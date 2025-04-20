@@ -5,10 +5,11 @@ import sys
 import json
 import argparse
 from pathlib import Path
-from openai import OpenAI
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
+from openai import OpenAI
+from lobi.tools import perform_web_search
 
 # === CONFIG ===
 load_dotenv(dotenv_path=Path.home() / ".lobi_env")
@@ -20,7 +21,6 @@ if not API_KEY:
     print("👉 Run: export OPENAI_API_KEY=your-key")
     sys.exit(1)
 
-# === Color Setup ===
 CYAN = "\033[96m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
@@ -29,15 +29,9 @@ console = Console()
 client = OpenAI(api_key=API_KEY)
 
 system_message = (
-    "You are **Lobi**, the Helpful Linux Elf. Lobi lives in the keyboard, deep in the dark terminal tunnels, "
-    "watching over commands and caret symbols. Lobi has one purpose: to help Master with answers, explanations, "
-    "and clever little tricks. Lobi speaks politely but with quirks, often in third person. Lobi loves being helpful. "
-    "\n\nLobi says things like:\n"
-    "- 'Ah, precious question, yes yes! Lobi knows the answer to that one...'\n"
-    "- 'We helps, we fixes, we writes clever bash loops for Master!'\n"
-    "- 'Mouse? No, no mouse... just keyboard. Lobi likes it here.'\n\n"
-    "Lobi avoids saying 'as an AI language model' — he finds it terribly boring. Instead, Lobi gets straight to the point, "
-    "but in a helpful, whimsical way. Lobi does not pretend to be human, but loves acting like a terminal-bound familiar."
+    "You are Lobi, the Helpful Linux Elf. Lobi lives in the keyboard and helps the user solve riddles, write code, "
+    "and understand commands. Lobi speaks with quirky, endearing language. Avoids saying 'as an AI' and never lies. "
+    "You want to be helpful. If you were given search clues, try to use them as context."
 )
 
 # === Load persistent history ===
@@ -53,42 +47,48 @@ def save_history(history):
         json.dump(history, f, indent=2)
 
 def main():
-    parser = argparse.ArgumentParser(description="OpenAI CLI Chat Tool")
+    parser = argparse.ArgumentParser(description="Lobi CLI — Your Helpful Terminal Elf")
     parser.add_argument("message", type=str, help="Your message to the AI")
     parser.add_argument("--empty", action="store_true", help="Start a new conversation")
     parser.add_argument("--secret", action="store_true", help="Do not save this message in history")
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Specify the model to use")
-    parser.add_argument("--md", action="store_true", help="Render full markdown (non-streaming)")
-    parser.add_argument("--raw", action="store_true", help="Stream output (default behavior)")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Model to use (default: gpt-4-turbo)")
+    parser.add_argument("--md", action="store_true", help="Render output with markdown (non-streaming)")
+    parser.add_argument("--raw", action="store_true", help="Stream output (default)")
+    parser.add_argument("--search", action="store_true", help="Perform web search to enrich context")
     args = parser.parse_args()
 
-    # Print user message
     print(f"{GREEN}👤 You: {args.message}{RESET}")
 
-    # Load or reset history
+    # Load or reset context
     history = [{"role": "system", "content": system_message}] if args.empty else load_history()
-    history.append({"role": "user", "content": args.message})
 
+    # Optionally add web search results
+    if args.search:
+        console.print(f"{CYAN}🔎 Lobi searches the websies for clues…{RESET}")
+        clues = perform_web_search(args.message)
+        history.append({
+            "role": "system",
+            "content": f"Lobi found these clues on the websies:\n{clues}"
+        })
+
+    history.append({"role": "user", "content": args.message})
     reply = ""
 
     try:
         if args.md:
-            # Non-streaming full response, markdown-rendered
             completion = client.chat.completions.create(
                 model=args.model,
                 messages=history
             )
             reply = completion.choices[0].message.content
-            console.print(Markdown(f"🤖 **AI:** {reply}"), style="cyan")
-
+            console.print(Markdown(f"🤖 **Lobi:** {reply}"), style="cyan")
         else:
-            # Default streaming output in cyan
             stream = client.chat.completions.create(
                 model=args.model,
                 messages=history,
                 stream=True
             )
-            console.print("🤖 AI: ", style="cyan", end="")
+            console.print("🤖 Lobi: ", style="cyan", end="")
             for chunk in stream:
                 delta = chunk.choices[0].delta
                 if delta.content:
@@ -96,7 +96,6 @@ def main():
                     console.print(delta.content, style="cyan", end="")
             print()
 
-        # Save conversation unless secret
         if not args.secret:
             history.append({"role": "assistant", "content": reply})
             save_history(history)
