@@ -1,9 +1,9 @@
-# 🧝‍♂️ Lobi CLI — The Helpful Linux Elf
+# 🧝‍♂️ Lobi — The Helpful Linux Elf
 
 **Lobi** is a minimalist yet powerful terminal-based AI assistant powered by OpenAI. It's designed for developers, sysadmins, and terminal lovers who want instant answers, markdown rendering, and persistent chat history — all from the comfort of the CLI.
 
 ![badge](https://img.shields.io/badge/terminal-ready-brightgreen?style=flat-square)
-![license](https://img.shields.io/github/license/ginkorea/lobi-cli?style=flat-square)
+![license](https://img.shields.io/github/license/ginkorea/lobi?style=flat-square)
 
 ---
 
@@ -14,7 +14,7 @@
 - 🔒 Secret mode (`--secret`) and clean resets (`--empty`)
 - 💾 Persistent conversation history (`~/.hey_history.json`)
 - 🎨 Beautiful color-coded terminal output with emoji flair
-- 🌍 Easy to install globally, no virtualenv required
+- 🌍 Easy to install globally, not tied to any virtualenv
 
 ---
 
@@ -23,14 +23,14 @@
 ### Install via GitHub:
 
 ```bash
-pip install git+https://github.com/ginkorea/lobi-cli.git
+pip install git+https://github.com/ginkorea/lobi.git
 ```
 
 ### Or clone and install manually:
 
 ```bash
-git clone https://github.com/ginkorea/lobi-cli.git
-cd lobi-cli
+git clone https://github.com/ginkorea/lobi.git
+cd lobi
 pip install .
 ```
 
@@ -85,8 +85,8 @@ lobi "This is sensitive info" --secret
 ## 🧪 Developer Install
 
 ```bash
-git clone https://github.com/ginkorea/lobi-cli.git
-cd lobi-cli
+git clone https://github.com/ginkorea/lobi.git
+cd lobi
 pip install -e .
 ```
 
