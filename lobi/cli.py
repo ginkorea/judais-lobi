@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 # === CONFIG ===
-load_dotenv()
+load_dotenv(dotenv_path=Path.home() / ".lobi_env")
 HISTORY_FILE = Path.home() / ".hey_history.json"
 DEFAULT_MODEL = "gpt-4-turbo"
 API_KEY = os.getenv("OPENAI_API_KEY")
