@@ -5,6 +5,8 @@
 ![badge](https://img.shields.io/badge/terminal-ready-brightgreen?style=flat-square)
 ![license](https://img.shields.io/github/license/ginkorea/lobi?style=flat-square)
 
+![Lobi the Helpful Linux Elf](https://github.com/ginkorea/lobi/raw/master/images/lobi.png)
+
 ---
 
 ## ✨ Features
