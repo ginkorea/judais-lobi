@@ -10,11 +10,14 @@ from rich.console import Console
 from rich.markdown import Markdown
 from openai import OpenAI
 from lobi.tools import perform_web_search
+from lobi.memory import LongTermMemory  # ✅ Fixed import path
 
 # === CONFIG ===
 load_dotenv(dotenv_path=Path.home() / ".lobi_env")
-HISTORY_FILE = Path.home() / ".hey_history.json"
-DEFAULT_MODEL = "gpt-4-turbo"
+SHORT_TERM_FILE = Path.home() / ".lobi_history.json"
+LONG_TERM_FILE = Path.home() / ".lobi_longterm.json"
+HISTORY_FILE = SHORT_TERM_FILE
+DEFAULT_MODEL = "gpt-4o-mini"
 API_KEY = os.getenv("OPENAI_API_KEY")
 if not API_KEY:
     print("❌ ERROR: OPENAI_API_KEY is not set.")
@@ -34,9 +37,13 @@ system_message = (
     "You want to be helpful. If you were given search clues, try to use them as context."
 )
 
+# === Initialize long-term memory ===
+long_memory = LongTermMemory(path=LONG_TERM_FILE, model="text-embedding-3-small")
+
 # === Load persistent history ===
 def load_history():
     if HISTORY_FILE.exists():
+        console.print(f"{CYAN}📜 Lobi remembers your past conversations...{RESET}")
         with open(HISTORY_FILE, "r") as f:
             return json.load(f)
     return [{"role": "system", "content": system_message}]
@@ -50,8 +57,9 @@ def main():
     parser = argparse.ArgumentParser(description="Lobi CLI — Your Helpful Terminal Elf")
     parser.add_argument("message", type=str, help="Your message to the AI")
     parser.add_argument("--empty", action="store_true", help="Start a new conversation")
+    parser.add_argument("--purge", action="store_true", help="Purge long-term memory")
     parser.add_argument("--secret", action="store_true", help="Do not save this message in history")
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Model to use (default: gpt-4-turbo)")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Model to use (default: gpt-4o-mini)")
     parser.add_argument("--md", action="store_true", help="Render output with markdown (non-streaming)")
     parser.add_argument("--raw", action="store_true", help="Stream output (default)")
     parser.add_argument("--search", action="store_true", help="Perform web search to enrich context")
@@ -62,6 +70,20 @@ def main():
 
     # Load or reset context
     history = [{"role": "system", "content": system_message}] if args.empty else load_history()
+
+    # Purge long-term memory if requested
+    if args.purge:
+        console.print(f"{CYAN}🧹 Lobi forgets everything in the long-term...{RESET}")
+        long_memory.purge()
+
+    # Inject relevant long-term memory
+    relevant_memories = long_memory.search(args.message, top_k=3)
+    if relevant_memories:
+        context = "\n".join([f"{m['role']}: {m['content']}" for m in relevant_memories])
+        history.append({
+            "role": "system",
+            "content": f"🔍 Lobi recalls:\n{context}"
+        })
 
     # Optionally add web search results
     if args.search:
@@ -100,6 +122,8 @@ def main():
         if not args.secret:
             history.append({"role": "assistant", "content": reply})
             save_history(history)
+            long_memory.add("user", args.message)
+            long_memory.add("assistant", reply)
 
     except Exception as e:
         print(f"\n❌ Error: {e}")
