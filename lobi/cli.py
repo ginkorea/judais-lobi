@@ -55,6 +55,7 @@ def main():
     parser.add_argument("--md", action="store_true", help="Render output with markdown (non-streaming)")
     parser.add_argument("--raw", action="store_true", help="Stream output (default)")
     parser.add_argument("--search", action="store_true", help="Perform web search to enrich context")
+    parser.add_argument("--deep", action="store_true", help="Deep dive into the top search result and use page contents")
     args = parser.parse_args()
 
     print(f"{GREEN}👤 You: {args.message}{RESET}")
@@ -65,7 +66,7 @@ def main():
     # Optionally add web search results
     if args.search:
         console.print(f"{CYAN}🔎 Lobi searches the websies for clues…{RESET}")
-        clues = perform_web_search(args.message)
+        clues = perform_web_search(args.message, deep_dive=args.deep)
         history.append({
             "role": "system",
             "content": f"Lobi found these clues on the websies:\n{clues}"
@@ -81,14 +82,14 @@ def main():
                 messages=history
             )
             reply = completion.choices[0].message.content
-            console.print(Markdown(f"🤖 **Lobi:** {reply}"), style="cyan")
+            console.print(Markdown(f"🧝 **Lobi:** {reply}"), style="cyan")
         else:
             stream = client.chat.completions.create(
                 model=args.model,
                 messages=history,
                 stream=True
             )
-            console.print("🤖 Lobi: ", style="cyan", end="")
+            console.print("🧝 Lobi: ", style="cyan", end="")
             for chunk in stream:
                 delta = chunk.choices[0].delta
                 if delta.content:
