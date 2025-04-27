@@ -143,3 +143,16 @@ class Lobi:
         self.save_history()
         self.remember(user_prompt, summary)
 
+    def summarize_text(self, text):
+        """Summarizes a given text."""
+        prompt = [
+            {"role": "system", "content": "Summarize the following output in a concise, readable format."},
+            {"role": "user", "content": text}
+        ]
+        completion = self.client.chat.completions.create(
+            model=self.model,
+            messages=prompt
+        )
+        return completion.choices[0].message.content.strip()
+
+

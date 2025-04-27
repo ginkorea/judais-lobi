@@ -4,13 +4,16 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-brightgreen.svg)](https://www.python.org/)
 [![Memory](https://img.shields.io/badge/Memory-Short--term%20%26%20Long--term-yellow.svg)](#-memory-files)
 [![Status](https://img.shields.io/badge/Status-Active-brightgreen.svg)](#)
+[![PyPI version](https://badge.fury.io/py/lobi-cli.svg)](https://badge.fury.io/py/lobi-cli)
 
 ![Lobi the Helpful Linux Elf](https://github.com/ginkorea/lobi/raw/master/images/lobi.png)
 
+---
 
 Lobi lives in your keyboard and helps you solve riddles, write code, poke the websies, and whisper secrets of the circuits.  
 Built to be mischievous, quirky, loyal — and now a fully memory-driven coding agent!
 
+---
 
 ## ✨ Features
 
@@ -31,6 +34,16 @@ Built to be mischievous, quirky, loyal — and now a fully memory-driven coding 
 - **Install Local Python Projects:** (`--install-project`)
 - **Markdown or Raw Output Modes:** (`--md` or `--raw`)
 - **Secret Mode:** (`--secret`) don't save history for sensitive queries
+
+---
+
+## ⚡ Quick Installation
+
+```bash
+pip install lobi-cli
+```
+
+✅ Requires Python 3.9+
 
 ---
 
@@ -97,10 +110,10 @@ lobi --install-project
 
 ## 📦 Developer Setup
 
-Clone and install:
+Clone and install manually:
 
 ```bash
-git clone https://github.com/yourname/lobi.git
+git clone https://github.com/ginkorea/lobi.git
 cd lobi
 pip install .
 ```
@@ -126,6 +139,13 @@ Lobi automatically creates a lightweight `.lobienv` virtual environment for runn
 
 ---
 
+## ⚠️ Security Notice
+
+Lobi can generate and run Bash commands and Python code.  
+**Always review the generated code** before running it, especially when using `--shell` or `--python`.
+
+---
+
 ## 🧠 How Lobi Thinks
 
 When asked to code, Lobi can:
@@ -141,18 +161,16 @@ If needed, Lobi will politely ask you for sudo powers to poke the network bits. 
 
 ## 💬 Example Memory Reflection Injected into Prompt
 
-```terminaloutput
+```text
 ✨ Memory 1:
 Lobi attempted to scan the network, but no devices were found.
 
 🐍 Python Code:
-```python
 import scapy.all as scapy
 ...
-```
-```terminaloutput
+
 📜 Execution Result:
-"PermissionError: [Errno 1] Operation not permitted"
+PermissionError: [Errno 1] Operation not permitted
 ```
 
 ---
@@ -162,4 +180,4 @@ import scapy.all as scapy
 Created with mischief, magic, and memory to be your quirky Linux companion.  
 Always learning. Always whispering. Always trying to help, precious.
 
-
+---

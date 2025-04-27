@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--recall", type=int, help="Recall last N coding adventures (short-term)")
     parser.add_argument("--recall-type", type=str, choices=["0", "1", "both"], default="both", help="Recall only successes (1), failures (0), or both")
     parser.add_argument("--long-term", type=int, help="Recall N best matches from long-term memory")
+    parser.add_argument("--summarize", action="store_true", help="Summarize the output of a shell command")
+    parser.add_argument("--voice", action="store_true", help="Have Lobi speak his responses aloud")  # Voice support
 
     args = parser.parse_args()
 
@@ -36,7 +38,6 @@ def main():
     elf = Lobi(model=args.model or "gpt-4o-mini")
 
     if args.shell or args.python:
-        # ✨ Before generating, build system memory
         memory_reflection = elf.recall_memory(
             n=args.recall or 0,
             result_type=args.recall_type,
@@ -64,6 +65,13 @@ def main():
 
         result, success = elf.tools.run_shell_command(parsed_command, return_success=True)
         console.print(f"{GREEN}💥 Lobi runs:\n{result}{RESET}")
+
+        if args.summarize:
+            console.print(f"{CYAN}🧠 Lobi ponders the output…{RESET}")
+            summary = elf.summarize_text(result)
+            console.print(f"{GREEN}📜 Summary:\n{summary}{RESET}")
+            if args.voice:
+                elf.tools.speak_text(summary)
 
         if not args.secret:
             elf.save_coding_adventure(args.message, parsed_command, result, "shell", success)
@@ -114,6 +122,8 @@ def main():
         if args.md:
             reply = elf.chat(args.message)
             console.print(Markdown(f"🧝 **Lobi:** {reply}"), style="cyan")
+            if args.voice:
+                elf.tools.speak_text(reply)
         else:
             stream = elf.chat(args.message, stream=True)
             console.print("🧝 Lobi: ", style="cyan", end="")
@@ -124,6 +134,8 @@ def main():
                     reply += delta.content
                     console.print(delta.content, style="cyan", end="")
             print()
+            if args.voice:
+                elf.tools.speak_text(reply)
 
         if not args.secret:
             elf.history.append({"role": "assistant", "content": reply})

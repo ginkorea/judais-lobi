@@ -8,6 +8,7 @@ import venv
 import shutil
 import random
 import requests
+import pyttsx3
 from bs4 import BeautifulSoup
 from pathlib import Path
 
@@ -308,3 +309,12 @@ class Tools:
 
         corrected_code = completion.choices[0].message.content
         return self.extract_python_code(corrected_code)
+
+    def speak_text(self, text):
+        """Speaks text aloud using tuned espeak settings."""
+        try:
+            # -v en+f3 = English female light voice
+            # -s 140 = Slow speech rate for storytelling
+            subprocess.run(['espeak', '-v', 'en+f3', '-s', '140', text], check=True)
+        except Exception as e:
+            print(f"⚠️ Lobi tried to speak but got tangled: {e}")
