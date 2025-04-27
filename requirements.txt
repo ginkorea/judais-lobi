@@ -1,0 +1,10 @@
+openai>=1.0.0
+rich
+python-dotenv
+beautifulsoup4
+requests
+faiss-cpu
+numpy
+pyttsx3
+spacy[ja]==3.6.1  # ✅ Add spacy pinned
+git+https://github.com/ginkorea/tts-patched.git@main#egg=TTS  # ✅ Your patched repo!

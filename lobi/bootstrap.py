@@ -5,9 +5,6 @@ import venv
 from pathlib import Path
 
 def bootstrap_lobienv():
-    """
-    Ensures .lobienv exists, pip is upgraded, and ALL Lobi required packages are installed.
-    """
     lobienv = Path(".lobienv")
     python_bin = lobienv / "bin" / "python"
     pip_bin = lobienv / "bin" / "pip"
@@ -27,11 +24,16 @@ def bootstrap_lobienv():
         "python-dotenv",
         "requests",
         "beautifulsoup4",
-        "rich"
+        "rich",
+        "pyttsx3",
+        "spacy[ja]==3.6.1"
     ]
     subprocess.run([str(pip_bin), "install"] + required_packages, check=True)
 
-    print("✅ Lobi's magical environment (.lobienv) is now fully ready!")
+    print("🎤 Installing Patched TTS (Lobi voice)...")
+    subprocess.run([str(pip_bin), "install", "git+https://github.com/ginkorea/tts-patched.git@main"], check=True)
+
+    print("✅ Lobi's magical environment (.lobienv) is now fully ready with a voice!")
 
 if __name__ == "__main__":
     bootstrap_lobienv()

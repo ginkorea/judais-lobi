@@ -11,7 +11,7 @@ except Exception as e:
 
 setup(
     name="lobi-cli",
-    version="0.3.1",  # incremented for new voice feature!
+    version="0.3.3",  # 🎯 Minor version bump because now we support voice properly
     packages=find_packages(),
     install_requires=[
         "openai>=1.0.0",
@@ -21,7 +21,9 @@ setup(
         "requests",
         "faiss-cpu",
         "numpy",
-        "pyttsx3"  # NEW for Voice (TTS)!
+        "pyttsx3",
+        "spacy[ja]==3.6.1",
+        "git+https://github.com/ginkorea/tts-patched.git@main#egg=TTS",
     ],
     entry_points={
         "console_scripts": [
@@ -30,7 +32,7 @@ setup(
         ],
     },
     author="Josh Gompert",
-    description="Lobi: a terminal-based AI assistant with personality, memory, and now a speaking voice!",
+    description="Lobi: a terminal-based AI assistant with memory, local voice, and emerging offline model support",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/lobi",
@@ -40,5 +42,5 @@ setup(
         "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.7",
+    python_requires=">=3.10",  # Minimum due to some dependencies
 )
