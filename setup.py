@@ -1,8 +1,17 @@
+# setup.py
+
 from setuptools import setup, find_packages
+
+# Import bootstrap function
+try:
+    from lobi.bootstrap import bootstrap_lobienv
+    bootstrap_lobienv()
+except Exception as e:
+    print(f"⚠️ Warning: Bootstrap failed during install: {e}")
 
 setup(
     name="lobi-cli",
-    version="0.2.2",
+    version="0.2.3",
     packages=find_packages(),
     install_requires=[
         "openai>=1.0.0",
@@ -10,12 +19,13 @@ setup(
         "python-dotenv",
         "beautifulsoup4",
         "requests",
-        "faiss-cpu",          # Added for vector search in LongTermMemory
-        "numpy"               # Required for FAISS vector operations
+        "faiss-cpu",
+        "numpy"
     ],
     entry_points={
         "console_scripts": [
             "lobi = lobi.cli:main",
+            "lobi-bootstrap = lobi.bootstrap:bootstrap_lobienv",
         ],
     },
     author="Josh Gompert",
@@ -29,5 +39,5 @@ setup(
         "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
         "Operating System :: OS Independent",
     ],
-    python_requires='>=3.7',
+    python_requires=">=3.7",
 )

@@ -1,104 +1,165 @@
-# 🧝‍♂️ Lobi — The Helpful Linux Elf
+# 🧝‍♂️ Lobi: The Helpful Linux Elf
 
-**Lobi** is a minimalist yet powerful terminal-based AI assistant powered by OpenAI. It's designed for developers, sysadmins, and terminal lovers who want instant answers, markdown rendering, and persistent chat history — all from the comfort of the CLI.
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-brightgreen.svg)](https://www.python.org/)
+[![Memory](https://img.shields.io/badge/Memory-Short--term%20%26%20Long--term-yellow.svg)](#-memory-files)
+[![Status](https://img.shields.io/badge/Status-Active-brightgreen.svg)](#)
 
-![badge](https://img.shields.io/badge/terminal-ready-brightgreen?style=flat-square)
-![license](https://img.shields.io/github/license/ginkorea/lobi?style=flat-square)
+[Lobi the Helpful Linux Elf](https://github.com/ginkorea/lobi/raw/master/images/lobi.png)
 
-![Lobi the Helpful Linux Elf](https://github.com/ginkorea/lobi/raw/master/images/lobi.png)
 
----
+Lobi lives in your keyboard and helps you solve riddles, write code, poke the websies, and whisper secrets of the circuits.  
+Built to be mischievous, quirky, loyal — and now a fully memory-driven coding agent!
+
 
 ## ✨ Features
 
-- 🤖 Chat with OpenAI's GPT-4 or GPT-4 Turbo
-- 📘 Streamed or Markdown-rendered answers (`--raw` / `--md`)
-- 🔒 Secret mode (`--secret`) and clean resets (`--empty`)
-- 💾 Persistent conversation history (`~/.hey_history.json`)
-- 🎨 Beautiful color-coded terminal output with emoji flair
-- 🌍 Easy to install globally, not tied to any virtualenv
+- **Friendly CLI Assistant:** chat, ask questions, brainstorm ideas
+- **Code Writer:** write and run Python scripts (`--python`) or Bash commands (`--shell`)
+- **Agentic Memory System:**
+  - **Short-term memory:** persistent `.lobi_history.json`
+  - **Long-term vector memory:** FAISS-powered `.lobi_longterm.json`
+  - **Recall past successes or failures** using `--recall` and `--recall-type`
+- **Self-Reflective Learning:**
+  - Structured memory injection into new prompts
+  - Improves upon past failed or successful code automatically
+- **Error Handling & Repair:**
+  - Automatically installs missing Python packages
+  - Attempts code repairs if errors occur
+- **Root Access (optional):**
+  - Asks permission for sudo commands
+- **Install Local Python Projects:** (`--install-project`)
+- **Markdown or Raw Output Modes:** (`--md` or `--raw`)
+- **Secret Mode:** (`--secret`) don't save history for sensitive queries
 
 ---
 
-## 🚀 Installation
-
-### Install via GitHub:
+## 🧰 Usage
 
 ```bash
-pip install git+https://github.com/ginkorea/lobi.git
+lobi "your message here" [options]
 ```
 
-### Or clone and install manually:
+### Common Options
+
+| Option             | Description |
+|--------------------|-------------|
+| `--python`          | Ask Lobi to write and run a Python script |
+| `--shell`           | Ask Lobi to write and run a Bash command |
+| `--recall N`        | Recall last **N** coding memories (short-term) |
+| `--recall-type`     | `1 = success`, `0 = failure`, `both = both` |
+| `--long-term N`     | Recall **N** best matches from long-term memory |
+| `--install-project` | Install a Python project into `.lobienv` |
+| `--empty`           | Start a new conversation |
+| `--purge`           | Purge long-term memory |
+| `--search`          | Perform a web search for your query |
+| `--deep`            | Perform a deep dive into top web result |
+| `--secret`          | Do not save this conversation |
+| `--model`           | Specify an OpenAI model (default: `gpt-4o-mini`) |
+| `--md`              | Render output as Markdown |
+| `--raw`             | Render output as plain text |
+
+---
+
+## 🔥 Example Commands
+
+### Basic Chat
+```bash
+lobi "What is the best way to learn Linux?"
+```
+
+### Write and Run Python Code
+```bash
+lobi "Plot a histogram of random numbers" --python
+```
+
+### Write and Run a Bash Command
+```bash
+lobi "List all active IPs on the local network" --shell
+```
+
+### Recall Past Attempts to Improve
+```bash
+lobi "Scan the network better" --python --recall 3 --recall-type 0
+```
+
+### Recall Long-Term Memories
+```bash
+lobi "Find hidden devices on network" --python --recall 2 --long-term 3
+```
+
+### Install a Project
+```bash
+lobi --install-project
+```
+
+---
+
+## 📦 Developer Setup
+
+Clone and install:
 
 ```bash
-git clone https://github.com/ginkorea/lobi.git
+git clone https://github.com/yourname/lobi.git
 cd lobi
 pip install .
 ```
 
----
-
-## 🔐 Setup Your API Key
-
-Either export it:
+Optional: use a virtualenv:
 
 ```bash
-export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+python3 -m venv .venv
+source .venv/bin/activate
+pip install .
 ```
 
-Or create a `.env` file in your home directory:
-
-```bash
-echo "OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxx" > ~/.lobi.env
-```
-
-Lobi will read it automatically on launch.
+Lobi automatically creates a lightweight `.lobienv` virtual environment for running generated Python safely.
 
 ---
 
-## 🧑‍💻 Usage
+## 📜 Memory Files
 
-```bash
-lobi "What are Linux runlevels?"
-```
-
-### Common Flags
-
-| Option       | Description                                      |
-|--------------|--------------------------------------------------|
-| `--empty`    | Start a new conversation (no history/context)    |
-| `--secret`   | Don’t save this exchange to history              |
-| `--model`    | Use a specific OpenAI model (default: gpt-4-turbo) |
-| `--md`       | Render markdown (non-streaming, pretty)          |
-| `--raw`      | Stream raw output (default)                      |
+| File                  | Purpose |
+|------------------------|---------|
+| `~/.lobi_history.json` | Persistent short-term conversation and coding memory |
+| `~/.lobi_longterm.json`| Vectorized long-term memory for retrieval-augmented prompts |
 
 ---
 
-## 💡 Examples
+## 🧠 How Lobi Thinks
 
-```bash
-lobi "Give me a Python function that sorts a list." --md
-lobi "What is systemd?" --empty
-lobi "This is sensitive info" --secret
-```
+When asked to code, Lobi can:
+- Recall up to N past exploits
+- Focus on only failures (`--recall-type 0`) or successes (`--recall-type 1`)
+- Search long-term memory
+- Inject structured reflections into his next coding attempt
+- Adapt automatically and retry if errors occur
+
+If needed, Lobi will politely ask you for sudo powers to poke the network bits. 🧙‍♂️
 
 ---
 
-## 🧪 Developer Install
+## 💬 Example Memory Reflection Injected into Prompt
 
-```bash
-git clone https://github.com/ginkorea/lobi.git
-cd lobi
-pip install -e .
+```terminaloutput
+✨ Memory 1:
+Lobi attempted to scan the network, but no devices were found.
+
+🐍 Python Code:
+```python
+import scapy.all as scapy
+...
+```
+```terminaloutput
+📜 Execution Result:
+"PermissionError: [Errno 1] Operation not permitted"
 ```
 
 ---
 
-## 📜 License
+## ❤️ About
 
-[GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html)  
-© 2025 [Josh Gompert (ginkorea)](https://github.com/ginkorea)
+Created with mischief, magic, and memory to be your quirky Linux companion.  
+Always learning. Always whispering. Always trying to help, precious.
 
----
 
-> 🧝‍♂️ Lobi lives in your terminal — ready to help, learn, and serve.
