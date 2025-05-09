@@ -9,11 +9,12 @@ class RunPythonTool(RunSubprocessTool):
     description = "Executes Python in an agent-specific elfenv with retries, package recovery, sudo fallback, and repair."
 
     def __init__(self, **kwargs):
-        self.elfenv = kwargs.get("elfenv", Path(".elfenv"))  # default fallback
+        self.elfenv = kwargs.get("elfenv", Path(".elfenv"))
         self.python_bin = self.elfenv / "bin" / "python"
         self.pip_bin = self.elfenv / "bin" / "pip"
         self.ensure_elfenv()
         super().__init__(**kwargs)
+        self.name = "run_python_code"
 
     def __call__(self, code, elf, unsafe=True, max_retries=2, return_success=False):
         attempt = 0

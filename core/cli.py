@@ -3,6 +3,9 @@
 import argparse
 from rich.console import Console
 from rich.markdown import Markdown
+from core.tools import Tools
+from core.tools.run_shell import RunShellTool
+from core.tools.run_python import RunPythonTool
 
 GREEN = "\033[92m"
 RESET = "\033[0m"
@@ -55,18 +58,17 @@ def _main(Elf):
         ]
         completion = elf.client.chat.completions.create(model=elf.model, messages=command_gen_prompt)
         raw_command = completion.choices[0].message.content.strip()
-        parsed_command = elf.tools.extract_shell_command(raw_command)
+        parsed_command = RunShellTool.extract_code(raw_command)
         console.print(f"🧠 {Elf.__name__} thinks:\n{parsed_command}", style=style)
 
-        result, success = elf.tools.run_shell_command(parsed_command, return_success=True)
+        result, success = elf.tools.run("run_shell_command", parsed_command, return_success=True)
         console.print(f"💥 {Elf.__name__} runs:\n{result}", style=style)
 
         if args.summarize:
-            console.print(f"🧠 {Elf.__name__} ponders…", style=style)
             summary = elf.summarize_text(result)
             console.print(f"📜 Summary:\n{summary}", style=style)
             if args.voice:
-                elf.tools.speak_text(summary)
+                elf.tools.run("speak_text", summary)
 
         if not args.secret:
             elf.save_coding_adventure(args.message, parsed_command, result, "shell", success)
@@ -79,10 +81,10 @@ def _main(Elf):
         ]
         completion = elf.client.chat.completions.create(model=elf.model, messages=code_gen_prompt)
         raw_code = completion.choices[0].message.content.strip()
-        parsed_code = elf.tools.extract_python_code(raw_code)
+        parsed_code = RunPythonTool.extract_code(raw_code)
         console.print(f"🧠 {Elf.__name__} writes:\n{parsed_code}", style=style)
 
-        result, success = elf.tools.run_python_code(parsed_code, return_success=True)
+        result, success = elf.tools.run("run_python_code", parsed_code, elf=elf, return_success=True)
         console.print(f"💥 {Elf.__name__} executes:\n{result}", style=style)
 
         if not args.secret:
@@ -90,8 +92,7 @@ def _main(Elf):
         return
 
     if args.install_project:
-        console.print(f"🛠 {Elf.__name__} prepares to install the project...", style=style)
-        result = elf.tools.install_project()
+        result = elf.tools.run("install_project")
         console.print(f"📦 Install Result:\n{result}", style=style)
         return
 
@@ -99,21 +100,21 @@ def _main(Elf):
         elf.reset_history()
 
     if args.purge:
-        console.print(f"🧹 {Elf.__name__} forgets everything in the long-term...", style=style)
         elf.purge_memory()
+        console.print(f"🧹 {Elf.__name__} forgets everything in the long-term...", style=style)
 
     elf.enrich_with_memory(args.message)
 
     if args.search:
-        console.print(f"🔎 {Elf.__name__} searches the websies…", style=style)
         elf.enrich_with_search(args.message, deep=args.deep)
+        console.print(f"🔎 {Elf.__name__} searches the websies…", style=style)
 
     try:
         if args.md:
             reply = elf.chat(args.message)
             console.print(Markdown(f"🧝 **{Elf.__name__}:** {reply}"), style=style)
             if args.voice:
-                elf.tools.speak_text(reply)
+                elf.tools.run("speak_text", reply)
         else:
             stream = elf.chat(args.message, stream=True)
             console.print(f"🧝 {Elf.__name__}: ", style=style, end="")
@@ -125,7 +126,7 @@ def _main(Elf):
                     console.print(delta.content, style=style, end="")
             print()
             if args.voice:
-                elf.tools.speak_text(reply)
+                elf.tools.run("speak_text", reply)
 
         if not args.secret:
             elf.history.append({"role": "assistant", "content": reply})
@@ -133,9 +134,8 @@ def _main(Elf):
             elf.remember(args.message, reply)
 
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        console.print(f"\n❌ Error: {e}", style="red")
 
-# CLI entry points for scripts
 def main_lobi():
     from lobi import Lobi
     _main(Lobi)

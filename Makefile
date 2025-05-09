@@ -1,11 +1,9 @@
-install:
-	python3.11 -m venv .lobienv
-	. .lobienv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt
+VENV_NAME = .elfenv
+PYTHON = python3.11
 
-bootstrap:
-	python3.11 lobi/bootstrap.py
+install:
+	$(PYTHON) core/bootstrap.py
 
 rebuild:
-	rm -rf build dist *.egg-info .lobienv
+	rm -rf build dist *.egg-info .elfenv
 	make install
-	make bootstrap

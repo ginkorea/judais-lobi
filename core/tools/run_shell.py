@@ -9,6 +9,7 @@ class RunShellTool(RunSubprocessTool):
     def __init__(self, **kwargs):
         kwargs.setdefault("executable", "/bin/bash")
         super().__init__(**kwargs)
+        self.name = "run_shell_command"
 
     def __call__(self, command, timeout=None, return_success=False):
         code, out, err = self.run(command, timeout=timeout)
