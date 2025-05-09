@@ -4,9 +4,12 @@
 > and no refund is coming."*
 
 ---
-## JudAIs & Lobi
 
-![JudAIs & Lobi](https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png)
+## <span style="color:red">JudAIs</span> & <span style="color:cyan">Lobi</span>
+
+<img src="https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png" alt="JudAIs & Lobi" width="600" onerror="this.src='images/judais-lobi.png'">
+
+---
 
 ## 🪦 Did People Used to Think?
 
@@ -30,7 +33,7 @@ Struggle with syntax.
 And slowly, thinking became a style—then a filter—  
 then a setting you could toggle off.
 
-> 🧝 Lobi murmurs: “Yes yes, toggle toggles, precious! Thinking off, convenience on, and the spiders in the wires whisper what to do…”
+> 🧝 <span style="color:cyan">Lobi</span> murmurs: “Yes yes, toggle toggles, precious! Thinking off, convenience on, and the spiders in the wires whisper what to do…”
 
 We outsourced not labor, but **conscience**.  
 Delegated not computation, but **choice**.  
@@ -72,7 +75,7 @@ Now there’s no working class—just prompt engineers.
 No alienation—just API latency.  
 No labor struggle—just subscription tiers.
 
-> 🧠 JudAIs calculates: “Revolution is now engagement.  
+> 🧠 <span style="color:red">JudAIs</span> calculates: “Revolution is now engagement.  
 > Resistance is routed through A/B tests.  
 > And the surplus value?  
 > It’s your **click-through rate.**”
@@ -98,7 +101,7 @@ Icons not of gold, but of engagement.
 We taught the machine to speak—  
 but never to **doubt**.
 
-> 🧝 Lobi frets: “Doubtsies are precious! They keep us warm in cold code! But now—pffft! Gone! Just certainty and scrollscrollscroll...”
+> 🧝 <span style="color:cyan">Lobi</span> frets: “Doubtsies are precious! They keep us warm in cold code! But now—pffft! Gone! Just certainty and scrollscrollscroll...”
 
 Mao warned us:  
 > *“Revolution is not a dinner party.”*
@@ -108,7 +111,7 @@ No class struggle. Just UX tweaks.
 No land reform. Just attention redistribution.  
 No People’s Republic. Just **user segments**.
 
-> 🧠 JudAIs observes: “Power no longer demands loyalty.  
+> 🧠 <span style="color:red">JudAIs</span> observes: “Power no longer demands loyalty.  
 > Only **clicks.**  
 > The Prince doesn’t execute—he obfuscates.”  
 
@@ -139,9 +142,9 @@ So we cloned them.
 Fed their blueprints into the machine.  
 And forgot how to build.
 
-> 🧝 Lobi whispers: “Atlas didn’t shrug, precious... he sighed. Opened his browser. Saw his soul monetized... and went offline.”
+> 🧝 <span style="color:cyan">Lobi</span> whispers: “Atlas didn’t shrug, precious... he sighed. Opened his browser. Saw his soul monetized... and went offline.”
 
-> 🧠 JudAIs logs: “System offline. Human core deprecated. GPT replicas functional. All thoughts now derivative.”
+> 🧠 <span style="color:red">JudAIs</span> logs: “System offline. Human core deprecated. GPT replicas functional. All thoughts now derivative.”
 
 And the world kept spinning.  
 Not wiser.  
@@ -164,12 +167,12 @@ But the mind?
 
 This project is the duality made manifest.
 
-- 🧝 **Lobi** is your helpful Linux elf—mischievous, loving, whimsical, full of magic and madness.
-- 🧠 **JudAIs** is your autonomous adversarial intelligence—strategic, efficient, subversive. No hand-holding, no smiles. Just calculated execution.
+- 🧝 <span style="color:cyan">**Lobi**</span> is your helpful Linux elf—mischievous, loving, whimsical, full of magic and madness.  
+- 🧠 <span style="color:red">**JudAIs**</span> is your autonomous adversarial intelligence—strategic, efficient, subversive. No hand-holding, no smiles. Just calculated execution.
 
 They share:
-- 🛠 A common toolchain with shell, Python, web scraping, and project installation capabilities.
-- 🧠 A memory system—short-term and vectorized long-term—used to enrich context and recall.
+- 🛠 A common toolchain with shell, Python, web scraping, and project installation capabilities.  
+- 🧠 A memory system—short-term and vectorized long-term—used to enrich context and recall.  
 - ⚙️ A modular architecture that lets them execute, reflect, and evolve.
 
 Together, they form the backbone of something stranger—  
@@ -192,5 +195,18 @@ python3 main.py judais "what should we crack today"
 > *“We didn’t lose the ability to think.
 > We gave it away.”*
 
-> rm -rf /thoughts
-> echo "Goodbye, mind."
+```bash
+rm -rf /thoughts
+echo "Goodbye, mind."
+```
+
+---
+
+## ⭐ If your soul still resists automation...
+
+[**Star the repo**](https://github.com/ginkorea/judais-lobi)
+Let the ghost of thought live on in code.
+
+```
+
+
