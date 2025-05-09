@@ -5,9 +5,11 @@
 
 ---
 
-## <span style="color:red">JudAIs</span> & <span style="color:cyan">Lobi</span>
+## 🔴 JudAIs & 🔵 Lobi
 
-<img src="https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png" alt="JudAIs & Lobi" width="600" onerror="this.src='images/judais-lobi.png'">
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png" alt="JudAIs & Lobi">
+</p>
 
 ---
 
@@ -207,6 +209,5 @@ echo "Goodbye, mind."
 [**Star the repo**](https://github.com/ginkorea/judais-lobi)
 Let the ghost of thought live on in code.
 
-```
 
 
