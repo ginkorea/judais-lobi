@@ -21,7 +21,8 @@ class RunSubprocessTool(Tool, ABC):
         self.return_success = kwargs.get("return_success", False)
         self.timeout = kwargs.get("timeout", 30)
         self.check_root = kwargs.get("check_root", False)
-        self.executable = kwargs.get("executable", "/bin/bash")  # default only for shell commands
+        self.executable = kwargs.get("executable", "/bin/bash") # default only for shell commands
+        self.elf = kwargs.get("elf", None)  # Optional elf object for sudo permission checks
 
     def run(self, cmd, timeout=None):
         """

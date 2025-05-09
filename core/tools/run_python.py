@@ -17,6 +17,7 @@ class RunPythonTool(RunSubprocessTool):
         self.name = "run_python_code"
 
     def __call__(self, code, elf, unsafe=True, max_retries=2, return_success=False):
+        self.elf = elf
         attempt = 0
         current_code = code
 
@@ -47,7 +48,7 @@ class RunPythonTool(RunSubprocessTool):
                 return ("❌ Permission denied", 0) if return_success else "❌ Permission denied"
 
             if attempt < max_retries:
-                current_code = elf.tools.repair_code_with_lobi(elf, current_code, err)
+                current_code = self.repair_code(current_code, err)
                 attempt += 1
                 continue
 
@@ -66,5 +67,42 @@ class RunPythonTool(RunSubprocessTool):
         match = re.search(r"No module named '(.*?)'", err)
         return match.group(1) if match else None
 
+
     # 🔁 Use shared extract_code
     extract_code = staticmethod(lambda text: RunSubprocessTool.extract_code(text, "python"))
+
+
+
+    def repair_code(self, broken_code, error_message):
+        prompt = f"""You are an expert Python repair assistant.
+
+        The following Python code failed:
+        
+        ```python
+        {broken_code}
+        ````
+        
+        Error:
+        
+        ```
+        {error_message}
+        ```
+        
+        Please rewrite the corrected full code below. Respond with only the fixed code in a Python code block.
+        """
+        try:
+            response = self.elf.client.chat.completions.create(
+                model=self.elf.model,
+                messages=[
+                    {"role": "system", "content": "Fix broken Python code."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            return self.extract_code(response.choices[0].message.content, "python")
+        except Exception:
+            return broken_code
+
+
+
+
+
