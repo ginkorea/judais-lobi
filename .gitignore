@@ -1,3 +1,5 @@
 .env
 .idea
 local_models
+__pycache__/
+*.pyc
