@@ -4,6 +4,9 @@
 > and no refund is coming."*
 
 ---
+## JudAIs & Lobi
+
+![JudAIs & Lobi](https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png)
 
 ## 🪦 Did People Used to Think?
 
