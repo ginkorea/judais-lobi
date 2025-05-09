@@ -33,7 +33,7 @@ setup(
     },
     author="Josh Gompert",
     description="Lobi: a terminal-based AI assistant with memory, local voice, and emerging offline model support",
-    long_description=open("README.md").read(),
+    long_description=open("lobi/README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/lobi",
     classifiers=[

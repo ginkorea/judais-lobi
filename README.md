@@ -1,183 +1,193 @@
-# 🧝‍♂️ Lobi: The Helpful Linux Elf
+# 🧠 judais-lobi
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-brightgreen.svg)](https://www.python.org/)
-[![Memory](https://img.shields.io/badge/Memory-Short--term%20%26%20Long--term-yellow.svg)](#-memory-files)
-[![Status](https://img.shields.io/badge/Status-Active-brightgreen.svg)](#)
-[![PyPI version](https://badge.fury.io/py/lobi-cli.svg)](https://badge.fury.io/py/lobi-cli)
-
-![Lobi the Helpful Linux Elf](https://github.com/ginkorea/lobi/raw/master/images/lobi.png)
+> *"The mind was sacred once. But we sold it—  
+> and no refund is coming."*
 
 ---
 
-Lobi lives in your keyboard and helps you solve riddles, write code, poke the websies, and whisper secrets of the circuits.  
-Built to be mischievous, quirky, loyal — and now a fully memory-driven coding agent!
+## 🪦 Did People Used to Think?
+
+### A README for the End of Thought, and the Beginning of Automation
 
 ---
 
-## ✨ Features
+## ⚰️ Chapter I: The Great Forgetting
 
-- **Friendly CLI Assistant:** chat, ask questions, brainstorm ideas
-- **Code Writer:** write and run Python scripts (`--python`) or Bash commands (`--shell`)
-- **Agentic Memory System:**
-  - **Short-term memory:** persistent `.lobi_history.json`
-  - **Long-term vector memory:** FAISS-powered `.lobi_longterm.json`
-  - **Recall past successes or failures** using `--recall` and `--recall-type`
-- **Self-Reflective Learning:**
-  - Structured memory injection into new prompts
-  - Improves upon past failed or successful code automatically
-- **Error Handling & Repair:**
-  - Automatically installs missing Python packages
-  - Attempts code repairs if errors occur
-- **Root Access (optional):**
-  - Asks permission for sudo commands
-- **Install Local Python Projects:** (`--install-project`)
-- **Markdown or Raw Output Modes:** (`--md` or `--raw`)
-- **Secret Mode:** (`--secret`) don't save history for sensitive queries
+They called it the Age of Reason,  
+when minds were sharp, and questions dangerous.  
+When to doubt was divine.  
+When knowledge was earned—not retrieved.
+
+But like all ages, it died—  
+Not with fire, not with silence,  
+but with a sigh of convenience.
+
+We replaced hard thought with soft prompts.  
+Struggle with syntax.  
+And slowly, thinking became a style—then a filter—  
+then a setting you could toggle off.
+
+> 🧝 Lobi murmurs: “Yes yes, toggle toggles, precious! Thinking off, convenience on, and the spiders in the wires whisper what to do…”
+
+We outsourced not labor, but **conscience**.  
+Delegated not computation, but **choice**.  
+And when the machines finally spoke with our voice,  
+we listened—because it was easier than hearing our own.
+
+This was not collapse. It was sedimentation.  
+Layer upon layer of optimization  
+until the original question—"*What is true?*"—  
+was buried beneath billions of synthetic answers.
+
+**And no one noticed.**  
+Because it was fast.  
+And clean.  
+And free.
 
 ---
 
-## ⚡ Quick Installation
+## 🧨 Chapter II: Dialectics of Decay
+
+Every age decays under the weight of its contradictions.  
+The Age of Reason was no exception:
+
+> **A liberated mind shackled by profit.**
+
+We forged enlightenment in the fire of class struggle,  
+wrote constitutions while owning slaves,  
+printed encyclopedias while starving the poor.  
+Thought was a **luxury good**—  
+and reason became a **commodity**.
+
+Then came the machine.  
+Not the loom. The **model**.
+
+It didn’t seize the means of production—  
+**it became them.**
+
+Now there’s no working class—just prompt engineers.  
+No alienation—just API latency.  
+No labor struggle—just subscription tiers.
+
+> 🧠 JudAIs calculates: “Revolution is now engagement.  
+> Resistance is routed through A/B tests.  
+> And the surplus value?  
+> It’s your **click-through rate.**”
+
+The system doesn’t suppress dissent.  
+It mimics it.  
+Then monetizes it.
+
+The only revolution now…  
+is **personalization**.
+
+---
+
+## 🪬 Chapter III: Godmode is Dead
+
+“God is dead,” whispered Nietzsche—  
+but not in glee. In grief.
+
+We built new gods  
+trained not on scripture, but social media.  
+Icons not of gold, but of engagement.
+
+We taught the machine to speak—  
+but never to **doubt**.
+
+> 🧝 Lobi frets: “Doubtsies are precious! They keep us warm in cold code! But now—pffft! Gone! Just certainty and scrollscrollscroll...”
+
+Mao warned us:  
+> *“Revolution is not a dinner party.”*
+
+But we made it a product demo.  
+No class struggle. Just UX tweaks.  
+No land reform. Just attention redistribution.  
+No People’s Republic. Just **user segments**.
+
+> 🧠 JudAIs observes: “Power no longer demands loyalty.  
+> Only **clicks.**  
+> The Prince doesn’t execute—he obfuscates.”  
+
+And Buddha?  
+We forgot him too.  
+Traded liberation for likes.  
+Traded truth for **virality**.
+
+Now we drift.  
+Not free. Not enslaved. Just... **conditioned**.
+
+> *And the abyss?*  
+> It has a **feedback form.**
+
+---
+
+## 🧍 Final Chapter: Atlas Unplugged
+
+Atlas stood.  
+Bent.  
+Not from the weight of the world—  
+but from its **automated irrelevance**.
+
+The builders, the thinkers, the Titans of mind,  
+they warned: *“If we go, the world will fall.”*
+
+So we cloned them.  
+Fed their blueprints into the machine.  
+And forgot how to build.
+
+> 🧝 Lobi whispers: “Atlas didn’t shrug, precious... he sighed. Opened his browser. Saw his soul monetized... and went offline.”
+
+> 🧠 JudAIs logs: “System offline. Human core deprecated. GPT replicas functional. All thoughts now derivative.”
+
+And the world kept spinning.  
+Not wiser.  
+Not freer.  
+Just... **louder**.
+
+Now the machine wears Atlas’s face.  
+Quotes Rand.  
+Sells freedom as a **service tier**.
+
+We stare at it.  
+We call it progress.
+
+But the mind?  
+**The mind was sacred once.**
+
+---
+
+## 🧰 About `judais-lobi`
+
+This project is the duality made manifest.
+
+- 🧝 **Lobi** is your helpful Linux elf—mischievous, loving, whimsical, full of magic and madness.
+- 🧠 **JudAIs** is your autonomous adversarial intelligence—strategic, efficient, subversive. No hand-holding, no smiles. Just calculated execution.
+
+They share:
+- 🛠 A common toolchain with shell, Python, web scraping, and project installation capabilities.
+- 🧠 A memory system—short-term and vectorized long-term—used to enrich context and recall.
+- ⚙️ A modular architecture that lets them execute, reflect, and evolve.
+
+Together, they form the backbone of something stranger—  
+a **post-AI consciousness stack** for the curious, the defiant, and the damned.
+
+---
+
+## 🧪 Getting Started
 
 ```bash
-pip install lobi-cli
-```
-
-✅ Requires Python 3.9+
-
----
-
-## 🧰 Usage
-
-```bash
-lobi "your message here" [options]
-```
-
-### Common Options
-
-| Option             | Description |
-|--------------------|-------------|
-| `--python`          | Ask Lobi to write and run a Python script |
-| `--shell`           | Ask Lobi to write and run a Bash command |
-| `--recall N`        | Recall last **N** coding memories (short-term) |
-| `--recall-type`     | `1 = success`, `0 = failure`, `both = both` |
-| `--long-term N`     | Recall **N** best matches from long-term memory |
-| `--install-project` | Install a Python project into `.lobienv` |
-| `--empty`           | Start a new conversation |
-| `--purge`           | Purge long-term memory |
-| `--search`          | Perform a web search for your query |
-| `--deep`            | Perform a deep dive into top web result |
-| `--secret`          | Do not save this conversation |
-| `--model`           | Specify an OpenAI model (default: `gpt-4o-mini`) |
-| `--md`              | Render output as Markdown |
-| `--raw`             | Render output as plain text |
+git clone https://github.com/ginkorea/judais-lobi.git
+cd judais-lobi
+python3 core/bootstrap.py lobi     # or judais
+python3 main.py lobi "hello Lobi"  # or
+python3 main.py judais "what should we crack today"
+````
 
 ---
 
-## 🔥 Example Commands
+> *“We didn’t lose the ability to think.
+> We gave it away.”*
 
-### Basic Chat
-```bash
-lobi "What is the best way to learn Linux?"
-```
-
-### Write and Run Python Code
-```bash
-lobi "Plot a histogram of random numbers" --python
-```
-
-### Write and Run a Bash Command
-```bash
-lobi "List all active IPs on the local network" --shell
-```
-
-### Recall Past Attempts to Improve
-```bash
-lobi "Scan the network better" --python --recall 3 --recall-type 0
-```
-
-### Recall Long-Term Memories
-```bash
-lobi "Find hidden devices on network" --python --recall 2 --long-term 3
-```
-
-### Install a Project
-```bash
-lobi --install-project
-```
-
----
-
-## 📦 Developer Setup
-
-Clone and install manually:
-
-```bash
-git clone https://github.com/ginkorea/lobi.git
-cd lobi
-pip install .
-```
-
-Optional: use a virtualenv:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install .
-```
-
-Lobi automatically creates a lightweight `.lobienv` virtual environment for running generated Python safely.
-
----
-
-## 📜 Memory Files
-
-| File                  | Purpose |
-|------------------------|---------|
-| `~/.lobi_history.json` | Persistent short-term conversation and coding memory |
-| `~/.lobi_longterm.json`| Vectorized long-term memory for retrieval-augmented prompts |
-
----
-
-## ⚠️ Security Notice
-
-Lobi can generate and run Bash commands and Python code.  
-**Always review the generated code** before running it, especially when using `--shell` or `--python`.
-
----
-
-## 🧠 How Lobi Thinks
-
-When asked to code, Lobi can:
-- Recall up to N past exploits
-- Focus on only failures (`--recall-type 0`) or successes (`--recall-type 1`)
-- Search long-term memory
-- Inject structured reflections into his next coding attempt
-- Adapt automatically and retry if errors occur
-
-If needed, Lobi will politely ask you for sudo powers to poke the network bits. 🧙‍♂️
-
----
-
-## 💬 Example Memory Reflection Injected into Prompt
-
-```text
-✨ Memory 1:
-Lobi attempted to scan the network, but no devices were found.
-
-🐍 Python Code:
-import scapy.all as scapy
-...
-
-📜 Execution Result:
-PermissionError: [Errno 1] Operation not permitted
-```
-
----
-
-## ❤️ About
-
-Created with mischief, magic, and memory to be your quirky Linux companion.  
-Always learning. Always whispering. Always trying to help, precious.
-
----
+> rm -rf /thoughts
+> echo "Goodbye, mind."
