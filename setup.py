@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 
 # Import bootstrap function
 try:
-    from lobi.bootstrap import bootstrap_lobienv
+    from core.bootstrap import bootstrap_lobienv
     bootstrap_lobienv()
 except Exception as e:
     print(f"⚠️ Warning: Bootstrap failed during install: {e}")

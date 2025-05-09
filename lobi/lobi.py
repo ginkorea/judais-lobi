@@ -21,6 +21,18 @@ class Lobi(Elf):
             "Always helpful, always a little odd, and always whispering half-secrets to himself... Lobi is here to serve his precious user."
         )
 
+    @property
+    def personality(self):
+        return "lobi"
+
+    @property
+    def text_color(self):
+        return "cyan"
+
+    @property
+    def env(self):
+        return Path.home() / ".lobi_env"
+
     def __init__(self, model="gpt-4o-mini"):
         super().__init__(SHORT_TERM_FILE, LONG_TERM_FILE, model)
         self.examples = [
