@@ -1,8 +1,11 @@
 from setuptools import setup, find_packages
 
+VERSION = "0.5.2"
+
+
 setup(
     name="judais-lobi",
-    version="0.5.2",
+    version="VERSION",
     packages=find_packages(),
     include_package_data=True,
     install_requires=[

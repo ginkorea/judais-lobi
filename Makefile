@@ -4,6 +4,8 @@ VENV_NAME = jlenv
 PYTHON = python3.11
 VERSION = $(shell python -c "import setup; print(setup.VERSION)")
 TAG = v$(VERSION)
+BRANCH = $(shell git symbolic-ref --short HEAD)
+
 
 install:
 	@echo "🔍 Checking system dependencies..."
