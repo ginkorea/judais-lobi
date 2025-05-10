@@ -15,11 +15,11 @@ setup(
         "beautifulsoup4",
         "requests",
         "faiss-cpu",
-        "numpy",
-        # "thinc==8.1.12",
-        # "spacy[ja]==3.6.1",
-        "simpleaudio~=1.0.4",  # For speech playback (C-backed)
+        "numpy"
     ],
+    extras_require={
+        "voice": ["simpleaudio~=1.0.4"] # For speech playback (C-backed)
+    },
     entry_points={
         "console_scripts": [
             "lobi = core.cli:main_lobi",
