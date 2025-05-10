@@ -6,26 +6,41 @@ from .run_python import RunPythonTool
 from .install_project import InstallProjectTool
 from .fetch_page import FetchPageTool
 from .web_search import WebSearchTool
-from .voice import SpeakTextTool
+from typing import Callable, Union
 
 class Tools:
     def __init__(self, elfenv=None):
-        self.registry: dict[str, Tool] = {}
+        self.elfenv = elfenv
+        self.registry: dict[str, Union[Tool, Callable[[], Tool]]] = {}
         self._register(RunShellTool())
         self._register(RunPythonTool(elfenv=elfenv))
         self._register(InstallProjectTool(elfenv=elfenv))
         self._register(FetchPageTool())
         self._register(WebSearchTool())
-        self._register(SpeakTextTool())
+        self._register_lazy("speak_text", self._lazy_load_speak_text)
 
     def _register(self, _tool: Tool):
         self.registry[_tool.name] = _tool
+
+    def _register_lazy(self, name: str, factory: Callable[[], Tool]):
+        self.registry[name] = factory
+
+    def _lazy_load_speak_text(self):
+        from core.tools.voice import SpeakTextTool
+        return SpeakTextTool()
 
     def list_tools(self):
         return list(self.registry.keys())
 
     def get_tool(self, name: str):
-        return self.registry.get(name)
+        tool = self.registry.get(name)
+        if tool is None:
+            return None
+        if callable(tool) and not isinstance(tool, Tool):
+            tool_instance = tool()
+            self.registry[name] = tool_instance
+            return tool_instance
+        return tool
 
     def describe_tool(self, name: str):
         _tool = self.get_tool(name)

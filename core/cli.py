@@ -12,6 +12,17 @@ RESET = "\033[0m"
 
 console = Console()
 
+def strip_markdown(md: str) -> str:
+    from io import StringIO
+    from rich.console import Console as StrippedConsole
+    from rich.markdown import Markdown
+    from rich.text import Text
+
+    sio = StringIO()
+    stripped_console = StrippedConsole(file=sio, force_terminal=False, color_system=None)
+    stripped_console.print(Markdown(md))
+    return Text.from_markup(sio.getvalue()).plain
+
 def _main(Elf):
     parser = argparse.ArgumentParser(description=f"{Elf.__name__} CLI Interface")
     parser.add_argument("message", type=str, help="Your message to the AI")
@@ -33,7 +44,7 @@ def _main(Elf):
     parser.add_argument("--voice", action="store_true", help="Speak the response aloud")
     args = parser.parse_args()
 
-    print(f"{GREEN}👤 You: {args.message}{RESET}")
+    print(f"{GREEN}\U0001f464 You: {args.message}{RESET}")
 
     elf = Elf(model=args.model or "gpt-4o-mini")
     style = getattr(elf, "text_color", "cyan")
@@ -59,14 +70,14 @@ def _main(Elf):
         completion = elf.client.chat.completions.create(model=elf.model, messages=command_gen_prompt)
         raw_command = completion.choices[0].message.content.strip()
         parsed_command = RunShellTool.extract_code(raw_command)
-        console.print(f"🧠 {Elf.__name__} thinks:\n{parsed_command}", style=style)
+        console.print(f"\U0001f9e0 {Elf.__name__} thinks:\n{parsed_command}", style=style)
 
         result, success = elf.tools.run("run_shell_command", parsed_command, return_success=True)
-        console.print(f"💥 {Elf.__name__} runs:\n{result}", style=style)
+        console.print(f"\U0001f4a5 {Elf.__name__} runs:\n{result}", style=style)
 
         if args.summarize:
             summary = elf.summarize_text(result)
-            console.print(f"📜 Summary:\n{summary}", style=style)
+            console.print(f"\U0001f4dc Summary:\n{summary}", style=style)
             if args.voice:
                 elf.tools.run("speak_text", summary)
 
@@ -82,10 +93,10 @@ def _main(Elf):
         completion = elf.client.chat.completions.create(model=elf.model, messages=code_gen_prompt)
         raw_code = completion.choices[0].message.content.strip()
         parsed_code = RunPythonTool.extract_code(raw_code)
-        console.print(f"🧠 {Elf.__name__} writes:\n{parsed_code}", style=style)
+        console.print(f"\U0001f9e0 {Elf.__name__} writes:\n{parsed_code}", style=style)
 
         result, success = elf.tools.run("run_python_code", parsed_code, elf=elf, return_success=True)
-        console.print(f"💥 {Elf.__name__} executes:\n{result}", style=style)
+        console.print(f"\U0001f4a5 {Elf.__name__} executes:\n{result}", style=style)
 
         if not args.secret:
             elf.save_coding_adventure(args.message, parsed_code, result, "python", success)
@@ -93,7 +104,7 @@ def _main(Elf):
 
     if args.install_project:
         result = elf.tools.run("install_project")
-        console.print(f"📦 Install Result:\n{result}", style=style)
+        console.print(f"\U0001f4e6 Install Result:\n{result}", style=style)
         return
 
     if args.empty:
@@ -101,23 +112,23 @@ def _main(Elf):
 
     if args.purge:
         elf.purge_memory()
-        console.print(f"🧹 {Elf.__name__} forgets everything in the long-term...", style=style)
+        console.print(f"\U0001f9f9 {Elf.__name__} forgets everything in the long-term...", style=style)
 
     elf.enrich_with_memory(args.message)
 
     if args.search:
         elf.enrich_with_search(args.message, deep=args.deep)
-        console.print(f"🔎 {Elf.__name__} searches the websies…", style=style)
+        console.print(f"\U0001f50e {Elf.__name__} searches the websies…", style=style)
 
     try:
         if args.md:
             reply = elf.chat(args.message)
-            console.print(Markdown(f"🧝 **{Elf.__name__}:** {reply}"), style=style)
+            console.print(Markdown(f"\U0001f9dd **{Elf.__name__}:** {reply}"), style=style)
             if args.voice:
-                elf.tools.run("speak_text", reply)
+                elf.tools.run("speak_text", strip_markdown(reply))
         else:
             stream = elf.chat(args.message, stream=True)
-            console.print(f"🧝 {Elf.__name__}: ", style=style, end="")
+            console.print(f"\U0001f9dd {Elf.__name__}: ", style=style, end="")
             reply = ""
             for chunk in stream:
                 delta = chunk.choices[0].delta

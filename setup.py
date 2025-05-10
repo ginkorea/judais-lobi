@@ -13,9 +13,8 @@ setup(
         "requests",
         "faiss-cpu",
         "numpy",
-        "pyttsx3",
         "spacy[ja]==3.6.1",
-        # TTS now handled in requirements.txt
+        "simpleaudio~=1.0.4",  # For speech playback (C-backed)
     ],
     entry_points={
         "console_scripts": [
