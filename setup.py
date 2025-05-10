@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="judais-lobi",
-    version="0.5.1",
+    version="0.5.2",
     packages=find_packages(),
     include_package_data=True,
     install_requires=[
@@ -13,8 +13,8 @@ setup(
         "requests",
         "faiss-cpu",
         "numpy",
-        "spacy[ja]==3.6.1",
         "thinc==8.1.12",
+        "spacy[ja]==3.6.1",
         "simpleaudio~=1.0.4",  # For speech playback (C-backed)
     ],
     entry_points={

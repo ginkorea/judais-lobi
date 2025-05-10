@@ -1,5 +1,9 @@
+# Makefile for judais-lobi CLI project
+
 VENV_NAME = jlenv
 PYTHON = python3.11
+VERSION = $(shell python -c "import setup; print(setup.VERSION)")
+TAG = v$(VERSION)
 
 install:
 	@echo "🔍 Checking system dependencies..."
@@ -17,3 +21,23 @@ install:
 rebuild:
 	rm -rf build dist *.egg-info .$(VENV_NAME)
 	make install
+
+tag:
+	@echo "🏷️ Tagging release $(TAG)..."
+	@git add .
+	@git commit -m "release: $(TAG)" || true
+	@git tag $(TAG)
+	@git push origin main
+	@git push origin $(TAG)
+
+build:
+	@echo "📦 Building distribution for PyPI..."
+	@rm -rf dist build *.egg-info
+	@$(PYTHON) -m build
+
+upload:
+	@echo "🚀 Uploading to PyPI..."
+	@$(PYTHON) -m twine upload dist/*
+
+publish: tag build upload
+	@echo "✅ Published version $(VERSION) to GitHub and PyPI."
