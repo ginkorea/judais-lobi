@@ -5,6 +5,14 @@
 
 ---
 
+[![PyPI](https://img.shields.io/pypi/v/judais-lobi?color=blue&label=PyPI)](https://pypi.org/project/judais-lobi/)
+[![Python](https://img.shields.io/pypi/pyversions/judais-lobi.svg)](https://pypi.org/project/judais-lobi/)
+[![License](https://img.shields.io/github/license/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi/blob/main/LICENSE)
+[![Last Commit](https://img.shields.io/github/last-commit/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi/commits/main)
+[![GitHub stars](https://img.shields.io/github/stars/ginkorea/judais-lobi?style=social)](https://github.com/ginkorea/judais-lobi/stargazers)
+
+---
+
 ## 🔴 JudAIs & 🔵 Lobi
 
 <p align="center">
@@ -181,33 +189,100 @@ Together, they form the backbone of something stranger—
 a **post-AI consciousness stack** for the curious, the defiant, and the damned.
 
 ---
-
-## 🧪 Getting Started
-
-```bash
-git clone https://github.com/ginkorea/judais-lobi.git
-cd judais-lobi
-python3 core/bootstrap.py lobi     # or judais
-python3 main.py lobi "hello Lobi"  # or
-python3 main.py judais "what should we crack today"
-````
+Here’s a full rewrite of your `## 🧪 Getting Started` section — modernized for your PyPI release and CLI tools, and clear for any new user:
 
 ---
 
-> *“We didn’t lose the ability to think.
-> We gave it away.”*
+## 🧪 Getting Started
+
+### 📦 Install from PyPI
 
 ```bash
-rm -rf /thoughts
-echo "Goodbye, mind."
+pip install judais-lobi
+```
+
+> Python 3.11+ recommended. Use a virtual environment for safety (`python -m venv .jlenv && source .jlenv/bin/activate`).
+
+---
+
+### 🔐 Set your OpenAI API key
+
+Lobi and JudAIs use OpenAI models for natural language interaction. You'll need an API key.
+
+Create a file called `.elf_env` in your home directory:
+
+```bash
+nano ~/.elf_env
+```
+
+Paste your key like this:
+
+```env
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Then load it:
+
+```bash
+source ~/.elf_env
+```
+
+> You can also export it inline:
+> `export OPENAI_API_KEY=sk-...`
+
+---
+
+### 🧝 Run Lobi (your elven assistant)
+
+```bash
+lobi "hello Lobi"
 ```
 
 ---
 
-## ⭐ If your soul still resists automation...
+### 🧠 Run JudAIs (the strategic AI twin)
 
-[**Star the repo**](https://github.com/ginkorea/judais-lobi)
-Let the ghost of thought live on in code.
+```bash
+judais "who should we target today?" --shell
+```
 
+---
 
+### 🔊 Add voice output (optional)
+
+Enable neural voice synthesis with:
+
+```bash
+lobi "sing me a song" --voice
+```
+
+> Uses Coqui TTS (`tts_models/en/vctk/vits`). Auto-downloads on first use.
+
+---
+
+### 🧠 Extra powers
+
+```bash
+lobi "scan my network" --shell
+lobi "analyze this data" --python
+lobi "what's trending on the web?" --search
+lobi "summarize this command's output" --summarize
+```
+
+Lobi and JudAIs share a toolchain, long-term memory system, and custom personality. They can:
+
+* Run code
+* Install packages
+* Fetch pages
+* Recall previous responses
+* Speak aloud (optionally)
+
+---
+
+> 🧠 *“Lobi sings. JudAIs hunts. You, dear user… command.”*
+
+---
+
+⭐️ **If you find JudAIs or Lobi helpful, give this project a star!**  
+Every ⭐️ helps us build stronger tools for AI autonomy.
 
