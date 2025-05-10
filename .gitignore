@@ -1,6 +1,23 @@
-.env
-.idea
-local_models
-__pycache__/
-*.pyc
+# Ignore Python virtual environments
 .jlenv/
+.judais-lobi-venv/
+
+# Ignore editor settings and caches
+.idea/
+.vscode/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Ignore test/output artifacts
+speech.wav
+*.log
+
+# Ignore local dev configs or checkpoints
+.cadence/
+.lobienv/
+.judaisenv/
+
+# Byte-compiled and temporary files
+.DS_Store
