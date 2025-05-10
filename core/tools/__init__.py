@@ -6,6 +6,7 @@ from .run_python import RunPythonTool
 from .install_project import InstallProjectTool
 from .fetch_page import FetchPageTool
 from .web_search import WebSearchTool
+from .voice import SpeakTextTool
 
 class Tools:
     def __init__(self, elfenv=None):
@@ -15,6 +16,7 @@ class Tools:
         self._register(InstallProjectTool(elfenv=elfenv))
         self._register(FetchPageTool())
         self._register(WebSearchTool())
+        self._register(SpeakTextTool())
 
     def _register(self, _tool: Tool):
         self.registry[_tool.name] = _tool

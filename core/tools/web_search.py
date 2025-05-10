@@ -1,6 +1,7 @@
 # tools/web_search.py
 
 from core.tools.tool import Tool
+from core.tools.fetch_page import FetchPageTool
 import requests
 from bs4 import BeautifulSoup
 
@@ -23,8 +24,11 @@ class WebSearchTool(Tool):
         markdown_results = "\n".join([f"- [{r['title']}]({r['url']})" for r in results])
 
         if deep_dive and results:
-            from tools.fetch_page import FetchPageTool
             fetch = FetchPageTool()
-            detailed = [fetch(r["url"]) for r in results[:k_articles]]
-            return f"Deep dive into: {results[0]['title']}\nURL: {results[0]['url']}\n\nContents:\n{detailed[0]}"
+            detailed = [
+                f"### {r['title']}\nURL: {r['url']}\n\n{fetch(r['url'])}"
+                for r in results[:k_articles]
+            ]
+            return "\n\n---\n\n".join(detailed)
+
         return markdown_results

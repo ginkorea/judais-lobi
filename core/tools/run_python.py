@@ -16,7 +16,7 @@ class RunPythonTool(RunSubprocessTool):
         super().__init__(**kwargs)
         self.name = "run_python_code"
 
-    def __call__(self, code, elf, unsafe=True, max_retries=2, return_success=False):
+    def __call__(self, code, elf, unsafe=True, max_retries=5, return_success=False):
         self.elf = elf
         attempt = 0
         current_code = code
@@ -26,7 +26,7 @@ class RunPythonTool(RunSubprocessTool):
                 f.write(current_code)
                 temp_path = f.name
 
-            code, out, err = self.run([str(self.python_bin), temp_path], timeout=30)
+            code, out, err = self.run([str(self.python_bin), temp_path], timeout=120)
             os.remove(temp_path)
 
             if code == 0:
@@ -70,7 +70,6 @@ class RunPythonTool(RunSubprocessTool):
 
     # 🔁 Use shared extract_code
     extract_code = staticmethod(lambda text: RunSubprocessTool.extract_code(text, "python"))
-
 
 
     def repair_code(self, broken_code, error_message):
