@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 
 
 setup(
@@ -16,8 +16,8 @@ setup(
         "requests",
         "faiss-cpu",
         "numpy",
-        "thinc==8.1.12",
-        "spacy[ja]==3.6.1",
+        # "thinc==8.1.12",
+        # "spacy[ja]==3.6.1",
         "simpleaudio~=1.0.4",  # For speech playback (C-backed)
     ],
     entry_points={

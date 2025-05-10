@@ -5,8 +5,8 @@ beautifulsoup4~=4.13.4
 requests~=2.32.3
 faiss-cpu~=1.11.0
 numpy~=1.26.4
-thinc==8.1.12  # Avoid C API break on Python 3.12
-spacy[ja]==3.6.1
+# thinc==8.1.12  # Avoid C API break on Python 3.12
+# spacy[ja]==3.6.1
 # git+https://github.com/ginkorea/tts-patched.git@main#egg=TTS
 TTS~=0.22.0
 simpleaudio~=1.0.4
