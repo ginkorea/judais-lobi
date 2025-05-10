@@ -29,7 +29,7 @@ tag:
 	@git add .
 	@git commit -m "release: $(TAG)" || true
 	@git tag $(TAG)
-	@git push origin main
+	@git push origin master
 	@git push origin $(TAG)
 
 build:
