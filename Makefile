@@ -2,7 +2,7 @@
 
 VENV_NAME = jlenv
 PYTHON = python3.11
-VERSION = $(shell python -c "import setup; print(setup.VERSION)")
+VERSION = 0.5.3
 TAG = v$(VERSION)
 BRANCH = $(shell git symbolic-ref --short HEAD)
 
