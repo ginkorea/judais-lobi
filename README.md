@@ -189,9 +189,6 @@ Together, they form the backbone of something stranger—
 a **post-AI consciousness stack** for the curious, the defiant, and the damned.
 
 ---
-Here’s a full rewrite of your `## 🧪 Getting Started` section — modernized for your PyPI release and CLI tools, and clear for any new user:
-
----
 
 ## 🧪 Getting Started
 
