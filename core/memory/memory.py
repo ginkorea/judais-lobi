@@ -7,6 +7,7 @@ from typing import Optional, List, Dict
 import numpy as np
 import faiss
 from openai import OpenAI
+from core.memory.rag_utils import read_file, safe_chunk_text
 
 # ---- Helpers ----
 def now() -> int:
@@ -19,7 +20,8 @@ def normalize(vec: np.ndarray) -> np.ndarray:
 
 # ---- UnifiedMemory ----
 class UnifiedMemory:
-    def __init__(self, db_path: Path, model="text-embedding-3-small"):
+    def __init__(self, db_path: Path, model="text-embedding-3-large"):
+        """db_path: SQLite file, model: embedding model (default: 3-large)."""
         self.db_path = Path(db_path)
         self.model = model
         self.client = OpenAI()
@@ -62,6 +64,8 @@ class UnifiedMemory:
 
     # ----- Embedding -----
     def _embed(self, text: str) -> np.ndarray:
+        """Embed a text string safely."""
+        text = text[:8000]  # hard cutoff just in case
         resp = self.client.embeddings.create(input=text, model=self.model)
         return np.array(resp.data[0].embedding, dtype=np.float32)
 
@@ -90,7 +94,6 @@ class UnifiedMemory:
                 (role, content, emb.tobytes(), json.dumps(meta or {}), now())
             )
             rid = cur.lastrowid
-        # Update FAISS
         if self.long_index is None:
             self.long_index = faiss.IndexFlatIP(len(emb))
         self.long_index.add(emb.reshape(1, -1))
@@ -122,12 +125,12 @@ class UnifiedMemory:
     def _hash_file(self, path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    def crawl_dir(self, dir_path: Path, include: Optional[str] = None):
-        from core.memory.rag_utils import read_file, chunk_text
+    def crawl_dir(self, dir_path: Path, include: Optional[str] = None, recursive: bool = False):
         dir_path = Path(dir_path).expanduser().resolve()
         added = []
+        iterator = dir_path.rglob("*") if recursive else dir_path.glob("*")
         with sqlite3.connect(self.db_path) as con:
-            for f in dir_path.rglob("*"):
+            for f in iterator:
                 if not f.is_file():
                     continue
                 if include and not f.match(include):
@@ -140,11 +143,11 @@ class UnifiedMemory:
                                      (str(f), sha)).fetchone()
                 if exists:
                     continue
-                chunks = chunk_text(text)
+                chunks = safe_chunk_text(text)
                 for i, c in enumerate(chunks):
                     emb = normalize(self._embed(c))
                     cur = con.execute(
-                        "INSERT INTO rag_chunks(dir,file,chunk_index,content,embedding,sha,ts) VALUES(?,?,?,?,?,?,?,?)",
+                        "INSERT INTO rag_chunks(dir,file,chunk_index,content,embedding,sha,ts) VALUES(?,?,?,?,?,?,?)",
                         (str(dir_path), str(f), i, c, emb.tobytes(), sha, now())
                     )
                     cid = cur.lastrowid
@@ -175,126 +178,3 @@ class UnifiedMemory:
                     continue
                 results.append({"dir": d, "file": f, "chunk": chunk, "content": content})
         return results
-
-    # ----- Adventures -----
-    def add_adventure(self, prompt, code, result, mode, success: bool):
-        with sqlite3.connect(self.db_path) as con:
-            con.execute(
-                "INSERT INTO adventures(prompt,code,result,mode,success,ts) VALUES(?,?,?,?,?,?)",
-                (prompt, code, result, mode, int(success), now())
-            )
-
-    def list_adventures(self, n=10):
-        with sqlite3.connect(self.db_path) as con:
-            rows = con.execute(
-                "SELECT prompt,code,result,success FROM adventures ORDER BY id DESC LIMIT ?",
-                (n,)
-            ).fetchall()
-        return [{"prompt": p, "code": c, "result": r, "success": bool(s)} for p, c, r, s in rows]
-
-    # ----- Index Rebuild -----
-    def _rebuild_indexes(self):
-        self._rebuild_long_index()
-        self._rebuild_rag_index()
-
-    def _rebuild_long_index(self):
-        with sqlite3.connect(self.db_path) as con:
-            rows = con.execute("SELECT id,embedding FROM long_term").fetchall()
-        if not rows:
-            return
-        dim = len(np.frombuffer(rows[0][1], dtype=np.float32))
-        self.long_index = faiss.IndexFlatIP(dim)
-        self.long_id_map = []
-        vecs = []
-        for rid, eblob in rows:
-            v = normalize(np.frombuffer(eblob, dtype=np.float32))
-            vecs.append(v)
-            self.long_id_map.append(rid)
-        self.long_index.add(np.stack(vecs))
-
-    def _rebuild_rag_index(self):
-        with sqlite3.connect(self.db_path) as con:
-            rows = con.execute("SELECT id,embedding FROM rag_chunks").fetchall()
-        if not rows:
-            return
-        dim = len(np.frombuffer(rows[0][1], dtype=np.float32))
-        self.rag_index = faiss.IndexFlatIP(dim)
-        self.rag_id_map = []
-        vecs = []
-        for rid, eblob in rows:
-            v = normalize(np.frombuffer(eblob, dtype=np.float32))
-            vecs.append(v)
-            self.rag_id_map.append(rid)
-        self.rag_index.add(np.stack(vecs))
-
-    def crawl_file(self, file_path: Path):
-        """Index a single file into rag_chunks."""
-        from core.memory.rag_utils import read_file, chunk_text
-        file_path = Path(file_path).expanduser().resolve()
-        if not file_path.is_file():
-            return []
-
-        text = read_file(file_path)
-        if not text.strip():
-            return []
-
-        sha = self._hash_file(file_path)
-        with sqlite3.connect(self.db_path) as con:
-            exists = con.execute(
-                "SELECT 1 FROM rag_chunks WHERE file=? AND sha=?",
-                (str(file_path), sha)
-            ).fetchone()
-            if exists:
-                return []
-
-            chunks = chunk_text(text)
-            added_chunks = []
-            for i, c in enumerate(chunks):
-                emb = normalize(self._embed(c))
-                cur = con.execute(
-                    "INSERT INTO rag_chunks(dir,file,chunk_index,content,embedding,sha,ts) VALUES(?,?,?,?,?,?,?,?)",
-                    (str(file_path.parent), str(file_path), i, c, emb.tobytes(), sha, now())
-                )
-                cid = cur.lastrowid
-                if self.rag_index is None:
-                    self.rag_index = faiss.IndexFlatIP(len(emb))
-                self.rag_index.add(emb.reshape(1, -1))
-                self.rag_id_map.append(cid)
-                added_chunks.append({"file": str(file_path), "chunk": i, "content": c})
-        return added_chunks
-
-    def delete_rag(self, target: Path):
-        """Delete all chunks from a given file or directory and rebuild FAISS."""
-        target = Path(target).expanduser().resolve()
-        with sqlite3.connect(self.db_path) as con:
-            if target.is_file():
-                con.execute("DELETE FROM rag_chunks WHERE file=?", (str(target),))
-            else:
-                con.execute("DELETE FROM rag_chunks WHERE dir=?", (str(target),))
-        self._rebuild_rag_index()
-
-    def overwrite_rag(self, target: Path):
-        """Delete existing RAG entries for target, then re-crawl."""
-        self.delete_rag(target)
-        if target.is_file():
-            return self.crawl_file(target)
-        else:
-            return self.crawl_dir(target)
-
-    def rag_status(self):
-        """Return a summary of RAG contents: directories, files, and chunk counts."""
-        with sqlite3.connect(self.db_path) as con:
-            rows = con.execute("""
-                SELECT dir, file, COUNT(*) as chunks
-                FROM rag_chunks
-                GROUP BY dir, file
-                ORDER BY dir, file
-            """).fetchall()
-        status = {}
-        for d, f, c in rows:
-            status.setdefault(d, []).append({"file": f, "chunks": c})
-        return status
-
-
-
-

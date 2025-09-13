@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = "0.5.5"
+VERSION = "0.6.0"
 
 
 setup(
@@ -10,15 +10,35 @@ setup(
     include_package_data=True,
     install_requires=[
         "openai>=1.0.0",
-        "rich",
-        "python-dotenv",
-        "beautifulsoup4",
-        "requests",
-        "faiss-cpu",
-        "numpy"
+        "rich>=14.0.0",
+        "python-dotenv>=1.1.0",
+        "beautifulsoup4>=4.13.4",
+        "requests>=2.32.3",
+        "faiss-cpu>=1.11.0",
+        "numpy>=1.26.4",
+        "httpx>=0.28.1",
+        "httpcore>=1.0.9",
+        "h11>=0.16.0",
+        "sniffio>=1.3.1",
+        "pydantic>=2.11.0",
+        "annotated-types>=0.7.0",
+        "certifi>=2025.8.3",
     ],
     extras_require={
-        "voice": ["simpleaudio~=1.0.4"] # For speech playback (C-backed)
+        "voice": [
+            "simpleaudio>=1.0.4",
+            "TTS>=0.22.0",
+            "torch>=2.7.0",
+            "torchaudio>=2.7.0",
+            "soundfile>=0.13.1",
+            "audioread>=3.0.1",
+            "soxr>=0.5.0.post1",
+            "transformers>=4.51.3",
+            "huggingface-hub>=0.31.1",
+            "tokenizers>=0.21.1",
+            "safetensors>=0.5.3",
+            "trainer>=0.0.36",
+        ]
     },
     entry_points={
         "console_scripts": [

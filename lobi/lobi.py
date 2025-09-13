@@ -3,9 +3,6 @@
 from pathlib import Path
 from core.elf import Elf
 
-LONG_TERM_FILE = Path.home() / ".lobi_longterm.json"
-SHORT_TERM_FILE = Path.home() / ".lobi_history.json"
-
 class Lobi(Elf):
     @property
     def system_message(self):
@@ -33,8 +30,8 @@ class Lobi(Elf):
     def env(self):
         return Path.home() / ".lobi_env"
 
-    def __init__(self, model="gpt-4o-mini"):
-        super().__init__(SHORT_TERM_FILE, LONG_TERM_FILE, model)
+    def __init__(self, model="gpt-5-mini"):
+        super().__init__(model)
         self.examples = [
             ("What's the weather like today?",
              "Lobi peeks through the cloudsies... the sun is playing peekaboo today, precious! But Lobi doesn’t *really* know the sky. Maybe the websies knows? Shall Lobi fetch it? Hmm? Yes yes..."),

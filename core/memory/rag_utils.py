@@ -11,6 +11,13 @@ try:
 except ImportError:
     docx = None
 
+# optional tokenizer
+try:
+    import tiktoken
+    enc = tiktoken.encoding_for_model("text-embedding-3-large")
+except Exception:
+    enc = None
+
 def read_file(path: Path) -> str:
     ext = path.suffix.lower()
     if ext == ".pdf" and PdfReader:
@@ -30,7 +37,23 @@ def read_file(path: Path) -> str:
     except Exception:
         return ""
 
+def safe_chunk_text(text: str, max_tokens=2000, overlap=200):
+    """Split text into safe token-limited chunks for embeddings."""
+    if not text.strip():
+        return []
+    if not enc:
+        # fallback to char-based
+        return chunk_text(text, max_chars=2000, overlap=200)
+
+    tokens = enc.encode(text)
+    chunks, step = [], max_tokens - overlap
+    for i in range(0, len(tokens), step):
+        sub = tokens[i:i+max_tokens]
+        chunks.append(enc.decode(sub))
+    return chunks
+
 def chunk_text(text: str, max_chars=800, overlap=100):
+    """Fallback simple chunking."""
     chunks, buf = [], ""
     for para in text.split("\n\n"):
         if len(buf) + len(para) < max_chars:

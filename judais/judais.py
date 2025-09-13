@@ -3,9 +3,6 @@
 from pathlib import Path
 from core.elf import Elf
 
-LONG_TERM_FILE = Path.home() / ".judais_longterm.json"
-SHORT_TERM_FILE = Path.home() / ".judais_history.json"
-
 class JudAIs(Elf):
     @property
     def system_message(self):
@@ -31,5 +28,5 @@ class JudAIs(Elf):
     def text_color(self):
         return "red"
 
-    def __init__(self, model="gpt-4o-mini"):
-        super().__init__(SHORT_TERM_FILE, LONG_TERM_FILE, model)
+    def __init__(self, model="gpt-5-mini"):
+        super().__init__(model)
