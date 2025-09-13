@@ -29,8 +29,8 @@ class UnifiedMemory:
         # FAISS indexes
         self.long_index = None
         self.rag_index = None
-        self.long_id_map = []
-        self.rag_id_map = []
+        self.long_id_map: List[int] = []
+        self.rag_id_map: List[int] = []
 
         self._ensure_db()
         self._rebuild_indexes()
@@ -64,8 +64,8 @@ class UnifiedMemory:
 
     # ----- Embedding -----
     def _embed(self, text: str) -> np.ndarray:
-        """Embed a text string safely."""
-        text = text[:8000]  # hard cutoff just in case
+        """Embed a text string safely (hard-cut to avoid token overflows)."""
+        text = text[:8000]  # defensive cap; chunking should keep us below this anyway
         resp = self.client.embeddings.create(input=text, model=self.model)
         return np.array(resp.data[0].embedding, dtype=np.float32)
 
@@ -77,8 +77,10 @@ class UnifiedMemory:
 
     def load_short(self, n=20) -> List[Dict]:
         with sqlite3.connect(self.db_path) as con:
-            rows = con.execute("SELECT role,content FROM short_term ORDER BY id DESC LIMIT ?",
-                               (n,)).fetchall()
+            rows = con.execute(
+                "SELECT role,content FROM short_term ORDER BY id DESC LIMIT ?",
+                (n,)
+            ).fetchall()
         return [{"role": r, "content": c} for r, c in reversed(rows)]
 
     def reset_short(self):
@@ -94,6 +96,7 @@ class UnifiedMemory:
                 (role, content, emb.tobytes(), json.dumps(meta or {}), now())
             )
             rid = cur.lastrowid
+        # Update FAISS
         if self.long_index is None:
             self.long_index = faiss.IndexFlatIP(len(emb))
         self.long_index.add(emb.reshape(1, -1))
@@ -110,7 +113,10 @@ class UnifiedMemory:
                 if idx < 0 or idx >= len(self.long_id_map):
                     continue
                 rid = self.long_id_map[idx]
-                row = con.execute("SELECT role,content FROM long_term WHERE id=?", (rid,)).fetchone()
+                row = con.execute(
+                    "SELECT role,content FROM long_term WHERE id=?",
+                    (rid,)
+                ).fetchone()
                 if row:
                     results.append({"role": row[0], "content": row[1]})
         return results
@@ -121,11 +127,16 @@ class UnifiedMemory:
         self.long_index = None
         self.long_id_map = []
 
-    # ----- RAG -----
+    # ----- RAG helpers -----
     def _hash_file(self, path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    # ----- RAG: crawl -----
     def crawl_dir(self, dir_path: Path, include: Optional[str] = None, recursive: bool = False):
+        """
+        Index files under dir_path into rag_chunks.
+        - recursive: False by default (CLI can pass --recursive to enable)
+        """
         dir_path = Path(dir_path).expanduser().resolve()
         added = []
         iterator = dir_path.rglob("*") if recursive else dir_path.glob("*")
@@ -139,8 +150,10 @@ class UnifiedMemory:
                 if not text.strip():
                     continue
                 sha = self._hash_file(f)
-                exists = con.execute("SELECT 1 FROM rag_chunks WHERE file=? AND sha=?",
-                                     (str(f), sha)).fetchone()
+                exists = con.execute(
+                    "SELECT 1 FROM rag_chunks WHERE file=? AND sha=?",
+                    (str(f), sha)
+                ).fetchone()
                 if exists:
                     continue
                 chunks = safe_chunk_text(text)
@@ -151,6 +164,7 @@ class UnifiedMemory:
                         (str(dir_path), str(f), i, c, emb.tobytes(), sha, now())
                     )
                     cid = cur.lastrowid
+                    # FAISS update
                     if self.rag_index is None:
                         self.rag_index = faiss.IndexFlatIP(len(emb))
                     self.rag_index.add(emb.reshape(1, -1))
@@ -158,7 +172,46 @@ class UnifiedMemory:
                 added.append(f)
         return added
 
+    def crawl_file(self, file_path: Path):
+        """Index a single file into rag_chunks."""
+        file_path = Path(file_path).expanduser().resolve()
+        if not file_path.is_file():
+            return []
+        text = read_file(file_path)
+        if not text.strip():
+            return []
+        sha = self._hash_file(file_path)
+        added_chunks = []
+        with sqlite3.connect(self.db_path) as con:
+            exists = con.execute(
+                "SELECT 1 FROM rag_chunks WHERE file=? AND sha=?",
+                (str(file_path), sha)
+            ).fetchone()
+            if exists:
+                return []
+
+            chunks = safe_chunk_text(text)
+            for i, c in enumerate(chunks):
+                emb = normalize(self._embed(c))
+                cur = con.execute(
+                    "INSERT INTO rag_chunks(dir,file,chunk_index,content,embedding,sha,ts) VALUES(?,?,?,?,?,?,?)",
+                    (str(file_path.parent), str(file_path), i, c, emb.tobytes(), sha, now())
+                )
+                cid = cur.lastrowid
+                if self.rag_index is None:
+                    self.rag_index = faiss.IndexFlatIP(len(emb))
+                self.rag_index.add(emb.reshape(1, -1))
+                self.rag_id_map.append(cid)
+                added_chunks.append({"file": str(file_path), "chunk": i, "content": c})
+        return added_chunks
+
+    # ----- RAG: search / manage -----
     def search_rag(self, query: str, top_k=6, dir_filter: Optional[str] = None):
+        """
+        Semantic search across rag_chunks.
+        - dir_filter: when provided, limits to files whose path starts with that dir.
+          (recursive-by-nature filtering)
+        """
         if self.rag_index is None:
             return []
         q = normalize(self._embed(query))
@@ -169,8 +222,10 @@ class UnifiedMemory:
                 if idx < 0 or idx >= len(self.rag_id_map):
                     continue
                 cid = self.rag_id_map[idx]
-                row = con.execute("SELECT dir,file,chunk_index,content FROM rag_chunks WHERE id=?",
-                                  (cid,)).fetchone()
+                row = con.execute(
+                    "SELECT dir,file,chunk_index,content FROM rag_chunks WHERE id=?",
+                    (cid,)
+                ).fetchone()
                 if not row:
                     continue
                 d, f, chunk, content = row
@@ -178,3 +233,74 @@ class UnifiedMemory:
                     continue
                 results.append({"dir": d, "file": f, "chunk": chunk, "content": content})
         return results
+
+    def delete_rag(self, target: Path):
+        """Delete all chunks from a given file or directory and rebuild FAISS."""
+        target = Path(target).expanduser().resolve()
+        with sqlite3.connect(self.db_path) as con:
+            if target.is_file():
+                con.execute("DELETE FROM rag_chunks WHERE file=?", (str(target),))
+            else:
+                con.execute("DELETE FROM rag_chunks WHERE dir=?", (str(target),))
+        self._rebuild_rag_index()
+
+    def overwrite_rag(self, target: Path):
+        """Delete existing RAG entries for target, then re-crawl."""
+        self.delete_rag(target)
+        if target.is_file():
+            return self.crawl_file(target)
+        else:
+            return self.crawl_dir(target)
+
+    def rag_status(self):
+        """Return a summary of RAG contents: directories, files, and chunk counts."""
+        with sqlite3.connect(self.db_path) as con:
+            rows = con.execute("""
+                SELECT dir, file, COUNT(*) as chunks
+                FROM rag_chunks
+                GROUP BY dir, file
+                ORDER BY dir, file
+            """).fetchall()
+        status: Dict[str, List[Dict]] = {}
+        for d, f, c in rows:
+            status.setdefault(d, []).append({"file": f, "chunks": c})
+        return status
+
+    # ----- Index Rebuild -----
+    def _rebuild_indexes(self):
+        self._rebuild_long_index()
+        self._rebuild_rag_index()
+
+    def _rebuild_long_index(self):
+        with sqlite3.connect(self.db_path) as con:
+            rows = con.execute("SELECT id,embedding FROM long_term").fetchall()
+        if not rows:
+            self.long_index = None
+            self.long_id_map = []
+            return
+        dim = len(np.frombuffer(rows[0][1], dtype=np.float32))
+        self.long_index = faiss.IndexFlatIP(dim)
+        self.long_id_map = []
+        vecs = []
+        for rid, eblob in rows:
+            v = normalize(np.frombuffer(eblob, dtype=np.float32))
+            vecs.append(v)
+            self.long_id_map.append(rid)
+        self.long_index.add(np.stack(vecs))
+
+    def _rebuild_rag_index(self):
+        with sqlite3.connect(self.db_path) as con:
+            rows = con.execute("SELECT id,embedding FROM rag_chunks").fetchall()
+        if not rows:
+            self.rag_index = None
+            self.rag_id_map = []
+            return
+        dim = len(np.frombuffer(rows[0][1], dtype=np.float32))
+        self.rag_index = faiss.IndexFlatIP(dim)
+        self.rag_id_map = []
+        vecs = []
+        for rid, eblob in rows:
+            v = normalize(np.frombuffer(eblob, dtype=np.float32))
+            vecs.append(v)
+            self.rag_id_map.append(rid)
+        self.rag_index.add(np.stack(vecs))

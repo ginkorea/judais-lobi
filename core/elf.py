@@ -4,7 +4,7 @@
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -180,18 +180,56 @@ class Elf(ABC):
         return hits, msg
 
     # ----- execution helpers (used by CLI) -----
-    def generate_shell_command(self, prompt, system_prompt=None):
-        command_gen_prompt = [
+    def generate_shell_command(self, prompt, system_prompt=None) -> str:
+        messages = [
             {"role": "system", "content": system_prompt or "Convert the user's request into a single-line bash command. No explanations. Only the command."},
             {"role": "user", "content": prompt}
         ]
-        completion = self.client.chat.completions.create(model=self.model, messages=command_gen_prompt)
+        completion = self.client.chat.completions.create(model=self.model, messages=messages)
         return RunShellTool.extract_code(completion.choices[0].message.content.strip())
 
-    def generate_python_code(self, prompt, system_prompt=None):
-        code_gen_prompt = [
+    def generate_python_code(self, prompt, system_prompt=None) -> str:
+        messages = [
             {"role": "system", "content": system_prompt or "Convert the user's request into a single Python script. No explanations. Only the code."},
             {"role": "user", "content": prompt}
         ]
-        completion = self.client.chat.completions.create(model=self.model, messages=code_gen_prompt)
+        completion = self.client.chat.completions.create(model=self.model, messages=messages)
         return RunPythonTool.extract_code(completion.choices[0].message.content.strip())
+
+    def run_shell_task(self, prompt: str, memory_reflection: str, summarize: bool = False) -> Tuple[str, str, bool, Optional[str]]:
+        """Generate and run a shell command, optionally summarizing output."""
+        system_prompt = None
+        if memory_reflection:
+            system_prompt = (
+                self.system_message + "\n\n"
+                f"You are {self.__class__.__name__}, recalling past adventures.\n"
+                f"{memory_reflection}\n\n"
+                "Now generate the best new shell command."
+            )
+        command = self.generate_shell_command(prompt, system_prompt)
+        result, success = self.tools.run("run_shell_command", command, return_success=True)
+        summary = self.summarize_text(result) if summarize else None
+        return command, result, success, summary
+
+    def run_python_task(self, prompt: str, memory_reflection: str) -> Tuple[str, str, bool]:
+        """Generate and run Python code."""
+        system_prompt = None
+        if memory_reflection:
+            system_prompt = (
+                self.system_message + "\n\n"
+                f"You are {self.__class__.__name__}, recalling past adventures.\n"
+                f"{memory_reflection}\n\n"
+                "Now generate the best new Python code."
+            )
+        code = self.generate_python_code(prompt, system_prompt)
+        result, success = self.tools.run("run_python_code", code, elf=self, return_success=True)
+        return code, result, success
+
+    def summarize_text(self, text: str) -> str:
+        """Summarize text using the model."""
+        messages = [
+            {"role": "system", "content": "Summarize the following text concisely."},
+            {"role": "user", "content": text}
+        ]
+        completion = self.client.chat.completions.create(model=self.model, messages=messages)
+        return completion.choices[0].message.content.strip()
