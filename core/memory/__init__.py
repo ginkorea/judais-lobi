@@ -1,1 +1,1 @@
-from core.memory.memory import LongTermMemory
+from core.memory.memory import UnifiedMemory

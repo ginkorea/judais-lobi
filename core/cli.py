@@ -1,11 +1,13 @@
-#!/usr/bin/env python3
+# A CLI interface for interacting with Elf subclasses like Lobi and JudAIs.
+# core/cli.py
 
 import argparse
 from rich.console import Console
 from rich.markdown import Markdown
-from core.tools import Tools
+from pathlib import Path
 from core.tools.run_shell import RunShellTool
 from core.tools.run_python import RunPythonTool
+import sqlite3
 
 GREEN = "\033[92m"
 RESET = "\033[0m"
@@ -29,7 +31,11 @@ def _main(Elf):
     parser.add_argument("--empty", action="store_true", help="Start a new conversation")
     parser.add_argument("--purge", action="store_true", help="Purge long-term memory")
     parser.add_argument("--secret", action="store_true", help="Do not save this message in history")
-    parser.add_argument("--model", type=str, help="Model to use (default: gpt-4o-mini)")
+    parser.add_argument(
+        "--model",
+        type=str,
+        help="Model to use (default: gpt-4.1-mini). Options: gpt-4.1-mini, gpt-4.1, gpt-5"
+    )
     parser.add_argument("--md", action="store_true", help="Render output with markdown (non-streaming)")
     parser.add_argument("--raw", action="store_true", help="Stream output (default)")
     parser.add_argument("--search", action="store_true", help="Perform web search to enrich context")
@@ -42,13 +48,19 @@ def _main(Elf):
     parser.add_argument("--long-term", type=int, help="Recall N best matches from long-term memory")
     parser.add_argument("--summarize", action="store_true", help="Summarize the output of a shell command")
     parser.add_argument("--voice", action="store_true", help="Speak the response aloud")
+
+    # Archive / RAG
+    parser.add_argument("--archive", nargs="+", help="Archive ops: crawl [dir|file], find <query>, list, delete, overwrite")
+    parser.add_argument("--dir", type=Path, help="Target directory or file for archive operations")
+
     args = parser.parse_args()
 
     print(f"{GREEN}\U0001f464 You: {args.message}{RESET}")
 
-    elf = Elf(model=args.model or "gpt-4o-mini")
+    elf = Elf(model=args.model or "gpt-4.1-mini")
     style = getattr(elf, "text_color", "cyan")
 
+    # ----- Shell Mode -----
     if args.shell or args.python:
         memory_reflection = elf.recall_memory(
             n=args.recall or 0,
@@ -85,6 +97,7 @@ def _main(Elf):
             elf.save_coding_adventure(args.message, parsed_command, result, "shell", success)
         return
 
+    # ----- Python Mode -----
     if args.python:
         code_gen_prompt = [
             {"role": "system", "content": system_prompt or "Convert the user's request into a single Python script. No explanations. Only the code."},
@@ -102,11 +115,13 @@ def _main(Elf):
             elf.save_coding_adventure(args.message, parsed_code, result, "python", success)
         return
 
+    # ----- Project Install -----
     if args.install_project:
         result = elf.tools.run("install_project")
         console.print(f"\U0001f4e6 Install Result:\n{result}", style=style)
         return
 
+    # ----- Conversation Reset / Purge -----
     if args.empty:
         elf.reset_history()
 
@@ -114,12 +129,64 @@ def _main(Elf):
         elf.purge_memory()
         console.print(f"\U0001f9f9 {Elf.__name__} forgets everything in the long-term...", style=style)
 
+    # ----- Archive / RAG -----
+    if args.archive:
+        subcmd = args.archive[0]
+        query = " ".join(args.archive[1:]) if len(args.archive) > 1 else args.message
+        hits = []
+
+        if subcmd == "crawl":
+            if args.dir and args.dir.is_file():
+                elf.memory.crawl_file(args.dir)
+                hits = elf.memory.search_rag(query, dir_filter=str(args.dir))
+            else:
+                elf.memory.crawl_dir(args.dir or Path("."))
+                hits = elf.memory.search_rag(query, dir_filter=str(args.dir) if args.dir else None)
+        elif subcmd == "find":
+            hits = elf.memory.search_rag(query, dir_filter=str(args.dir) if args.dir else None)
+        elif subcmd == "list":
+            with sqlite3.connect(elf.memory.db_path) as con:
+                rows = con.execute("SELECT DISTINCT dir FROM rag_chunks").fetchall()
+                hits = [{"dir": r[0]} for r in rows]
+        elif subcmd == "delete":
+            if not args.dir:
+                console.print("❌ --dir must be specified for delete", style="red")
+            else:
+                elf.memory.delete_rag(args.dir)
+                console.print(f"🗑️ Deleted RAG entries for {args.dir}", style="yellow")
+
+        elif subcmd == "overwrite":
+            if not args.dir:
+                console.print("❌ --dir must be specified for overwrite", style="red")
+            else:
+                added = elf.memory.overwrite_rag(args.dir)
+                console.print(f"♻️ Overwrote {len(added)} chunks for {args.dir}", style="yellow")
+
+        elif subcmd == "status":
+            status = elf.memory.rag_status()
+            if not status:
+                console.print("📂 Archive is empty.", style="yellow")
+            else:
+                for d, files in status.items():
+                    console.print(f"📁 {d}", style="cyan")
+                    for f in files:
+                        console.print(f"   📄 {Path(f['file']).name} ({f['chunks']} chunks)", style="green")
+
+        if hits:
+            context = "\n\n".join(
+                [f"[{h.get('file', h.get('dir'))}] {h.get('content','')}" for h in hits]
+            )
+            elf.history.append({"role": "system", "content": f"📚 Archive recalls:\n{context}"})
+            console.print(f"📚 Injected {len(hits)} archive hits", style=style)
+
+    # ----- Memory & Web Search -----
     elf.enrich_with_memory(args.message)
 
     if args.search:
         elf.enrich_with_search(args.message, deep=args.deep)
         console.print(f"\U0001f50e {Elf.__name__} searches the websies…", style=style)
 
+    # ----- Chat -----
     try:
         if args.md:
             reply = elf.chat(args.message)
