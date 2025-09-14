@@ -65,4 +65,30 @@ class Tools:
         _tool = self.get_tool(name)
         if not _tool:
             raise ValueError(f"No such tool: {name}")
-        return _tool(*args, **kwargs)
+
+        result = _tool(*args, **kwargs)
+
+        # --- Tool awareness injection ---
+        elf = kwargs.get("elf")  # pass elf=self when calling
+        if elf:
+            # summarize args
+            arg_summary = ", ".join(map(str, args))
+            kwarg_summary = ", ".join(f"{k}={v}" for k, v in kwargs.items() if k != "elf")
+            arg_text = "; ".join(filter(None, [arg_summary, kwarg_summary]))
+
+            # trim long result for context
+            result_str = str(result)
+            if len(result_str) > 500:
+                result_str = result_str[:500] + "…"
+
+            elf.history.append({
+                "role": "assistant",
+                "content": (
+                    f"🤖 (Tool used: {name})\n"
+                    f"Args: {arg_text or 'none'}\n"
+                    f"Result (truncated):\n{result_str}"
+                )
+            })
+
+        return result
+

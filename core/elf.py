@@ -127,7 +127,7 @@ class Elf(ABC):
     def enrich_with_search(self, user_message: str, deep: bool = False):
         """Append web search results as assistant-visible context (tool awareness)."""
         try:
-            clues = self.tools.run("perform_web_search", user_message, deep_dive=deep)
+            clues = self.tools.run("perform_web_search", user_message, deep_dive=deep, elf=self)
             self.history.append({
                 "role": "assistant",
                 "content": f"🤖 (Tool used: WebSearch — executed just now)\nQuery: '{user_message}'\n\nResults:\n{clues}"
@@ -236,8 +236,9 @@ class Elf(ABC):
             return [], "No results found for enhance"
 
         # crawl/overwrite/delete/list/status handled by RagCrawlerTool
-        result = tool(query, dir=str(directory) if directory else None,
-                      file=None, recursive=recursive)
+        result = self.tools.run("rag_crawl", subcmd, query,
+                                dir=str(directory) if directory else None,
+                                file=None, recursive=recursive, elf=self)
         return [], result.get("summary") if result else None
 
     def enhance_message(self, user_msg: str, hits: list[dict]) -> str:
@@ -275,7 +276,7 @@ class Elf(ABC):
         """Generate and run a shell command, optionally summarizing output."""
         enhanced_prompt = self.format_prompt(prompt, memory_reflection, "shell")
         command = self.generate_shell_command(enhanced_prompt)
-        result, success = self.tools.run("run_shell_command", command, return_success=True)
+        result, success = self.tools.run("run_shell_command", command, return_success=True, elf=self)
         summary = self.summarize_text(result) if summarize else None
         return command, result, success, summary
 

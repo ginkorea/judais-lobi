@@ -138,12 +138,13 @@ class RagCrawlerTool(Tool):
                  recursive: bool = False):
         """
         Dispatch archive actions: crawl, overwrite, list, status, delete.
-        - crawl/overwrite → summarize with LLM, save reflection
-        - list/status/delete → no LLM, but log to memory
+        Adds explicit (Tool used: rag_crawl) markers into short-term memory
+        so the LLM can see what just happened.
         """
+        tag = "🤖 (Tool used: rag_crawl)"
+
         if action in ("crawl", "overwrite"):
             if action == "overwrite":
-                # wipe existing entries
                 target = Path(file or dir).expanduser().resolve()
                 self.memory.delete_rag(target)
 
@@ -158,43 +159,36 @@ class RagCrawlerTool(Tool):
                         crawled.extend(self._crawl_file(f))
 
             if not crawled:
+                msg = f"{tag} No new chunks found for {file or dir}"
+                self.memory.add_short("system", msg)
                 return {"status": "no new chunks"}
 
-            # Summarize with LLM
             joined = "\n".join(c["content"] for c in crawled[:10])
             prompt = (
-                f"User asked: {user_message}\n\n"
                 f"You just {action}d {len(crawled)} chunks from {file or dir}.\n\n"
-                f"Summarize the main topics, functions, or ideas."
+                f"Summarize the main topics or ideas."
             )
             summary = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "user", "content": prompt + "\n\nSample:\n" + joined}
-                ]
+                messages=[{"role": "user", "content": prompt + "\n\nSample:\n" + joined}]
             ).choices[0].message.content.strip()
 
-            reflection = f"📚 {action.title()}ed {file or dir}: {summary}"
+            reflection = f"{tag} 📚 {action.title()}ed {file or dir}: {summary}"
             self.memory.add_long("system", reflection)
             self.memory.add_short("system", reflection)
-
-            if self.debug:
-                print(reflection)
-
             return {"status": action, "chunks": len(crawled), "summary": summary}
 
         elif action == "list":
-            rows = []
             with self.memory._connect() as con:
                 cur = con.execute("SELECT DISTINCT dir FROM rag_chunks")
                 rows = [r[0] for r in cur.fetchall()]
-            reflection = f"📚 Archive list: {len(rows)} directories"
+            reflection = f"{tag} 📚 Archive list: {len(rows)} directories"
             self.memory.add_short("system", reflection)
             return {"status": "list", "dirs": rows}
 
         elif action == "status":
             status = self.memory.rag_status()
-            reflection = f"📚 Archive status checked ({len(status)} dirs)."
+            reflection = f"{tag} 📚 Archive status checked ({len(status)} dirs)."
             self.memory.add_short("system", reflection)
             return {"status": "status", "detail": status}
 
@@ -203,7 +197,7 @@ class RagCrawlerTool(Tool):
                 return {"status": "error", "msg": "delete requires --dir or --file"}
             target = Path(file or dir).expanduser().resolve()
             self.memory.delete_rag(target)
-            reflection = f"🗑️ Deleted RAG entries for {target}"
+            reflection = f"{tag} 🗑️ Deleted RAG entries for {target}"
             self.memory.add_short("system", reflection)
             return {"status": "delete", "target": str(target)}
 

@@ -161,13 +161,16 @@ class UnifiedMemory:
         self.long_id_map = []
 
     # ----- RAG helpers -----
-    def _hash_file(self, path: Path) -> str:
+    @staticmethod
+    def _hash_file(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
     # ----- RAG: search / manage -----
     def search_rag(self, query: str, top_k=6, dir_filter: Optional[str] = None):
+        """Semantic search over RAG chunks, returning content + source metadata."""
         if self.rag_index is None:
             return []
+
         q = normalize(self._embed(query))
         D, I = self.rag_index.search(q.reshape(1, -1), top_k)
 
@@ -177,7 +180,7 @@ class UnifiedMemory:
 
         results = []
         with sqlite3.connect(self.db_path) as con:
-            for idx in I[0]:
+            for idx, score in zip(I[0], D[0]):
                 if idx < 0 or idx >= len(self.rag_id_map):
                     continue
                 cid = self.rag_id_map[idx]
@@ -191,9 +194,16 @@ class UnifiedMemory:
                 f_abs = str(Path(f).resolve())
                 if dir_root and not f_abs.startswith(dir_root + "/") and f_abs != dir_root:
                     continue
-                results.append({"dir": d, "file": f_abs, "chunk": chunk, "content": content})
+                results.append({
+                    "dir": d,
+                    "file": f_abs,
+                    "chunk": chunk,
+                    "content": content,
+                    "score": float(score)
+                })
+        # sort by score (cosine similarity)
+        results.sort(key=lambda r: r["score"], reverse=True)
         return results
-
 
     def delete_rag(self, target: Path):
         """Delete all chunks from a given file or directory and rebuild FAISS."""
