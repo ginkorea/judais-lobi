@@ -7,7 +7,6 @@ from typing import Optional, List, Dict
 import numpy as np
 import faiss
 from openai import OpenAI
-from core.memory.rag_utils import read_file, safe_chunk_text
 
 # ---- Helpers ----
 def now() -> int:
@@ -20,10 +19,13 @@ def normalize(vec: np.ndarray) -> np.ndarray:
 
 # ---- UnifiedMemory ----
 class UnifiedMemory:
-    def __init__(self, db_path: Path, model="text-embedding-3-large"):
+    def __init__(self, db_path: Path, model="text-embedding-3-large", debug=False):
         """db_path: SQLite file, model: embedding model (default: 3-large)."""
+        self.debug = debug
         self.db_path = Path(db_path)
+        if self.debug: print(f"db_path: {self.db_path}")
         self.model = model
+        if self.debug: print(f"model: {self.model}")
         self.client = OpenAI()
 
         # FAISS indexes
@@ -32,7 +34,10 @@ class UnifiedMemory:
         self.long_id_map: List[int] = []
         self.rag_id_map: List[int] = []
 
+        # Ensure DB and schema
+
         self._ensure_db()
+
         self._rebuild_indexes()
 
     # ----- Schema -----
@@ -40,6 +45,10 @@ class UnifiedMemory:
         with sqlite3.connect(self.db_path) as con:
             con.executescript("""
             PRAGMA journal_mode=WAL;
+            CREATE TABLE IF NOT EXISTS meta(
+                k TEXT PRIMARY KEY,
+                v TEXT
+            );
             CREATE TABLE IF NOT EXISTS short_term(
                 id INTEGER PRIMARY KEY,
                 role TEXT, content TEXT, ts INTEGER
@@ -61,6 +70,30 @@ class UnifiedMemory:
                 mode TEXT, success INT, ts INTEGER
             );
             """)
+        # model lock on first use
+        self._ensure_model_lock()
+
+    def _ensure_model_lock(self):
+        with sqlite3.connect(self.db_path) as con:
+            cur = con.execute("SELECT v FROM meta WHERE k='embedding_model'")
+            row = cur.fetchone()
+            if row is None:
+                con.execute("INSERT INTO meta(k, v) VALUES('embedding_model', ?)", (self.model,))
+            else:
+                saved = row[0]
+                if saved != self.model:
+                    raise RuntimeError(
+                        f"Embedding model mismatch.\n"
+                        f"DB locked to: {saved}\n"
+                        f"Requested:   {self.model}\n"
+                        f"Choose the same model or run a migration (re-embed)."
+                    )
+
+    # ----- Connection Helper -----
+    def _connect(self):
+        """Helper to open SQLite connection consistently."""
+        return sqlite3.connect(self.db_path)
+
 
     # ----- Embedding -----
     def _embed(self, text: str) -> np.ndarray:
@@ -131,91 +164,17 @@ class UnifiedMemory:
     def _hash_file(self, path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    # ----- RAG: crawl -----
-    def crawl_dir(self, dir_path: Path, include: Optional[str] = None, recursive: bool = False):
-        """
-        Index files under dir_path into rag_chunks.
-        - recursive: False by default (CLI can pass --recursive to enable)
-        """
-        dir_path = Path(dir_path).expanduser().resolve()
-        added = []
-        iterator = dir_path.rglob("*") if recursive else dir_path.glob("*")
-        with sqlite3.connect(self.db_path) as con:
-            for f in iterator:
-                if not f.is_file():
-                    continue
-                if include and not f.match(include):
-                    continue
-                text = read_file(f)
-                if not text.strip():
-                    continue
-                sha = self._hash_file(f)
-                exists = con.execute(
-                    "SELECT 1 FROM rag_chunks WHERE file=? AND sha=?",
-                    (str(f), sha)
-                ).fetchone()
-                if exists:
-                    continue
-                chunks = safe_chunk_text(text)
-                for i, c in enumerate(chunks):
-                    emb = normalize(self._embed(c))
-                    cur = con.execute(
-                        "INSERT INTO rag_chunks(dir,file,chunk_index,content,embedding,sha,ts) VALUES(?,?,?,?,?,?,?)",
-                        (str(dir_path), str(f), i, c, emb.tobytes(), sha, now())
-                    )
-                    cid = cur.lastrowid
-                    # FAISS update
-                    if self.rag_index is None:
-                        self.rag_index = faiss.IndexFlatIP(len(emb))
-                    self.rag_index.add(emb.reshape(1, -1))
-                    self.rag_id_map.append(cid)
-                added.append(f)
-        return added
-
-    def crawl_file(self, file_path: Path):
-        """Index a single file into rag_chunks."""
-        file_path = Path(file_path).expanduser().resolve()
-        if not file_path.is_file():
-            return []
-        text = read_file(file_path)
-        if not text.strip():
-            return []
-        sha = self._hash_file(file_path)
-        added_chunks = []
-        with sqlite3.connect(self.db_path) as con:
-            exists = con.execute(
-                "SELECT 1 FROM rag_chunks WHERE file=? AND sha=?",
-                (str(file_path), sha)
-            ).fetchone()
-            if exists:
-                return []
-
-            chunks = safe_chunk_text(text)
-            for i, c in enumerate(chunks):
-                emb = normalize(self._embed(c))
-                cur = con.execute(
-                    "INSERT INTO rag_chunks(dir,file,chunk_index,content,embedding,sha,ts) VALUES(?,?,?,?,?,?,?)",
-                    (str(file_path.parent), str(file_path), i, c, emb.tobytes(), sha, now())
-                )
-                cid = cur.lastrowid
-                if self.rag_index is None:
-                    self.rag_index = faiss.IndexFlatIP(len(emb))
-                self.rag_index.add(emb.reshape(1, -1))
-                self.rag_id_map.append(cid)
-                added_chunks.append({"file": str(file_path), "chunk": i, "content": c})
-        return added_chunks
-
     # ----- RAG: search / manage -----
     def search_rag(self, query: str, top_k=6, dir_filter: Optional[str] = None):
-        """
-        Semantic search across rag_chunks.
-        - dir_filter: when provided, limits to files whose path starts with that dir.
-          (recursive-by-nature filtering)
-        """
         if self.rag_index is None:
             return []
         q = normalize(self._embed(query))
         D, I = self.rag_index.search(q.reshape(1, -1), top_k)
+
+        dir_root = None
+        if dir_filter:
+            dir_root = str(Path(dir_filter).expanduser().resolve())
+
         results = []
         with sqlite3.connect(self.db_path) as con:
             for idx in I[0]:
@@ -229,10 +188,12 @@ class UnifiedMemory:
                 if not row:
                     continue
                 d, f, chunk, content = row
-                if dir_filter and not str(f).startswith(str(dir_filter)):
+                f_abs = str(Path(f).resolve())
+                if dir_root and not f_abs.startswith(dir_root + "/") and f_abs != dir_root:
                     continue
-                results.append({"dir": d, "file": f, "chunk": chunk, "content": content})
+                results.append({"dir": d, "file": f_abs, "chunk": chunk, "content": content})
         return results
+
 
     def delete_rag(self, target: Path):
         """Delete all chunks from a given file or directory and rebuild FAISS."""
@@ -304,3 +265,35 @@ class UnifiedMemory:
             vecs.append(v)
             self.rag_id_map.append(rid)
         self.rag_index.add(np.stack(vecs))
+
+    # ----- Adventures -----
+    def add_adventure(self, prompt: str, code: str, result: str, mode: str, success: bool):
+        """Insert a coding adventure into the adventures table."""
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                "INSERT INTO adventures(prompt,code,result,mode,success,ts) VALUES(?,?,?,?,?,?)",
+                (prompt, code, result, mode, int(success), now())
+            )
+
+    def list_adventures(self, n: int = 10) -> List[Dict]:
+        """Return the last N adventures in chronological order (oldest first)."""
+        with sqlite3.connect(self.db_path) as con:
+            rows = con.execute(
+                "SELECT prompt,code,result,mode,success,ts FROM adventures ORDER BY id DESC LIMIT ?",
+                (n,)
+            ).fetchall()
+        # reverse so oldest → newest
+        return [
+            {
+                "prompt": r[0],
+                "code": r[1],
+                "result": r[2],
+                "mode": r[3],
+                "success": bool(r[4]),
+                "ts": r[5],
+            }
+            for r in reversed(rows)
+        ]
+
+
+

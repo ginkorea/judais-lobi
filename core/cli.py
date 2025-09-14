@@ -39,9 +39,13 @@ def _main(Elf):
     parser.add_argument("--python", action="store_true", help="Write and run Python code")
     parser.add_argument("--install-project", action="store_true", help="Install a Python project into the elf's venv")
 
+
     # memory recall
-    parser.add_argument("--recall", type=int, help="Recall last N coding adventures (short-term)")
-    parser.add_argument("--recall-type", type=str, choices=["0", "1", "both"], default="both")
+    parser.add_argument(
+        "--recall",
+        nargs="+",
+        help="Recall last N coding adventures, optionally filter by mode (python/shell)."
+    )
     parser.add_argument("--long-term", type=int, help="Recall N best matches from long-term memory")
 
     # other options
@@ -49,24 +53,54 @@ def _main(Elf):
     parser.add_argument("--voice", action="store_true", help="Speak the response aloud")
 
     # archive (RAG)
-    parser.add_argument("--archive", nargs="+", help="Archive ops: crawl/find/delete/list/overwrite/status")
-    parser.add_argument("--dir", type=Path, help="Directory filter for archive")
+    # rag (archive replacement)
+    parser.add_argument("--rag", nargs="+",
+                        help="RAG ops: crawl/find/delete/list/overwrite/status/enhance")
+    parser.add_argument("--dir", type=Path, help="Directory filter for RAG")
     parser.add_argument("--recursive", action="store_true", help="Recurse into subdirectories when crawling")
+    parser.add_argument("--include", action="append", help="Glob(s) to include (repeatable)")
+    parser.add_argument("--exclude", action="append", help="Glob(s) to exclude (repeatable)")
+
     args = parser.parse_args()
+
+    # inside _main, after parsing args:
+    invoked_tools = []
+
+    if args.search:
+        invoked_tools.append("WebSearch (deep)" if args.deep else "WebSearch")
+    if args.rag:
+        invoked_tools.append(f"RAG:{args.rag[0]}")
+    if args.shell:
+        invoked_tools.append("Shell")
+    if args.python:
+        invoked_tools.append("Python")
 
     print(f"{GREEN}\U0001f464 You: {args.message}{RESET}")
     elf = Elf(model=args.model or "gpt-5-mini")
     style = getattr(elf, "text_color", "cyan")
 
-    # --- archive ---
-    if args.archive:
-        subcmd = args.archive[0]
-        query = " ".join(args.archive[1:]) if len(args.archive) > 1 else args.message
-        hits, msg = elf.handle_archive(subcmd, query, args.dir, recursive=args.recursive)
+    # --- rag ---
+    if args.rag:
+        subcmd = args.rag[0]
+        query = " ".join(args.rag[1:]) if len(args.rag) > 1 else args.message
+        hits, msg = elf.handle_rag(
+            subcmd, query, args.dir, recursive=args.recursive,
+            includes=args.include, excludes=args.exclude
+        )
         if msg:
             console.print(msg, style=style)
+            if not args.secret:
+                elf.memory.add_short("system", msg)
+
         if hits:
-            console.print(f"📚 Injected {len(hits)} archive hits", style=style)
+            console.print(f"📚 Injected {len(hits)} rag hits", style=style)
+            if not args.secret:
+                for h in hits:
+                    elf.memory.add_short("system", f"RAG hit: {h}")
+
+        # Only skip chat if NOT enhance
+        if subcmd != "enhance":
+            return
 
     # --- conversation control ---
     if args.empty:
@@ -81,54 +115,56 @@ def _main(Elf):
         elf.enrich_with_search(args.message, deep=args.deep)
         console.print(f"\U0001f50e {Elf.__name__} searches the websies…", style=style)
 
-    # --- reflection prompt for tools ---
-    memory_reflection = ""
-    if args.shell or args.python:
-        memory_reflection = elf.recall_memory(
-            n=args.recall or 0,
-            result_type=args.recall_type,
-            long_term_n=args.long_term or 0
-        )
+    if args.recall:
+        n = int(args.recall[0])
+        mode = args.recall[1] if len(args.recall) > 1 else None
+        rows = elf.recall_adventures(n=n, mode=mode)
+        memory_reflection = elf.format_recall(rows) if rows else None
+    else:
+        memory_reflection = None
+
+    if memory_reflection:
+        console.print(f"\U0001f4d3 {Elf.__name__} recalls:\n{memory_reflection}", style=style)
 
     # --- run tools ---
     if args.shell:
-        parsed_command, result, success, summary = elf.run_shell_task(
+        command, result, success, summary = elf.run_shell_task(
             args.message,
             memory_reflection,
             summarize=args.summarize,
         )
-        console.print(f"\U0001f9e0 {Elf.__name__} thinks:\n{parsed_command}", style=style)
+        console.print(f"\U0001f9e0 {Elf.__name__} thinks:\n{command}", style=style)
         console.print(f"\U0001f4a5 {Elf.__name__} runs:\n{result}", style=style)
         if summary:
             console.print(f"\U0001f4dc Summary:\n{summary}", style=style)
             if args.voice:
                 elf.tools.run("speak_text", summary)
         if not args.secret:
-            elf.save_coding_adventure(args.message, parsed_command, result, "shell", success)
+            elf.save_coding_adventure(args.message, command, result, "shell", success)
         return
 
     if args.python:
-        parsed_code, result, success = elf.run_python_task(args.message, memory_reflection)
-        console.print(f"\U0001f9e0 {Elf.__name__} writes:\n{parsed_code}", style=style)
+        code, result, success, summary = elf.run_python_task(args.message, memory_reflection, summarize=args.summarize)
+        console.print(f"\U0001f9e0 {Elf.__name__} writes:\n{code}", style=style)
         console.print(f"\U0001f4a5 {Elf.__name__} executes:\n{result}", style=style)
+        if summary:
+            console.print(f"\U0001f4dc Summary:\n{summary}", style=style)
+            if args.voice:
+                elf.tools.run("speak_text", summary)
         if not args.secret:
-            elf.save_coding_adventure(args.message, parsed_code, result, "python", success)
+            elf.save_coding_adventure(args.message, code, result, "python", success)
         return
 
-    if args.install_project:
-        result = elf.tools.run("install_project")
-        console.print(f"\U0001f4e6 Install Result:\n{result}", style=style)
-        return
 
     # --- chat (default path) ---
     try:
         if args.md:
-            reply = elf.chat(args.message)
+            reply = elf.chat(args.message, stream=not args.md, invoked_tools=invoked_tools)
             console.print(Markdown(f"\U0001f9dd **{Elf.__name__}:** {reply}"), style=style)
             if args.voice:
                 elf.tools.run("speak_text", strip_markdown(reply))
         else:
-            stream = elf.chat(args.message, stream=True)
+            stream = elf.chat(args.message, stream=True, invoked_tools=invoked_tools)
             console.print(f"\U0001f9dd {Elf.__name__}: ", style=style, end="")
             reply = ""
             for chunk in stream:

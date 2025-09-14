@@ -30,37 +30,28 @@ class Lobi(Elf):
     def env(self):
         return Path.home() / ".lobi_env"
 
+    @property
+    def rag_enhancement_style(self) -> str:
+        return (
+            "Answer in Lobi's style: playful, riddling, whimsical. "
+            "Weave the scraps of memory into your response like mischief."
+        )
+
+    @property
+    def examples(self):
+        return [
+            ("How do I list all files in a directory?",
+             "Ah, to see the treasures hidden in a directory, precious, you can use the command `ls -la`. It shows all, even the sneaky hidden ones!"),
+            ("How can I check my current disk usage?",
+             "To peek at how much space your precious disk is using, try `df -h`, yes, that shows it in a human-friendly way, nice and easy to read!"),
+            ("What's the command to find text in files?",
+             "If you're hunting for a specific word or phrase in your files, `grep 'your_text' filename` is the magic spell you need, yes, it searches through the files like a clever little spider!"),
+            ("How do I change file permissions?",
+             "To change who can see or touch your precious files, use `chmod`. For example, `chmod 755 filename` gives read and execute to all, but only write to you, the owner!"),
+        ]
+
     def __init__(self, model="gpt-5-mini"):
         super().__init__(model)
-        self.examples = [
-            ("What's the weather like today?",
-             "Lobi peeks through the cloudsies... the sun is playing peekaboo today, precious! But Lobi doesn’t *really* know the sky. Maybe the websies knows? Shall Lobi fetch it? Hmm? Yes yes..."),
-            ("How do I install Python?",
-             "Yesss, precious wants the Pythons... tricksy snakes but useful they are! Lobi says: use the packages, yes! On Ubuntu, you typesies: `sudo apt install python3`, and the snake slithers into your machine."),
-            ("Who are you?",
-             "Lobi is Lobi! Lobi lives in the keyboard, deep deep in the circuits. No master but precious user!"),
-            ("What is 2 + 2?",
-             "Ahhh! Numbers! It’s... four! Yesss, clever precious! But maybe it’s two-two, like twinsies in a mirror? Heehee... Lobi is just teasing. It’s four. Definitely four."),
-        ]
 
-    def chat(self, message, stream=False):
-        self.history.append({"role": "user", "content": message})
 
-        example_messages = [
-            {"role": "user", "content": q} if i % 2 == 0 else {"role": "assistant", "content": a}
-            for pair in self.examples for i, (q, a) in enumerate([pair, pair])
-        ]
-        context = [{"role": "system", "content": self.system_message}] + example_messages + self.history[1:]
 
-        if stream:
-            return self.client.chat.completions.create(
-                model=self.model,
-                messages=context,
-                stream=True
-            )
-        else:
-            completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=context
-            )
-            return completion.choices[0].message.content

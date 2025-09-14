@@ -2,10 +2,15 @@
 
 from core.tools.base_subprocess import RunSubprocessTool
 from pathlib import Path
+from typing import Tuple, Any
+
 
 class InstallProjectTool(RunSubprocessTool):
     name = "install_project"
-    description = "Installs a Python project into the current elfenv using setup.py, pyproject.toml, or requirements.txt."
+    description = (
+        "Installs a Python project into the current elfenv using setup.py, "
+        "pyproject.toml, or requirements.txt."
+    )
 
     def __init__(self, **kwargs):
         self.elfenv = kwargs.get("elfenv", Path(".elfenv"))
@@ -14,7 +19,17 @@ class InstallProjectTool(RunSubprocessTool):
         super().__init__(**kwargs)
 
     def __call__(self, path="."):
-        path = Path(path)
+        """
+        Public entry point: tries to install the given project and returns human-readable output.
+        """
+        return self._run_with_retries(path, max_retries=1, unsafe=False, return_success=False)
+
+    # ---------- Template overrides ----------
+    def _attempt(self, payload: Any) -> Tuple[int, str, str]:
+        """
+        payload = path to project directory
+        """
+        path = Path(payload)
         if (path / "setup.py").exists():
             cmd = [str(self.pip_bin), "install", "."]
         elif (path / "pyproject.toml").exists():
@@ -22,12 +37,16 @@ class InstallProjectTool(RunSubprocessTool):
         elif (path / "requirements.txt").exists():
             cmd = [str(self.pip_bin), "install", "-r", "requirements.txt"]
         else:
-            return "❌ No installable project found in the given directory."
+            return 1, "", "❌ No installable project found in the given directory."
 
-        code, out, err = self.run(cmd, timeout=60)
-        return f"📦 {out or err}"
+        return self.run(cmd, timeout=300)
 
+    def _describe(self, payload: Any) -> str:
+        return f"install project at {payload}"
+
+    # ---------- Helpers ----------
     def ensure_elfenv(self):
         from venv import create
         if not self.pip_bin.exists():
+            self._log(f"🧙 Creating venv at {self.elfenv} …")
             create(str(self.elfenv), with_pip=True)
