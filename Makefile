@@ -28,9 +28,10 @@ tag:
 	@echo "🏷️ Tagging release $(TAG)..."
 	@git add .
 	@git commit -m "release: $(TAG)" || true
-	@git tag $(TAG)
+	-@git tag $(TAG) || true
 	@git push origin master
-	@git push origin $(TAG)
+	-@git push origin $(TAG) || true
+
 
 build:
 	@echo "📦 Building distribution for PyPI..."
