@@ -1,7 +1,7 @@
 # Makefile for judais-lobi CLI project
 
 VENV_NAME = jlenv
-PYTHON = python3.11
+PYTHON = python3.13
 VERSION = 0.6.1
 TAG = v$(VERSION)
 BRANCH = $(shell git symbolic-ref --short HEAD)
