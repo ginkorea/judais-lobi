@@ -2,10 +2,9 @@
 
 VENV_NAME = jlenv
 PYTHON = python3.13
-VERSION = 0.6.2
+VERSION = 0.6.3
 TAG = v$(VERSION)
 BRANCH = $(shell git symbolic-ref --short HEAD)
-
 
 install:
 	@echo "🔍 Checking system dependencies..."
@@ -32,7 +31,6 @@ tag:
 	@git push origin master
 	-@git push origin $(TAG) || true
 
-
 build:
 	@echo "📦 Building distribution for PyPI..."
 	@rm -rf dist build *.egg-info
@@ -40,7 +38,7 @@ build:
 
 upload:
 	@echo "🚀 Uploading to PyPI..."
-	@$(PYTHON) -m twine upload dist/*
+	@$(PYTHON) -m twine upload dist/* || echo "⚠️ Skipping upload: version $(VERSION) may already exist on PyPI."
 
-publish: tag build upload
-	@echo "✅ Published version $(VERSION) to GitHub and PyPI."
+publish: build upload tag
+	@echo "✅ Published version $(VERSION) to GitHub and (if new) PyPI."
