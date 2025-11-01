@@ -1,7 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = "0.6.4"
-
+VERSION = "0.7.0"
 
 setup(
     name="judais-lobi",
@@ -10,6 +9,7 @@ setup(
     include_package_data=True,
     install_requires=[
         "openai>=1.0.0",
+        "mistralai>=1.0.0",       # ✅ Added for Mistral integration
         "rich>=14.0.0",
         "python-dotenv>=1.1.0",
         "beautifulsoup4>=4.13.4",
@@ -47,7 +47,7 @@ setup(
         ],
     },
     author="Josh Gompert",
-    description="JudAIs & Lobi: Dual-agent terminal AI with memory, automation, and attitude",
+    description="JudAIs & Lobi v0.7.0 — Dual-agent terminal AI with unified OpenAI/Mistral backend, memory, and tools",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/judais-lobi",

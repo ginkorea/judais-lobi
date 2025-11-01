@@ -27,7 +27,10 @@ def _main(Elf):
     parser.add_argument("--empty", action="store_true", help="Start a new conversation")
     parser.add_argument("--purge", action="store_true", help="Purge long-term memory")
     parser.add_argument("--secret", action="store_true", help="Do not save this message in history")
+
     parser.add_argument("--model", type=str, help="Model to use (default: gpt-5-mini)")
+    parser.add_argument("--provider", type=str, choices=["openai", "mistral"],
+                        help="Force provider backend (openai or mistral)")
 
     parser.add_argument("--md", action="store_true", help="Render output with markdown (non-streaming)")
     parser.add_argument("--raw", action="store_true", help="Stream output (default)")
@@ -37,8 +40,8 @@ def _main(Elf):
     parser.add_argument("--deep", action="store_true", help="Deep dive into the top search result")
     parser.add_argument("--shell", action="store_true", help="Write and run a shell command")
     parser.add_argument("--python", action="store_true", help="Write and run Python code")
-    parser.add_argument("--install-project", action="store_true", help="Install a Python project into the elf's venv")
-
+    parser.add_argument("--install-project", action="store_true",
+                        help="Install a Python project into the elf's venv")
 
     # memory recall
     parser.add_argument(
@@ -53,7 +56,6 @@ def _main(Elf):
     parser.add_argument("--voice", action="store_true", help="Speak the response aloud")
 
     # archive (RAG)
-    # rag (archive replacement)
     parser.add_argument("--rag", nargs="+",
                         help="RAG ops: crawl/find/delete/list/overwrite/status/enhance")
     parser.add_argument("--dir", type=Path, help="Directory filter for RAG")
@@ -62,10 +64,9 @@ def _main(Elf):
     parser.add_argument("--exclude", action="append", help="Glob(s) to exclude (repeatable)")
 
     args = parser.parse_args()
-
-    # inside _main, after parsing args:
     invoked_tools = []
 
+    # --- detect tool usage ---
     if args.search:
         invoked_tools.append("WebSearch (deep)" if args.deep else "WebSearch")
     if args.rag:
@@ -76,10 +77,14 @@ def _main(Elf):
         invoked_tools.append("Python")
 
     print(f"{GREEN}\U0001f464 You: {args.message}{RESET}")
-    elf = Elf(model=args.model or "gpt-5-mini")
-    style = getattr(elf, "text_color", "cyan")
 
-    # --- rag ---
+    # --- instantiate elf with provider override ---
+    elf = Elf(model=args.model or "gpt-5-mini", provider=args.provider)
+    style = getattr(elf, "text_color", "cyan")
+    provider_name = elf.client.provider.upper()
+    console.print(f"🧠 Using provider: {provider_name}", style=style)
+
+    # --- RAG handling ---
     if args.rag:
         subcmd = args.rag[0]
         query = " ".join(args.rag[1:]) if len(args.rag) > 1 else args.message
@@ -91,30 +96,29 @@ def _main(Elf):
             console.print(msg, style=style)
             if not args.secret:
                 elf.memory.add_short("system", msg)
-
         if hits:
             console.print(f"📚 Injected {len(hits)} rag hits", style=style)
             if not args.secret:
                 for h in hits:
                     elf.memory.add_short("system", f"RAG hit: {h}")
-
-        # Only skip chat if NOT enhance
         if subcmd != "enhance":
             return
 
-    # --- conversation control ---
+    # --- memory control ---
     if args.empty:
         elf.reset_history()
+        console.print("🧹 Starting a new conversation", style=style)
     if args.purge:
         elf.purge_memory()
-        console.print(f"\U0001f9f9 {Elf.__name__} forgets everything in the long-term...", style=style)
+        console.print(f"🧠 {Elf.__name__} forgets everything long-term...", style=style)
 
-    # --- enrichments ---
+    # --- enrich context ---
     elf.enrich_with_memory(args.message)
     if args.search:
         elf.enrich_with_search(args.message, deep=args.deep)
-        console.print(f"\U0001f50e {Elf.__name__} searches the websies…", style=style)
+        console.print(f"🔍 {Elf.__name__} searches the websies…", style=style)
 
+    # --- recall ---
     if args.recall:
         n = int(args.recall[0])
         mode = args.recall[1] if len(args.recall) > 1 else None
@@ -124,19 +128,15 @@ def _main(Elf):
         memory_reflection = None
 
     if memory_reflection:
-        console.print(f"\U0001f4d3 {Elf.__name__} recalls:\n{memory_reflection}", style=style)
+        console.print(f"📖 {Elf.__name__} recalls:\n{memory_reflection}", style=style)
 
     # --- run tools ---
     if args.shell:
-        command, result, success, summary = elf.run_shell_task(
-            args.message,
-            memory_reflection,
-            summarize=args.summarize,
-        )
-        console.print(f"\U0001f9e0 {Elf.__name__} thinks:\n{command}", style=style)
-        console.print(f"\U0001f4a5 {Elf.__name__} runs:\n{result}", style=style)
+        command, result, success, summary = elf.run_shell_task(args.message, memory_reflection, summarize=args.summarize)
+        console.print(f"⚙️  {Elf.__name__} thinks:\n{command}", style=style)
+        console.print(f"💥 Output:\n{result}", style=style)
         if summary:
-            console.print(f"\U0001f4dc Summary:\n{summary}", style=style)
+            console.print(f"📝 Summary:\n{summary}", style=style)
             if args.voice:
                 elf.tools.run("speak_text", summary)
         if not args.secret:
@@ -145,31 +145,30 @@ def _main(Elf):
 
     if args.python:
         code, result, success, summary = elf.run_python_task(args.message, memory_reflection, summarize=args.summarize)
-        console.print(f"\U0001f9e0 {Elf.__name__} writes:\n{code}", style=style)
-        console.print(f"\U0001f4a5 {Elf.__name__} executes:\n{result}", style=style)
+        console.print(f"💻 {Elf.__name__} writes:\n{code}", style=style)
+        console.print(f"📦 Result:\n{result}", style=style)
         if summary:
-            console.print(f"\U0001f4dc Summary:\n{summary}", style=style)
+            console.print(f"🧾 Summary:\n{summary}", style=style)
             if args.voice:
                 elf.tools.run("speak_text", summary)
         if not args.secret:
             elf.save_coding_adventure(args.message, code, result, "python", success)
         return
 
-
-    # --- chat (default path) ---
+    # --- default chat path ---
     try:
         if args.md:
-            reply = elf.chat(args.message, stream=not args.md, invoked_tools=invoked_tools)
-            console.print(Markdown(f"\U0001f9dd **{Elf.__name__}:** {reply}"), style=style)
+            reply = elf.chat(args.message, stream=False, invoked_tools=invoked_tools)
+            console.print(Markdown(f"🧞 **{Elf.__name__}:** {reply}"), style=style)
             if args.voice:
                 elf.tools.run("speak_text", strip_markdown(reply))
         else:
             stream = elf.chat(args.message, stream=True, invoked_tools=invoked_tools)
-            console.print(f"\U0001f9dd {Elf.__name__}: ", style=style, end="")
+            console.print(f"🧞 {Elf.__name__}: ", style=style, end="")
             reply = ""
             for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
+                delta = getattr(chunk.choices[0], "delta", None)
+                if delta and getattr(delta, "content", None):
                     reply += delta.content
                     console.print(delta.content, style=style, end="")
             print()
@@ -183,6 +182,7 @@ def _main(Elf):
 
     except Exception as e:
         console.print(f"\n❌ Error: {e}", style="red")
+
 
 
 def main_lobi():
