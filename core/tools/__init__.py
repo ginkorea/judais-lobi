@@ -10,18 +10,32 @@ from .rag_crawler import RagCrawlerTool
 from core.memory.memory import UnifiedMemory
 from typing import Callable, Union
 
+
 class Tools:
-    def __init__(self, elfenv=None, memory: UnifiedMemory = None):
+    """
+    Core tool registry.
+    By default, excludes TTS (speak_text) unless explicitly registered at runtime.
+    """
+
+    def __init__(self, elfenv=None, memory: UnifiedMemory = None, enable_voice=False):
         self.elfenv = elfenv
         self.registry: dict[str, Union[Tool, Callable[[], Tool]]] = {}
+
+        # Always-available tools
         self._register(RunShellTool())
         self._register(RunPythonTool(elfenv=elfenv))
         self._register(InstallProjectTool(elfenv=elfenv))
         self._register(FetchPageTool())
         self._register(WebSearchTool())
+
         if memory:
             self._register(RagCrawlerTool(memory))
-        self._register_lazy("speak_text", self._lazy_load_speak_text)
+
+        # Only load voice if explicitly enabled
+        if enable_voice:
+            self._register_lazy("speak_text", self._lazy_load_speak_text)
+
+    # ------------------- registration helpers -------------------
 
     def _register(self, _tool: Tool):
         self.registry[_tool.name] = _tool
@@ -29,8 +43,11 @@ class Tools:
     def _register_lazy(self, name: str, factory: Callable[[], Tool]):
         self.registry[name] = factory
 
+    # ------------------- lazy voice load -------------------
+
     @staticmethod
     def _lazy_load_speak_text():
+        """Dynamically import the Coqui TTS voice tool."""
         try:
             from core.tools.voice import SpeakTextTool
             return SpeakTextTool()
@@ -43,6 +60,8 @@ class Tools:
                     return "⚠️ Voice output disabled (TTS not installed)."
 
             return DummySpeakTool()
+
+    # ------------------- tool management -------------------
 
     def list_tools(self):
         return list(self.registry.keys())
@@ -69,18 +88,14 @@ class Tools:
         result = _tool(*args, **kwargs)
 
         # --- Tool awareness injection ---
-        elf = kwargs.get("elf")  # pass elf=self when calling
+        elf = kwargs.get("elf")
         if elf:
-            # summarize args
             arg_summary = ", ".join(map(str, args))
             kwarg_summary = ", ".join(f"{k}={v}" for k, v in kwargs.items() if k != "elf")
             arg_text = "; ".join(filter(None, [arg_summary, kwarg_summary]))
-
-            # trim long result for context
             result_str = str(result)
             if len(result_str) > 500:
                 result_str = result_str[:500] + "…"
-
             elf.history.append({
                 "role": "assistant",
                 "content": (
@@ -89,6 +104,4 @@ class Tools:
                     f"Result (truncated):\n{result_str}"
                 )
             })
-
         return result
-

@@ -4,7 +4,7 @@
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, List, Dict
 
 from dotenv import load_dotenv
 from core.unified_client import UnifiedClient
@@ -13,242 +13,221 @@ from core.tools import Tools
 from core.tools.run_shell import RunShellTool
 from core.tools.run_python import RunPythonTool
 
-load_dotenv(dotenv_path=Path.home() / ".elf_env")
-DEFAULT_MODEL = "gpt-5-mini"
-client = UnifiedClient()
+# --- Load environment early and explicitly ---
+_ENV_PATH = Path.home() / ".elf_env"
+if _ENV_PATH.exists():
+    load_dotenv(dotenv_path=_ENV_PATH, override=True)
+
+# --- Provider-aware model defaults ---
+DEFAULT_MODELS: Dict[str, str] = {
+    "openai": "gpt-4o-mini",
+    "mistral": "codestral-latest",
+}
 
 
 class Elf(ABC):
-    def __init__(self, model=DEFAULT_MODEL, provider: str | None = None, debug=True):
-        self.model = model
-        self.client = UnifiedClient(provider_override=provider)
-        self.client = client
-        # one DB per personality (lobi / judais)
-        self.memory = UnifiedMemory(Path.home() / f".{self.personality}_memory.db")
-        # short-term history always comes from DB
-        self.history = self.load_history()
-        self.tools = Tools(elfenv=self.env, memory=self.memory)
-        self.debug = debug
+    """Base Elf with dual-provider support and unified chat interface."""
 
-    # ----- abstract personality config -----
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        debug: bool = True,
+    ):
+        from rich import print  # local to avoid hard dep when not needed
+
+        # --- Provider resolution (CLI flag > env var > default 'openai') ---
+        requested = (provider or os.getenv("ELF_PROVIDER") or "openai").strip().lower()
+
+        # Normalize keys (treat blank as missing)
+        openai_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        mistral_key = (os.getenv("MISTRAL_API_KEY") or "").strip()
+
+        prov = requested
+        if prov == "openai" and not openai_key:
+            print("[yellow]⚠️ No OpenAI key found — falling back to Mistral.[/yellow]")
+            prov = "mistral"
+        elif prov == "mistral" and not mistral_key:
+            print("[yellow]⚠️ No Mistral key found — falling back to OpenAI.[/yellow]")
+            prov = "openai"
+
+        self.provider = prov
+        self.model = model or DEFAULT_MODELS[self.provider]
+
+        # --- Client / memory / tools ---
+        self.client = UnifiedClient(provider_override=self.provider)
+        self.memory = UnifiedMemory(Path.home() / f".{self.personality}_memory.db")
+        self.tools = Tools(elfenv=self.env, memory=self.memory, enable_voice=False)
+
+        # Build initial history (system + any prior short-term)
+        self.history = self._load_history()
+
+        self.debug = debug
+        if self.debug:
+            print(f"[green]🧠 Using provider:[/green] {self.provider.upper()} | "
+                  f"[cyan]Model:[/cyan] {self.model}")
+
+    # =======================
+    # Abstract configuration
+    # =======================
     @property
     @abstractmethod
     def system_message(self) -> str: ...
+
     @property
     @abstractmethod
     def personality(self) -> str: ...
+
     @property
     @abstractmethod
-    def examples(self) -> list[str]: ...
+    def examples(self) -> List[List[str]]: ...
+
     @property
     @abstractmethod
     def env(self): ...
+
     @property
     @abstractmethod
     def text_color(self): ...
+
     @property
     @abstractmethod
     def rag_enhancement_style(self) -> str: ...
 
-    # ---- enhance system message with examples ----
-    def system_message_with_examples(self) -> str:
-        tool_info = "\n".join(
-            f"- {name}: {self.tools.describe_tool(name)['description']}"
-            for name in self.tools.list_tools()
-        )
-
-        tools_text = (
-            "\n\nYou have the following tools available (but you do not call them directly):\n"
-            f"{tool_info}\n\n"
-            "Important:\n"
-            "- Tools are invoked automatically by the system **before your turn**.\n"
-            "- Their invocation and results will appear in conversation history as assistant messages.\n"
-            "- Treat tool outputs as your own work.\n\n"
-        )
-
-        examples_text = "\n\n".join(
-            f"User: {ex[0]}\nAssistant: {ex[1]}" for ex in self.examples
-        )
-        return f"{self.system_message}{tools_text}Here are some examples:\n\n{examples_text}"
-
-    # ----- short-term memory -----
-    def load_history(self):
+    # =======================
+    # History helpers
+    # =======================
+    def _load_history(self) -> List[Dict[str, str]]:
         rows = self.memory.load_short(n=100)
         if not rows:
             return [{"role": "system", "content": self.system_message}]
         return [{"role": r["role"], "content": r["content"]} for r in rows]
 
-    def save_history(self):
+    def save_history(self) -> None:
         self.memory.reset_short()
         for entry in self.history:
             self.memory.add_short(entry["role"], entry["content"])
 
-    def reset_history(self):
+    def reset_history(self) -> None:
         self.history = [{"role": "system", "content": self.system_message}]
         self.memory.reset_short()
 
-    # ----- memory ops -----
-    def purge_memory(self):
+    # =======================
+    # Long-term memory
+    # =======================
+    def purge_memory(self) -> None:
         self.memory.purge_long()
 
-    def enrich_with_memory(self, user_message: str):
+    def enrich_with_memory(self, user_message: str) -> None:
         relevant = self.memory.search_long(user_message, top_k=3)
-        if relevant:
-            context = "\n".join([f"{m['role']}: {m['content']}" for m in relevant])
-            self.history.append({
-                "role": "assistant",
-                "content": f"🔍 From long-term memory:\n{context}"
-            })
+        if not relevant:
+            return
+        context = "\n".join(f"{m['role']}: {m['content']}" for m in relevant)
+        self.history.append(
+            {"role": "assistant", "content": f"🔍 From long-term memory:\n{context}"}
+        )
 
-    def remember(self, user: str, assistant: str):
+    def remember(self, user: str, assistant: str) -> None:
         self.memory.add_long("user", user)
         self.memory.add_long("assistant", assistant)
 
-    # ----- web search -----
-    def enrich_with_search(self, user_message: str, deep: bool = False):
+    # =======================
+    # Web search integration
+    # =======================
+    def enrich_with_search(self, user_message: str, deep: bool = False) -> None:
         try:
-            clues = self.tools.run("perform_web_search", user_message, deep_dive=deep, elf=self)
+            results = self.tools.run("perform_web_search", user_message, deep_dive=deep, elf=self)
             self.history.append({
                 "role": "assistant",
-                "content": f"🤖 (Tool used: WebSearch)\nQuery: '{user_message}'\n\nResults:\n{clues}"
+                "content": f"🤖 (Tool used: WebSearch)\nQuery: '{user_message}'\n\nResults:\n{results}"
             })
         except Exception as e:
-            self.history.append({
-                "role": "assistant",
-                "content": f"❌ (WebSearch failed)\n{str(e)}"
-            })
+            self.history.append({"role": "assistant", "content": f"❌ WebSearch failed: {e}"})
 
-    # ----- chat -----
-    def chat(self, message: str, stream: bool = False, invoked_tools: Optional[list[str]] = None):
-        """Unified chat interface supporting both OpenAI and Mistral."""
+    # =======================
+    # System prompt assembly
+    # =======================
+    def _system_with_examples(self) -> str:
+        tool_info = "\n".join(
+            f"- {name}: {self.tools.describe_tool(name)['description']}"
+            for name in self.tools.list_tools()
+        )
+        examples_text = "\n\n".join(
+            f"User: {ex[0]}\nAssistant: {ex[1]}" for ex in self.examples
+        )
+        return (
+            f"{self.system_message}\n\n"
+            "You have the following tools (do not call them directly):\n"
+            f"{tool_info}\n\n"
+            "Tool results appear in history as assistant messages; treat them as your own work.\n\n"
+            f"Here are examples:\n\n{examples_text}"
+        )
+
+    # =======================
+    # Chat interface
+    # =======================
+    def chat(
+        self,
+        message: str,
+        stream: bool = False,
+        invoked_tools: Optional[List[str]] = None
+    ):
         self.history.append({"role": "user", "content": message})
 
-        sys_msg = self.system_message_with_examples()
+        sys_msg = self._system_with_examples()
         if invoked_tools:
             sys_msg += (
-                "\n\n[Tool Context]\n"
-                f"Tools invoked automatically before this step: {', '.join(invoked_tools)}.\n"
-                "You already have their results in the history.\n"
+                "\n\n[Tool Context] "
+                f"{', '.join(invoked_tools)} results are available above.\n"
             )
 
         context = [{"role": "system", "content": sys_msg}] + self.history[1:]
+        return self.client.chat(model=self.model, messages=context, stream=stream)
 
-        if stream:
-            # Stream yields provider-specific chunks (handled upstream)
-            return self.client.chat(model=self.model, messages=context, stream=True)
-        else:
-            return self.client.chat(model=self.model, messages=context)
+    # =======================
+    # Code helpers
+    # =======================
+    def _gen_code(self, prompt: str) -> str:
+        resp = self.client.chat(model=self.model, messages=[{"role": "user", "content": prompt}])
+        return str(resp).strip()
 
-    # ----- adventures -----
-    def save_coding_adventure(self, prompt: str, code: str, result: str, mode: str, success: bool):
-        self.memory.add_adventure(prompt, code, result, mode, success)
-        user_msg = f"💡 User asked: {prompt}"
-        asst_msg = f"🧠 {mode.title()} code attempt:\n{code}\n\nResult:\n{result}\nSuccess: {success}"
-        self.history.extend([
-            {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": asst_msg}
-        ])
-        self.save_history()
-        self.memory.add_long("user", user_msg)
-        self.memory.add_long("assistant", asst_msg)
-
-    def recall_adventures(self, n: int = 5, mode: Optional[str] = None):
-        if self.debug:
-            print(f"🧠 Recalling last {n} adventures{f' ({mode})' if mode else ''}...")
-        rows = self.memory.list_adventures(n=1000)
-        if mode:
-            rows = [r for r in rows if r["mode"] == mode]
-        return rows[-n:]
-
-    @staticmethod
-    def format_recall(rows):
-        return "\n\n".join(
-            f"📝 Prompt: {r['prompt']}\n🧠 Code: {r['code']}\n✅ Success: {r['success']}"
-            for r in rows
-        )
-
-    # ----- RAG ops -----
-    def handle_rag(self, subcmd: str, query: str, directory=None,
-                   recursive: bool = False, includes=None, excludes=None):
-        tool = self.tools.get_tool("rag_crawl")
-        if not tool:
-            raise RuntimeError("RagCrawlerTool not registered")
-
-        if subcmd == "enhance":
-            hits = self.memory.search_rag(query, top_k=5,
-                                          dir_filter=str(directory) if directory else None)
-            if hits:
-                snippets = "\n".join(
-                    f"{h['file']} chunk {h['chunk']}: {(h['content'] or '')[:200].replace(chr(10), ' ')}"
-                    for h in hits
-                )
-                self.history.append({"role": "assistant", "content": f"📚 Archive recall injected:\n{snippets}"})
-                return hits, f"📚 Injected {len(hits)} RAG results"
-            return [], "No results found for enhance"
-
-        result = self.tools.run("rag_crawl", subcmd, query,
-                                dir=str(directory) if directory else None,
-                                file=None, recursive=recursive, elf=self)
-        return [], result.get("summary") if result else None
-
-    def enhance_message(self, user_msg: str, hits: list[dict]) -> str:
-        if not hits:
-            return user_msg
-        snippets = "\n".join(
-            f"- {h['file']} (chunk {h['chunk']}): {(h['content'] or '')[:200].replace(chr(10), ' ')}"
-            for h in hits
-        )
-        return (
-            f"User query: {user_msg}\n\n"
-            f"Archive recall (top {len(hits)} snippets):\n{snippets}\n\n"
-            f"Style directive: {self.rag_enhancement_style}"
-        )
-
-    # ----- execution helpers -----
     def generate_shell_command(self, prompt: str) -> str:
-        messages = [{"role": "user", "content": prompt}]
-        code_text = self.client.chat(model=self.model, messages=messages)
-        return RunShellTool.extract_code(str(code_text).strip())
+        return RunShellTool.extract_code(self._gen_code(prompt))
 
     def generate_python_code(self, prompt: str) -> str:
-        messages = [{"role": "user", "content": prompt}]
-        code_text = self.client.chat(model=self.model, messages=messages)
-        return RunPythonTool.extract_code(str(code_text).strip())
+        return RunPythonTool.extract_code(self._gen_code(prompt))
 
-    def run_shell_task(self, prompt: str,
-                       memory_reflection: Optional[str] = None,
-                       summarize: bool = False) -> Tuple[str, str, Any, Optional[str]]:
-        enhanced_prompt = self.format_prompt(prompt, memory_reflection, "shell")
-        command = self.generate_shell_command(enhanced_prompt)
-        result, success = self.tools.run("run_shell_command", command, return_success=True, elf=self)
+    # =======================
+    # Task execution
+    # =======================
+    def run_shell_task(
+        self, prompt: str, memory_reflection: Optional[str] = None, summarize: bool = False
+    ) -> Tuple[str, str, Any, Optional[str]]:
+        enhanced = self._format_prompt(prompt, memory_reflection, "shell")
+        cmd = self.generate_shell_command(enhanced)
+        result, success = self.tools.run("run_shell_command", cmd, return_success=True, elf=self)
         summary = self.summarize_text(result) if summarize else None
-        return command, result, success, summary
+        return cmd, result, success, summary
 
-    def run_python_task(self, prompt: str,
-                        memory_reflection: Optional[str] = None,
-                        summarize: bool = False) -> Tuple[str, Any, Any, Optional[str]]:
-        enhanced_prompt = self.format_prompt(prompt, memory_reflection, "Python")
-        code = self.generate_python_code(enhanced_prompt)
+    def run_python_task(
+        self, prompt: str, memory_reflection: Optional[str] = None, summarize: bool = False
+    ) -> Tuple[str, Any, Any, Optional[str]]:
+        enhanced = self._format_prompt(prompt, memory_reflection, "Python")
+        code = self.generate_python_code(enhanced)
         result, success = self.tools.run("run_python_code", code, elf=self, return_success=True)
         summary = self.summarize_text(result) if summarize else None
         return code, result, success, summary
 
+    # =======================
+    # Helpers
+    # =======================
     @staticmethod
-    def format_prompt(prompt: str, memory_reflection: Optional[str], code_type: str) -> str:
-        base_prompt = f"User request: {prompt}\n\n"
-        closer = (
-            f"Now generate the best {code_type} code possible. "
-            f"No explanations, only code in valid {code_type} syntax. Comments allowed."
-        )
-        if memory_reflection:
-            return base_prompt + f"Relevant past {code_type} attempts:\n{memory_reflection}\n\n" + closer
-        return base_prompt + closer
+    def _format_prompt(prompt: str, memory_reflection: Optional[str], code_type: str) -> str:
+        base = f"User request: {prompt}\n\n"
+        close = f"Now produce valid {code_type} code only. Comments allowed."
+        return base + (f"Relevant past {code_type} attempts:\n{memory_reflection}\n\n" if memory_reflection else "") + close
 
     def summarize_text(self, text: str) -> str:
-        """Summarize text using the active model/provider."""
-        summary_prompt = (
-            f"Summarize the following text in a {self.personality}-like manner:\n\n{text}"
-        )
-        messages = [{"role": "user", "content": summary_prompt}]
-        result = self.client.chat(model=self.model, messages=messages)
-        return str(result).strip()
+        summary_prompt = f"Summarize this text in {self.personality}'s style:\n\n{text}"
+        out = self.client.chat(model=self.model, messages=[{"role": "user", "content": summary_prompt}])
+        return str(out).strip()

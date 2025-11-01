@@ -1,104 +1,107 @@
-# core/unified_client.py
 import os
-from mistralai import Mistral
-from openai import OpenAI
+import json
+import subprocess
+import tempfile
 from types import SimpleNamespace
+from typing import List, Dict, Any, Optional
+from openai import OpenAI
 
 
 class UnifiedClient:
     """
-    Unified chat interface for OpenAI and Mistral.
-    Supports provider override via CLI or environment.
+    Unified client:
+      - OpenAI → uses OpenAI SDK
+      - Mistral → uses cURL for reliability and proper SSE streaming
     """
 
-    def __init__(self, provider_override: str | None = None):
-        self.provider = None
-        self.client = None
+    def __init__(self, provider_override: Optional[str] = None):
+        self.provider = (provider_override or os.getenv("ELF_PROVIDER") or "openai").lower()
 
-        mistral_key = os.getenv("MISTRAL_API_KEY")
-        openai_key = os.getenv("OPENAI_API_KEY")
+        if self.provider == "openai":
+            key = os.getenv("OPENAI_API_KEY")
+            if not key:
+                raise RuntimeError("Missing OPENAI_API_KEY")
+            self.client = OpenAI(api_key=key)
 
-        # Allow CLI/provider override
-        if provider_override:
-            provider_override = provider_override.lower().strip()
-            if provider_override not in ("openai", "mistral"):
-                raise ValueError("provider_override must be 'openai' or 'mistral'")
-            self.provider = provider_override
+        elif self.provider == "mistral":
+            self.api_key = os.getenv("MISTRAL_API_KEY")
+            if not self.api_key:
+                raise RuntimeError("Missing MISTRAL_API_KEY")
 
-        # Auto-detect provider if not manually set
-        if not self.provider:
-            if mistral_key:
-                self.provider = "mistral"
-            elif openai_key:
-                self.provider = "openai"
-            else:
-                raise RuntimeError("No API key found for OpenAI or Mistral.")
-
-        # Initialize provider client
-        if self.provider == "mistral":
-            if not mistral_key:
-                raise RuntimeError("MISTRAL_API_KEY not set.")
-            self.client = Mistral(api_key=mistral_key)
-        elif self.provider == "openai":
-            if not openai_key:
-                raise RuntimeError("OPENAI_API_KEY not set.")
-            self.client = OpenAI(api_key=openai_key)
         else:
-            raise RuntimeError(f"Unknown provider: {self.provider}")
+            raise ValueError(f"Unsupported provider: {self.provider}")
 
-    # --------------------------------------------------
-    # Unified chat interface
-    # --------------------------------------------------
-    def chat(self, model: str, messages: list[dict], stream: bool = False):
-        """Run chat completion compatible with both providers."""
+    # ------------------------------------------------------------
+    # Public unified interface
+    # ------------------------------------------------------------
+    def chat(self, model: str, messages: List[Dict[str, Any]], stream: bool = False):
         if self.provider == "openai":
             return self._chat_openai(model, messages, stream)
         elif self.provider == "mistral":
             return self._chat_mistral(model, messages, stream)
-        else:
-            raise RuntimeError("No valid provider initialized.")
 
-    # --------------------------------------------------
-    # OpenAI backend
-    # --------------------------------------------------
-    def _chat_openai(self, model, messages, stream=False):
+    # ------------------------------------------------------------
+    # OpenAI SDK
+    # ------------------------------------------------------------
+    def _chat_openai(self, model: str, messages: List[Dict[str, Any]], stream: bool):
         if stream:
-            return self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                stream=True,
-            )
-        res = self.client.chat.completions.create(model=model, messages=messages)
-        return res.choices[0].message.content
+            return self.client.chat.completions.create(model=model, messages=messages, stream=True)
+        result = self.client.chat.completions.create(model=model, messages=messages)
+        return result.choices[0].message.content
 
-    # --------------------------------------------------
-    # Mistral backend
-    # --------------------------------------------------
-    def _chat_mistral(self, model, messages, stream=False):
-        """
-        Mistral SDK ≥1.9.0 uses:
-          client.chat.complete(model=..., messages=..., stream=True/False)
-        Messages are simple dicts: [{"role": "user", "content": "..."}]
-        """
+    # ------------------------------------------------------------
+    # Mistral via cURL
+    # ------------------------------------------------------------
+    def _chat_mistral(self, model: str, messages: List[Dict[str, Any]], stream: bool):
+        if not model:
+            model = "codestral-latest"
 
-        if not all("role" in m and "content" in m for m in messages):
-            raise ValueError("Messages must be list of dicts with 'role' and 'content'")
+        payload = {"model": model, "messages": messages, "stream": stream}
 
-        if stream:
-            # Mistral streaming generator
-            stream_gen = self.client.chat.complete(model=model, messages=messages, stream=True)
-            for event in stream_gen:
-                # Mistral stream yields delta chunks under event.data.choices[0].delta["content"]
-                if hasattr(event, "data") and event.data and getattr(event.data, "choices", None):
-                    delta_text = event.data.choices[0].delta.get("content", "")
-                    if delta_text:
-                        yield SimpleNamespace(
-                            choices=[SimpleNamespace(delta=SimpleNamespace(content=delta_text))]
-                        )
-            return None
+        # --- Use a temporary JSON file for -d @file syntax ---
+        with tempfile.NamedTemporaryFile("w+", delete=False) as tmp:
+            json.dump(payload, tmp)
+            tmp.flush()
+            tmp_path = tmp.name
 
-        # Non-streaming response
-        res = self.client.chat.complete(model=model, messages=messages, stream=False)
-        if hasattr(res, "choices") and res.choices and hasattr(res.choices[0], "message"):
-            return res.choices[0].message.content
-        return ""
+        cmd = [
+            "curl",
+            "-s",
+            "https://api.mistral.ai/v1/chat/completions",
+            "-H", f"Authorization: Bearer {self.api_key}",
+            "-H", "Content-Type: application/json",
+            "-d", f"@{tmp_path}"
+        ]
+
+        if not stream:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            os.unlink(tmp_path)
+            try:
+                parsed = json.loads(res.stdout)
+                return parsed["choices"][0]["message"]["content"]
+            except Exception:
+                return res.stdout.strip()
+
+        # --- Streaming mode ---
+        def mistral_stream():
+            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+                for line in proc.stdout:
+                    # print(line)
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[len("data: "):]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                        content = obj["choices"][0]["delta"].get("content")
+                        if content:
+                            yield SimpleNamespace(
+                                choices=[SimpleNamespace(delta=SimpleNamespace(content=content))]
+                            )
+                    except Exception:
+                        continue
+            os.unlink(tmp_path)
+
+        return mistral_stream()
