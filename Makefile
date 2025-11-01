@@ -1,44 +1,33 @@
-# Makefile for judais-lobi CLI project
+# ===== JudAIs-Lobi Build & Maintenance =====
 
-VENV_NAME = jlenv
-PYTHON = python3.11
-VERSION = 0.6.4
-TAG = v$(VERSION)
-BRANCH = $(shell git symbolic-ref --short HEAD)
+# Clean up previous build artifacts
+clean:
+	rm -rf build dist *.egg-info __pycache__
 
+# Install core and voice dependencies
+deps:
+	pip install -U pip setuptools wheel
+	pip install -r requirements.txt
+
+# Build distributables (source + wheel)
+build: clean deps
+	python setup.py sdist bdist_wheel
+
+# Local editable install for dev use
 install:
-	@echo "🔍 Checking system dependencies..."
-	@if [ ! -f /usr/include/alsa/asoundlib.h ]; then \
-		echo "⚠️ ALSA dev headers missing."; \
-		if command -v dnf >/dev/null; then echo "👉 Try: sudo dnf install alsa-lib-devel gcc make $(PYTHON)-devel"; \
-		elif command -v apt >/dev/null; then echo "👉 Try: sudo apt install libasound2-dev build-essential $(PYTHON)-dev"; \
-		elif command -v pacman >/dev/null; then echo "👉 Try: sudo pacman -S alsa-lib base-devel $(PYTHON)"; \
-		else echo "❗ Unknown distro. Install ALSA headers manually."; fi; \
-	fi
+	pip install -e .[voice]
 
-	@echo "📦 Bootstrapping environment in .$(VENV_NAME)..."
-	$(PYTHON) core/bootstrap.py $(VENV_NAME)
+# Full rebuild: clean, rebuild, reinstall
+rebuild: clean deps build install
+	@echo "\n✅ Rebuild complete for JudAIs-Lobi v0.7.2"
 
-rebuild:
-	rm -rf build dist *.egg-info .$(VENV_NAME)
-	make install
+# Publish to PyPI (optional)
+publish:
+	twine upload dist/*
 
-tag:
-	@echo "🏷️ Tagging release $(TAG)..."
-	@git add .
-	@git commit -m "release: $(TAG)" || true
-	-@git tag $(TAG) || true
-	@git push origin master
-	-@git push origin $(TAG) || true
+# Quick test commands
+test-lobi:
+	lobi "Hello Lobi" --provider openai
 
-build:
-	@echo "📦 Building distribution for PyPI..."
-	@rm -rf dist build *.egg-info
-	@$(PYTHON) -m build
-
-upload:
-	@echo "🚀 Uploading to PyPI..."
-	@$(PYTHON) -m twine upload dist/* || echo "⚠️ Skipping upload: version $(VERSION) may already exist on PyPI."
-
-publish: build upload tag
-	@echo "✅ Published version $(VERSION) to GitHub and (if new) PyPI."
+test-judais:
+	judais "Hello JudAIs" --provider mistral

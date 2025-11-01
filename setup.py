@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = "0.7.0"
+VERSION = "0.7.2"
 
 setup(
     name="judais-lobi",
@@ -47,7 +47,7 @@ setup(
         ],
     },
     author="Josh Gompert",
-    description="JudAIs & Lobi v0.7.0 — Dual-agent terminal AI with unified OpenAI/Mistral backend, memory, and tools",
+    description="JudAIs & Lobi v0.7.2 — Dual-agent terminal AI with unified OpenAI/Mistral backend, memory, and tools",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/judais-lobi",
