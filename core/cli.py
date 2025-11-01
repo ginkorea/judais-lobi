@@ -61,18 +61,7 @@ def _main(Elf):
     parser.add_argument("--exclude", action="append", help="Exclude globs")
 
     args = parser.parse_args()
-
     os.environ.setdefault("COQUI_TTS_LOG_LEVEL", "ERROR")
-
-    invoked_tools = []
-    if args.search:
-        invoked_tools.append("WebSearch (deep)" if args.deep else "WebSearch")
-    if args.rag:
-        invoked_tools.append(f"RAG:{args.rag[0]}")
-    if args.shell:
-        invoked_tools.append("Shell")
-    if args.python:
-        invoked_tools.append("Python")
 
     print(f"{GREEN}👤 You: {args.message}{RESET}")
 
@@ -129,35 +118,57 @@ def _main(Elf):
     else:
         reflection = None
 
-    # --- main chat path ---
+    # =====================================================
+    # 🧩 Restored Code Execution Hooks
+    # =====================================================
+    try:
+        if args.python:
+            code, result, success, summary = elf.run_python_task(args.message, reflection, summarize=args.summarize)
+            console.print(f"🧠 {Elf.__name__} wrote Python:\n{code}", style=style)
+            console.print(f"💥 Result:\n{result}", style=style)
+            if summary:
+                console.print(f"🧾 Summary:\n{summary}", style=style)
+            return
+
+        if args.shell:
+            cmd, result, success, summary = elf.run_shell_task(args.message, reflection, summarize=args.summarize)
+            console.print(f"🧠 {Elf.__name__} executed shell:\n{cmd}", style=style)
+            console.print(f"💥 Output:\n{result}", style=style)
+            if summary:
+                console.print(f"🧾 Summary:\n{summary}", style=style)
+            return
+    except Exception as e:
+        console.print(f"\n❌ Code execution error: {e}", style="red")
+        return
+
+    # =====================================================
+    # 🧠 Normal Chat Path
+    # =====================================================
     try:
         if args.md:
-            reply = elf.chat(args.message, stream=False, invoked_tools=invoked_tools)
+            reply = elf.chat(args.message, stream=False)
             console.print(Markdown(f"🧞 **{Elf.__name__}:** {reply}"), style=style)
             if args.voice:
                 elf.tools.run("speak_text", strip_markdown(reply))
-            final_reply = reply
         else:
-            # Streaming mode (unified across providers)
-            resp_iter = elf.chat(args.message, stream=True, invoked_tools=invoked_tools)
+            resp_iter = elf.chat(args.message, stream=True)
             console.print(f"🧞 {Elf.__name__}: ", style=style, end="")
-            final_reply = ""
+            reply = ""
             for chunk in resp_iter:
                 if hasattr(chunk, "choices"):
                     delta = getattr(chunk.choices[0], "delta", None)
                     content = getattr(delta, "content", None) if delta else None
                     if content:
                         console.print(content, style=style, end="")
-                        final_reply += content
+                        reply += content
             print()
-            if args.voice and final_reply:
-                elf.tools.run("speak_text", final_reply)
+            if args.voice and reply:
+                elf.tools.run("speak_text", reply)
 
-        # --- persist ---
         if not args.secret:
-            elf.history.append({"role": "assistant", "content": final_reply})
+            elf.history.append({"role": "assistant", "content": reply})
             elf.save_history()
-            elf.remember(args.message, final_reply)
+            elf.remember(args.message, reply)
 
     except Exception as e:
         console.print(f"\n❌ Error: {e}", style="red")

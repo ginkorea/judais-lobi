@@ -87,22 +87,26 @@ class RunPythonTool(RunSubprocessTool):
         )
 
         try:
-            response = self.elf.client.chat.completions.create(
+            # ✅ Unified API (works for both OpenAI and Mistral)
+            response = self.elf.client.chat(
                 model=self.elf.model,
                 messages=[
                     {"role": "system", "content": "Fix broken Python code."},
                     {"role": "user", "content": prompt},
                 ],
             )
-            fixed = response.choices[0].message.content or ""
-            repaired = self.extract_code(fixed, "python")
+
+            # Response is a plain string under unified_client
+            repaired = self.extract_code(str(response), "python")
             if repaired and repaired.strip() and repaired.strip() != str(payload).strip():
                 self._cleanup_temp()
                 return repaired
+
         except Exception as e:
             self._log(f"⚠️ Repair request failed: {e}")
 
         return payload
+
 
     def _describe(self, payload: Any) -> str:
         code = str(payload).strip().splitlines()
