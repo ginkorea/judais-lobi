@@ -1,4 +1,3 @@
-```markdown
 # ROADMAP.md
 **Project:** judais-lobi
 **Objective:** Transform judais-lobi into a local-first, contract-driven, agentic open developer system.
@@ -578,4 +577,3 @@ core/roles/
 The role system composes prompts as: `STATIC_PREFIX + RoleDirective + PersonalityOverlay + PhaseContext`.
 
 This is the point of no return. After this, there is no going back to the chatbot architecture. The system is a kernel.
-```
