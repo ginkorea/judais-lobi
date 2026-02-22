@@ -12,17 +12,13 @@ from core.memory import UnifiedMemory
 from core.tools import Tools
 from core.tools.run_shell import RunShellTool
 from core.tools.run_python import RunPythonTool
+from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
+from core.runtime.messages import build_system_prompt, build_chat_context
 
 # --- Load environment early and explicitly ---
 _ENV_PATH = Path.home() / ".elf_env"
 if _ENV_PATH.exists():
     load_dotenv(dotenv_path=_ENV_PATH, override=True)
-
-# --- Provider-aware model defaults ---
-DEFAULT_MODELS: Dict[str, str] = {
-    "openai": "gpt-4o-mini",
-    "mistral": "codestral-latest",
-}
 
 
 class Elf(ABC):
@@ -39,23 +35,11 @@ class Elf(ABC):
     ):
         from rich import print  # local to avoid hard dep when not needed
 
-        # --- Provider resolution (CLI flag > env var > default 'openai') ---
-        requested = (provider or os.getenv("ELF_PROVIDER") or "openai").strip().lower()
-
-        # Normalize keys (treat blank as missing)
-        openai_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-        mistral_key = (os.getenv("MISTRAL_API_KEY") or "").strip()
-
-        prov = requested
-        if client is None:
-            if prov == "openai" and not openai_key:
-                print("[yellow]⚠️ No OpenAI key found — falling back to Mistral.[/yellow]")
-                prov = "mistral"
-            elif prov == "mistral" and not mistral_key:
-                print("[yellow]⚠️ No Mistral key found — falling back to OpenAI.[/yellow]")
-                prov = "openai"
-
-        self.provider = prov
+        # --- Provider resolution (delegated to runtime) ---
+        self.provider = resolve_provider(
+            requested=provider,
+            has_injected_client=(client is not None),
+        )
         self.model = model or DEFAULT_MODELS[self.provider]
 
         # --- Client / memory / tools ---
@@ -152,19 +136,11 @@ class Elf(ABC):
     # System prompt assembly
     # =======================
     def _system_with_examples(self) -> str:
-        tool_info = "\n".join(
-            f"- {name}: {self.tools.describe_tool(name)['description']}"
-            for name in self.tools.list_tools()
-        )
-        examples_text = "\n\n".join(
-            f"User: {ex[0]}\nAssistant: {ex[1]}" for ex in self.examples
-        )
-        return (
-            f"{self.system_message}\n\n"
-            "You have the following tools (do not call them directly):\n"
-            f"{tool_info}\n\n"
-            "Tool results appear in history as assistant messages; treat them as your own work.\n\n"
-            f"Here are examples:\n\n{examples_text}"
+        return build_system_prompt(
+            system_message=self.system_message,
+            tool_names=self.tools.list_tools(),
+            describe_tool_fn=self.tools.describe_tool,
+            examples=self.examples,
         )
 
     # =======================
@@ -177,15 +153,8 @@ class Elf(ABC):
         invoked_tools: Optional[List[str]] = None
     ):
         self.history.append({"role": "user", "content": message})
-
-        sys_msg = self._system_with_examples()
-        if invoked_tools:
-            sys_msg += (
-                "\n\n[Tool Context] "
-                f"{', '.join(invoked_tools)} results are available above.\n"
-            )
-
-        context = [{"role": "system", "content": sys_msg}] + self.history[1:]
+        sys_prompt = self._system_with_examples()
+        context = build_chat_context(sys_prompt, self.history, invoked_tools)
         return self.client.chat(model=self.model, messages=context, stream=stream)
 
     # =======================

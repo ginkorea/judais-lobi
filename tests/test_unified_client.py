@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from core.unified_client import UnifiedClient
+from core.runtime.backends.openai_backend import OpenAIBackend
 
 
 class TestUnifiedClientOpenAI:
@@ -15,7 +16,7 @@ class TestUnifiedClientOpenAI:
         mock_openai = MagicMock()
         client = UnifiedClient(provider_override="openai", openai_client=mock_openai)
         assert client.provider == "openai"
-        assert client.client is mock_openai
+        assert isinstance(client._backend, OpenAIBackend)
 
     def test_chat_non_streaming(self):
         mock_openai = MagicMock()
