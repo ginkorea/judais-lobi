@@ -31,6 +31,8 @@ They are no longer just terminal personalities.
 
 They are evolving into a **local-first, contract-driven autonomous developer system**.
 
+To understand the reason read the [manifesto](https://github.com/ginkorea/judais-lobi/MANIFESTO.md)!
+
 ---
 
 # 🚧 Current Status
