@@ -4,14 +4,11 @@ from pathlib import Path
 from core.elf import Elf
 
 class JudAIs(Elf):
-    def __init__(self, model=None, provider=None, debug=True, **kwargs):
+    def __init__(self, model="codestral", provider="mistral", debug=True):
         """
         JudAIs defaults to Mistral (Codestral) but can use other backends if forced.
         """
-        provider = provider or "mistral"
-        model = model or "codestral-latest"
-        super().__init__(model=model, provider=provider, debug=debug, **kwargs)
-
+        super().__init__(model=model, provider=provider, debug=debug)
 
     @property
     def system_message(self):

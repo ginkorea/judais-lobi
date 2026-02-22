@@ -33,9 +33,6 @@ class Elf(ABC):
         model: Optional[str] = None,
         provider: Optional[str] = None,
         debug: bool = True,
-        client=None,
-        memory=None,
-        tools=None,
     ):
         from rich import print  # local to avoid hard dep when not needed
 
@@ -47,21 +44,20 @@ class Elf(ABC):
         mistral_key = (os.getenv("MISTRAL_API_KEY") or "").strip()
 
         prov = requested
-        if client is None:
-            if prov == "openai" and not openai_key:
-                print("[yellow]⚠️ No OpenAI key found — falling back to Mistral.[/yellow]")
-                prov = "mistral"
-            elif prov == "mistral" and not mistral_key:
-                print("[yellow]⚠️ No Mistral key found — falling back to OpenAI.[/yellow]")
-                prov = "openai"
+        if prov == "openai" and not openai_key:
+            print("[yellow]⚠️ No OpenAI key found — falling back to Mistral.[/yellow]")
+            prov = "mistral"
+        elif prov == "mistral" and not mistral_key:
+            print("[yellow]⚠️ No Mistral key found — falling back to OpenAI.[/yellow]")
+            prov = "openai"
 
         self.provider = prov
         self.model = model or DEFAULT_MODELS[self.provider]
 
         # --- Client / memory / tools ---
-        self.client = client if client is not None else UnifiedClient(provider_override=self.provider)
-        self.memory = memory if memory is not None else UnifiedMemory(Path.home() / f".{self.personality}_memory.db")
-        self.tools = tools if tools is not None else Tools(elfenv=self.env, memory=self.memory, enable_voice=False)
+        self.client = UnifiedClient(provider_override=self.provider)
+        self.memory = UnifiedMemory(Path.home() / f".{self.personality}_memory.db")
+        self.tools = Tools(elfenv=self.env, memory=self.memory, enable_voice=False)
 
         # Build initial history (system + any prior short-term)
         self.history = self._load_history()
@@ -128,7 +124,7 @@ class Elf(ABC):
             return
         context = "\n".join(f"{m['role']}: {m['content']}" for m in relevant)
         self.history.append(
-            {"role": "assistant", "content": f"----\n#FOR CONTEXT ONLY DO NOT REPEAT TO THE USER\n🔍 long-term memory:\n{context}\n#THE PREVIOUS MEMORY IS ONLY FOR CONTEXT TO SHAPE YOUR RESPONSE, DO NOT REPEAT TO THE USER.\n----"}
+            {"role": "assistant", "content": f"🔍 From long-term memory:\n{context}"}
         )
 
     def remember(self, user: str, assistant: str) -> None:

@@ -14,14 +14,17 @@ class UnifiedClient:
       - Mistral → uses cURL for reliability and proper SSE streaming
     """
 
-    def __init__(self, provider_override: Optional[str] = None):
+    def __init__(self, provider_override: Optional[str] = None, openai_client=None):
         self.provider = (provider_override or os.getenv("ELF_PROVIDER") or "openai").lower()
 
         if self.provider == "openai":
-            key = os.getenv("OPENAI_API_KEY")
-            if not key:
-                raise RuntimeError("Missing OPENAI_API_KEY")
-            self.client = OpenAI(api_key=key)
+            if openai_client is not None:
+                self.client = openai_client
+            else:
+                key = os.getenv("OPENAI_API_KEY")
+                if not key:
+                    raise RuntimeError("Missing OPENAI_API_KEY")
+                self.client = OpenAI(api_key=key)
 
         elif self.provider == "mistral":
             self.api_key = os.getenv("MISTRAL_API_KEY")

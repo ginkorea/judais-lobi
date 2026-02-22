@@ -25,6 +25,7 @@ setup(
         "certifi>=2025.8.3",
     ],
     extras_require={
+        "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
         "voice": [
             "simpleaudio>=1.0.4",
             "TTS>=0.22.0",

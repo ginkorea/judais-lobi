@@ -40,7 +40,6 @@ class RunSubprocessTool(Tool, ABC):
         # For direct shell execution convenience (used by run() when cmd is str)
         self.executable = kwargs.get("executable", "/bin/bash")
         self.elf = kwargs.get("elf", None)  # Optional elf object for sudo permission checks
-        self.subprocess_runner = kwargs.get("subprocess_runner", None)
 
     # -----------------------------
     # Shared low-level runner
@@ -52,17 +51,6 @@ class RunSubprocessTool(Tool, ABC):
         """
         timeout = timeout or self.timeout
         shell_mode = isinstance(cmd, str)
-
-        if self.subprocess_runner is not None:
-            try:
-                return self.subprocess_runner(
-                    cmd, shell=shell_mode, timeout=timeout,
-                    executable=self.executable if shell_mode else None,
-                )
-            except subprocess.TimeoutExpired:
-                return -1, "", "⏱️ Subprocess timed out"
-            except Exception as ex:
-                return -1, "", self._format_exception(ex)
 
         try:
             result = subprocess.run(

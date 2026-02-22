@@ -19,14 +19,14 @@ def normalize(vec: np.ndarray) -> np.ndarray:
 
 # ---- UnifiedMemory ----
 class UnifiedMemory:
-    def __init__(self, db_path: Path, model="text-embedding-3-large", debug=False, embedding_client=None):
+    def __init__(self, db_path: Path, model="text-embedding-3-large", debug=False):
         """db_path: SQLite file, model: embedding model (default: 3-large)."""
         self.debug = debug
         self.db_path = Path(db_path)
         if self.debug: print(f"db_path: {self.db_path}")
         self.model = model
         if self.debug: print(f"model: {self.model}")
-        self.client = embedding_client if embedding_client is not None else OpenAI()
+        self.client = OpenAI()
 
         # FAISS indexes
         self.long_index = None

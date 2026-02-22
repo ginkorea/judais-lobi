@@ -15,8 +15,7 @@ class InstallProjectTool(RunSubprocessTool):
     def __init__(self, **kwargs):
         self.elfenv = kwargs.get("elfenv", Path(".elfenv"))
         self.pip_bin = self.elfenv / "bin" / "pip"
-        if not kwargs.get("skip_venv_setup", False):
-            self.ensure_elfenv()
+        self.ensure_elfenv()
         super().__init__(**kwargs)
 
     def __call__(self, path="."):

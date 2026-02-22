@@ -22,8 +22,7 @@ class RunPythonTool(RunSubprocessTool):
         self.elfenv = kwargs.get("elfenv", Path(".elfenv"))
         self.python_bin = self.elfenv / "bin" / "python"
         self.pip_bin = self.elfenv / "bin" / "pip"
-        if not kwargs.get("skip_venv_setup", False):
-            self._ensure_elfenv()
+        self._ensure_elfenv()
         super().__init__(**kwargs)
         self.name = "run_python_code"
 
@@ -88,26 +87,22 @@ class RunPythonTool(RunSubprocessTool):
         )
 
         try:
-            # ✅ Unified API (works for both OpenAI and Mistral)
-            response = self.elf.client.chat(
+            response = self.elf.client.chat.completions.create(
                 model=self.elf.model,
                 messages=[
                     {"role": "system", "content": "Fix broken Python code."},
                     {"role": "user", "content": prompt},
                 ],
             )
-
-            # Response is a plain string under unified_client
-            repaired = self.extract_code(str(response), "python")
+            fixed = response.choices[0].message.content or ""
+            repaired = self.extract_code(fixed, "python")
             if repaired and repaired.strip() and repaired.strip() != str(payload).strip():
                 self._cleanup_temp()
                 return repaired
-
         except Exception as e:
             self._log(f"⚠️ Repair request failed: {e}")
 
         return payload
-
 
     def _describe(self, payload: Any) -> str:
         code = str(payload).strip().splitlines()

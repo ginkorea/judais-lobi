@@ -4,12 +4,12 @@ from pathlib import Path
 from core.elf import Elf
 
 class Lobi(Elf):
-    def __init__(self, model="gpt-5-mini", provider="openai", debug=True, **kwargs):
+    def __init__(self, model="gpt-5-mini", provider="openai", debug=True):
         """
         Lobi defaults to OpenAI as its provider but can switch dynamically
         (e.g., --provider mistral for local fallback).
         """
-        super().__init__(model=model, provider=provider, debug=debug, **kwargs)
+        super().__init__(model=model, provider=provider, debug=debug)
 
     @property
     def system_message(self):

@@ -25,6 +25,13 @@ rebuild: clean deps build install
 publish:
 	twine upload dist/*
 
+# Test suite
+test:
+	python -m pytest tests/ -v --tb=short
+
+test-cov:
+	python -m pytest tests/ -v --tb=short --cov=core --cov=lobi --cov=judais --cov-report=term-missing
+
 # Quick test commands
 test-lobi:
 	lobi "Hello Lobi" --provider openai
