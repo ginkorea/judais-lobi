@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from core.memory.memory import UnifiedMemory
+from core.kernel import BudgetConfig, SessionState
 
 
 # ---------------------------------------------------------------------------
@@ -93,3 +94,29 @@ def isolate_env(monkeypatch):
     """Remove API keys and provider env vars so tests never make real calls."""
     for var in ("OPENAI_API_KEY", "MISTRAL_API_KEY", "ELF_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
+
+
+# ---------------------------------------------------------------------------
+# Kernel fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def budget():
+    """Default budget config for kernel tests."""
+    return BudgetConfig()
+
+
+@pytest.fixture
+def tight_budget():
+    """Restrictive budget for testing enforcement."""
+    return BudgetConfig(
+        max_phase_retries=2,
+        max_total_iterations=5,
+        max_time_per_phase_seconds=0.01,
+    )
+
+
+@pytest.fixture
+def session_state():
+    """Fresh SessionState for kernel tests."""
+    return SessionState(task_description="test task")

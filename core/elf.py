@@ -204,3 +204,32 @@ class Elf(ABC):
         summary_prompt = f"Summarize this text in {self.personality}'s style:\n\n{text}"
         out = self.client.chat(model=self.model, messages=[{"role": "user", "content": summary_prompt}])
         return str(out).strip()
+
+    # =======================
+    # Agentic task execution
+    # =======================
+    def run_task(self, task_description: str, budget=None):
+        """Thin adapter: delegate an agentic task to the kernel orchestrator.
+
+        Direct chat, code-gen, memory, and all other methods remain unchanged.
+        Phase 7 replaces the stub dispatcher with real role implementations.
+        """
+        from core.kernel import Orchestrator
+
+        dispatcher = self._make_task_dispatcher()
+        orchestrator = Orchestrator(dispatcher=dispatcher, budget=budget)
+        return orchestrator.run(task_description)
+
+    def _make_task_dispatcher(self):
+        """Create a role dispatcher for agentic task execution.
+
+        Phase 2 returns a stub that succeeds on every phase.
+        Phase 7 overrides this with real role implementations.
+        """
+        from core.kernel import PhaseResult, Phase, SessionState
+
+        class StubDispatcher:
+            def dispatch(self, phase: Phase, state: SessionState) -> PhaseResult:
+                return PhaseResult(success=True)
+
+        return StubDispatcher()
