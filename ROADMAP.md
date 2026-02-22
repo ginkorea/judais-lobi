@@ -2,6 +2,22 @@
 **Project:** judais-lobi
 **Objective:** Transform judais-lobi into a local-first, contract-driven, agentic open developer system.
 
+## Implementation Status
+
+- [x] **Phase 0** – Dependency Injection, Test Harness & Baseline (73 tests, DI seams, pytest harness)
+- [x] **Phase 1** – Extract Runtime & Stabilize the Spine (runtime extracted, 107 tests, `elf.py` provider-free)
+- [x] **Phase 2** – Kernel State Machine & Hard Budgets (state machine, budgets, orchestrator, 164 tests)
+- [ ] **Phase 3** – Session Artifacts, Contracts & KV Prefixing
+- [ ] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating
+- [ ] **Phase 5** – The Repo Map (Context Compression)
+- [ ] **Phase 6** – Repository-Native Patch Engine
+- [ ] **Phase 7** – Multi-Role Orchestrator, Composite Judge & External Critic
+- [ ] **Phase 8** – Retrieval, Context Discipline & Local Inference
+- [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
+- [ ] **Phase 10** – Evaluation & Benchmarks
+
+---
+
 ## 1. Mission Statement
 Judais-lobi will evolve from a CLI assistant with tools into a local-first autonomous developer agent with:
 
