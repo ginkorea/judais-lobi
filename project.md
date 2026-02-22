@@ -5,18 +5,20 @@
 | Metric | Value |
 |:--|:--|
 | Root Directory | `/home/gompert/data/workspace/judais-lobi` |
-| Total Directories | 21 |
-| Total Indexed Files | 65 |
+| Total Directories | 25 |
+| Total Indexed Files | 96 |
 | Skipped Files | 5 |
-| Indexed Size | 272.47 KB |
+| Indexed Size | 449.33 KB |
 | Max File Size Limit | 2 MB |
 
 ## 📚 Table of Contents
 
+- [.coverage](#coverage)
 - [.gitignore](#gitignore)
 - [LICENSE](#license)
 - [Makefile](#makefile)
 - [README.md](#readme-md)
+- [ROADMAP.md](#roadmap-md)
 - [STORY.md](#story-md)
 - [build/lib/core/__init__.py](#build-lib-core-init-py)
 - [build/lib/core/bootstrap.py](#build-lib-core-bootstrap-py)
@@ -46,8 +48,20 @@
 - [core/bootstrap.py](#core-bootstrap-py)
 - [core/cli.py](#core-cli-py)
 - [core/elf.py](#core-elf-py)
+- [core/kernel/__init__.py](#core-kernel-init-py)
+- [core/kernel/budgets.py](#core-kernel-budgets-py)
+- [core/kernel/orchestrator.py](#core-kernel-orchestrator-py)
+- [core/kernel/state.py](#core-kernel-state-py)
 - [core/memory/__init__.py](#core-memory-init-py)
 - [core/memory/memory.py](#core-memory-memory-py)
+- [core/runtime/__init__.py](#core-runtime-init-py)
+- [core/runtime/backends/__init__.py](#core-runtime-backends-init-py)
+- [core/runtime/backends/base.py](#core-runtime-backends-base-py)
+- [core/runtime/backends/local_backend.py](#core-runtime-backends-local-backend-py)
+- [core/runtime/backends/mistral_backend.py](#core-runtime-backends-mistral-backend-py)
+- [core/runtime/backends/openai_backend.py](#core-runtime-backends-openai-backend-py)
+- [core/runtime/messages.py](#core-runtime-messages-py)
+- [core/runtime/provider_config.py](#core-runtime-provider-config-py)
 - [core/tools/__init__.py](#core-tools-init-py)
 - [core/tools/base_subprocess.py](#core-tools-base-subprocess-py)
 - [core/tools/fetch_page.py](#core-tools-fetch-page-py)
@@ -78,6 +92,23 @@
 - [pyproject.toml](#pyproject-toml)
 - [requirements.txt](#requirements-txt)
 - [setup.py](#setup-py)
+- [tests/__init__.py](#tests-init-py)
+- [tests/conftest.py](#tests-conftest-py)
+- [tests/test_backends.py](#tests-test-backends-py)
+- [tests/test_base_subprocess.py](#tests-test-base-subprocess-py)
+- [tests/test_cli_smoke.py](#tests-test-cli-smoke-py)
+- [tests/test_elf.py](#tests-test-elf-py)
+- [tests/test_elf_run_task.py](#tests-test-elf-run-task-py)
+- [tests/test_judais.py](#tests-test-judais-py)
+- [tests/test_kernel_budgets.py](#tests-test-kernel-budgets-py)
+- [tests/test_kernel_orchestrator.py](#tests-test-kernel-orchestrator-py)
+- [tests/test_kernel_state.py](#tests-test-kernel-state-py)
+- [tests/test_lobi.py](#tests-test-lobi-py)
+- [tests/test_messages.py](#tests-test-messages-py)
+- [tests/test_provider_config.py](#tests-test-provider-config-py)
+- [tests/test_tools_registry.py](#tests-test-tools-registry-py)
+- [tests/test_unified_client.py](#tests-test-unified-client-py)
+- [tests/test_unified_memory.py](#tests-test-unified-memory-py)
 
 ## 📂 Project Structure
 
@@ -117,9 +148,24 @@
             📄 lobi.py
 📁 configs/
 📁 core/
+    📁 kernel/
+        📄 __init__.py
+        📄 budgets.py
+        📄 orchestrator.py
+        📄 state.py
     📁 memory/
         📄 __init__.py
         📄 memory.py
+    📁 runtime/
+        📁 backends/
+            📄 __init__.py
+            📄 base.py
+            📄 local_backend.py
+            📄 mistral_backend.py
+            📄 openai_backend.py
+        📄 __init__.py
+        📄 messages.py
+        📄 provider_config.py
     📁 tools/
         📁 recon/
             📄 __init__.py
@@ -163,6 +209,24 @@
     📄 lobi.py
     📄 README.md
 📁 scripts/
+📁 tests/
+    📄 __init__.py
+    📄 conftest.py
+    📄 test_backends.py
+    📄 test_base_subprocess.py
+    📄 test_cli_smoke.py
+    📄 test_elf.py
+    📄 test_elf_run_task.py
+    📄 test_judais.py
+    📄 test_kernel_budgets.py
+    📄 test_kernel_orchestrator.py
+    📄 test_kernel_state.py
+    📄 test_lobi.py
+    📄 test_messages.py
+    📄 test_provider_config.py
+    📄 test_tools_registry.py
+    📄 test_unified_client.py
+    📄 test_unified_memory.py
 📄 LICENSE
 📄 main.py
 📄 Makefile
@@ -170,6 +234,7 @@
 📄 pyproject.toml
 📄 README.md
 📄 requirements.txt
+📄 ROADMAP.md
 📄 setup.py
 📄 speech.wav
 📄 STORY.md
@@ -913,6 +978,13 @@ rebuild: clean deps build install
 # Publish to PyPI (optional)
 publish:
 	twine upload dist/*
+
+# Test suite
+test:
+	python -m pytest tests/ -v --tb=short
+
+test-cov:
+	python -m pytest tests/ -v --tb=short --cov=core --cov=lobi --cov=judais --cov-report=term-missing
 
 # Quick test commands
 test-lobi:
@@ -3937,17 +4009,13 @@ from core.memory import UnifiedMemory
 from core.tools import Tools
 from core.tools.run_shell import RunShellTool
 from core.tools.run_python import RunPythonTool
+from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
+from core.runtime.messages import build_system_prompt, build_chat_context
 
 # --- Load environment early and explicitly ---
 _ENV_PATH = Path.home() / ".elf_env"
 if _ENV_PATH.exists():
     load_dotenv(dotenv_path=_ENV_PATH, override=True)
-
-# --- Provider-aware model defaults ---
-DEFAULT_MODELS: Dict[str, str] = {
-    "openai": "gpt-4o-mini",
-    "mistral": "codestral-latest",
-}
 
 
 class Elf(ABC):
@@ -3958,31 +4026,23 @@ class Elf(ABC):
         model: Optional[str] = None,
         provider: Optional[str] = None,
         debug: bool = True,
+        client=None,
+        memory=None,
+        tools=None,
     ):
         from rich import print  # local to avoid hard dep when not needed
 
-        # --- Provider resolution (CLI flag > env var > default 'openai') ---
-        requested = (provider or os.getenv("ELF_PROVIDER") or "openai").strip().lower()
-
-        # Normalize keys (treat blank as missing)
-        openai_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-        mistral_key = (os.getenv("MISTRAL_API_KEY") or "").strip()
-
-        prov = requested
-        if prov == "openai" and not openai_key:
-            print("[yellow]⚠️ No OpenAI key found — falling back to Mistral.[/yellow]")
-            prov = "mistral"
-        elif prov == "mistral" and not mistral_key:
-            print("[yellow]⚠️ No Mistral key found — falling back to OpenAI.[/yellow]")
-            prov = "openai"
-
-        self.provider = prov
+        # --- Provider resolution (delegated to runtime) ---
+        self.provider = resolve_provider(
+            requested=provider,
+            has_injected_client=(client is not None),
+        )
         self.model = model or DEFAULT_MODELS[self.provider]
 
         # --- Client / memory / tools ---
-        self.client = UnifiedClient(provider_override=self.provider)
-        self.memory = UnifiedMemory(Path.home() / f".{self.personality}_memory.db")
-        self.tools = Tools(elfenv=self.env, memory=self.memory, enable_voice=False)
+        self.client = client if client is not None else UnifiedClient(provider_override=self.provider)
+        self.memory = memory if memory is not None else UnifiedMemory(Path.home() / f".{self.personality}_memory.db")
+        self.tools = tools if tools is not None else Tools(elfenv=self.env, memory=self.memory, enable_voice=False)
 
         # Build initial history (system + any prior short-term)
         self.history = self._load_history()
@@ -4073,19 +4133,11 @@ class Elf(ABC):
     # System prompt assembly
     # =======================
     def _system_with_examples(self) -> str:
-        tool_info = "\n".join(
-            f"- {name}: {self.tools.describe_tool(name)['description']}"
-            for name in self.tools.list_tools()
-        )
-        examples_text = "\n\n".join(
-            f"User: {ex[0]}\nAssistant: {ex[1]}" for ex in self.examples
-        )
-        return (
-            f"{self.system_message}\n\n"
-            "You have the following tools (do not call them directly):\n"
-            f"{tool_info}\n\n"
-            "Tool results appear in history as assistant messages; treat them as your own work.\n\n"
-            f"Here are examples:\n\n{examples_text}"
+        return build_system_prompt(
+            system_message=self.system_message,
+            tool_names=self.tools.list_tools(),
+            describe_tool_fn=self.tools.describe_tool,
+            examples=self.examples,
         )
 
     # =======================
@@ -4098,15 +4150,8 @@ class Elf(ABC):
         invoked_tools: Optional[List[str]] = None
     ):
         self.history.append({"role": "user", "content": message})
-
-        sys_msg = self._system_with_examples()
-        if invoked_tools:
-            sys_msg += (
-                "\n\n[Tool Context] "
-                f"{', '.join(invoked_tools)} results are available above.\n"
-            )
-
-        context = [{"role": "system", "content": sys_msg}] + self.history[1:]
+        sys_prompt = self._system_with_examples()
+        context = build_chat_context(sys_prompt, self.history, invoked_tools)
         return self.client.chat(model=self.model, messages=context, stream=stream)
 
     # =======================
@@ -4157,6 +4202,421 @@ class Elf(ABC):
         out = self.client.chat(model=self.model, messages=[{"role": "user", "content": summary_prompt}])
         return str(out).strip()
 
+    # =======================
+    # Agentic task execution
+    # =======================
+    def run_task(self, task_description: str, budget=None):
+        """Thin adapter: delegate an agentic task to the kernel orchestrator.
+
+        Direct chat, code-gen, memory, and all other methods remain unchanged.
+        Phase 7 replaces the stub dispatcher with real role implementations.
+        """
+        from core.kernel import Orchestrator
+
+        dispatcher = self._make_task_dispatcher()
+        orchestrator = Orchestrator(dispatcher=dispatcher, budget=budget)
+        return orchestrator.run(task_description)
+
+    def _make_task_dispatcher(self):
+        """Create a role dispatcher for agentic task execution.
+
+        Phase 2 returns a stub that succeeds on every phase.
+        Phase 7 overrides this with real role implementations.
+        """
+        from core.kernel import PhaseResult, Phase, SessionState
+
+        class StubDispatcher:
+            def dispatch(self, phase: Phase, state: SessionState) -> PhaseResult:
+                return PhaseResult(success=True)
+
+        return StubDispatcher()
+
+```
+
+## `core/kernel/__init__.py`
+
+```python
+# core/kernel/__init__.py
+
+from core.kernel.state import (
+    Phase,
+    SessionState,
+    TRANSITIONS,
+    InvalidTransition,
+    validate_transition,
+)
+from core.kernel.budgets import (
+    BudgetConfig,
+    BudgetExhausted,
+    PhaseRetriesExhausted,
+    TotalIterationsExhausted,
+    PhaseTimeoutExhausted,
+    check_phase_retries,
+    check_total_iterations,
+    check_phase_time,
+    check_all_budgets,
+)
+from core.kernel.orchestrator import (
+    Orchestrator,
+    RoleDispatcher,
+    PhaseResult,
+)
+
+__all__ = [
+    "Phase",
+    "SessionState",
+    "TRANSITIONS",
+    "InvalidTransition",
+    "validate_transition",
+    "BudgetConfig",
+    "BudgetExhausted",
+    "PhaseRetriesExhausted",
+    "TotalIterationsExhausted",
+    "PhaseTimeoutExhausted",
+    "check_phase_retries",
+    "check_total_iterations",
+    "check_phase_time",
+    "check_all_budgets",
+    "Orchestrator",
+    "RoleDispatcher",
+    "PhaseResult",
+]
+
+```
+
+## `core/kernel/budgets.py`
+
+```python
+# core/kernel/budgets.py — Hard budget configuration and enforcement
+
+import time
+from dataclasses import dataclass
+
+from core.kernel.state import Phase, SessionState
+
+
+@dataclass(frozen=True)
+class BudgetConfig:
+    """Hard budget parameters for a kernel session. Immutable after creation."""
+    max_phase_retries: int = 3
+    max_total_iterations: int = 30
+    max_time_per_phase_seconds: float = 300.0
+    max_tool_output_bytes_in_context: int = 32_768
+    max_context_tokens_per_role: int = 16_384
+
+
+class BudgetExhausted(Exception):
+    """Base exception for all budget violations."""
+    pass
+
+
+class PhaseRetriesExhausted(BudgetExhausted):
+    """Raised when a phase exceeds max_phase_retries."""
+
+    def __init__(self, phase: Phase, retries: int, max_retries: int):
+        self.phase = phase
+        self.retries = retries
+        self.max_retries = max_retries
+        super().__init__(
+            f"Phase {phase.name} exhausted retries: {retries}/{max_retries}"
+        )
+
+
+class TotalIterationsExhausted(BudgetExhausted):
+    """Raised when total iterations across all phases exceeds the cap."""
+
+    def __init__(self, iterations: int, max_iterations: int):
+        self.iterations = iterations
+        self.max_iterations = max_iterations
+        super().__init__(
+            f"Total iterations exhausted: {iterations}/{max_iterations}"
+        )
+
+
+class PhaseTimeoutExhausted(BudgetExhausted):
+    """Raised when a single phase exceeds its time budget."""
+
+    def __init__(self, phase: Phase, elapsed: float, max_seconds: float):
+        self.phase = phase
+        self.elapsed = elapsed
+        self.max_seconds = max_seconds
+        super().__init__(
+            f"Phase {phase.name} timed out: {elapsed:.1f}s/{max_seconds:.1f}s"
+        )
+
+
+def check_phase_retries(state: SessionState, config: BudgetConfig) -> None:
+    """Raise PhaseRetriesExhausted if current phase has exceeded retries."""
+    retries = state.phase_retries.get(state.current_phase, 0)
+    if retries >= config.max_phase_retries:
+        raise PhaseRetriesExhausted(
+            state.current_phase, retries, config.max_phase_retries
+        )
+
+
+def check_total_iterations(state: SessionState, config: BudgetConfig) -> None:
+    """Raise TotalIterationsExhausted if session has exceeded iteration cap."""
+    if state.total_iterations >= config.max_total_iterations:
+        raise TotalIterationsExhausted(
+            state.total_iterations, config.max_total_iterations
+        )
+
+
+def check_phase_time(state: SessionState, config: BudgetConfig) -> None:
+    """Raise PhaseTimeoutExhausted if current phase has exceeded time budget."""
+    if state.phase_start_time is None:
+        return
+    elapsed = time.monotonic() - state.phase_start_time
+    if elapsed > config.max_time_per_phase_seconds:
+        raise PhaseTimeoutExhausted(
+            state.current_phase, elapsed, config.max_time_per_phase_seconds
+        )
+
+
+def check_all_budgets(state: SessionState, config: BudgetConfig) -> None:
+    """Run all budget checks. Raises the first violation found.
+
+    Order: total iterations (most absolute) -> phase retries -> phase time.
+    """
+    check_total_iterations(state, config)
+    check_phase_retries(state, config)
+    check_phase_time(state, config)
+
+```
+
+## `core/kernel/orchestrator.py`
+
+```python
+# core/kernel/orchestrator.py — Main orchestration loop
+
+import logging
+from dataclasses import dataclass
+from typing import Any, Optional, Protocol
+
+from core.kernel.state import Phase, SessionState, InvalidTransition
+from core.kernel.budgets import BudgetConfig, BudgetExhausted, check_all_budgets
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PhaseResult:
+    """Outcome of executing a single phase."""
+    success: bool
+    output: Any = None
+    error: Optional[str] = None
+    needs_fix: bool = False
+
+
+class RoleDispatcher(Protocol):
+    """Protocol for phase-specific role execution.
+
+    Implementations are injected into the Orchestrator.
+    Phase 7 provides real implementations; Phase 2 tests use stubs.
+    """
+
+    def dispatch(self, phase: Phase, state: SessionState) -> PhaseResult: ...
+
+
+# Linear phase order (excludes FIX, HALTED, COMPLETED — those are branching targets)
+_PHASE_ORDER = [
+    Phase.INTAKE, Phase.CONTRACT, Phase.REPO_MAP, Phase.PLAN,
+    Phase.RETRIEVE, Phase.PATCH, Phase.CRITIQUE, Phase.RUN,
+]
+
+
+class Orchestrator:
+    """Drives the kernel state machine through all phases.
+
+    Reads current state, selects next phase, dispatches to roles,
+    and enforces hard budgets. The orchestrator never touches the
+    filesystem directly — all I/O goes through the injected dispatcher.
+    """
+
+    def __init__(
+        self,
+        dispatcher: RoleDispatcher,
+        budget: Optional[BudgetConfig] = None,
+    ):
+        self._dispatcher = dispatcher
+        self._budget = budget or BudgetConfig()
+
+    def run(self, task: str) -> SessionState:
+        """Execute a complete task through the state machine.
+
+        Returns the final SessionState (COMPLETED or HALTED).
+        """
+        state = SessionState(task_description=task)
+
+        while not self._is_terminal(state.current_phase):
+            try:
+                check_all_budgets(state, self._budget)
+                result = self._execute_phase(state)
+                next_phase = self._select_next_phase(state, result)
+                if next_phase is not None:
+                    state.enter_phase(next_phase)
+            except BudgetExhausted as exc:
+                logger.warning("Budget exhausted: %s", exc)
+                state.halt(str(exc))
+            except InvalidTransition as exc:
+                logger.error("Invalid transition: %s", exc)
+                state.halt(str(exc))
+
+        return state
+
+    def _execute_phase(self, state: SessionState) -> PhaseResult:
+        """Dispatch current phase to the role handler."""
+        logger.info("Executing phase: %s", state.current_phase.name)
+        result = self._dispatcher.dispatch(state.current_phase, state)
+        if not isinstance(result, PhaseResult):
+            result = PhaseResult(success=True, output=result)
+        if not result.success:
+            retry_count = state.record_phase_retry(state.current_phase)
+            logger.info(
+                "Phase %s failed (retry %d/%d): %s",
+                state.current_phase.name,
+                retry_count,
+                self._budget.max_phase_retries,
+                result.error,
+            )
+        return result
+
+    def _select_next_phase(
+        self, state: SessionState, result: PhaseResult,
+    ) -> Optional[Phase]:
+        """Determine the next phase based on current state and phase result.
+
+        Returns None if the current phase should be retried (failure in a
+        non-RUN linear phase). The main loop skips enter_phase in that case,
+        and the next iteration's budget check catches exhausted retries.
+        """
+        current = state.current_phase
+
+        # RUN branches: success → FINALIZE, failure → FIX
+        if current == Phase.RUN:
+            return Phase.FINALIZE if result.success else Phase.FIX
+
+        # FIX always loops back to PATCH
+        if current == Phase.FIX:
+            return Phase.PATCH
+
+        # FINALIZE → COMPLETED
+        if current == Phase.FINALIZE:
+            return Phase.COMPLETED
+
+        # For all other phases: retry on failure, advance on success
+        if not result.success:
+            return None
+
+        if current in _PHASE_ORDER:
+            idx = _PHASE_ORDER.index(current)
+            if idx + 1 < len(_PHASE_ORDER):
+                return _PHASE_ORDER[idx + 1]
+
+        raise InvalidTransition(current, Phase.HALTED)
+
+    @staticmethod
+    def _is_terminal(phase: Phase) -> bool:
+        return phase in (Phase.HALTED, Phase.COMPLETED)
+
+```
+
+## `core/kernel/state.py`
+
+```python
+# core/kernel/state.py — Phase enum, transition rules, and session state
+
+import time
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Any, Dict, Optional
+
+
+class Phase(Enum):
+    """Phases of the kernel state machine."""
+    INTAKE = auto()
+    CONTRACT = auto()
+    REPO_MAP = auto()
+    PLAN = auto()
+    RETRIEVE = auto()
+    PATCH = auto()
+    CRITIQUE = auto()
+    RUN = auto()
+    FIX = auto()
+    FINALIZE = auto()
+    HALTED = auto()
+    COMPLETED = auto()
+
+
+# Allowed transitions: current phase -> set of valid next phases
+TRANSITIONS: Dict[Phase, frozenset] = {
+    Phase.INTAKE:    frozenset({Phase.CONTRACT, Phase.HALTED}),
+    Phase.CONTRACT:  frozenset({Phase.REPO_MAP, Phase.HALTED}),
+    Phase.REPO_MAP:  frozenset({Phase.PLAN, Phase.HALTED}),
+    Phase.PLAN:      frozenset({Phase.RETRIEVE, Phase.HALTED}),
+    Phase.RETRIEVE:  frozenset({Phase.PATCH, Phase.HALTED}),
+    Phase.PATCH:     frozenset({Phase.CRITIQUE, Phase.HALTED}),
+    Phase.CRITIQUE:  frozenset({Phase.RUN, Phase.HALTED}),
+    Phase.RUN:       frozenset({Phase.FIX, Phase.FINALIZE, Phase.HALTED}),
+    Phase.FIX:       frozenset({Phase.PATCH, Phase.HALTED}),
+    Phase.FINALIZE:  frozenset({Phase.COMPLETED, Phase.HALTED}),
+    Phase.HALTED:    frozenset(),
+    Phase.COMPLETED: frozenset(),
+}
+
+
+class InvalidTransition(Exception):
+    """Raised when a phase transition violates state machine rules."""
+
+    def __init__(self, from_phase: Phase, to_phase: Phase):
+        self.from_phase = from_phase
+        self.to_phase = to_phase
+        super().__init__(f"Invalid transition: {from_phase.name} -> {to_phase.name}")
+
+
+def validate_transition(from_phase: Phase, to_phase: Phase) -> None:
+    """Raise InvalidTransition if from_phase -> to_phase is not allowed."""
+    allowed = TRANSITIONS.get(from_phase, frozenset())
+    if to_phase not in allowed:
+        raise InvalidTransition(from_phase, to_phase)
+
+
+@dataclass
+class SessionState:
+    """Mutable state for a single kernel session (one --task invocation)."""
+
+    task_description: str
+    current_phase: Phase = Phase.INTAKE
+    total_iterations: int = 0
+    phase_retries: Dict[Phase, int] = field(default_factory=dict)
+    phase_start_time: Optional[float] = None
+    session_start_time: float = field(default_factory=time.monotonic)
+    halt_reason: Optional[str] = None
+    artifacts: Dict[str, Any] = field(default_factory=dict)
+
+    def enter_phase(self, phase: Phase) -> None:
+        """Transition to a new phase. Validates, increments iterations, resets timer."""
+        validate_transition(self.current_phase, phase)
+        self.current_phase = phase
+        self.phase_start_time = time.monotonic()
+        self.total_iterations += 1
+
+    def record_phase_retry(self, phase: Phase) -> int:
+        """Increment retry count for a phase. Returns new count."""
+        current = self.phase_retries.get(phase, 0)
+        self.phase_retries[phase] = current + 1
+        return current + 1
+
+    def halt(self, reason: str) -> None:
+        """Move to HALTED terminal state."""
+        self.current_phase = Phase.HALTED
+        self.halt_reason = reason
+
+    def complete(self) -> None:
+        """Move to COMPLETED terminal state."""
+        validate_transition(self.current_phase, Phase.COMPLETED)
+        self.current_phase = Phase.COMPLETED
+
 ```
 
 ## `core/memory/__init__.py`
@@ -4189,14 +4649,14 @@ def normalize(vec: np.ndarray) -> np.ndarray:
 
 # ---- UnifiedMemory ----
 class UnifiedMemory:
-    def __init__(self, db_path: Path, model="text-embedding-3-large", debug=False):
+    def __init__(self, db_path: Path, model="text-embedding-3-large", debug=False, embedding_client=None):
         """db_path: SQLite file, model: embedding model (default: 3-large)."""
         self.debug = debug
         self.db_path = Path(db_path)
         if self.debug: print(f"db_path: {self.db_path}")
         self.model = model
         if self.debug: print(f"model: {self.model}")
-        self.client = OpenAI()
+        self.client = embedding_client if embedding_client is not None else OpenAI()
 
         # FAISS indexes
         self.long_index = None
@@ -4480,6 +4940,336 @@ class UnifiedMemory:
 
 ```
 
+## `core/runtime/__init__.py`
+
+```python
+# core/runtime/__init__.py
+
+from core.runtime.backends import (
+    Backend,
+    BackendCapabilities,
+    OpenAIBackend,
+    MistralBackend,
+    LocalBackend,
+)
+from core.runtime.messages import build_system_prompt, build_chat_context
+from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
+
+__all__ = [
+    "Backend",
+    "BackendCapabilities",
+    "OpenAIBackend",
+    "MistralBackend",
+    "LocalBackend",
+    "build_system_prompt",
+    "build_chat_context",
+    "DEFAULT_MODELS",
+    "resolve_provider",
+]
+
+```
+
+## `core/runtime/backends/__init__.py`
+
+```python
+# core/runtime/backends/__init__.py
+
+from core.runtime.backends.base import Backend, BackendCapabilities
+from core.runtime.backends.openai_backend import OpenAIBackend
+from core.runtime.backends.mistral_backend import MistralBackend
+from core.runtime.backends.local_backend import LocalBackend
+
+__all__ = [
+    "Backend",
+    "BackendCapabilities",
+    "OpenAIBackend",
+    "MistralBackend",
+    "LocalBackend",
+]
+
+```
+
+## `core/runtime/backends/base.py`
+
+```python
+# core/runtime/backends/base.py — Backend ABC + capabilities dataclass
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Dict, List
+
+
+@dataclass(frozen=True)
+class BackendCapabilities:
+    supports_streaming: bool = True
+    supports_json_mode: bool = False
+    supports_tool_calls: bool = False
+
+
+class Backend(ABC):
+    @property
+    @abstractmethod
+    def capabilities(self) -> BackendCapabilities: ...
+
+    @abstractmethod
+    def chat(self, model: str, messages: List[Dict], stream: bool = False):
+        """Returns str (non-streaming) or iterator of SimpleNamespace (streaming)."""
+        ...
+
+```
+
+## `core/runtime/backends/local_backend.py`
+
+```python
+# core/runtime/backends/local_backend.py — Stub for Phase 8
+
+from typing import Dict, List
+
+from core.runtime.backends.base import Backend, BackendCapabilities
+
+
+class LocalBackend(Backend):
+    def __init__(self, endpoint: str = "http://localhost:8000"):
+        self.endpoint = endpoint
+
+    def chat(self, model: str, messages: List[Dict], stream: bool = False):
+        raise NotImplementedError(
+            "Local inference not yet implemented. See Phase 8."
+        )
+
+    @property
+    def capabilities(self) -> BackendCapabilities:
+        return BackendCapabilities(
+            supports_streaming=False,
+            supports_json_mode=False,
+            supports_tool_calls=False,
+        )
+
+```
+
+## `core/runtime/backends/mistral_backend.py`
+
+```python
+# core/runtime/backends/mistral_backend.py — Mistral cURL/SSE wrapper
+
+import json
+import os
+import subprocess
+import tempfile
+from types import SimpleNamespace
+from typing import Dict, List
+
+from core.runtime.backends.base import Backend, BackendCapabilities
+
+
+class MistralBackend(Backend):
+    def __init__(self):
+        self.api_key = os.getenv("MISTRAL_API_KEY")
+        if not self.api_key:
+            raise RuntimeError("Missing MISTRAL_API_KEY")
+
+    def chat(self, model: str, messages: List[Dict], stream: bool = False):
+        if not model:
+            model = "codestral-latest"
+
+        payload = {"model": model, "messages": messages, "stream": stream}
+
+        with tempfile.NamedTemporaryFile("w+", delete=False) as tmp:
+            json.dump(payload, tmp)
+            tmp.flush()
+            tmp_path = tmp.name
+
+        cmd = [
+            "curl",
+            "-s",
+            "https://api.mistral.ai/v1/chat/completions",
+            "-H", f"Authorization: Bearer {self.api_key}",
+            "-H", "Content-Type: application/json",
+            "-d", f"@{tmp_path}",
+        ]
+
+        if not stream:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            os.unlink(tmp_path)
+            try:
+                parsed = json.loads(res.stdout)
+                return parsed["choices"][0]["message"]["content"]
+            except Exception:
+                return res.stdout.strip()
+
+        # --- Streaming mode ---
+        def mistral_stream():
+            with subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            ) as proc:
+                for line in proc.stdout:
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[len("data: "):]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                        content = obj["choices"][0]["delta"].get("content")
+                        if content:
+                            yield SimpleNamespace(
+                                choices=[
+                                    SimpleNamespace(
+                                        delta=SimpleNamespace(content=content)
+                                    )
+                                ]
+                            )
+                    except Exception:
+                        continue
+            os.unlink(tmp_path)
+
+        return mistral_stream()
+
+    @property
+    def capabilities(self) -> BackendCapabilities:
+        return BackendCapabilities(
+            supports_streaming=True,
+            supports_json_mode=True,
+            supports_tool_calls=False,
+        )
+
+```
+
+## `core/runtime/backends/openai_backend.py`
+
+```python
+# core/runtime/backends/openai_backend.py — OpenAI SDK wrapper
+
+import os
+from typing import Dict, List
+
+from openai import OpenAI
+
+from core.runtime.backends.base import Backend, BackendCapabilities
+
+
+class OpenAIBackend(Backend):
+    def __init__(self, openai_client=None):
+        if openai_client is not None:
+            self.client = openai_client
+        else:
+            key = os.getenv("OPENAI_API_KEY")
+            if not key:
+                raise RuntimeError("Missing OPENAI_API_KEY")
+            self.client = OpenAI(api_key=key)
+
+    def chat(self, model: str, messages: List[Dict], stream: bool = False):
+        if stream:
+            return self.client.chat.completions.create(
+                model=model, messages=messages, stream=True
+            )
+        result = self.client.chat.completions.create(model=model, messages=messages)
+        return result.choices[0].message.content
+
+    @property
+    def capabilities(self) -> BackendCapabilities:
+        return BackendCapabilities(
+            supports_streaming=True,
+            supports_json_mode=True,
+            supports_tool_calls=True,
+        )
+
+```
+
+## `core/runtime/messages.py`
+
+```python
+# core/runtime/messages.py — System prompt and chat context assembly
+
+from typing import Callable, Dict, List, Optional
+
+
+def build_system_prompt(
+    system_message: str,
+    tool_names: List[str],
+    describe_tool_fn: Callable[[str], Dict],
+    examples: List,
+) -> str:
+    """Assemble system prompt from message, tool descriptions, and examples."""
+    tool_info = "\n".join(
+        f"- {name}: {describe_tool_fn(name)['description']}"
+        for name in tool_names
+    )
+    examples_text = "\n\n".join(
+        f"User: {ex[0]}\nAssistant: {ex[1]}" for ex in examples
+    )
+    return (
+        f"{system_message}\n\n"
+        "You have the following tools (do not call them directly):\n"
+        f"{tool_info}\n\n"
+        "Tool results appear in history as assistant messages; treat them as your own work.\n\n"
+        f"Here are examples:\n\n{examples_text}"
+    )
+
+
+def build_chat_context(
+    system_prompt: str,
+    history: List[Dict[str, str]],
+    invoked_tools: Optional[List[str]] = None,
+) -> List[Dict[str, str]]:
+    """Build the message list sent to the backend.
+
+    Replaces history[0] (system message) with the full system_prompt,
+    appends tool-context annotation if invoked_tools is provided.
+    """
+    prompt = system_prompt
+    if invoked_tools:
+        prompt += (
+            "\n\n[Tool Context] "
+            f"{', '.join(invoked_tools)} results are available above.\n"
+        )
+    return [{"role": "system", "content": prompt}] + history[1:]
+
+```
+
+## `core/runtime/provider_config.py`
+
+```python
+# core/runtime/provider_config.py — Provider defaults and resolution
+
+import os
+from typing import Optional
+
+DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "mistral": "codestral-latest",
+}
+
+
+def resolve_provider(
+    requested: Optional[str] = None,
+    has_injected_client: bool = False,
+) -> str:
+    """Resolve provider: explicit arg > ELF_PROVIDER env > default 'openai'.
+
+    When no client is injected, falls back between providers if the
+    requested one's API key is missing.
+    """
+    from rich import print  # local to avoid hard dep when not needed
+
+    prov = (requested or os.getenv("ELF_PROVIDER") or "openai").strip().lower()
+
+    if not has_injected_client:
+        openai_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        mistral_key = (os.getenv("MISTRAL_API_KEY") or "").strip()
+
+        if prov == "openai" and not openai_key:
+            print("[yellow]Warning: No OpenAI key found - falling back to Mistral.[/yellow]")
+            prov = "mistral"
+        elif prov == "mistral" and not mistral_key:
+            print("[yellow]Warning: No Mistral key found - falling back to OpenAI.[/yellow]")
+            prov = "openai"
+
+    return prov
+
+```
+
 ## `core/tools/__init__.py`
 
 ```python
@@ -4638,6 +5428,7 @@ class RunSubprocessTool(Tool, ABC):
         # For direct shell execution convenience (used by run() when cmd is str)
         self.executable = kwargs.get("executable", "/bin/bash")
         self.elf = kwargs.get("elf", None)  # Optional elf object for sudo permission checks
+        self.subprocess_runner = kwargs.get("subprocess_runner", None)
 
     # -----------------------------
     # Shared low-level runner
@@ -4649,6 +5440,17 @@ class RunSubprocessTool(Tool, ABC):
         """
         timeout = timeout or self.timeout
         shell_mode = isinstance(cmd, str)
+
+        if self.subprocess_runner is not None:
+            try:
+                return self.subprocess_runner(
+                    cmd, shell=shell_mode, timeout=timeout,
+                    executable=self.executable if shell_mode else None,
+                )
+            except subprocess.TimeoutExpired:
+                return -1, "", "⏱️ Subprocess timed out"
+            except Exception as ex:
+                return -1, "", self._format_exception(ex)
 
         try:
             result = subprocess.run(
@@ -4903,7 +5705,8 @@ class InstallProjectTool(RunSubprocessTool):
     def __init__(self, **kwargs):
         self.elfenv = kwargs.get("elfenv", Path(".elfenv"))
         self.pip_bin = self.elfenv / "bin" / "pip"
-        self.ensure_elfenv()
+        if not kwargs.get("skip_venv_setup", False):
+            self.ensure_elfenv()
         super().__init__(**kwargs)
 
     def __call__(self, path="."):
@@ -5392,7 +6195,8 @@ class RunPythonTool(RunSubprocessTool):
         self.elfenv = kwargs.get("elfenv", Path(".elfenv"))
         self.python_bin = self.elfenv / "bin" / "python"
         self.pip_bin = self.elfenv / "bin" / "pip"
-        self._ensure_elfenv()
+        if not kwargs.get("skip_venv_setup", False):
+            self._ensure_elfenv()
         super().__init__(**kwargs)
         self.name = "run_python_code"
 
@@ -5769,112 +6573,33 @@ class WebSearchTool(Tool):
 
 ```python
 import os
-import json
-import subprocess
-import tempfile
-from types import SimpleNamespace
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
+
+from core.runtime.backends.openai_backend import OpenAIBackend
+from core.runtime.backends.mistral_backend import MistralBackend
 
 
 class UnifiedClient:
     """
-    Unified client:
-      - OpenAI → uses OpenAI SDK
-      - Mistral → uses cURL for reliability and proper SSE streaming
+    Unified client — thin router that delegates to backend implementations.
     """
 
-    def __init__(self, provider_override: Optional[str] = None):
+    def __init__(self, provider_override: Optional[str] = None, openai_client=None):
         self.provider = (provider_override or os.getenv("ELF_PROVIDER") or "openai").lower()
 
         if self.provider == "openai":
-            key = os.getenv("OPENAI_API_KEY")
-            if not key:
-                raise RuntimeError("Missing OPENAI_API_KEY")
-            self.client = OpenAI(api_key=key)
-
+            self._backend = OpenAIBackend(openai_client=openai_client)
         elif self.provider == "mistral":
-            self.api_key = os.getenv("MISTRAL_API_KEY")
-            if not self.api_key:
-                raise RuntimeError("Missing MISTRAL_API_KEY")
-
+            self._backend = MistralBackend()
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
-    # ------------------------------------------------------------
-    # Public unified interface
-    # ------------------------------------------------------------
     def chat(self, model: str, messages: List[Dict[str, Any]], stream: bool = False):
-        if self.provider == "openai":
-            return self._chat_openai(model, messages, stream)
-        elif self.provider == "mistral":
-            return self._chat_mistral(model, messages, stream)
+        return self._backend.chat(model, messages, stream)
 
-    # ------------------------------------------------------------
-    # OpenAI SDK
-    # ------------------------------------------------------------
-    def _chat_openai(self, model: str, messages: List[Dict[str, Any]], stream: bool):
-        if stream:
-            return self.client.chat.completions.create(model=model, messages=messages, stream=True)
-        result = self.client.chat.completions.create(model=model, messages=messages)
-        return result.choices[0].message.content
-
-    # ------------------------------------------------------------
-    # Mistral via cURL
-    # ------------------------------------------------------------
-    def _chat_mistral(self, model: str, messages: List[Dict[str, Any]], stream: bool):
-        if not model:
-            model = "codestral-latest"
-
-        payload = {"model": model, "messages": messages, "stream": stream}
-
-        # --- Use a temporary JSON file for -d @file syntax ---
-        with tempfile.NamedTemporaryFile("w+", delete=False) as tmp:
-            json.dump(payload, tmp)
-            tmp.flush()
-            tmp_path = tmp.name
-
-        cmd = [
-            "curl",
-            "-s",
-            "https://api.mistral.ai/v1/chat/completions",
-            "-H", f"Authorization: Bearer {self.api_key}",
-            "-H", "Content-Type: application/json",
-            "-d", f"@{tmp_path}"
-        ]
-
-        if not stream:
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            os.unlink(tmp_path)
-            try:
-                parsed = json.loads(res.stdout)
-                return parsed["choices"][0]["message"]["content"]
-            except Exception:
-                return res.stdout.strip()
-
-        # --- Streaming mode ---
-        def mistral_stream():
-            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
-                for line in proc.stdout:
-                    # print(line)
-                    line = line.strip()
-                    if not line or not line.startswith("data: "):
-                        continue
-                    data = line[len("data: "):]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(data)
-                        content = obj["choices"][0]["delta"].get("content")
-                        if content:
-                            yield SimpleNamespace(
-                                choices=[SimpleNamespace(delta=SimpleNamespace(content=content))]
-                            )
-                    except Exception:
-                        continue
-            os.unlink(tmp_path)
-
-        return mistral_stream()
+    @property
+    def capabilities(self):
+        return self._backend.capabilities
 
 ```
 
@@ -5893,13 +6618,13 @@ from pathlib import Path
 from core.elf import Elf
 
 class JudAIs(Elf):
-    def __init__(self, model=None, provider=None, debug=True):
+    def __init__(self, model=None, provider=None, debug=True, **kwargs):
         """
         JudAIs defaults to Mistral (Codestral) but can use other backends if forced.
         """
         provider = provider or "mistral"
         model = model or "codestral-latest"
-        super().__init__(model=model, provider=provider, debug=debug)
+        super().__init__(model=model, provider=provider, debug=debug, **kwargs)
 
 
     @property
@@ -6474,12 +7199,12 @@ from pathlib import Path
 from core.elf import Elf
 
 class Lobi(Elf):
-    def __init__(self, model="gpt-5-mini", provider="openai", debug=True):
+    def __init__(self, model="gpt-5-mini", provider="openai", debug=True, **kwargs):
         """
         Lobi defaults to OpenAI as its provider but can switch dynamically
         (e.g., --provider mistral for local fallback).
         """
-        super().__init__(model=model, provider=provider, debug=debug)
+        super().__init__(model=model, provider=provider, debug=debug, **kwargs)
 
     @property
     def system_message(self):
@@ -6565,6 +7290,9 @@ if __name__ == "__main__":
 requires = ["setuptools>=65", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 ```
 
 ## `requirements.txt`
@@ -6635,6 +7363,7 @@ setup(
         "certifi>=2025.8.3",
     ],
     extras_require={
+        "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
         "voice": [
             "simpleaudio>=1.0.4",
             "TTS>=0.22.0",
@@ -6669,6 +7398,1745 @@ setup(
     ],
     python_requires=">=3.10",
 )
+
+```
+
+## `tests/__init__.py`
+
+```python
+
+```
+
+## `tests/conftest.py`
+
+```python
+# tests/conftest.py — Shared fixtures for judais-lobi test suite
+
+import os
+import pytest
+import numpy as np
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from core.memory.memory import UnifiedMemory
+from core.kernel import BudgetConfig, SessionState
+
+
+# ---------------------------------------------------------------------------
+# Fake clients
+# ---------------------------------------------------------------------------
+
+class FakeUnifiedClient:
+    """Drop-in replacement for UnifiedClient. Returns canned responses."""
+
+    def __init__(self, canned="Hello from fake client", provider="openai"):
+        self.canned = canned
+        self.provider = provider
+
+    def chat(self, model, messages, stream=False):
+        if stream:
+            return self._stream()
+        return self.canned
+
+    def _stream(self):
+        for word in self.canned.split():
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=word + " "))]
+            )
+
+
+class FakeEmbeddingClient:
+    """Drop-in for OpenAI embedding client. Returns deterministic vectors."""
+
+    def __init__(self, dim=16, seed=42):
+        self.dim = dim
+        self.rng = np.random.RandomState(seed)
+        self.embeddings = self  # self.embeddings.create() interface
+
+    def create(self, input, model=None):
+        vec = self.rng.randn(self.dim).astype("float32")
+        return SimpleNamespace(data=[SimpleNamespace(embedding=vec.tolist())])
+
+
+# ---------------------------------------------------------------------------
+# Fake subprocess runner factory
+# ---------------------------------------------------------------------------
+
+def make_fake_subprocess_runner(rc=0, stdout="ok", stderr=""):
+    """Factory returning a callable (cmd, *, shell, timeout, executable) -> (int, str, str)."""
+    def runner(cmd, *, shell=False, timeout=None, executable=None):
+        return rc, stdout, stderr
+    return runner
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fake_client():
+    return FakeUnifiedClient()
+
+
+@pytest.fixture
+def fake_embedding_client():
+    return FakeEmbeddingClient()
+
+
+@pytest.fixture
+def memory(tmp_path, fake_embedding_client):
+    """UnifiedMemory backed by a temp SQLite DB and fake embeddings."""
+    db = tmp_path / "test.db"
+    return UnifiedMemory(db, embedding_client=fake_embedding_client)
+
+
+@pytest.fixture
+def fake_tools():
+    """MagicMock standing in for the Tools registry."""
+    tools = MagicMock()
+    tools.list_tools.return_value = ["run_shell_command", "run_python_code"]
+    tools.describe_tool.return_value = {"name": "mock_tool", "description": "A mock tool"}
+    tools.run.return_value = "mock result"
+    return tools
+
+
+@pytest.fixture(autouse=True)
+def isolate_env(monkeypatch):
+    """Remove API keys and provider env vars so tests never make real calls."""
+    for var in ("OPENAI_API_KEY", "MISTRAL_API_KEY", "ELF_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+
+
+# ---------------------------------------------------------------------------
+# Kernel fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def budget():
+    """Default budget config for kernel tests."""
+    return BudgetConfig()
+
+
+@pytest.fixture
+def tight_budget():
+    """Restrictive budget for testing enforcement."""
+    return BudgetConfig(
+        max_phase_retries=2,
+        max_total_iterations=5,
+        max_time_per_phase_seconds=0.01,
+    )
+
+
+@pytest.fixture
+def session_state():
+    """Fresh SessionState for kernel tests."""
+    return SessionState(task_description="test task")
+
+```
+
+## `tests/test_backends.py`
+
+```python
+# tests/test_backends.py — Tests for backend implementations
+
+import pytest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from core.runtime.backends.base import BackendCapabilities
+from core.runtime.backends.openai_backend import OpenAIBackend
+from core.runtime.backends.mistral_backend import MistralBackend
+from core.runtime.backends.local_backend import LocalBackend
+
+
+class TestOpenAIBackend:
+    def test_injected_client(self):
+        mock = MagicMock()
+        backend = OpenAIBackend(openai_client=mock)
+        assert backend.client is mock
+
+    def test_non_streaming(self):
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))]
+        )
+        backend = OpenAIBackend(openai_client=mock)
+        result = backend.chat("gpt-4o-mini", [{"role": "user", "content": "hello"}])
+        assert result == "hi"
+        mock.chat.completions.create.assert_called_once_with(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+    def test_streaming(self):
+        mock = MagicMock()
+        chunks = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="a"))]),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="b"))]),
+        ]
+        mock.chat.completions.create.return_value = iter(chunks)
+        backend = OpenAIBackend(openai_client=mock)
+        result = list(backend.chat("gpt-4o-mini", [{"role": "user", "content": "hi"}], stream=True))
+        assert len(result) == 2
+        mock.chat.completions.create.assert_called_once_with(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+    def test_missing_key_raises(self):
+        with pytest.raises(RuntimeError, match="Missing OPENAI_API_KEY"):
+            OpenAIBackend()
+
+    def test_capabilities(self):
+        mock = MagicMock()
+        backend = OpenAIBackend(openai_client=mock)
+        caps = backend.capabilities
+        assert caps.supports_streaming is True
+        assert caps.supports_json_mode is True
+        assert caps.supports_tool_calls is True
+
+
+class TestMistralBackend:
+    def test_missing_key_raises(self):
+        with pytest.raises(RuntimeError, match="Missing MISTRAL_API_KEY"):
+            MistralBackend()
+
+    def test_capabilities(self, monkeypatch):
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        backend = MistralBackend()
+        caps = backend.capabilities
+        assert caps.supports_streaming is True
+        assert caps.supports_json_mode is True
+        assert caps.supports_tool_calls is False
+
+
+class TestLocalBackend:
+    def test_chat_raises_not_implemented(self):
+        backend = LocalBackend()
+        with pytest.raises(NotImplementedError, match="Phase 8"):
+            backend.chat("local-model", [{"role": "user", "content": "hi"}])
+
+    def test_capabilities(self):
+        backend = LocalBackend()
+        caps = backend.capabilities
+        assert caps.supports_streaming is False
+        assert caps.supports_json_mode is False
+        assert caps.supports_tool_calls is False
+
+    def test_custom_endpoint(self):
+        backend = LocalBackend(endpoint="http://myhost:9000")
+        assert backend.endpoint == "http://myhost:9000"
+
+    def test_default_endpoint(self):
+        backend = LocalBackend()
+        assert backend.endpoint == "http://localhost:8000"
+
+```
+
+## `tests/test_base_subprocess.py`
+
+```python
+# tests/test_base_subprocess.py
+
+import subprocess
+import pytest
+from pathlib import Path
+
+from core.tools.run_shell import RunShellTool
+from core.tools.run_python import RunPythonTool
+from core.tools.base_subprocess import RunSubprocessTool
+from tests.conftest import make_fake_subprocess_runner
+
+
+class TestRunShellToolWithFakeRunner:
+    def test_shell_success(self):
+        runner = make_fake_subprocess_runner(rc=0, stdout="hello world", stderr="")
+        tool = RunShellTool(subprocess_runner=runner)
+        rc, out, err = tool.run("echo hello")
+        assert rc == 0
+        assert out == "hello world"
+
+    def test_shell_failure(self):
+        runner = make_fake_subprocess_runner(rc=1, stdout="", stderr="command not found")
+        tool = RunShellTool(subprocess_runner=runner)
+        rc, out, err = tool.run("badcmd")
+        assert rc == 1
+        assert "command not found" in err
+
+    def test_shell_timeout(self):
+        def timeout_runner(cmd, *, shell, timeout, executable):
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        tool = RunShellTool(subprocess_runner=timeout_runner)
+        rc, out, err = tool.run("sleep 999")
+        assert rc == -1
+        assert "timed out" in err.lower()
+
+    def test_shell_exception(self):
+        def error_runner(cmd, *, shell, timeout, executable):
+            raise OSError("disk on fire")
+        tool = RunShellTool(subprocess_runner=error_runner)
+        rc, out, err = tool.run("anything")
+        assert rc == -1
+        assert "OSError" in err
+
+
+class TestRunPythonToolWithFakeRunner:
+    def test_python_tool_skip_venv(self):
+        """RunPythonTool with skip_venv_setup should not try to create a venv."""
+        runner = make_fake_subprocess_runner(rc=0, stdout="42", stderr="")
+        tool = RunPythonTool(
+            elfenv=Path("/tmp/fake_elfenv"),
+            skip_venv_setup=True,
+            subprocess_runner=runner,
+        )
+        assert tool.name == "run_python_code"
+
+    def test_python_run_delegates_to_runner(self):
+        runner = make_fake_subprocess_runner(rc=0, stdout="result", stderr="")
+        tool = RunPythonTool(
+            elfenv=Path("/tmp/fake_elfenv"),
+            skip_venv_setup=True,
+            subprocess_runner=runner,
+        )
+        rc, out, err = tool.run(["python", "script.py"])
+        assert rc == 0
+        assert out == "result"
+
+
+class TestExtractCode:
+    def test_extract_python_block(self):
+        text = "Here is the code:\n```python\nprint('hello')\n```\nDone."
+        assert RunSubprocessTool.extract_code(text, "python") == "print('hello')"
+
+    def test_extract_generic_block(self):
+        text = "```\nls -la\n```"
+        assert RunSubprocessTool.extract_code(text) == "ls -la"
+
+    def test_extract_inline_code(self):
+        text = "Run `echo hi` to test"
+        assert RunSubprocessTool.extract_code(text) == "echo hi"
+
+    def test_extract_plain_text(self):
+        text = "echo hello world"
+        assert RunSubprocessTool.extract_code(text) == "echo hello world"
+
+```
+
+## `tests/test_cli_smoke.py`
+
+```python
+# tests/test_cli_smoke.py — CLI integration smoke tests
+
+import pytest
+from unittest.mock import patch, MagicMock
+from io import StringIO
+
+
+class TestCLISmoke:
+    """Test CLI arg paths by mocking at the Elf boundary."""
+
+    def _make_mock_elf_class(self):
+        """Create a mock Elf class that can be instantiated by _main()."""
+        mock_elf = MagicMock()
+        mock_elf.model = "test-model"
+        mock_elf.text_color = "cyan"
+        mock_elf.client.provider = "openai"
+        mock_elf.history = [{"role": "system", "content": "test"}]
+        mock_elf.chat.return_value = "test response"
+        mock_elf.tools = MagicMock()
+        mock_elf.memory = MagicMock()
+
+        MockClass = MagicMock(return_value=mock_elf)
+        MockClass.__name__ = "TestElf"
+        return MockClass, mock_elf
+
+    @patch("sys.argv", ["test", "hello world"])
+    def test_basic_chat(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.chat.return_value = iter([])  # stream mode returns iterator
+        _main(MockClass)
+        MockClass.assert_called_once()
+        mock_elf.enrich_with_memory.assert_called_once_with("hello world")
+
+    @patch("sys.argv", ["test", "hello", "--empty"])
+    def test_empty_flag(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.chat.return_value = iter([])
+        _main(MockClass)
+        mock_elf.reset_history.assert_called_once()
+
+    @patch("sys.argv", ["test", "hello", "--purge"])
+    def test_purge_flag(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.chat.return_value = iter([])
+        _main(MockClass)
+        mock_elf.purge_memory.assert_called_once()
+
+    @patch("sys.argv", ["test", "list files", "--shell"])
+    def test_shell_flag(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.run_shell_task.return_value = ("ls", "output", True, None)
+        _main(MockClass)
+        mock_elf.run_shell_task.assert_called_once()
+
+    @patch("sys.argv", ["test", "print hello", "--python"])
+    def test_python_flag(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.run_python_task.return_value = ("code", "output", True, None)
+        _main(MockClass)
+        mock_elf.run_python_task.assert_called_once()
+
+    @patch("sys.argv", ["test", "hello", "--md"])
+    def test_md_flag(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.chat.return_value = "markdown response"
+        _main(MockClass)
+        mock_elf.chat.assert_called_once_with("hello", stream=False)
+
+    @patch("sys.argv", ["test", "hello", "--search"])
+    def test_search_flag(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.chat.return_value = iter([])
+        _main(MockClass)
+        mock_elf.enrich_with_search.assert_called_once()
+
+```
+
+## `tests/test_elf.py`
+
+```python
+# tests/test_elf.py — Tests for the Elf base class via a concrete StubElf subclass
+
+import pytest
+from pathlib import Path
+from unittest.mock import MagicMock
+
+from core.elf import Elf
+from tests.conftest import FakeUnifiedClient
+
+
+class StubElf(Elf):
+    """Minimal concrete Elf subclass for testing."""
+
+    @property
+    def system_message(self):
+        return "You are StubElf, a test elf."
+
+    @property
+    def personality(self):
+        return "stub"
+
+    @property
+    def examples(self):
+        return [("How?", "Like this.")]
+
+    @property
+    def env(self):
+        return Path("/tmp/stub_env")
+
+    @property
+    def text_color(self):
+        return "green"
+
+    @property
+    def rag_enhancement_style(self):
+        return "Answer in stub style."
+
+
+class TestElfConstruction:
+    def test_di_injection(self, fake_client, memory, fake_tools):
+        """Elf constructed with injected dependencies uses them directly."""
+        elf = StubElf(
+            model="test-model", provider="openai", debug=False,
+            client=fake_client, memory=memory, tools=fake_tools,
+        )
+        assert elf.client is fake_client
+        assert elf.memory is memory
+        assert elf.tools is fake_tools
+        assert elf.model == "test-model"
+        assert elf.provider == "openai"
+
+    def test_default_model_resolution(self, fake_client, memory, fake_tools):
+        """When model=None, defaults are used based on provider."""
+        elf = StubElf(
+            provider="openai", debug=False,
+            client=fake_client, memory=memory, tools=fake_tools,
+        )
+        assert elf.model == "gpt-4o-mini"  # DEFAULT_MODELS["openai"]
+
+    def test_no_fallback_warning_with_injected_client(self, fake_client, memory, fake_tools, capsys):
+        """Injected client should suppress the key-missing fallback logic."""
+        elf = StubElf(
+            provider="openai", debug=False,
+            client=fake_client, memory=memory, tools=fake_tools,
+        )
+        # No fallback should happen — provider stays as requested
+        assert elf.provider == "openai"
+
+
+class TestElfHistory:
+    def test_initial_history_system_message(self, fake_client, memory, fake_tools):
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        assert len(elf.history) >= 1
+        assert elf.history[0]["role"] == "system"
+        assert "StubElf" in elf.history[0]["content"]
+
+    def test_save_and_load_history(self, fake_client, memory, fake_tools):
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        elf.history.append({"role": "user", "content": "test message"})
+        elf.history.append({"role": "assistant", "content": "test reply"})
+        elf.save_history()
+
+        # Create a new elf with same memory — should load history
+        elf2 = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        assert len(elf2.history) >= 2  # at least system + saved entries
+
+    def test_reset_history(self, fake_client, memory, fake_tools):
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        elf.history.append({"role": "user", "content": "data"})
+        elf.reset_history()
+        assert len(elf.history) == 1
+        assert elf.history[0]["role"] == "system"
+
+
+class TestElfChat:
+    def test_chat_non_streaming(self, fake_client, memory, fake_tools):
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        result = elf.chat("hello", stream=False)
+        assert result == "Hello from fake client"
+        # User message should be added to history
+        assert any(h["content"] == "hello" for h in elf.history)
+
+    def test_chat_streaming(self, fake_client, memory, fake_tools):
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        result = elf.chat("hello", stream=True)
+        chunks = list(result)
+        assert len(chunks) > 0
+
+    def test_chat_with_invoked_tools(self, fake_client, memory, fake_tools):
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        result = elf.chat("hello", invoked_tools=["run_shell_command"])
+        assert result == "Hello from fake client"
+
+
+class TestElfMemory:
+    def test_enrich_with_memory_no_results(self, fake_client, memory, fake_tools):
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        initial_len = len(elf.history)
+        elf.enrich_with_memory("test query")
+        # No long-term memories → no new history entry
+        assert len(elf.history) == initial_len
+
+    def test_enrich_with_memory_with_results(self, fake_client, memory, fake_tools):
+        memory.add_long("user", "The sky is blue")
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        initial_len = len(elf.history)
+        elf.enrich_with_memory("what color is the sky?")
+        assert len(elf.history) > initial_len
+        assert "long-term memory" in elf.history[-1]["content"]
+
+    def test_purge_memory(self, fake_client, memory, fake_tools):
+        memory.add_long("user", "remember this")
+        elf = StubElf(
+            debug=False, client=fake_client, memory=memory, tools=fake_tools,
+        )
+        elf.purge_memory()
+        assert memory.long_index is None
+
+
+class TestElfCodeGeneration:
+    def test_generate_shell_command(self, memory, fake_tools):
+        client = FakeUnifiedClient(canned="```bash\nls -la\n```")
+        elf = StubElf(
+            debug=False, client=client, memory=memory, tools=fake_tools,
+        )
+        cmd = elf.generate_shell_command("list files")
+        assert "ls" in cmd
+
+    def test_generate_python_code(self, memory, fake_tools):
+        client = FakeUnifiedClient(canned="```python\nprint('hello')\n```")
+        elf = StubElf(
+            debug=False, client=client, memory=memory, tools=fake_tools,
+        )
+        code = elf.generate_python_code("print hello")
+        assert "print" in code
+
+```
+
+## `tests/test_elf_run_task.py`
+
+```python
+# tests/test_elf_run_task.py — Tests for Elf.run_task() thin adapter
+
+import pytest
+from pathlib import Path
+
+from core.elf import Elf
+from core.kernel import Phase, BudgetConfig
+from tests.conftest import FakeUnifiedClient
+
+
+class StubElf(Elf):
+    """Minimal concrete Elf for testing run_task()."""
+
+    @property
+    def system_message(self):
+        return "You are StubElf."
+
+    @property
+    def personality(self):
+        return "stub"
+
+    @property
+    def examples(self):
+        return [("Q?", "A.")]
+
+    @property
+    def env(self):
+        return Path("/tmp/stub_env")
+
+    @property
+    def text_color(self):
+        return "green"
+
+    @property
+    def rag_enhancement_style(self):
+        return "Answer in stub style."
+
+
+class TestElfRunTask:
+    def test_run_task_returns_session_state(self, fake_client, memory, fake_tools):
+        elf = StubElf(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        state = elf.run_task("add pagination")
+        assert state.task_description == "add pagination"
+
+    def test_run_task_completes(self, fake_client, memory, fake_tools):
+        elf = StubElf(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        state = elf.run_task("add pagination")
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_run_task_with_custom_budget(self, fake_client, memory, fake_tools):
+        elf = StubElf(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        budget = BudgetConfig(max_total_iterations=50)
+        state = elf.run_task("add pagination", budget=budget)
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_existing_chat_unaffected(self, fake_client, memory, fake_tools):
+        """Adding run_task() does not break existing chat()."""
+        elf = StubElf(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        result = elf.chat("hello", stream=False)
+        assert result == "Hello from fake client"
+
+```
+
+## `tests/test_judais.py`
+
+```python
+# tests/test_judais.py — Tests for JudAIs personality
+
+import pytest
+from tests.conftest import FakeUnifiedClient
+
+
+class TestJudAIs:
+    def test_personality(self, fake_client, memory, fake_tools):
+        from judais.judais import JudAIs
+        j = JudAIs(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert j.personality == "judAIs"
+
+    def test_default_model(self, fake_client, memory, fake_tools):
+        from judais.judais import JudAIs
+        j = JudAIs(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert j.model == "codestral-latest"
+
+    def test_default_provider(self, fake_client, memory, fake_tools):
+        from judais.judais import JudAIs
+        j = JudAIs(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert j.provider == "mistral"
+
+    def test_text_color(self, fake_client, memory, fake_tools):
+        from judais.judais import JudAIs
+        j = JudAIs(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert j.text_color == "red"
+
+    def test_system_message_contains_judais(self, fake_client, memory, fake_tools):
+        from judais.judais import JudAIs
+        j = JudAIs(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert "JudAIs" in j.system_message
+
+    def test_di_forwarding(self, fake_client, memory, fake_tools):
+        """Verify **kwargs forwards client/memory/tools to Elf.__init__."""
+        from judais.judais import JudAIs
+        j = JudAIs(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert j.client is fake_client
+        assert j.memory is memory
+        assert j.tools is fake_tools
+
+    def test_examples_not_empty(self, fake_client, memory, fake_tools):
+        from judais.judais import JudAIs
+        j = JudAIs(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert len(j.examples) > 0
+
+    def test_chat_works(self, fake_client, memory, fake_tools):
+        from judais.judais import JudAIs
+        j = JudAIs(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        result = j.chat("hello", stream=False)
+        assert result == "Hello from fake client"
+
+    def test_provider_override(self, fake_client, memory, fake_tools):
+        """JudAIs can accept provider override."""
+        from judais.judais import JudAIs
+        j = JudAIs(provider="openai", debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert j.provider == "openai"
+
+```
+
+## `tests/test_kernel_budgets.py`
+
+```python
+# tests/test_kernel_budgets.py — Tests for budget config and enforcement
+
+import time
+import pytest
+from dataclasses import FrozenInstanceError
+
+from core.kernel.state import Phase, SessionState
+from core.kernel.budgets import (
+    BudgetConfig,
+    BudgetExhausted,
+    PhaseRetriesExhausted,
+    TotalIterationsExhausted,
+    PhaseTimeoutExhausted,
+    check_phase_retries,
+    check_total_iterations,
+    check_phase_time,
+    check_all_budgets,
+)
+
+
+class TestBudgetConfig:
+    def test_defaults(self):
+        config = BudgetConfig()
+        assert config.max_phase_retries == 3
+        assert config.max_total_iterations == 30
+        assert config.max_time_per_phase_seconds == 300.0
+        assert config.max_tool_output_bytes_in_context == 32_768
+        assert config.max_context_tokens_per_role == 16_384
+
+    def test_frozen(self):
+        config = BudgetConfig()
+        with pytest.raises(FrozenInstanceError):
+            config.max_phase_retries = 10
+
+    def test_custom_values(self):
+        config = BudgetConfig(
+            max_phase_retries=5,
+            max_total_iterations=100,
+            max_time_per_phase_seconds=60.0,
+        )
+        assert config.max_phase_retries == 5
+        assert config.max_total_iterations == 100
+        assert config.max_time_per_phase_seconds == 60.0
+
+
+class TestCheckPhaseRetries:
+    def test_under_limit_no_raise(self):
+        state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)
+        config = BudgetConfig(max_phase_retries=3)
+        check_phase_retries(state, config)  # Should not raise
+
+    def test_at_limit_raises(self):
+        state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)
+        state.phase_retries[Phase.CONTRACT] = 3
+        config = BudgetConfig(max_phase_retries=3)
+        with pytest.raises(PhaseRetriesExhausted):
+            check_phase_retries(state, config)
+
+    def test_over_limit_raises(self):
+        state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)
+        state.phase_retries[Phase.CONTRACT] = 5
+        config = BudgetConfig(max_phase_retries=3)
+        with pytest.raises(PhaseRetriesExhausted):
+            check_phase_retries(state, config)
+
+    def test_exception_attributes(self):
+        state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)
+        state.phase_retries[Phase.CONTRACT] = 3
+        config = BudgetConfig(max_phase_retries=3)
+        with pytest.raises(PhaseRetriesExhausted) as exc_info:
+            check_phase_retries(state, config)
+        assert exc_info.value.phase == Phase.CONTRACT
+        assert exc_info.value.retries == 3
+        assert exc_info.value.max_retries == 3
+
+
+class TestCheckTotalIterations:
+    def test_under_limit_no_raise(self):
+        state = SessionState(task_description="test")
+        state.total_iterations = 10
+        config = BudgetConfig(max_total_iterations=30)
+        check_total_iterations(state, config)  # Should not raise
+
+    def test_at_limit_raises(self):
+        state = SessionState(task_description="test")
+        state.total_iterations = 30
+        config = BudgetConfig(max_total_iterations=30)
+        with pytest.raises(TotalIterationsExhausted):
+            check_total_iterations(state, config)
+
+    def test_exception_attributes(self):
+        state = SessionState(task_description="test")
+        state.total_iterations = 30
+        config = BudgetConfig(max_total_iterations=30)
+        with pytest.raises(TotalIterationsExhausted) as exc_info:
+            check_total_iterations(state, config)
+        assert exc_info.value.iterations == 30
+        assert exc_info.value.max_iterations == 30
+
+
+class TestCheckPhaseTime:
+    def test_within_limit_no_raise(self):
+        state = SessionState(task_description="test")
+        state.phase_start_time = time.monotonic()  # Just started
+        config = BudgetConfig(max_time_per_phase_seconds=300.0)
+        check_phase_time(state, config)  # Should not raise
+
+    def test_over_limit_raises(self):
+        state = SessionState(task_description="test")
+        # Simulate phase started 400 seconds ago
+        state.phase_start_time = time.monotonic() - 400.0
+        config = BudgetConfig(max_time_per_phase_seconds=300.0)
+        with pytest.raises(PhaseTimeoutExhausted):
+            check_phase_time(state, config)
+
+    def test_no_start_time_no_raise(self):
+        state = SessionState(task_description="test")
+        state.phase_start_time = None
+        config = BudgetConfig(max_time_per_phase_seconds=1.0)
+        check_phase_time(state, config)  # Should not raise
+
+
+class TestCheckAllBudgets:
+    def test_all_under_limit(self):
+        state = SessionState(task_description="test")
+        config = BudgetConfig()
+        check_all_budgets(state, config)  # Should not raise
+
+    def test_iterations_checked_first(self):
+        """When both iterations and retries are exceeded, TotalIterationsExhausted fires."""
+        state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)
+        state.total_iterations = 30
+        state.phase_retries[Phase.CONTRACT] = 5
+        config = BudgetConfig(max_total_iterations=30, max_phase_retries=3)
+        with pytest.raises(TotalIterationsExhausted):
+            check_all_budgets(state, config)
+
+
+class TestExceptionHierarchy:
+    def test_all_subclass_budget_exhausted(self):
+        assert issubclass(PhaseRetriesExhausted, BudgetExhausted)
+        assert issubclass(TotalIterationsExhausted, BudgetExhausted)
+        assert issubclass(PhaseTimeoutExhausted, BudgetExhausted)
+
+    def test_catch_base_catches_all(self):
+        """except BudgetExhausted catches all specific exception types."""
+        exceptions = [
+            PhaseRetriesExhausted(Phase.INTAKE, 3, 3),
+            TotalIterationsExhausted(30, 30),
+            PhaseTimeoutExhausted(Phase.INTAKE, 400.0, 300.0),
+        ]
+        for exc in exceptions:
+            try:
+                raise exc
+            except BudgetExhausted:
+                pass  # Expected
+
+```
+
+## `tests/test_kernel_orchestrator.py`
+
+```python
+# tests/test_kernel_orchestrator.py — Tests for the Orchestrator
+
+import time
+import pytest
+
+from core.kernel.state import Phase, SessionState
+from core.kernel.budgets import BudgetConfig
+from core.kernel.orchestrator import Orchestrator, PhaseResult
+
+
+class ConfigurableDispatcher:
+    """Test stub that returns configured PhaseResult per phase."""
+
+    def __init__(self, results=None):
+        self.results = results or {}
+        self.call_log = []
+        self.default_result = PhaseResult(success=True)
+        self._call_count = {}  # Phase -> number of times dispatched
+
+    def dispatch(self, phase, state):
+        self.call_log.append(phase)
+        count = self._call_count.get(phase, 0)
+        self._call_count[phase] = count + 1
+
+        result_or_fn = self.results.get(phase, self.default_result)
+        if callable(result_or_fn):
+            return result_or_fn(count)
+        return result_or_fn
+
+
+class TestOrchestratorHappyPath:
+    def test_drives_through_all_phases(self):
+        """With all-success dispatcher, orchestrator visits every phase."""
+        dispatcher = ConfigurableDispatcher()
+        orch = Orchestrator(dispatcher=dispatcher)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_final_state_is_completed(self):
+        dispatcher = ConfigurableDispatcher()
+        orch = Orchestrator(dispatcher=dispatcher)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+        assert state.halt_reason is None
+
+    def test_all_phases_dispatched(self):
+        """Dispatcher receives all 10 execution phases plus FINALIZE."""
+        dispatcher = ConfigurableDispatcher()
+        orch = Orchestrator(dispatcher=dispatcher)
+        orch.run("test task")
+        expected = [
+            Phase.INTAKE, Phase.CONTRACT, Phase.REPO_MAP, Phase.PLAN,
+            Phase.RETRIEVE, Phase.PATCH, Phase.CRITIQUE, Phase.RUN,
+            Phase.FINALIZE,
+        ]
+        assert dispatcher.call_log == expected
+
+    def test_total_iterations_counted(self):
+        dispatcher = ConfigurableDispatcher()
+        orch = Orchestrator(dispatcher=dispatcher)
+        state = orch.run("test task")
+        # 9 transitions: INTAKE->CONTRACT->...->RUN->FINALIZE->COMPLETED
+        assert state.total_iterations == 9
+
+
+class TestOrchestratorFixLoop:
+    def test_fix_loops_back_to_patch(self):
+        """When RUN fails, FIX is dispatched, then loops to PATCH."""
+        call_count = {"run": 0}
+
+        def run_result(count):
+            call_count["run"] += 1
+            if call_count["run"] <= 1:
+                return PhaseResult(success=False, error="tests failed")
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher(results={
+            Phase.RUN: run_result,
+        })
+        orch = Orchestrator(dispatcher=dispatcher)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_fix_loop_eventually_succeeds(self):
+        """If RUN fails twice then succeeds, state ends COMPLETED."""
+        call_count = {"run": 0}
+
+        def run_result(count):
+            call_count["run"] += 1
+            if call_count["run"] <= 2:
+                return PhaseResult(success=False, error="tests failed")
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher(results={
+            Phase.RUN: run_result,
+        })
+        orch = Orchestrator(dispatcher=dispatcher)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_fix_loop_call_order(self):
+        """Call log shows correct FIX loop sequence."""
+        call_count = {"run": 0}
+
+        def run_result(count):
+            call_count["run"] += 1
+            if call_count["run"] <= 1:
+                return PhaseResult(success=False, error="tests failed")
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher(results={
+            Phase.RUN: run_result,
+        })
+        orch = Orchestrator(dispatcher=dispatcher)
+        orch.run("test task")
+        expected = [
+            Phase.INTAKE, Phase.CONTRACT, Phase.REPO_MAP, Phase.PLAN,
+            Phase.RETRIEVE, Phase.PATCH, Phase.CRITIQUE, Phase.RUN,
+            Phase.FIX,
+            Phase.PATCH, Phase.CRITIQUE, Phase.RUN,
+            Phase.FINALIZE,
+        ]
+        assert dispatcher.call_log == expected
+
+
+class TestOrchestratorBudgetHalt:
+    def test_halts_on_total_iterations(self):
+        """Perpetual FIX loop halts after max_total_iterations."""
+        dispatcher = ConfigurableDispatcher(results={
+            Phase.RUN: PhaseResult(success=False, error="always fails"),
+        })
+        budget = BudgetConfig(max_total_iterations=15, max_phase_retries=100)
+        orch = Orchestrator(dispatcher=dispatcher, budget=budget)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.HALTED
+        assert "iterations" in state.halt_reason.lower()
+
+    def test_halts_on_phase_retries(self):
+        """Phase that always fails halts after max_phase_retries."""
+        # CONTRACT always fails -> retries accumulate on CONTRACT
+        dispatcher = ConfigurableDispatcher(results={
+            Phase.CONTRACT: PhaseResult(success=False, error="invalid"),
+        })
+        budget = BudgetConfig(max_phase_retries=2, max_total_iterations=100)
+        orch = Orchestrator(dispatcher=dispatcher, budget=budget)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.HALTED
+        assert "retries" in state.halt_reason.lower()
+
+    def test_halt_reason_set(self):
+        dispatcher = ConfigurableDispatcher(results={
+            Phase.RUN: PhaseResult(success=False, error="always fails"),
+        })
+        budget = BudgetConfig(max_total_iterations=12, max_phase_retries=100)
+        orch = Orchestrator(dispatcher=dispatcher, budget=budget)
+        state = orch.run("test task")
+        assert state.halt_reason is not None
+        assert len(state.halt_reason) > 0
+
+    def test_fix_loop_halts_after_budget(self):
+        """FIX loop that never succeeds halts after max_total_iterations."""
+        dispatcher = ConfigurableDispatcher(results={
+            Phase.RUN: PhaseResult(success=False, error="tests fail"),
+        })
+        budget = BudgetConfig(max_total_iterations=20, max_phase_retries=100)
+        orch = Orchestrator(dispatcher=dispatcher, budget=budget)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.HALTED
+
+
+class TestOrchestratorTimeoutHalt:
+    def test_phase_timeout_halts(self):
+        """A phase that exceeds time budget causes halt."""
+        def slow_dispatch(count):
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher()
+
+        budget = BudgetConfig(max_time_per_phase_seconds=0.0)
+        orch = Orchestrator(dispatcher=dispatcher, budget=budget)
+        state = orch.run("test task")
+        # First phase (INTAKE) is dispatched, then enter_phase to CONTRACT
+        # sets timer. Next check_all_budgets finds CONTRACT timed out.
+        assert state.current_phase == Phase.HALTED
+        assert "timed out" in state.halt_reason.lower()
+
+
+class TestOrchestratorEdgeCases:
+    def test_custom_budget(self):
+        dispatcher = ConfigurableDispatcher()
+        budget = BudgetConfig(max_total_iterations=50)
+        orch = Orchestrator(dispatcher=dispatcher, budget=budget)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_default_budget(self):
+        dispatcher = ConfigurableDispatcher()
+        orch = Orchestrator(dispatcher=dispatcher)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_dispatcher_returns_raw_value(self):
+        """If dispatcher returns non-PhaseResult, it gets wrapped as success."""
+
+        class RawDispatcher:
+            def dispatch(self, phase, state):
+                return "raw value"
+
+        orch = Orchestrator(dispatcher=RawDispatcher())
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+
+```
+
+## `tests/test_kernel_state.py`
+
+```python
+# tests/test_kernel_state.py — Tests for Phase enum, transitions, and SessionState
+
+import time
+import pytest
+
+from core.kernel.state import (
+    Phase,
+    TRANSITIONS,
+    InvalidTransition,
+    validate_transition,
+    SessionState,
+)
+
+
+class TestPhaseEnum:
+    def test_all_phases_defined(self):
+        """All 12 phases exist (10 execution + HALTED + COMPLETED)."""
+        names = {p.name for p in Phase}
+        expected = {
+            "INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE",
+            "PATCH", "CRITIQUE", "RUN", "FIX", "FINALIZE",
+            "HALTED", "COMPLETED",
+        }
+        assert names == expected
+
+    def test_phase_values_unique(self):
+        """Every Phase member has a unique value."""
+        values = [p.value for p in Phase]
+        assert len(values) == len(set(values))
+
+
+class TestTransitions:
+    def test_intake_to_contract(self):
+        validate_transition(Phase.INTAKE, Phase.CONTRACT)
+
+    def test_linear_progression(self):
+        """Each phase in the linear chain transitions to the next."""
+        chain = [
+            Phase.INTAKE, Phase.CONTRACT, Phase.REPO_MAP, Phase.PLAN,
+            Phase.RETRIEVE, Phase.PATCH, Phase.CRITIQUE, Phase.RUN,
+        ]
+        for i in range(len(chain) - 1):
+            validate_transition(chain[i], chain[i + 1])
+
+    def test_run_to_fix(self):
+        validate_transition(Phase.RUN, Phase.FIX)
+
+    def test_run_to_finalize(self):
+        validate_transition(Phase.RUN, Phase.FINALIZE)
+
+    def test_fix_to_patch(self):
+        validate_transition(Phase.FIX, Phase.PATCH)
+
+    def test_finalize_to_completed(self):
+        validate_transition(Phase.FINALIZE, Phase.COMPLETED)
+
+    def test_halted_is_terminal(self):
+        assert TRANSITIONS[Phase.HALTED] == frozenset()
+
+    def test_completed_is_terminal(self):
+        assert TRANSITIONS[Phase.COMPLETED] == frozenset()
+
+    def test_invalid_transition_raises(self):
+        with pytest.raises(InvalidTransition):
+            validate_transition(Phase.INTAKE, Phase.RUN)
+
+    def test_backward_transition_raises(self):
+        with pytest.raises(InvalidTransition):
+            validate_transition(Phase.CONTRACT, Phase.INTAKE)
+
+    def test_every_non_terminal_can_halt(self):
+        """Every phase except HALTED/COMPLETED allows transition to HALTED."""
+        terminals = {Phase.HALTED, Phase.COMPLETED}
+        for phase in Phase:
+            if phase in terminals:
+                continue
+            assert Phase.HALTED in TRANSITIONS[phase], (
+                f"{phase.name} cannot transition to HALTED"
+            )
+
+
+class TestSessionState:
+    def test_initial_state(self):
+        state = SessionState(task_description="do something")
+        assert state.current_phase == Phase.INTAKE
+        assert state.total_iterations == 0
+        assert state.phase_retries == {}
+        assert state.halt_reason is None
+        assert state.task_description == "do something"
+
+    def test_enter_phase_increments_iterations(self):
+        state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)
+        assert state.total_iterations == 1
+        state.enter_phase(Phase.REPO_MAP)
+        assert state.total_iterations == 2
+
+    def test_enter_phase_sets_timer(self):
+        state = SessionState(task_description="test")
+        assert state.phase_start_time is None
+        state.enter_phase(Phase.CONTRACT)
+        assert state.phase_start_time is not None
+        assert state.phase_start_time <= time.monotonic()
+
+    def test_enter_invalid_phase_raises(self):
+        state = SessionState(task_description="test")
+        with pytest.raises(InvalidTransition):
+            state.enter_phase(Phase.RUN)
+
+    def test_record_phase_retry(self):
+        state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)
+        count = state.record_phase_retry(Phase.CONTRACT)
+        assert count == 1
+        count = state.record_phase_retry(Phase.CONTRACT)
+        assert count == 2
+
+    def test_halt_sets_reason(self):
+        state = SessionState(task_description="test")
+        state.halt("budget exceeded")
+        assert state.current_phase == Phase.HALTED
+        assert state.halt_reason == "budget exceeded"
+
+    def test_complete_from_finalize(self):
+        state = SessionState(task_description="test")
+        # Walk to FINALIZE
+        state.enter_phase(Phase.CONTRACT)
+        state.enter_phase(Phase.REPO_MAP)
+        state.enter_phase(Phase.PLAN)
+        state.enter_phase(Phase.RETRIEVE)
+        state.enter_phase(Phase.PATCH)
+        state.enter_phase(Phase.CRITIQUE)
+        state.enter_phase(Phase.RUN)
+        state.enter_phase(Phase.FINALIZE)
+        state.complete()
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_complete_from_wrong_phase_raises(self):
+        state = SessionState(task_description="test")
+        with pytest.raises(InvalidTransition):
+            state.complete()
+
+```
+
+## `tests/test_lobi.py`
+
+```python
+# tests/test_lobi.py — Tests for Lobi personality
+
+import pytest
+from tests.conftest import FakeUnifiedClient
+
+
+class TestLobi:
+    def test_personality(self, fake_client, memory, fake_tools):
+        from lobi.lobi import Lobi
+        lobi = Lobi(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert lobi.personality == "lobi"
+
+    def test_default_model(self, fake_client, memory, fake_tools):
+        from lobi.lobi import Lobi
+        lobi = Lobi(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert lobi.model == "gpt-5-mini"
+
+    def test_default_provider(self, fake_client, memory, fake_tools):
+        from lobi.lobi import Lobi
+        lobi = Lobi(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert lobi.provider == "openai"
+
+    def test_text_color(self, fake_client, memory, fake_tools):
+        from lobi.lobi import Lobi
+        lobi = Lobi(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert lobi.text_color == "cyan"
+
+    def test_system_message_contains_lobi(self, fake_client, memory, fake_tools):
+        from lobi.lobi import Lobi
+        lobi = Lobi(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert "Lobi" in lobi.system_message
+
+    def test_di_forwarding(self, fake_client, memory, fake_tools):
+        """Verify **kwargs forwards client/memory/tools to Elf.__init__."""
+        from lobi.lobi import Lobi
+        lobi = Lobi(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert lobi.client is fake_client
+        assert lobi.memory is memory
+        assert lobi.tools is fake_tools
+
+    def test_examples_not_empty(self, fake_client, memory, fake_tools):
+        from lobi.lobi import Lobi
+        lobi = Lobi(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        assert len(lobi.examples) > 0
+
+    def test_chat_works(self, fake_client, memory, fake_tools):
+        from lobi.lobi import Lobi
+        lobi = Lobi(debug=False, client=fake_client, memory=memory, tools=fake_tools)
+        result = lobi.chat("hello", stream=False)
+        assert result == "Hello from fake client"
+
+```
+
+## `tests/test_messages.py`
+
+```python
+# tests/test_messages.py — Tests for message assembly functions
+
+from core.runtime.messages import build_system_prompt, build_chat_context
+
+
+class TestBuildSystemPrompt:
+    def _describe(self, name):
+        return {"description": f"desc for {name}"}
+
+    def test_includes_system_message(self):
+        result = build_system_prompt("You are a bot.", [], self._describe, [])
+        assert "You are a bot." in result
+
+    def test_includes_tool_descriptions(self):
+        result = build_system_prompt(
+            "sys", ["run_shell"], self._describe, []
+        )
+        assert "run_shell: desc for run_shell" in result
+
+    def test_includes_examples(self):
+        examples = [("How?", "Like this.")]
+        result = build_system_prompt("sys", [], self._describe, examples)
+        assert "User: How?" in result
+        assert "Assistant: Like this." in result
+
+    def test_handles_empty_tools_and_examples(self):
+        result = build_system_prompt("sys", [], self._describe, [])
+        assert "sys" in result
+        assert "tools" in result.lower()
+
+    def test_multiple_tools(self):
+        result = build_system_prompt(
+            "sys", ["tool_a", "tool_b"], self._describe, []
+        )
+        assert "tool_a: desc for tool_a" in result
+        assert "tool_b: desc for tool_b" in result
+
+    def test_multiple_examples(self):
+        examples = [("Q1", "A1"), ("Q2", "A2")]
+        result = build_system_prompt("sys", [], self._describe, examples)
+        assert "User: Q1" in result
+        assert "User: Q2" in result
+
+
+class TestBuildChatContext:
+    def test_replaces_system_message(self):
+        history = [
+            {"role": "system", "content": "old system"},
+            {"role": "user", "content": "hello"},
+        ]
+        result = build_chat_context("new system prompt", history)
+        assert result[0]["role"] == "system"
+        assert result[0]["content"] == "new system prompt"
+
+    def test_preserves_history(self):
+        history = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg1"},
+            {"role": "assistant", "content": "reply1"},
+        ]
+        result = build_chat_context("sys prompt", history)
+        assert len(result) == 3
+        assert result[1]["content"] == "msg1"
+        assert result[2]["content"] == "reply1"
+
+    def test_appends_tool_context(self):
+        history = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+        ]
+        result = build_chat_context("sys prompt", history, invoked_tools=["run_shell"])
+        assert "[Tool Context]" in result[0]["content"]
+        assert "run_shell" in result[0]["content"]
+
+    def test_no_tool_context_when_none(self):
+        history = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+        ]
+        result = build_chat_context("sys prompt", history, invoked_tools=None)
+        assert "[Tool Context]" not in result[0]["content"]
+
+    def test_empty_history_beyond_system(self):
+        history = [{"role": "system", "content": "sys"}]
+        result = build_chat_context("new sys", history)
+        assert len(result) == 1
+        assert result[0]["content"] == "new sys"
+
+```
+
+## `tests/test_provider_config.py`
+
+```python
+# tests/test_provider_config.py — Tests for provider resolution and defaults
+
+import os
+import pytest
+
+from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
+
+
+class TestDefaultModels:
+    def test_openai_default(self):
+        assert DEFAULT_MODELS["openai"] == "gpt-4o-mini"
+
+    def test_mistral_default(self):
+        assert DEFAULT_MODELS["mistral"] == "codestral-latest"
+
+    def test_keys(self):
+        assert set(DEFAULT_MODELS.keys()) == {"openai", "mistral"}
+
+
+class TestResolveProvider:
+    def test_explicit_provider(self):
+        assert resolve_provider(requested="mistral", has_injected_client=True) == "mistral"
+
+    def test_explicit_openai(self):
+        assert resolve_provider(requested="openai", has_injected_client=True) == "openai"
+
+    def test_env_var(self, monkeypatch):
+        monkeypatch.setenv("ELF_PROVIDER", "mistral")
+        assert resolve_provider(has_injected_client=True) == "mistral"
+
+    def test_default_is_openai(self):
+        assert resolve_provider(has_injected_client=True) == "openai"
+
+    def test_injected_client_skips_fallback(self):
+        """With an injected client, no key checking / fallback happens."""
+        result = resolve_provider(requested="openai", has_injected_client=True)
+        assert result == "openai"
+
+    def test_fallback_openai_to_mistral(self, monkeypatch):
+        """No OpenAI key -> falls back to mistral."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("MISTRAL_API_KEY", "key")
+        result = resolve_provider(requested="openai", has_injected_client=False)
+        assert result == "mistral"
+
+    def test_fallback_mistral_to_openai(self, monkeypatch):
+        """No Mistral key -> falls back to openai."""
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        result = resolve_provider(requested="mistral", has_injected_client=False)
+        assert result == "openai"
+
+    def test_case_insensitive(self):
+        assert resolve_provider(requested="OpenAI", has_injected_client=True) == "openai"
+
+    def test_strips_whitespace(self):
+        assert resolve_provider(requested="  mistral  ", has_injected_client=True) == "mistral"
+
+```
+
+## `tests/test_tools_registry.py`
+
+```python
+# tests/test_tools_registry.py
+
+import pytest
+from unittest.mock import MagicMock, patch
+
+from core.tools import Tools
+from core.tools.tool import Tool
+
+
+def _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython, spec=False):
+    """Helper: configure mocked constructors so Tools.__init__ can register them."""
+    mocks = {
+        "run_shell_command": MockShell,
+        "run_python_code": MockPython,
+        "install_project": MockInstall,
+        "fetch_page": MockFetch,
+        "perform_web_search": MockWeb,
+    }
+    for name, mock_cls in mocks.items():
+        instance = MagicMock(spec=Tool) if spec else MagicMock()
+        instance.name = name
+        instance.info.return_value = {"name": name, "description": f"Mock {name}"}
+        mock_cls.return_value = instance
+    return mocks
+
+
+class TestToolsRegistry:
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_list_tools(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        """Tools registry lists all registered tools."""
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        names = tools.list_tools()
+        assert "run_shell_command" in names
+        assert "run_python_code" in names
+        assert "install_project" in names
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_get_tool(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython, spec=True)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        shell = tools.get_tool("run_shell_command")
+        assert shell is not None
+        assert tools.get_tool("nonexistent") is None
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_describe_tool(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython, spec=True)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        desc = tools.describe_tool("run_shell_command")
+        assert "description" in desc
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_describe_unknown_tool(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        desc = tools.describe_tool("nonexistent")
+        assert "error" in desc
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_run_tool(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython, spec=True)
+        # Override the __call__ return for the shell mock
+        MockShell.return_value.return_value = "shell output"
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        result = tools.run("run_shell_command", "echo hi")
+        assert result == "shell output"
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_run_unknown_tool_raises(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        with pytest.raises(ValueError, match="No such tool"):
+            tools.run("nonexistent", "arg")
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_no_rag_tool_without_memory(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        """When memory=None, RagCrawlerTool is not registered."""
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        assert "rag_crawl" not in tools.list_tools()
+
+```
+
+## `tests/test_unified_client.py`
+
+```python
+# tests/test_unified_client.py
+
+import pytest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from core.unified_client import UnifiedClient
+from core.runtime.backends.openai_backend import OpenAIBackend
+
+
+class TestUnifiedClientOpenAI:
+    """Tests for UnifiedClient with injected OpenAI client."""
+
+    def test_injected_client_skips_key_check(self):
+        """When openai_client is provided, no API key is needed."""
+        mock_openai = MagicMock()
+        client = UnifiedClient(provider_override="openai", openai_client=mock_openai)
+        assert client.provider == "openai"
+        assert isinstance(client._backend, OpenAIBackend)
+
+    def test_chat_non_streaming(self):
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Hello!"))]
+        )
+        client = UnifiedClient(provider_override="openai", openai_client=mock_openai)
+        result = client.chat(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+        assert result == "Hello!"
+        mock_openai.chat.completions.create.assert_called_once()
+
+    def test_chat_streaming(self):
+        mock_openai = MagicMock()
+        chunks = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Hi"))]),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=" there"))]),
+        ]
+        mock_openai.chat.completions.create.return_value = iter(chunks)
+        client = UnifiedClient(provider_override="openai", openai_client=mock_openai)
+        result = client.chat(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}], stream=True)
+        collected = list(result)
+        assert len(collected) == 2
+
+    def test_missing_key_raises_without_injection(self):
+        with pytest.raises(RuntimeError, match="Missing OPENAI_API_KEY"):
+            UnifiedClient(provider_override="openai")
+
+
+class TestUnifiedClientMistral:
+    """Tests for Mistral provider (no injection needed — just key check)."""
+
+    def test_missing_mistral_key_raises(self):
+        with pytest.raises(RuntimeError, match="Missing MISTRAL_API_KEY"):
+            UnifiedClient(provider_override="mistral")
+
+    def test_unsupported_provider_raises(self):
+        with pytest.raises(ValueError, match="Unsupported provider"):
+            UnifiedClient(provider_override="unsupported")
+
+```
+
+## `tests/test_unified_memory.py`
+
+```python
+# tests/test_unified_memory.py
+
+import pytest
+import numpy as np
+
+from core.memory.memory import UnifiedMemory
+
+
+class TestShortTermMemory:
+    def test_add_and_load_short(self, memory):
+        memory.add_short("user", "hello")
+        memory.add_short("assistant", "hi there")
+        rows = memory.load_short(n=10)
+        assert len(rows) == 2
+        assert rows[0]["role"] == "user"
+        assert rows[0]["content"] == "hello"
+        assert rows[1]["role"] == "assistant"
+
+    def test_load_short_respects_limit(self, memory):
+        for i in range(10):
+            memory.add_short("user", f"msg {i}")
+        rows = memory.load_short(n=3)
+        assert len(rows) == 3
+
+    def test_reset_short(self, memory):
+        memory.add_short("user", "something")
+        memory.reset_short()
+        rows = memory.load_short()
+        assert len(rows) == 0
+
+    def test_load_short_empty(self, memory):
+        rows = memory.load_short()
+        assert rows == []
+
+
+class TestLongTermMemory:
+    def test_add_and_search_long(self, memory):
+        memory.add_long("user", "The capital of France is Paris")
+        memory.add_long("assistant", "Paris is a beautiful city")
+        results = memory.search_long("What is the capital of France?", top_k=2)
+        assert len(results) > 0
+        assert all("content" in r for r in results)
+
+    def test_search_long_empty(self, memory):
+        results = memory.search_long("anything")
+        assert results == []
+
+    def test_purge_long(self, memory):
+        memory.add_long("user", "remember this")
+        memory.purge_long()
+        assert memory.long_index is None
+        assert memory.long_id_map == []
+        results = memory.search_long("remember")
+        assert results == []
+
+
+class TestAdventures:
+    def test_add_and_list_adventures(self, memory):
+        memory.add_adventure("test prompt", "print('hi')", "hi", "python", True)
+        memory.add_adventure("test 2", "ls -la", "files", "shell", False)
+        adventures = memory.list_adventures(n=10)
+        assert len(adventures) == 2
+        assert adventures[0]["prompt"] == "test prompt"
+        assert adventures[0]["success"] is True
+        assert adventures[1]["success"] is False
+
+    def test_list_adventures_empty(self, memory):
+        assert memory.list_adventures() == []
+
+
+class TestModelLock:
+    def test_model_lock_mismatch_raises(self, tmp_path, fake_embedding_client):
+        db = tmp_path / "lock_test.db"
+        UnifiedMemory(db, model="text-embedding-3-large", embedding_client=fake_embedding_client)
+        with pytest.raises(RuntimeError, match="Embedding model mismatch"):
+            UnifiedMemory(db, model="text-embedding-3-small", embedding_client=fake_embedding_client)
+
+    def test_model_lock_same_model_ok(self, tmp_path, fake_embedding_client):
+        db = tmp_path / "lock_test2.db"
+        UnifiedMemory(db, model="text-embedding-3-large", embedding_client=fake_embedding_client)
+        mem2 = UnifiedMemory(db, model="text-embedding-3-large", embedding_client=fake_embedding_client)
+        assert mem2.model == "text-embedding-3-large"
+
+
+class TestIndexRebuild:
+    def test_rebuild_long_index_from_db(self, tmp_path, fake_embedding_client):
+        db = tmp_path / "rebuild_test.db"
+        mem1 = UnifiedMemory(db, embedding_client=fake_embedding_client)
+        mem1.add_long("user", "fact one")
+        mem1.add_long("user", "fact two")
+
+        # Create a new instance — it should rebuild from DB
+        mem2 = UnifiedMemory(db, embedding_client=fake_embedding_client)
+        assert mem2.long_index is not None
+        assert len(mem2.long_id_map) == 2
 
 ```
 
@@ -6711,9 +9179,24 @@ setup(
             📄 lobi.py
 📁 configs/
 📁 core/
+    📁 kernel/
+        📄 __init__.py
+        📄 budgets.py
+        📄 orchestrator.py
+        📄 state.py
     📁 memory/
         📄 __init__.py
         📄 memory.py
+    📁 runtime/
+        📁 backends/
+            📄 __init__.py
+            📄 base.py
+            📄 local_backend.py
+            📄 mistral_backend.py
+            📄 openai_backend.py
+        📄 __init__.py
+        📄 messages.py
+        📄 provider_config.py
     📁 tools/
         📁 recon/
             📄 __init__.py
@@ -6757,6 +9240,24 @@ setup(
     📄 lobi.py
     📄 README.md
 📁 scripts/
+📁 tests/
+    📄 __init__.py
+    📄 conftest.py
+    📄 test_backends.py
+    📄 test_base_subprocess.py
+    📄 test_cli_smoke.py
+    📄 test_elf.py
+    📄 test_elf_run_task.py
+    📄 test_judais.py
+    📄 test_kernel_budgets.py
+    📄 test_kernel_orchestrator.py
+    📄 test_kernel_state.py
+    📄 test_lobi.py
+    📄 test_messages.py
+    📄 test_provider_config.py
+    📄 test_tools_registry.py
+    📄 test_unified_client.py
+    📄 test_unified_memory.py
 📄 LICENSE
 📄 main.py
 📄 Makefile
@@ -6764,6 +9265,7 @@ setup(
 📄 pyproject.toml
 📄 README.md
 📄 requirements.txt
+📄 ROADMAP.md
 📄 setup.py
 📄 speech.wav
 📄 STORY.md

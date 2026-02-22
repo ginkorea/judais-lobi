@@ -1,158 +1,259 @@
 # 🧠 judais-lobi
 
-> *"The mind was sacred once. But we sold it—  
-> and no refund is coming."*
+> Artifact-driven. Capability-gated. GPU-aware.
+> Not a chatbot. A kernel.
 
 ---
 
-[![PyPI](https://img.shields.io/pypi/v/judais-lobi?color=blue&label=PyPI)](https://pypi.org/project/judais-lobi/)
+[![PyPI](https://img.shields.io/pypi/v/judais-lobi?color=blue\&label=PyPI)](https://pypi.org/project/judais-lobi/)
 [![Python](https://img.shields.io/pypi/pyversions/judais-lobi.svg)](https://pypi.org/project/judais-lobi/)
 [![License](https://img.shields.io/github/license/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi/blob/main/LICENSE)
 [![Last Commit](https://img.shields.io/github/last-commit/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi/commits/main)
-[![GitHub stars](https://img.shields.io/github/stars/ginkorea/judais-lobi?style=social)](https://github.com/ginkorea/judais-lobi/stargazers)
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png" alt="JudAIs & Lobi" width="400">
-</p>
+[![Repo Size](https://img.shields.io/github/repo-size/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi)
+[![Code Size](https://img.shields.io/github/languages/code-size/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi)
+[![Issues](https://img.shields.io/github/issues/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi/issues)
+[![Stars](https://img.shields.io/github/stars/ginkorea/judais-lobi?style=social)](https://github.com/ginkorea/judais-lobi/stargazers)
 
 ---
 
 ## 🔴 JudAIs & 🔵 Lobi
 
-JudAIs & Lobi are dual AI agents that share a powerful toolchain and memory system:
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png" alt="JudAIs & Lobi" width="420">
+</p>
 
-- 🧝 **Lobi**: your helpful Linux elf—mischievous, whimsical, full of magic and madness.  
-- 🧠 **JudAIs**: your autonomous adversarial intelligence—strategic, efficient, subversive.  
+Two agents. One spine.
 
-They share:
-- 🛠 Tools for shell, Python, web scraping, and project installation  
-- 🧠 Unified SQLite + FAISS memory (short-term, long-term, archive, adventures)  
-- 📚 Archive (RAG) system with PDF/DOCX/TXT/code ingestion  
-- ⚙️ Modular architecture to execute, reflect, and evolve  
+* 🧝 **Lobi** — whimsical Linux elf, creative, narrative, curious.
+* 🧠 **JudAIs** — strategic adversarial twin, efficient, ruthless, execution-first.
 
-> Looking for the lore? See [STORY.md](STORY.md).
+They are no longer just terminal personalities.
+
+They are evolving into a **local-first, contract-driven autonomous developer system**.
 
 ---
 
-## 📦 Install
+# 🚧 Current Status
 
-### Requirements
-- Python 3.11+
-- OpenAI API key
+See: `ROADMAP.md` 
 
-### Install package
+### Completed
+
+* ✅ Phase 0 — Dependency Injection & Test Harness
+* ✅ Phase 1 — Runtime extraction (provider separation)
+* ✅ Phase 2 — Kernel State Machine & Hard Budgets
+
+### In Progress (Architectural Pivot)
+
+* ⏳ Phase 3 — Session Artifacts & Contracts
+* ⏳ Phase 4 — Tool Bus + Sandboxing
+* ⏳ Phase 5+ — Repo Map, Patch Engine, Composite Judge
+
+This repo is transitioning from:
+
+```
+Chat CLI + Tools
+```
+
+to:
+
+```
+Kernel-Orchestrated Agentic Developer System
+```
+
+If you are reading this during the transition, understand: backward compatibility may bend.
+
+The direction is deliberate.
+
+---
+
+# 🧭 Where To Look
+
+If you want to understand the **future**, read:
+
+* 📜 `ROADMAP.md` — architectural blueprint 
+
+If you want to understand the **current implementation**, inspect:
+
+* `core/elf.py`  — legacy conversational core (scheduled for deletion in Phase 3)
+* `core/cli.py`  — CLI interface layer
+* `core/memory/memory.py`  — FAISS-backed long-term memory
+* `core/tools/` — tool implementations (shell, python, web, install, voice)
+* `lobi/`  and `judais/`  — personality overlays
+
+If you want to understand the **entry point**, see:
+
+* `main.py` 
+* `setup.py` 
+
+---
+
+# 🏗 Architectural Direction
+
+The target architecture (from the roadmap) is:
+
+* Artifact-driven state (no conversational drift)
+* Deterministic state machine
+* Capability-gated tool execution
+* Sandbox isolation (bwrap / nsjail)
+* Tests > Lint > LLM scoring hierarchy
+* GPU-aware orchestration (vLLM / TRT-LLM)
+* Optional external critic (frontier logic auditor)
+
+The system is moving toward:
+
+```
+CLI
+  ↓
+Kernel State Machine
+  ↓
+Roles (Planner / Coder / Reviewer)
+  ↓
+ToolBus → Sandbox → Subprocess
+  ↓
+Deterministic Judge
+```
+
+Eventually:
+
+* `elf.py` disappears.
+* History is replaced by artifacts.
+* Tools become dumb executors.
+* The kernel becomes the intelligence.
+
+This is not cosmetic refactoring.
+It is structural.
+
+---
+
+# 🧠 Memory System (Current)
+
+Long-term memory uses:
+
+* SQLite-backed JSON persistence
+* FAISS vector index
+* OpenAI embeddings (currently)
+
+See: `core/memory/memory.py` 
+
+This will be abstracted for local embeddings in later phases.
+
+Short-term history currently lives in JSON files per agent.
+This is being phased out in favor of session artifacts.
+
+---
+
+# 🛠 Current Capabilities
+
+Direct mode still works.
+
+```bash
+lobi "explain this function"
+lobi --shell "list files"
+lobi --python "plot sine wave"
+lobi --search "latest linux kernel"
+lobi --install-project
+```
+
+JudAIs:
+
+```bash
+judais "analyze this target" --shell
+```
+
+Voice (optional extra):
+
+```bash
+pip install judais-lobi[voice]
+lobi "sing" --voice
+```
+
+---
+
+# 🧪 Install
 
 ```bash
 pip install judais-lobi
-````
-
-### Setup API key
-
-Create a file `~/.elf_env` with:
-
-```env
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
 
-Or export inline:
+Requires:
+
+* Python 3.10+
+* OpenAI API key (for now)
+* Linux recommended
+
+Set API key:
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
----
+Or create:
 
-## 🚀 Examples
-
-### 🧝 Run Lobi
-
-```bash
-lobi "hello Lobi"
 ```
-
-### 🧠 Run JudAIs
-
-```bash
-judais "who should we target today?" --shell
+~/.elf_env
 ```
 
 ---
 
-### 📂 Archive (RAG)
+# 🔮 What This Is Becoming
 
-```bash
-# Crawl Markdown docs
-lobi "summarize project docs" --archive crawl --dir ~/workspace/docs --include "*.md"
+Judais-Lobi is not trying to be:
 
-# Crawl a PDF
-lobi "summarize contract" --archive crawl ~/contracts/deal.pdf
+* Another chat wrapper
+* Another SaaS IDE
+* Another prompt toy
 
-# Find knowledge in archive
-lobi "how does memory work?" --archive find "UnifiedMemory" --dir ~/workspace/judais-lobi
+It is attempting to become:
 
-# Overwrite (delete + reindex)
-lobi "refresh docs" --archive overwrite --dir ~/workspace/docs
+* A local-first agentic developer kernel
+* Deterministic and replayable
+* Hardware-aware
+* Capability-constrained
+* Air-gap ready
 
-# Delete from archive
-lobi "forget this" --archive delete --dir ~/contracts/deal.pdf
+The design philosophy is explicit in `ROADMAP.md` :
 
-# Check archive status
-lobi "status check" --archive status
-```
+* Artifacts over chat
+* Budgets over infinite loops
+* Capabilities over trust
+* Dumb tools, smart kernel
+* Commit or abort
 
----
+That last one matters.
 
-### 🛠 Tools
-
-JudAIs & Lobi include a shared toolchain that can be invoked directly from the CLI.
-
-#### 🔧 Shell
-
-```bash
-lobi "list all Python files" --shell
-lobi "check disk usage" --shell --summarize
-```
-
-#### 🐍 Python
-
-```bash
-lobi "plot a sine wave with matplotlib" --python
-lobi "fetch bitcoin price using requests" --python
-```
-
-#### 🌐 Web Search
-
-```bash
-lobi "what is the latest Linux kernel release?" --search
-lobi "explain llama.cpp server mode" --search --deep
-```
-
-#### 📦 Install Project
-
-```bash
-lobi "install this project" --install-project
-```
-
-#### 📚 Archive + RAG
-
-* `crawl`: index directories and files (PDF, DOCX, TXT, Markdown, code)
-* `find`: semantic search across archive
-* `delete`: remove from archive
-* `overwrite`: recrawl + replace
-* `status`: list indexed directories/files
+There will not be two systems of truth.
 
 ---
 
-### 🔊 Voice
+# 🧠 Philosophy
 
-```bash
-lobi "sing me a song" --voice
-```
+Lobi sings.
+JudAIs calculates.
 
-> Powered by Coqui TTS (`tts_models/en/vctk/vits`).
+But the system beneath them is becoming something else:
+
+A disciplined orchestration engine for machine reasoning.
+
+The aesthetic may be mythic.
+The architecture is not.
 
 ---
 
-⭐️ **If you find JudAIs or Lobi helpful, give this project a star!**
-Every ⭐️ helps us build stronger tools for AI autonomy.
+# ⭐ Contributing
 
+If you are contributing:
+
+1. Read the roadmap.
+2. Understand the phase ordering.
+3. Do not add new conversational shortcuts to `elf.py`.
+4. Do not bypass tool execution through direct subprocess calls.
+5. Every structural change must preserve deterministic replay.
+
+This is an architectural project, not a feature factory.
+
+---
+
+# 🧾 License
+
+GPLv3 — see LICENSE.
