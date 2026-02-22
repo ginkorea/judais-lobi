@@ -253,18 +253,22 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 * Implement automatic rollback on patch failure.
 **Definition of Done:** Patch protocol produces reproducible edits. Edits failing exact-match validation automatically trigger a budget-constrained retry.
 
-### Phase 7 – Multi-Role Orchestrator & Composite Judge
+### Phase 7 – Multi-Role Orchestrator, Composite Judge & External Critic
 
-**Goal:** Team-of-teams behavior via deterministic scoring hierarchy.
-**Tasks:**
+**Goal:** Team-of-teams behavior via deterministic scoring hierarchy, with an optional external frontier-model critic for catching "confident wrong" failures from local models.
 
-* Implement the **Composite Judge** as hard policy, not vibes:
+#### 7.1 Composite Judge
+
+Implement the **Composite Judge** as hard policy, not vibes:
+
 1. `pytest`/`stdout` (Hard Pass/Fail — stops everything).
 2. `pyright`/`lint` (Static analysis — blocks promotion unless explicitly waived by policy).
 3. `LLM Reviewer` (Qualitative — breaks ties only, flags risks). *LLM never overrides green/red tests.*
+4. `External Critic` (Optional — frontier-model logic auditor, see 7.3). *Never blocks if unavailable or refuses. Never overrides green/red tests.*
 
+#### 7.2 Candidate Sampling
 
-* Implement candidate sampling with hardware-adaptive concurrency (see VRAM Budget Note).
+Implement candidate sampling with hardware-adaptive concurrency (see VRAM Budget Note).
 
 **VRAM Budget Note:** Candidate sampling concurrency is dictated by the GPU profile, not hardcoded. The system must query available VRAM at startup and select a strategy accordingly:
 
@@ -279,7 +283,110 @@ The runtime must expose a `gpu_profile` configuration (auto-detected or user-spe
 
 **Deterministic candidate ordering:** When candidates are generated in parallel (across GPUs or concurrent requests), assign deterministic candidate IDs (`candidate_0`, `candidate_1`, ...) **before dispatch**. The Composite Judge scores candidates in ID order, not completion order. Otherwise the winning candidate depends on which GPU returns first — a race condition that breaks reproducibility.
 
-**Definition of Done:** Generates competing patches, grades them deterministically, discards test failures, and selects the proven winner.
+#### 7.3 External Critic (Optional Frontier-Model Auditor)
+
+**Motivation:** Local models are effective builders but vulnerable to "confident wrong" — logically coherent plans that miss critical assumptions, patches that pass tests but violate deeper constraints, or review loops that converge on the wrong answer. An external frontier model provides an independent logic audit without replacing local execution.
+
+**Architecture:**
+
+* **Local model = builder** (Planner/Coder/Reviewer roles, patch generation, repo ops)
+* **Deterministic judge = truth oracle** (tests/lint/bench — always authoritative)
+* **External frontier model = critic** (logic auditor, risk assessor, plan sanity checker)
+
+The critic does **not** write code. It does not get tools. It does not get repo access. It only critiques artifacts. It is a judge in the balcony, not a player on the field.
+
+**Air-gap design:** The entire critic subsystem is optional. When disabled (no API key, no network, air-gapped environment, or `external_critic.enabled: false` in policy), the pipeline runs identically — the critic checkpoints become no-ops. This is enforced structurally: critic calls are **interceptors on phase transitions**, not phases in the state machine. The orchestrator checks "should I call the critic before entering this next phase?" and skips silently when the critic is unavailable.
+
+**When to call the critic (trigger-based, not every loop):**
+
+High-leverage checkpoints only:
+
+1. **After PLAN (before RETRIEVE)** — catch missing assumptions, wrong file targets, untestable approach.
+2. **After RUN passes (before FINALIZE)** — catch "green tests but wrong semantics", latent risk.
+
+Escalation triggers (automatic, budget-permitting):
+
+* \> N iterations without progress (FIX loop spinning)
+* Patch touches security-sensitive surfaces (auth, crypto, permissions)
+* Dependency changes (new packages, version bumps)
+* Large refactor scope (> K files or > M lines changed)
+* Local reviewer disagreement with local planner
+* Planning uncertainty flagged by the local model itself
+
+**What the critic sees (minimal, structured `CritiquePack`):**
+
+* `TaskContract` (constraints, allowed commands, acceptance criteria)
+* `ChangePlan` (steps, files targeted)
+* `RepoMap excerpt` (only signatures + file paths, no full source)
+* `PatchSet` summary (diff stats + snippets of changed regions only)
+* `RunReport` (if tests ran: failures or pass summary)
+* `LocalReviewerReport` (what the local reviewer thought)
+
+No full repo. No secrets. No giant logs. No tool output dumps.
+
+**Redactor (non-negotiable, runs before any external call):**
+
+* Strip secrets (keys, tokens, passwords) by pattern matching
+* Strip hostnames/IPs if redaction level is `strict`
+* Replace file contents with diff snippets or function signatures only
+* Clamp payload size hard (cost + leakage control)
+* Log: `payload_size_bytes`, `redaction_ruleset_version`, `sha256(payload)`
+
+**Critic response contract (`ExternalCriticReport`):**
+
+* `verdict`: `approve` | `caution` | `block` | `refused`
+* `top_risks`: list (severity, rationale)
+* `missing_tests`: list
+* `logic_concerns`: list
+* `suggested_plan_adjustments`: list
+* `suggested_patch_adjustments`: list
+* `questions_for_builder`: list (bounded)
+* `confidence`: 0–1
+
+**Verdict policy — the critic never kneecaps the pipeline:**
+
+| Verdict | Kernel response |
+| --- | --- |
+| `approve` | Logged, pipeline continues |
+| `caution` | Logged, surfaced to user, does **not** halt |
+| `block` | Requires plan revision **or** explicit user override recorded as artifact |
+| `refused` | Logged, **ignored**, pipeline continues as if critic was not called |
+| `unavailable` | Silent no-op, pipeline continues |
+
+The `refused` verdict is the critical design constraint. If a frontier model returns a refusal (e.g., content policy triggers on a legitimate pentesting task), the system treats it as a non-event. The critic's system prompt frames all interactions as code review of existing artifacts, never as generation requests — this minimizes refusals. But when they happen, they must never block execution. The deterministic judge (tests/lint) remains the only hard gate.
+
+**Capability gating (fits Phase 4 permission model):**
+
+Critic access is a permissioned capability, same as network access. `TaskContract` declares:
+
+* `external_critic.enabled: true|false`
+* `external_critic.provider: <name>` (e.g., "openai", "anthropic")
+* `external_critic.max_calls_per_session: k`
+* `external_critic.max_tokens_per_call: n`
+* `external_critic.redaction_level: strict|normal`
+* `external_critic.allowed_artifact_fields: [...]`
+
+Grants are logged to the session. All requests and payload hashes are recorded for auditability.
+
+**Cost control:**
+
+* Max calls per session (hard budget in `TaskContract`)
+* Max tokens per call (input and output)
+* Trigger-based invocation only (not every loop)
+* **Critic caching:** Hash the `CritiquePack`. If the same content is reviewed again (e.g., after a no-op retry), reuse the prior report. Cache keyed by `sha256(redacted_payload)`.
+
+**Implementation tasks:**
+
+1. `ExternalCriticBackend` interface (HTTP client to frontier API, uses `core/runtime/backends/` pattern)
+2. `CritiquePack` builder (assembles minimal artifact payload from session state)
+3. `Redactor` (strict by default, configurable per policy)
+4. `ExternalCriticReport` schema + Pydantic validation
+5. Critic trigger policy (when to call, what to send, what to do with verdicts)
+6. Orchestrator interceptor hooks on PLAN→RETRIEVE and RUN→FINALIZE transitions
+7. CLI: `--critic` flag to enable, `--critic-provider <name>` to select, `--no-critic` to force off
+8. Manual invocation: `lobi critic --session <id>` for post-hoc review of any session
+
+**Definition of Done:** Generates competing patches, grades them deterministically, discards test failures, and selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline.
 
 ### Phase 8 – Retrieval, Context Discipline & Local Inference
 
@@ -338,6 +445,8 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 | **Runaway Loop** | Iteration > `max_total` | Halt session | `final_report.json` | Abort to human |
 | **VRAM OOM** | CUDA OOM exception | Kill inference, reduce batch/context | `vram_oom_<n>.json` | Retry with smaller context window |
 | **Model Collapse** | Last 3 outputs >90% identical on **semantic content fields** (plan steps, patch blocks, review reasoning — not raw artifact JSON, which is naturally repetitive in structure) | Kill phase, inject prompt perturbation | `collapse_<n>.json` | Burn 1 `max_phase_retries` with forced prompt perturbation |
+| **Critic Refusal** | External critic returns `refused` verdict | Log refusal, continue pipeline as if critic was not called | `critic_refused_<n>.json` | No retry consumed — refusal is a non-event |
+| **Critic Unavailable** | Network error, timeout, or critic disabled | Silent no-op, continue pipeline | `critic_unavailable_<n>.json` | No retry consumed |
 
 ---
 
@@ -362,6 +471,7 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 * **Budgets over Infinite Loops:** Everything has a timeout and a retry cap.
 * **Dumb Tools, Smart Kernel:** Tools execute. They do not decide, retry, repair, or escalate. All intelligence lives in the kernel. If a tool contains an `if/else` about what to do next, it has too much agency.
 * **Migration over Rewrite:** Each phase must leave the system in a working state. No big-bang rewrites.
+* **Air-Gap Ready:** Every external dependency (frontier critic, API backends, network tools) is optional and capability-gated. The system must run identically with or without network access. External services add value when available but never gate execution. A `refused` response from any external service is a non-event, not a blocker.
 * **Commit or Abort:** The greatest architectural risk is partial refactor — a half-agentic, half-chatbot chimera where some paths use artifacts and others use `self.history`, where some tools go through the bus and others call subprocess directly. Each phase must fully replace the subsystem it targets. Release 0.8 can break backward compatibility. That is allowed. What is not allowed is two systems of truth running in parallel.
 
 ## 8. User Interface Contract
