@@ -22,8 +22,8 @@ def strip_markdown(md: str) -> str:
     return Text.from_markup(sio.getvalue()).plain
 
 
-def _main(Elf):
-    parser = argparse.ArgumentParser(description=f"{Elf.__name__} CLI Interface")
+def _main(AgentClass):
+    parser = argparse.ArgumentParser(description=f"{AgentClass.__name__} CLI Interface")
     parser.add_argument("message", type=str, help="Your message to the AI")
     parser.add_argument("--empty", action="store_true", help="Start new conversation")
     parser.add_argument("--purge", action="store_true", help="Purge long-term memory")
@@ -66,7 +66,7 @@ def _main(Elf):
     print(f"{GREEN}👤 You: {args.message}{RESET}")
 
     # --- instantiate Elf ---
-    elf = Elf(model=args.model, provider=args.provider)
+    elf = AgentClass(model=args.model, provider=args.provider)
     style = getattr(elf, "text_color", "cyan")
     provider_name = elf.client.provider.upper()
     console.print(f"🧠 Using provider: {provider_name} | Model: {elf.model}", style=style)
@@ -101,12 +101,12 @@ def _main(Elf):
         console.print("🧹 Starting fresh.", style=style)
     if args.purge:
         elf.purge_memory()
-        console.print(f"🧠 {Elf.__name__} purged long-term memory.", style=style)
+        console.print(f"🧠 {AgentClass.__name__} purged long-term memory.", style=style)
 
     elf.enrich_with_memory(args.message)
     if args.search:
         elf.enrich_with_search(args.message, deep=args.deep)
-        console.print(f"🔍 {Elf.__name__} searching...", style=style)
+        console.print(f"🔍 {AgentClass.__name__} searching...", style=style)
 
     if args.recall:
         n = int(args.recall[0])
@@ -124,7 +124,7 @@ def _main(Elf):
     try:
         if args.python:
             code, result, success, summary = elf.run_python_task(args.message, reflection, summarize=args.summarize)
-            console.print(f"🧠 {Elf.__name__} wrote Python:\n{code}", style=style)
+            console.print(f"🧠 {AgentClass.__name__} wrote Python:\n{code}", style=style)
             console.print(f"💥 Result:\n{result}", style=style)
             if summary:
                 console.print(f"🧾 Summary:\n{summary}", style=style)
@@ -132,7 +132,7 @@ def _main(Elf):
 
         if args.shell:
             cmd, result, success, summary = elf.run_shell_task(args.message, reflection, summarize=args.summarize)
-            console.print(f"🧠 {Elf.__name__} executed shell:\n{cmd}", style=style)
+            console.print(f"🧠 {AgentClass.__name__} executed shell:\n{cmd}", style=style)
             console.print(f"💥 Output:\n{result}", style=style)
             if summary:
                 console.print(f"🧾 Summary:\n{summary}", style=style)
@@ -147,12 +147,12 @@ def _main(Elf):
     try:
         if args.md:
             reply = elf.chat(args.message, stream=False)
-            console.print(Markdown(f"🧞 **{Elf.__name__}:** {reply}"), style=style)
+            console.print(Markdown(f"🧞 **{AgentClass.__name__}:** {reply}"), style=style)
             if args.voice:
                 elf.tools.run("speak_text", strip_markdown(reply))
         else:
             resp_iter = elf.chat(args.message, stream=True)
-            console.print(f"🧞 {Elf.__name__}: ", style=style, end="")
+            console.print(f"🧞 {AgentClass.__name__}: ", style=style, end="")
             reply = ""
             for chunk in resp_iter:
                 if hasattr(chunk, "choices"):

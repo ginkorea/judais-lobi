@@ -41,16 +41,20 @@ class Orchestrator:
 
     Reads current state, selects next phase, dispatches to roles,
     and enforces hard budgets. The orchestrator never touches the
-    filesystem directly — all I/O goes through the injected dispatcher.
+    filesystem directly — all I/O goes through the injected dispatcher
+    and optional SessionManager.
     """
 
     def __init__(
         self,
         dispatcher: RoleDispatcher,
         budget: Optional[BudgetConfig] = None,
+        session_manager=None,
     ):
         self._dispatcher = dispatcher
         self._budget = budget or BudgetConfig()
+        self._session_manager = session_manager
+        self._artifact_sequence = 0
 
     def run(self, task: str) -> SessionState:
         """Execute a complete task through the state machine.
@@ -59,10 +63,41 @@ class Orchestrator:
         """
         state = SessionState(task_description=task)
 
+        if self._session_manager is not None:
+            state.session_id = self._session_manager.session_id
+            state.session_dir = self._session_manager.session_dir
+
         while not self._is_terminal(state.current_phase):
             try:
                 check_all_budgets(state, self._budget)
+
+                # Checkpoint before PATCH for rollback on RUN failure
+                if (state.current_phase == Phase.PATCH
+                        and self._session_manager is not None):
+                    label = f"pre_PATCH_{state.total_iterations:03d}"
+                    self._session_manager.checkpoint(label)
+                    state.artifacts["_last_patch_checkpoint"] = label
+
                 result = self._execute_phase(state)
+
+                # Validate and record artifact if session_manager present
+                if result.success and self._session_manager is not None:
+                    validation_result = self._validate_and_record(state, result)
+                    if validation_result is not None:
+                        result = validation_result
+
+                # On RUN failure, attempt rollback to pre-PATCH checkpoint
+                if (state.current_phase == Phase.RUN
+                        and not result.success
+                        and self._session_manager is not None):
+                    checkpoint_label = state.artifacts.get("_last_patch_checkpoint")
+                    if checkpoint_label:
+                        try:
+                            self._session_manager.rollback(checkpoint_label)
+                            logger.info("Rolled back to checkpoint: %s", checkpoint_label)
+                        except FileNotFoundError:
+                            logger.warning("Checkpoint %s not found for rollback", checkpoint_label)
+
                 next_phase = self._select_next_phase(state, result)
                 if next_phase is not None:
                     state.enter_phase(next_phase)
@@ -91,6 +126,42 @@ class Orchestrator:
                 result.error,
             )
         return result
+
+    def _validate_and_record(self, state: SessionState, result: PhaseResult) -> Optional[PhaseResult]:
+        """Validate phase output against schema, write artifact if valid.
+
+        Returns None if validation succeeds (or no schema).
+        Returns a failed PhaseResult if validation fails (burns a retry).
+        """
+        from core.contracts.validation import get_schema_for_phase, validate_phase_output
+
+        schema = get_schema_for_phase(state.current_phase)
+        if schema is None:
+            return None
+
+        if result.output is None:
+            return None
+
+        try:
+            validated = validate_phase_output(state.current_phase, result.output)
+            path = self._session_manager.write_artifact(
+                state.current_phase.name,
+                self._artifact_sequence,
+                validated,
+            )
+            self._artifact_sequence += 1
+            state.artifacts[state.current_phase.name] = str(path)
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Validation failed for phase %s: %s",
+                state.current_phase.name, exc,
+            )
+            retry_count = state.record_phase_retry(state.current_phase)
+            return PhaseResult(
+                success=False,
+                error=f"Validation failed: {exc}",
+            )
 
     def _select_next_phase(
         self, state: SessionState, result: PhaseResult,

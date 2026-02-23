@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 
 from core.memory.memory import UnifiedMemory
 from core.kernel import BudgetConfig, SessionState
+from core.contracts.schemas import PersonalityConfig
+from core.agent import Agent
 
 
 # ---------------------------------------------------------------------------
@@ -120,3 +122,28 @@ def tight_budget():
 def session_state():
     """Fresh SessionState for kernel tests."""
     return SessionState(task_description="test task")
+
+
+# ---------------------------------------------------------------------------
+# Agent fixtures
+# ---------------------------------------------------------------------------
+
+STUB_PERSONALITY = PersonalityConfig(
+    name="stub",
+    system_message="You are a test agent.",
+    examples=[("Q?", "A.")],
+    env_path="/tmp/stub_env",
+)
+
+
+@pytest.fixture
+def test_personality():
+    return STUB_PERSONALITY.model_copy()
+
+
+@pytest.fixture
+def agent(test_personality, fake_client, memory, fake_tools):
+    return Agent(
+        config=test_personality, debug=False,
+        client=fake_client, memory=memory, tools=fake_tools,
+    )

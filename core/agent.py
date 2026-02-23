@@ -1,12 +1,13 @@
-# core/elf.py
-# Base Elf class with memory, history, tools, and chat capabilities.
+# core/agent.py
+# Concrete Agent class. PersonalityConfig replaces Elf's abstract properties.
 
 import os
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, Tuple, Any, List, Dict
 
 from dotenv import load_dotenv
+
+from core.contracts.schemas import PersonalityConfig
 from core.unified_client import UnifiedClient
 from core.memory import UnifiedMemory
 from core.tools import Tools
@@ -15,17 +16,16 @@ from core.tools.run_python import RunPythonTool
 from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
 from core.runtime.messages import build_system_prompt, build_chat_context
 
-# --- Load environment early and explicitly ---
-_ENV_PATH = Path.home() / ".elf_env"
-if _ENV_PATH.exists():
-    load_dotenv(dotenv_path=_ENV_PATH, override=True)
 
+class Agent:
+    """Concrete agent class. PersonalityConfig replaces Elf's abstract properties.
 
-class Elf(ABC):
-    """Base Elf with dual-provider support and unified chat interface."""
+    Exposes the same interface as Elf for backward compatibility.
+    """
 
     def __init__(
         self,
+        config: PersonalityConfig,
         model: Optional[str] = None,
         provider: Optional[str] = None,
         debug: bool = True,
@@ -33,54 +33,64 @@ class Elf(ABC):
         memory=None,
         tools=None,
     ):
-        from rich import print  # local to avoid hard dep when not needed
+        self._config = config
 
-        # --- Provider resolution (delegated to runtime) ---
+        # Load environment from personality-specific env file
+        env_path = Path(config.env_path).expanduser()
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=True)
+
+        # --- Provider resolution ---
         self.provider = resolve_provider(
-            requested=provider,
+            requested=provider or config.default_provider,
             has_injected_client=(client is not None),
         )
-        self.model = model or DEFAULT_MODELS[self.provider]
+        self.model = model or config.default_model or DEFAULT_MODELS[self.provider]
 
         # --- Client / memory / tools ---
         self.client = client if client is not None else UnifiedClient(provider_override=self.provider)
-        self.memory = memory if memory is not None else UnifiedMemory(Path.home() / f".{self.personality}_memory.db")
-        self.tools = tools if tools is not None else Tools(elfenv=self.env, memory=self.memory, enable_voice=False)
+        self.memory = memory if memory is not None else UnifiedMemory(
+            Path.home() / f".{self.personality}_memory.db"
+        )
+        self.tools = tools if tools is not None else Tools(
+            elfenv=self.env, memory=self.memory, enable_voice=False
+        )
 
-        # Build initial history (system + any prior short-term)
+        # Build initial history
         self.history = self._load_history()
 
         self.debug = debug
         if self.debug:
+            from rich import print
             print(f"[green]🧠 Using provider:[/green] {self.provider.upper()} | "
                   f"[cyan]Model:[/cyan] {self.model}")
 
     # =======================
-    # Abstract configuration
+    # Properties (from config)
     # =======================
     @property
-    @abstractmethod
-    def system_message(self) -> str: ...
+    def personality(self) -> str:
+        return self._config.name
 
     @property
-    @abstractmethod
-    def personality(self) -> str: ...
+    def system_message(self) -> str:
+        return self._config.system_message
 
     @property
-    @abstractmethod
-    def examples(self) -> List[List[str]]: ...
+    def examples(self) -> List[Tuple[str, str]]:
+        return self._config.examples
 
     @property
-    @abstractmethod
-    def env(self): ...
+    def text_color(self) -> str:
+        return self._config.text_color
 
     @property
-    @abstractmethod
-    def text_color(self): ...
+    def env(self) -> Path:
+        return Path(self._config.env_path).expanduser()
 
     @property
-    @abstractmethod
-    def rag_enhancement_style(self) -> str: ...
+    def rag_enhancement_style(self) -> str:
+        return self._config.rag_enhancement_style
 
     # =======================
     # History helpers
@@ -208,16 +218,15 @@ class Elf(ABC):
     # =======================
     # Agentic task execution
     # =======================
-    def run_task(self, task_description: str, budget=None):
-        """Thin adapter: delegate an agentic task to the kernel orchestrator.
-
-        Direct chat, code-gen, memory, and all other methods remain unchanged.
-        Phase 7 replaces the stub dispatcher with real role implementations.
-        """
+    def run_task(self, task_description: str, budget=None, session_manager=None):
+        """Thin adapter: delegate an agentic task to the kernel orchestrator."""
         from core.kernel import Orchestrator
 
         dispatcher = self._make_task_dispatcher()
-        orchestrator = Orchestrator(dispatcher=dispatcher, budget=budget)
+        kwargs = {"dispatcher": dispatcher, "budget": budget}
+        if session_manager is not None:
+            kwargs["session_manager"] = session_manager
+        orchestrator = Orchestrator(**kwargs)
         return orchestrator.run(task_description)
 
     def _make_task_dispatcher(self):
@@ -233,3 +242,67 @@ class Elf(ABC):
                 return PhaseResult(success=True)
 
         return StubDispatcher()
+
+    # =======================
+    # CLI methods
+    # =======================
+    def recall_adventures(self, n: int = 10, mode=None) -> List[Dict]:
+        """Recall past adventures from memory."""
+        rows = self.memory.list_adventures(n=n)
+        if mode:
+            rows = [r for r in rows if r.get("mode") == mode]
+        return rows
+
+    def format_recall(self, rows: List[Dict]) -> str:
+        """Format adventure rows for display."""
+        lines = []
+        for r in rows:
+            status = "✅" if r.get("success") else "❌"
+            lines.append(f"{status} [{r.get('mode', '?')}] {r.get('prompt', '')[:80]}")
+        return "\n".join(lines)
+
+    def handle_rag(self, subcmd: str, query: str, directory=None, **kw):
+        """Delegate RAG operations to memory/tools."""
+        if subcmd == "crawl":
+            target = Path(directory) if directory else Path(".")
+            result = self.tools.run("rag_crawler", str(target),
+                                    recursive=kw.get("recursive", False),
+                                    includes=kw.get("includes"),
+                                    excludes=kw.get("excludes"),
+                                    elf=self)
+            return None, f"Crawled: {result}"
+
+        if subcmd == "find":
+            hits = self.memory.search_rag(query, dir_filter=str(directory) if directory else None)
+            if hits:
+                for hit in hits:
+                    self.history.append({
+                        "role": "assistant",
+                        "content": f"📚 RAG [{hit['file']}]: {hit['content'][:200]}"
+                    })
+            return hits, f"Found {len(hits)} RAG results" if hits else "No RAG results found"
+
+        if subcmd == "delete":
+            target = Path(directory) if directory else Path(query)
+            self.memory.delete_rag(target)
+            return None, f"Deleted RAG entries for {target}"
+
+        if subcmd == "list" or subcmd == "status":
+            status = self.memory.rag_status()
+            msg_parts = []
+            for d, files in status.items():
+                msg_parts.append(f"📁 {d}: {len(files)} files")
+            return None, "\n".join(msg_parts) if msg_parts else "No RAG data"
+
+        if subcmd == "enhance":
+            hits = self.memory.search_rag(query, dir_filter=str(directory) if directory else None)
+            if hits:
+                rag_context = "\n".join(f"[{h['file']}]: {h['content'][:300]}" for h in hits)
+                style = self.rag_enhancement_style
+                self.history.append({
+                    "role": "assistant",
+                    "content": f"----\n#RAG CONTEXT - DO NOT REPEAT VERBATIM\n{style}\n{rag_context}\n----"
+                })
+            return hits, None
+
+        return None, f"Unknown RAG command: {subcmd}"

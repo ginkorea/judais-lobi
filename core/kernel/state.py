@@ -3,6 +3,7 @@
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 
@@ -67,6 +68,8 @@ class SessionState:
     session_start_time: float = field(default_factory=time.monotonic)
     halt_reason: Optional[str] = None
     artifacts: Dict[str, Any] = field(default_factory=dict)
+    session_id: Optional[str] = None
+    session_dir: Optional[Path] = None
 
     def enter_phase(self, phase: Phase) -> None:
         """Transition to a new phase. Validates, increments iterations, resets timer."""
