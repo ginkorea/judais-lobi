@@ -5,6 +5,9 @@ from unittest.mock import MagicMock, patch
 
 from core.tools import Tools
 from core.tools.tool import Tool
+from core.tools.bus import ToolBus
+from core.tools.capability import CapabilityEngine
+from core.contracts.schemas import PolicyPack
 
 
 def _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython, spec=False):
@@ -13,7 +16,7 @@ def _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython, spec=Fa
         "run_shell_command": MockShell,
         "run_python_code": MockPython,
         "install_project": MockInstall,
-        "fetch_page": MockFetch,
+        "fetch_page_content": MockFetch,
         "perform_web_search": MockWeb,
     }
     for name, mock_cls in mocks.items():
@@ -80,7 +83,6 @@ class TestToolsRegistry:
     @patch("core.tools.WebSearchTool")
     def test_run_tool(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
         _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython, spec=True)
-        # Override the __call__ return for the shell mock
         MockShell.return_value.return_value = "shell output"
         tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
         result = tools.run("run_shell_command", "echo hi")
@@ -107,3 +109,52 @@ class TestToolsRegistry:
         _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
         tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
         assert "rag_crawl" not in tools.list_tools()
+
+
+class TestToolsToolBusIntegration:
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_bus_property_exists(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        assert isinstance(tools.bus, ToolBus)
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_bus_has_registered_tools(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        bus_tools = tools.bus.list_tools()
+        assert "run_shell_command" in bus_tools
+        assert "run_python_code" in bus_tools
+        assert "install_project" in bus_tools
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_custom_capability_engine(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
+        policy = PolicyPack(allowed_scopes=["shell.exec"])
+        engine = CapabilityEngine(policy)
+        tools = Tools(elfenv="/tmp/fake", memory=None, capability_engine=engine)
+        assert tools.bus.capability_engine is engine
+
+    @patch("core.tools.RunPythonTool")
+    @patch("core.tools.InstallProjectTool")
+    @patch("core.tools.RunShellTool")
+    @patch("core.tools.FetchPageTool")
+    @patch("core.tools.WebSearchTool")
+    def test_bus_describe_tool(self, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
+        _setup_mocks(MockWeb, MockFetch, MockShell, MockInstall, MockPython)
+        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        desc = tools.bus.describe_tool("run_shell_command")
+        assert desc["name"] == "run_shell_command"
+        assert "shell.exec" in desc["required_scopes"]

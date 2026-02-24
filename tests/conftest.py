@@ -9,8 +9,11 @@ from unittest.mock import MagicMock
 
 from core.memory.memory import UnifiedMemory
 from core.kernel import BudgetConfig, SessionState
-from core.contracts.schemas import PersonalityConfig
+from core.contracts.schemas import PersonalityConfig, PolicyPack
 from core.agent import Agent
+from core.tools.bus import ToolBus
+from core.tools.capability import CapabilityEngine
+from core.tools.sandbox import NoneSandbox
 
 
 # ---------------------------------------------------------------------------
@@ -146,4 +149,39 @@ def agent(test_personality, fake_client, memory, fake_tools):
     return Agent(
         config=test_personality, debug=False,
         client=fake_client, memory=memory, tools=fake_tools,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: ToolBus / Capability / Sandbox fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def none_sandbox():
+    """NoneSandbox instance for testing."""
+    return NoneSandbox()
+
+
+@pytest.fixture
+def capability_engine():
+    """Default deny-all CapabilityEngine for testing."""
+    return CapabilityEngine()
+
+
+@pytest.fixture
+def permissive_capability_engine():
+    """CapabilityEngine with all common scopes allowed."""
+    policy = PolicyPack(allowed_scopes=[
+        "shell.exec", "python.exec", "pip.install",
+        "http.read", "fs.read", "audio.output",
+    ])
+    return CapabilityEngine(policy)
+
+
+@pytest.fixture
+def tool_bus(permissive_capability_engine, none_sandbox):
+    """ToolBus with permissive capabilities and NoneSandbox."""
+    return ToolBus(
+        capability_engine=permissive_capability_engine,
+        sandbox=none_sandbox,
     )

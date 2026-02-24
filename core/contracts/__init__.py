@@ -14,6 +14,7 @@ from core.contracts.schemas import (
     PermissionRequest,
     PermissionGrant,
     PolicyPack,
+    ToolTrace,
     FinalReport,
     PHASE_SCHEMAS,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "PermissionRequest",
     "PermissionGrant",
     "PolicyPack",
+    "ToolTrace",
     "FinalReport",
     "PHASE_SCHEMAS",
 ]

@@ -1,36 +1,25 @@
-# tools/install_project.py
+# core/tools/install_project.py
+# Phase 4: Stripped retries. Direct execution only.
 
 from core.tools.base_subprocess import RunSubprocessTool
 from pathlib import Path
-from typing import Tuple, Any
+from typing import Tuple
 
 
 class InstallProjectTool(RunSubprocessTool):
     name = "install_project"
-    description = (
-        "Installs a Python project into the current elfenv using setup.py, "
-        "pyproject.toml, or requirements.txt."
-    )
+    description = "Installs a Python project into elfenv. Returns (exit_code, stdout, stderr)."
 
     def __init__(self, **kwargs):
         self.elfenv = kwargs.get("elfenv", Path(".elfenv"))
         self.pip_bin = self.elfenv / "bin" / "pip"
         if not kwargs.get("skip_venv_setup", False):
-            self.ensure_elfenv()
+            self._ensure_elfenv()
         super().__init__(**kwargs)
 
-    def __call__(self, path="."):
-        """
-        Public entry point: tries to install the given project and returns human-readable output.
-        """
-        return self._run_with_retries(path, max_retries=1, unsafe=False, return_success=False)
-
-    # ---------- Template overrides ----------
-    def _attempt(self, payload: Any) -> Tuple[int, str, str]:
-        """
-        payload = path to project directory
-        """
-        path = Path(payload)
+    def __call__(self, path=".", timeout=None, **kwargs) -> Tuple[int, str, str]:
+        """Install the project at the given path. Returns (rc, out, err)."""
+        path = Path(path)
         if (path / "setup.py").exists():
             cmd = [str(self.pip_bin), "install", "."]
         elif (path / "pyproject.toml").exists():
@@ -38,16 +27,11 @@ class InstallProjectTool(RunSubprocessTool):
         elif (path / "requirements.txt").exists():
             cmd = [str(self.pip_bin), "install", "-r", "requirements.txt"]
         else:
-            return 1, "", "❌ No installable project found in the given directory."
+            return 1, "", "No installable project found in the given directory."
 
-        return self.run(cmd, timeout=300)
+        return self.run(cmd, timeout=timeout or 300)
 
-    def _describe(self, payload: Any) -> str:
-        return f"install project at {payload}"
-
-    # ---------- Helpers ----------
-    def ensure_elfenv(self):
+    def _ensure_elfenv(self):
         from venv import create
         if not self.pip_bin.exists():
-            self._log(f"🧙 Creating venv at {self.elfenv} …")
             create(str(self.elfenv), with_pip=True)

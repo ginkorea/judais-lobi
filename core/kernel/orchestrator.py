@@ -50,10 +50,12 @@ class Orchestrator:
         dispatcher: RoleDispatcher,
         budget: Optional[BudgetConfig] = None,
         session_manager=None,
+        tool_bus=None,
     ):
         self._dispatcher = dispatcher
         self._budget = budget or BudgetConfig()
         self._session_manager = session_manager
+        self._tool_bus = tool_bus
         self._artifact_sequence = 0
 
     def run(self, task: str) -> SessionState:

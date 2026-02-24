@@ -7,12 +7,13 @@ from typing import Optional, Tuple, Any, List, Dict
 
 from dotenv import load_dotenv
 
-from core.contracts.schemas import PersonalityConfig
+from core.contracts.schemas import PersonalityConfig, PolicyPack
 from core.unified_client import UnifiedClient
 from core.memory import UnifiedMemory
 from core.tools import Tools
 from core.tools.run_shell import RunShellTool
 from core.tools.run_python import RunPythonTool
+from core.tools.capability import CapabilityEngine
 from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
 from core.runtime.messages import build_system_prompt, build_chat_context
 
@@ -188,18 +189,34 @@ class Agent:
     ) -> Tuple[str, str, Any, Optional[str]]:
         enhanced = self._format_prompt(prompt, memory_reflection, "shell")
         cmd = self.generate_shell_command(enhanced)
-        result, success = self.tools.run("run_shell_command", cmd, return_success=True, elf=self)
-        summary = self.summarize_text(result) if summarize else None
-        return cmd, result, success, summary
+        result = self.tools.run("run_shell_command", cmd, elf=self)
+        # Phase 4: tools now return (rc, out, err) tuples
+        if isinstance(result, tuple) and len(result) == 3:
+            rc, out, err = result
+            output = out if rc == 0 else (err or out)
+            success = 1 if rc == 0 else 0
+        else:
+            output = str(result)
+            success = 1
+        summary = self.summarize_text(output) if summarize else None
+        return cmd, output, success, summary
 
     def run_python_task(
         self, prompt: str, memory_reflection: Optional[str] = None, summarize: bool = False
     ) -> Tuple[str, Any, Any, Optional[str]]:
         enhanced = self._format_prompt(prompt, memory_reflection, "Python")
         code = self.generate_python_code(enhanced)
-        result, success = self.tools.run("run_python_code", code, elf=self, return_success=True)
-        summary = self.summarize_text(result) if summarize else None
-        return code, result, success, summary
+        result = self.tools.run("run_python_code", code, elf=self)
+        # Phase 4: tools now return (rc, out, err) tuples
+        if isinstance(result, tuple) and len(result) == 3:
+            rc, out, err = result
+            output = out if rc == 0 else (err or out)
+            success = 1 if rc == 0 else 0
+        else:
+            output = str(result)
+            success = 1
+        summary = self.summarize_text(output) if summarize else None
+        return code, output, success, summary
 
     # =======================
     # Helpers
@@ -218,12 +235,26 @@ class Agent:
     # =======================
     # Agentic task execution
     # =======================
-    def run_task(self, task_description: str, budget=None, session_manager=None):
-        """Thin adapter: delegate an agentic task to the kernel orchestrator."""
+    def run_task(self, task_description: str, budget=None, session_manager=None,
+                 policy=None):
+        """Thin adapter: delegate an agentic task to the kernel orchestrator.
+
+        Phase 4: Creates a CapabilityEngine with the given policy and passes
+        the ToolBus to the orchestrator for capability-gated dispatch.
+        """
         from core.kernel import Orchestrator
 
+        # Set up capability engine for agentic mode
+        if policy is not None:
+            cap_engine = CapabilityEngine(policy)
+            self.tools.bus._capability = cap_engine
+
         dispatcher = self._make_task_dispatcher()
-        kwargs = {"dispatcher": dispatcher, "budget": budget}
+        kwargs = {
+            "dispatcher": dispatcher,
+            "budget": budget,
+            "tool_bus": self.tools.bus,
+        }
         if session_manager is not None:
             kwargs["session_manager"] = session_manager
         orchestrator = Orchestrator(**kwargs)

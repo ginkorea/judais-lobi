@@ -147,6 +147,21 @@ class PolicyPack(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Tool tracing contracts (Phase 4)
+# ---------------------------------------------------------------------------
+
+class ToolTrace(BaseModel):
+    """Records a single tool invocation for audit and replay."""
+    tool_name: str
+    payload_summary: str = ""
+    exit_code: int = 0
+    stdout_excerpt: str = ""
+    stderr_excerpt: str = ""
+    scopes_used: List[str] = []
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# ---------------------------------------------------------------------------
 # Finalization contracts
 # ---------------------------------------------------------------------------
 

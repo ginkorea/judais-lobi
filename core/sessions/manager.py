@@ -103,6 +103,34 @@ class SessionManager:
         path.write_text(grant.model_dump_json(indent=2))
         return path
 
+    def load_grants(self) -> List[dict]:
+        """Load all grants from disk in sequence order."""
+        files = sorted(self._grants_dir.glob("grant_*.json"))
+        return [json.loads(f.read_text()) for f in files]
+
+    # ------------------------------------------------------------------
+    # Tool traces (Phase 4)
+    # ------------------------------------------------------------------
+
+    def write_tool_trace(self, trace: BaseModel) -> Path:
+        """Write a tool trace to disk for audit."""
+        traces_dir = self._session_dir / "tool_traces"
+        traces_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(traces_dir.glob("trace_*.json"))
+        seq = len(existing)
+        filename = f"trace_{seq:03d}.json"
+        path = traces_dir / filename
+        path.write_text(trace.model_dump_json(indent=2))
+        return path
+
+    def load_tool_traces(self) -> List[dict]:
+        """Load all tool traces from disk."""
+        traces_dir = self._session_dir / "tool_traces"
+        if not traces_dir.exists():
+            return []
+        files = sorted(traces_dir.glob("trace_*.json"))
+        return [json.loads(f.read_text()) for f in files]
+
     # ------------------------------------------------------------------
     # Memory pins
     # ------------------------------------------------------------------
