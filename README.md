@@ -40,31 +40,29 @@ See: `ROADMAP.md`
 
 ### Completed
 
-* ✅ Phase 0 — Dependency Injection & Test Harness
-* ✅ Phase 1 — Runtime extraction (provider separation)
-* ✅ Phase 2 — Kernel State Machine & Hard Budgets
+* ✅ Phase 0 — Dependency Injection & Test Harness (73 tests)
+* ✅ Phase 1 — Runtime extraction (provider separation, 107 tests)
+* ✅ Phase 2 — Kernel State Machine & Hard Budgets (164 tests)
+* ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
 
-### In Progress (Architectural Pivot)
+### In Progress
 
-* ⏳ Phase 3 — Session Artifacts & Contracts
-* ⏳ Phase 4 — Tool Bus + Sandboxing
-* ⏳ Phase 5+ — Repo Map, Patch Engine, Composite Judge
+* ⏳ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating
+* ⏳ Phase 5 — Repo Map (Context Compression)
+* ⏳ Phase 6 — Repository-Native Patch Engine
 
-This repo is transitioning from:
+### Phase 3 Highlights
 
-```
-Chat CLI + Tools
-```
+`elf.py` is deleted. The god-object ABC is gone.
 
-to:
+* **`core/agent.py`** — Concrete `Agent` class powered by `PersonalityConfig`. Same interface, no abstract methods.
+* **`core/contracts/`** — 14 Pydantic v2 models defining all session data (`TaskContract`, `ChangePlan`, `PatchSet`, `RunReport`, `PermissionGrant`, etc.).
+* **`core/sessions/`** — `SessionManager` for disk persistence with checkpoint/rollback.
+* **`core/kv_prefix.py`** — Static prefix builder for KV cache reuse across role handoffs.
+* **Validate-or-retry** — Invalid structured output burns a retry from the phase budget.
+* **Lobi & JudAIs** — Now thin subclasses of `Agent` with frozen `PersonalityConfig`, not abstract property overrides.
 
-```
-Kernel-Orchestrated Agentic Developer System
-```
-
-If you are reading this during the transition, understand: backward compatibility may bend.
-
-The direction is deliberate.
+The transition is no longer in progress. The kernel architecture is live.
 
 ---
 
@@ -76,11 +74,14 @@ If you want to understand the **future**, read:
 
 If you want to understand the **current implementation**, inspect:
 
-* `core/elf.py`  — legacy conversational core (scheduled for deletion in Phase 3)
+* `core/agent.py` — concrete Agent class (replaced `elf.py` in Phase 3)
+* `core/contracts/` — Pydantic v2 contract models for all session data
+* `core/sessions/` — SessionManager for disk artifact persistence
+* `core/kernel/` — state machine, budgets, orchestrator
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory
 * `core/tools/` — tool implementations (shell, python, web, install, voice)
-* `lobi/`  and `judais/`  — personality overlays
+* `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
 
@@ -115,12 +116,12 @@ ToolBus → Sandbox → Subprocess
 Deterministic Judge
 ```
 
-Eventually:
+As of Phase 3:
 
-* `elf.py` disappears.
-* History is replaced by artifacts.
-* Tools become dumb executors.
-* The kernel becomes the intelligence.
+* `elf.py` is deleted. `Agent` + `PersonalityConfig` replace it.
+* Session artifacts are the sole driver of agentic state.
+* Tools are next — Phase 4 makes them dumb executors behind a sandboxed bus.
+* The kernel is the intelligence.
 
 This is not cosmetic refactoring.
 It is structural.
@@ -139,8 +140,8 @@ See: `core/memory/memory.py`
 
 This will be abstracted for local embeddings in later phases.
 
-Short-term history currently lives in JSON files per agent.
-This is being phased out in favor of session artifacts.
+Short-term history remains for direct chat mode.
+Agentic mode uses session artifacts as the sole source of truth (Phase 3).
 
 ---
 
@@ -247,9 +248,9 @@ If you are contributing:
 
 1. Read the roadmap.
 2. Understand the phase ordering.
-3. Do not add new conversational shortcuts to `elf.py`.
-4. Do not bypass tool execution through direct subprocess calls.
-5. Every structural change must preserve deterministic replay.
+3. Do not bypass tool execution through direct subprocess calls.
+4. Every structural change must preserve deterministic replay.
+5. New functionality goes through `Agent` + contracts, not ad-hoc methods.
 
 This is an architectural project, not a feature factory.
 
