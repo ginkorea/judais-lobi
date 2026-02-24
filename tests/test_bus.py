@@ -85,7 +85,9 @@ class TestToolBusDispatch:
         bus = ToolBus()
         result = bus.dispatch("nonexistent")
         assert result.exit_code == -1
-        assert "Unknown tool" in result.stderr
+        import json
+        error = json.loads(result.stderr)
+        assert error["error"] == "unknown_tool"
 
     def test_dispatch_tuple_result(self):
         bus = self._make_permissive_bus()
@@ -134,7 +136,7 @@ class TestToolBusDispatch:
 
 
 class TestToolBusCapabilityGating:
-    def test_denied_returns_permission_error(self):
+    def test_denied_returns_structured_error(self):
         engine = CapabilityEngine()  # deny-by-default
         bus = ToolBus(capability_engine=engine)
         desc = ToolDescriptor(
@@ -144,8 +146,12 @@ class TestToolBusCapabilityGating:
         bus.register(desc, lambda cmd: (0, "ok", ""))
         result = bus.dispatch("run_shell_command", "ls")
         assert result.exit_code == -1
-        assert "Permission denied" in result.stderr
-        assert "shell.exec" in result.stderr
+        import json
+        denial = json.loads(result.stderr)
+        assert denial["error"] == "capability_denied"
+        assert denial["tool"] == "run_shell_command"
+        assert "shell.exec" in denial["missing_scopes"]
+        assert result.evidence is not None
 
     def test_granted_allows_execution(self):
         engine = CapabilityEngine()
@@ -219,6 +225,122 @@ class TestToolBusNetworkGating:
         result = bus.dispatch("perform_web_search", "test")
         assert result.exit_code == 0
         assert result.stdout == "results"
+
+
+class TestToolBusActionAwareDispatch:
+    """Phase 4a: action-aware dispatch for multi-action tools."""
+
+    def _make_bus_with_scopes(self, scopes):
+        policy = PolicyPack(allowed_scopes=scopes)
+        engine = CapabilityEngine(policy)
+        return ToolBus(capability_engine=engine)
+
+    def test_action_specific_scope_check(self):
+        bus = self._make_bus_with_scopes(["git.read"])
+        desc = ToolDescriptor(
+            tool_name="git",
+            required_scopes=["git.read", "git.write", "git.push", "git.fetch"],
+            action_scopes={
+                "status": ["git.read"],
+                "commit": ["git.write"],
+            },
+        )
+        bus.register(desc, lambda action, **kw: (0, f"did {action}", ""))
+        # git.read is granted — status should work
+        result = bus.dispatch("git", action="status")
+        assert result.exit_code == 0
+        assert result.stdout == "did status"
+        assert result.granted_scopes == ["git.read"]
+
+    def test_action_denied_when_scope_missing(self):
+        bus = self._make_bus_with_scopes(["git.read"])
+        desc = ToolDescriptor(
+            tool_name="git",
+            required_scopes=["git.read", "git.write"],
+            action_scopes={
+                "status": ["git.read"],
+                "commit": ["git.write"],
+            },
+        )
+        bus.register(desc, lambda action, **kw: (0, "ok", ""))
+        # git.write not granted — commit should be denied
+        result = bus.dispatch("git", action="commit")
+        assert result.exit_code == -1
+        import json
+        denial = json.loads(result.stderr)
+        assert denial["error"] == "capability_denied"
+        assert "git.write" in denial["missing_scopes"]
+        assert denial["action"] == "commit"
+
+    def test_no_action_uses_full_scopes(self):
+        bus = self._make_bus_with_scopes(["fs.read"])
+        desc = ToolDescriptor(
+            tool_name="fs",
+            required_scopes=["fs.read", "fs.write", "fs.delete"],
+            action_scopes={"read": ["fs.read"]},
+        )
+        bus.register(desc, lambda: (0, "ok", ""))
+        # Without action, checks all required_scopes — fs.write/delete missing
+        result = bus.dispatch("fs")
+        assert result.exit_code == -1
+
+    def test_unknown_action_falls_back_to_required_scopes(self):
+        bus = self._make_bus_with_scopes(["git.read", "git.write", "git.push", "git.fetch"])
+        desc = ToolDescriptor(
+            tool_name="git",
+            required_scopes=["git.read", "git.write", "git.push", "git.fetch"],
+            action_scopes={"status": ["git.read"]},
+        )
+        bus.register(desc, lambda action, **kw: (0, "ok", ""))
+        # Unknown action falls back to full required_scopes
+        result = bus.dispatch("git", action="unknown_action")
+        assert result.exit_code == 0
+
+    def test_action_passes_to_executor(self):
+        bus = self._make_bus_with_scopes(["verify.run"])
+        desc = ToolDescriptor(
+            tool_name="verify",
+            required_scopes=["verify.run"],
+            action_scopes={"lint": ["verify.run"]},
+        )
+        captured = {}
+        def executor(action, **kwargs):
+            captured["action"] = action
+            return (0, "ok", "")
+        bus.register(desc, executor)
+        bus.dispatch("verify", action="lint")
+        assert captured["action"] == "lint"
+
+    def test_describe_tool_includes_actions(self):
+        bus = ToolBus()
+        desc = ToolDescriptor(
+            tool_name="git",
+            action_scopes={"status": ["git.read"], "commit": ["git.write"]},
+        )
+        bus.register(desc, lambda: None)
+        info = bus.describe_tool("git")
+        assert "actions" in info
+        assert "status" in info["actions"]
+        assert "commit" in info["actions"]
+
+    def test_structured_unknown_tool_error(self):
+        bus = ToolBus()
+        result = bus.dispatch("nonexistent")
+        assert result.exit_code == -1
+        import json
+        error = json.loads(result.stderr)
+        assert error["error"] == "unknown_tool"
+
+    def test_evidence_field_on_denial(self):
+        bus = ToolBus()
+        desc = ToolDescriptor(tool_name="t", required_scopes=["x.y"])
+        bus.register(desc, lambda: (0, "ok", ""))
+        result = bus.dispatch("t")
+        assert result.exit_code == -1
+        assert result.evidence is not None
+        import json
+        evidence = json.loads(result.evidence)
+        assert evidence["error"] == "capability_denied"
 
 
 class TestToolBusProperties:

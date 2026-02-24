@@ -95,7 +95,9 @@ class TestGrantReplay:
         """Without replayed grants, tool dispatch is denied."""
         result = bus.dispatch("test_tool")
         assert result.exit_code == -1
-        assert "denied" in result.stderr.lower()
+        import json
+        denial = json.loads(result.stderr)
+        assert denial["error"] == "capability_denied"
 
 
 class TestTimeScopedGrantReplay:

@@ -22,8 +22,15 @@ from core.tools.descriptors import (
     FETCH_PAGE_DESCRIPTOR,
     RAG_CRAWLER_DESCRIPTOR,
     VOICE_DESCRIPTOR,
+    FS_DESCRIPTOR,
+    GIT_DESCRIPTOR,
+    VERIFY_DESCRIPTOR,
     ToolDescriptor,
 )
+from core.tools.fs_tools import FsTool
+from core.tools.git_tools import GitTool
+from core.tools.verify_tools import VerifyTool
+from core.tools.config_loader import load_project_config
 
 
 class Tools:
@@ -69,6 +76,16 @@ class Tools:
         self._bus.register(INSTALL_DESCRIPTOR, install_tool)
         self._bus.register(FETCH_PAGE_DESCRIPTOR, fetch_tool)
         self._bus.register(WEB_SEARCH_DESCRIPTOR, search_tool)
+
+        # Phase 4a: Consolidated multi-action tools
+        fs_tool = FsTool()
+        git_tool = GitTool()
+        project_config = load_project_config()
+        verify_tool = VerifyTool(config=project_config)
+
+        self._bus.register(FS_DESCRIPTOR, fs_tool)
+        self._bus.register(GIT_DESCRIPTOR, git_tool)
+        self._bus.register(VERIFY_DESCRIPTOR, verify_tool)
 
         if memory:
             rag_tool = RagCrawlerTool(memory)

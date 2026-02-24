@@ -16,6 +16,9 @@ from core.contracts.schemas import (
     PolicyPack,
     ToolTrace,
     FinalReport,
+    ProfileMode,
+    GodModeGrant,
+    AuditEntry,
     PHASE_SCHEMAS,
 )
 
@@ -35,5 +38,8 @@ __all__ = [
     "PolicyPack",
     "ToolTrace",
     "FinalReport",
+    "ProfileMode",
+    "GodModeGrant",
+    "AuditEntry",
     "PHASE_SCHEMAS",
 ]

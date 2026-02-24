@@ -2,9 +2,12 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from core.contracts.schemas import PermissionGrant, PolicyPack
+
+if TYPE_CHECKING:
+    from core.contracts.schemas import ProfileMode
 
 
 @dataclass
@@ -21,15 +24,22 @@ class CapabilityEngine:
     Checks tool invocations against:
     1. PolicyPack (static session-level permissions)
     2. Active PermissionGrants (dynamic, possibly time-scoped)
+
+    Supports wildcard ``"*"`` in ``allowed_scopes`` — grants all scopes.
     """
 
     def __init__(self, policy: Optional[PolicyPack] = None):
         self._policy = policy or PolicyPack()
         self._grants: List[PermissionGrant] = []
+        self._current_profile: Optional[str] = None
 
     @property
     def policy(self) -> PolicyPack:
         return self._policy
+
+    @property
+    def current_profile(self) -> Optional[str]:
+        return self._current_profile
 
     def add_grant(self, grant: PermissionGrant) -> None:
         """Add a permission grant."""
@@ -105,8 +115,29 @@ class CapabilityEngine:
         """
         self._grants = list(grants)
 
+    def revoke_all_grants(self) -> int:
+        """Revoke all active grants. Returns the count of revoked grants."""
+        count = len(self._grants)
+        self._grants.clear()
+        return count
+
+    def set_profile(self, profile: "ProfileMode") -> None:
+        """Replace the internal policy with one derived from *profile*.
+
+        Requires ``core.policy.profiles.policy_for_profile`` — imported
+        lazily to avoid circular imports.
+        """
+        from core.policy.profiles import policy_for_profile
+        self._policy = policy_for_profile(profile)
+        self._current_profile = profile.value
+
     def _is_scope_in_policy(self, scope: str) -> bool:
-        """Check if scope is allowed by the static policy."""
+        """Check if scope is allowed by the static policy.
+
+        Supports wildcard ``"*"`` — if present, all scopes are allowed.
+        """
+        if "*" in self._policy.allowed_scopes:
+            return True
         return scope in self._policy.allowed_scopes
 
     def _find_active_grant(self, tool_name: str, scope: str) -> Optional[PermissionGrant]:

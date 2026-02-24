@@ -1,6 +1,7 @@
-# core/contracts/schemas.py — All Pydantic v2 contract models for Phase 3
+# core/contracts/schemas.py — All Pydantic v2 contract models
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
@@ -173,6 +174,40 @@ class FinalReport(BaseModel):
     artifacts_produced: List[str] = []
     total_iterations: int = 0
     duration_seconds: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Profile & God Mode contracts (Phase 4b)
+# ---------------------------------------------------------------------------
+
+class ProfileMode(str, Enum):
+    """Permission profile levels. Each level includes all scopes from lower levels."""
+    SAFE = "safe"       # read-only: fs.read, git.read, verify.run
+    DEV = "dev"         # safe + write: fs.write, git.write, python.exec, shell.exec
+    OPS = "ops"         # dev + deploy: git.push, git.fetch, pip.install, http.read, fs.delete
+    GOD = "god"         # all scopes (wildcard "*")
+
+
+class GodModeGrant(BaseModel):
+    """Records a god mode activation for audit purposes."""
+    activated_by: str = "user"
+    reason: str
+    ttl_seconds: float = 300.0
+    activated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    panic_revoked: bool = False
+
+
+class AuditEntry(BaseModel):
+    """Single entry in the append-only audit log."""
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    event_type: str = ""
+    tool_name: str = ""
+    action: str = ""
+    scopes: List[str] = []
+    profile: str = ""
+    verdict: str = ""
+    detail: str = ""
+    session_id: str = ""
 
 
 # ---------------------------------------------------------------------------
