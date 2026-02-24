@@ -8,7 +8,7 @@
 - [x] **Phase 1** – Extract Runtime & Stabilize the Spine (runtime extracted, 107 tests, `elf.py` provider-free)
 - [x] **Phase 2** – Kernel State Machine & Hard Budgets (state machine, budgets, orchestrator, 164 tests)
 - [x] **Phase 3** – Session Artifacts, Contracts & KV Prefixing (`elf.py` deleted, Agent class, Pydantic contracts, SessionManager, 269 tests)
-- [ ] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating
+- [x] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating (ToolBus, CapabilityEngine, BwrapSandbox, 3 consolidated tools, profiles, god mode, audit, 562 tests)
 - [ ] **Phase 5** – The Repo Map (Context Compression)
 - [ ] **Phase 6** – Repository-Native Patch Engine
 - [ ] **Phase 7** – Multi-Role Orchestrator, Composite Judge & External Critic

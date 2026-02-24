@@ -44,25 +44,29 @@ See: `ROADMAP.md`
 * ✅ Phase 1 — Runtime extraction (provider separation, 107 tests)
 * ✅ Phase 2 — Kernel State Machine & Hard Budgets (164 tests)
 * ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
+* ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
 
-### In Progress
+### Up Next
 
-* ⏳ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating
 * ⏳ Phase 5 — Repo Map (Context Compression)
 * ⏳ Phase 6 — Repository-Native Patch Engine
 
-### Phase 3 Highlights
+### Phase 4 Highlights
 
-`elf.py` is deleted. The god-object ABC is gone.
+Tools are dumb executors behind a capability-gated bus. The kernel decides everything.
 
-* **`core/agent.py`** — Concrete `Agent` class powered by `PersonalityConfig`. Same interface, no abstract methods.
-* **`core/contracts/`** — 14 Pydantic v2 models defining all session data (`TaskContract`, `ChangePlan`, `PatchSet`, `RunReport`, `PermissionGrant`, etc.).
-* **`core/sessions/`** — `SessionManager` for disk persistence with checkpoint/rollback.
-* **`core/kv_prefix.py`** — Static prefix builder for KV cache reuse across role handoffs.
-* **Validate-or-retry** — Invalid structured output burns a retry from the phase budget.
-* **Lobi & JudAIs** — Now thin subclasses of `Agent` with frozen `PersonalityConfig`, not abstract property overrides.
+* **`core/tools/bus.py`** — Action-aware `ToolBus` with preflight hooks, panic switch integration, and JSONL audit logging. Structured JSON denial errors replace plain text.
+* **`core/tools/fs_tools.py`** — Consolidated `FsTool` with 5 actions (read, write, delete, list, stat). Pure `pathlib` I/O, no subprocess.
+* **`core/tools/git_tools.py`** — Consolidated `GitTool` with 12 actions (status, diff, log, add, commit, branch, push, pull, fetch, stash, tag, reset) via `run_subprocess`.
+* **`core/tools/verify_tools.py`** — Config-driven `VerifyTool` (lint, test, typecheck, format). Reads `.judais-lobi.yml` for project-specific commands, falls back to sensible defaults.
+* **`core/tools/descriptors.py`** — 10 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
+* **`core/tools/capability.py`** — Deny-by-default `CapabilityEngine` with wildcard `"*"` support, profile switching, and grant revocation.
+* **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard).
+* **`core/policy/god_mode.py`** — `GodModeSession` with TTL auto-downgrade, panic switch (instant revocation to SAFE), and full audit trail.
+* **`core/policy/audit.py`** — Append-only JSONL `AuditLogger` with regex-based secret redaction (OpenAI, GitHub, AWS, Slack tokens).
+* **`core/tools/sandbox.py`** — `NoneSandbox` (dev/debug) and `BwrapSandbox` (Tier-1 production) behind a common `SandboxRunner` interface.
 
-The transition is no longer in progress. The kernel architecture is live.
+3 consolidated multi-action tools replaced 21 separate descriptors. Git is the spine, not nice-to-have.
 
 ---
 
@@ -80,7 +84,8 @@ If you want to understand the **current implementation**, inspect:
 * `core/kernel/` — state machine, budgets, orchestrator
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory
-* `core/tools/` — tool implementations (shell, python, web, install, voice)
+* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify)
+* `core/policy/` — profiles, god mode, audit logging
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -116,15 +121,15 @@ ToolBus → Sandbox → Subprocess
 Deterministic Judge
 ```
 
-As of Phase 3:
+As of Phase 4:
 
-* `elf.py` is deleted. `Agent` + `PersonalityConfig` replace it.
-* Session artifacts are the sole driver of agentic state.
-* Tools are next — Phase 4 makes them dumb executors behind a sandboxed bus.
-* The kernel is the intelligence.
+* Tools are dumb executors behind a sandboxed, capability-gated bus.
+* Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`.
+* Deny-by-default. No scope = no execution.
+* God mode exists for emergencies — TTL-limited, panic-revocable, fully audited.
+* 3 consolidated multi-action tools (fs, git, verify) cover 21 operations under 13 scopes.
 
-This is not cosmetic refactoring.
-It is structural.
+The kernel is the only intelligence. Tools report. The kernel decides.
 
 ---
 
