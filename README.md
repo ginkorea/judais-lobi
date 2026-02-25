@@ -50,7 +50,7 @@ See: `ROADMAP.md`
 
 ### Up Next
 
-* ⏳ Phase 7 — Multi-Role Orchestrator, Composite Judge & External Critic
+* ⏳ Phase 7 — Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic
 * ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
 
 ### Phase 6 Highlights
@@ -132,8 +132,10 @@ If you want to understand the **entry point**, see:
 The target architecture (from the roadmap) is:
 
 * Artifact-driven state (no conversational drift)
-* Deterministic state machine
-* Capability-gated tool execution
+* Three-tier orchestration: Campaign graph (Tier 0) → Workflow graph (Tier 1) → Phase-internal planning (Tier 2)
+* Pluggable workflows — static templates for coding, red teaming, data analysis, and arbitrary tasks
+* Campaign orchestration — multi-step missions with DAG decomposition, HITL approval gates, and artifact handoff
+* Capability-gated tool execution with least-privilege by intersection (Global ∩ Workflow ∩ Step ∩ Phase)
 * Sandbox isolation (bwrap / nsjail)
 * Tests > Lint > LLM scoring hierarchy
 * GPU-aware orchestration (vLLM / TRT-LLM)
@@ -142,15 +144,19 @@ The target architecture (from the roadmap) is:
 The system is moving toward:
 
 ```
-CLI
+CLI (--task / --campaign / --workflow)
   ↓
-Kernel State Machine
+Campaign Orchestrator (Tier 0 — optional, multi-step missions)
+  ↓  plan → HITL approve → dispatch → synthesis
+Workflow Selector → WorkflowTemplate (Tier 1 — static graph)
+  ↓
+Kernel State Machine (phases, transitions, budgets)
   ↓
 Roles (Planner / Coder / Reviewer)
   ↓
-ToolBus → Sandbox → Subprocess
+ToolBus → EffectiveScope check → Sandbox → Subprocess
   ↓
-Deterministic Judge
+Deterministic Judge (Tests > Lint > LLM)
 ```
 
 As of Phase 6:
@@ -163,6 +169,12 @@ As of Phase 6:
 * The agent sees repo structure via a token-budgeted excerpt — file paths, symbol signatures, and dependency-ranked relevance — without loading full source.
 * 3-tier symbol extraction: Python `ast` → tree-sitter (7 languages) → regex fallback. Multi-language dependency graph with import resolution.
 * Code modifications use an exact-match patch protocol with git worktree isolation. Cross-file changes land atomically. Failed patches roll back at zero cost.
+
+Phase 7 (in design) adds:
+
+* **Pluggable Workflows** — `WorkflowTemplate` parameterizes the state machine. Coding pipeline becomes one template among many (generic, red team, data analysis). Phase-level capability profiles create temporal sandboxes (PLAN can read, EXECUTE can write).
+* **Campaign Orchestrator** — Tier 0 meta-layer for multi-step missions. Decomposes complex goals into a DAG of workflow steps with HITL approval, `StepPlan` execution contracts, and explicit artifact handoff between steps.
+* **EffectiveScope Intersection** — `Global ∩ Workflow ∩ Step ∩ Phase` computed per tool call. Least-privilege by construction — the LLM can never escalate, only narrow. Capability tags (`repo.read`, `net.scan`) are the stable abstraction; tools are implementation details.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
@@ -248,10 +260,11 @@ Judais-Lobi is not trying to be:
 
 It is attempting to become:
 
-* A local-first agentic developer kernel
+* A local-first agentic execution kernel (not just developer — any structured task domain)
 * Deterministic and replayable
 * Hardware-aware
-* Capability-constrained
+* Capability-constrained (least-privilege by intersection)
+* Mission-capable (campaign orchestration with HITL approval gates)
 * Air-gap ready
 
 The design philosophy is explicit in `ROADMAP.md` :
@@ -259,6 +272,9 @@ The design philosophy is explicit in `ROADMAP.md` :
 * Artifacts over chat
 * Budgets over infinite loops
 * Capabilities over trust
+* Capabilities over tools (stable tags, not tool names)
+* Plans over prompts (structured DAGs, not freestyle LLM loops)
+* Static graphs, adaptive phases (three-tier orchestration)
 * Dumb tools, smart kernel
 * Commit or abort
 
