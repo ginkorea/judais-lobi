@@ -112,8 +112,9 @@ core/
     workflows.py         # WorkflowTemplate, WorkflowSelector, built-in templates
   campaign/              # Campaign orchestrator (Tier 0)
     orchestrator.py      # CampaignOrchestrator: plan → approve → dispatch → synthesis
-    models.py            # CampaignPlan, MissionStep, CampaignState
+    models.py            # CampaignPlan, MissionStep, StepPlan, CampaignState
     validator.py         # DAG acyclicity, artifact declarations, step_id uniqueness
+    scope.py             # EffectiveScope intersection: Global ∩ Workflow ∩ Step ∩ Phase
     hitl.py              # HUMAN_REVIEW: $EDITOR file-edit loop + Pydantic revalidation
     handoff.py           # Artifact materialization: handoff_out/ → handoff_in/
   contracts/             # JSON schemas + Pydantic validation
@@ -191,6 +192,7 @@ Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the Tool
 7. **Kernel Never Touches the Filesystem:** The kernel reads artifacts and dispatches to tools. It never reads from the working directory, never opens project files, never writes outside the session directory. All repository interaction goes through a `RepoServer` tool via the ToolBus. Even read-only access must be sandboxed — if the kernel can read files directly, that is an unsandboxed path to the repo that bypasses policy. Kernel orchestrates. Tools touch the world.
 8. **Workflow Templates Are Static:** The `WorkflowTemplate` — its phases, transitions, and schema registry — is selected once at INTAKE and is immutable for the session. The LLM controls what happens *inside* a phase. The kernel controls *which phase runs next.* The LLM picks from a menu of templates; it never writes the menu. This is the one invariant that protects every budget and safety constraint from circumvention. Three-tier orchestration: static campaign graph (Tier 0), static workflow graph (Tier 1), adaptive phase-internal planning (Tier 2).
 9. **Campaign Plans Are Static Once Approved:** After the human approves a `CampaignPlan` at HUMAN_REVIEW, the step DAG is frozen. Steps can only be **(a)** retried, **(b)** skipped, or **(c)** aborted. No inserting new steps, no reordering, no changing workflow assignments — unless the campaign returns to HUMAN_REVIEW for re-approval. This prevents "LLM silently expands scope" and ensures the human-approved plan is the plan that executes.
+10. **Least Privilege by Intersection:** Every tool call passes through a scope intersection that computes `EffectiveScope = GlobalPolicy ∩ WorkflowScope ∩ StepScope ∩ PhaseScope`. GlobalPolicy is the deny-by-default `CapabilityEngine`. WorkflowScope is `workflow.required_scopes`. StepScope is `step_plan.capabilities_required` (campaign mode) or the full workflow scope (single-task mode). PhaseScope is `workflow.phase_capabilities[current_phase]`. The LLM can never escalate through any layer — it can only narrow. Even if a prompt injection forces a capability request for `net.http` in a coding workflow, WorkflowScope blocks it before it reaches the ToolBus. This is capability-based security: the scope is computed from the plan, not requested at runtime.
 
 
 
@@ -399,6 +401,7 @@ class WorkflowTemplate:
     phase_order: Tuple[str, ...]                        # Linear progression (excludes branch targets)
     branch_rules: Dict[str, Callable]                   # phase -> function(result) -> next_phase_name
     terminal_phases: FrozenSet[str]                     # {"HALTED", "COMPLETED"}
+    phase_capabilities: Dict[str, FrozenSet[str]]       # phase -> allowed capability tags for that phase
     default_budget_overrides: Dict[str, Any] = field(default_factory=dict)
     required_scopes: List[str] = field(default_factory=list)  # Scopes needed by this workflow
     description: str = ""
@@ -409,6 +412,7 @@ class WorkflowTemplate:
 * **Phases are strings, not enum members.** This allows workflow templates to define domain-specific phase names (`RECON`, `VULN_MAP`, `EXPLOIT`) without modifying a global enum. `SessionState.current_phase` becomes `str`. Transition validation uses `workflow.transitions[current]`.
 * **`branch_rules`** replace the hardcoded `if current == Phase.RUN: ...` logic in `_select_next_phase()`. Each workflow declares its own branching — e.g., coding says "RUN success → FINALIZE, RUN failure → FIX"; generic says "EVALUATE success → FINALIZE, EVALUATE failure → PLAN".
 * **`phase_schemas`** replace the global `PHASE_SCHEMAS` dict. `validate_phase_output()` looks up `workflow.phase_schemas[phase_name]`. A workflow can register domain-specific Pydantic models (e.g., `ReconReport`, `ExploitPlan`) for its phases.
+* **`phase_capabilities`** define which capability tags are available in each phase, creating a **temporal sandbox**. PLAN can read the repo but not write it. EXECUTE can write but only through the patch engine. The LLM cannot execute while it's supposed to be planning. The CapabilityEngine computes `EffectiveScope` per tool call as the intersection of all applicable layers (see Invariant 10).
 * **`default_budget_overrides`** allow workflows to tune budgets — red teaming may need more iterations than coding, data analysis may need longer phase timeouts for large datasets.
 
 **Built-in templates:**
@@ -428,6 +432,18 @@ CODING_WORKFLOW = WorkflowTemplate(
         "FINALIZE": lambda result: "COMPLETED",
     },
     terminal_phases=frozenset({"HALTED", "COMPLETED"}),
+    phase_capabilities={
+        "INTAKE":   frozenset({"fs.read"}),
+        "CONTRACT": frozenset({"fs.read"}),
+        "REPO_MAP": frozenset({"fs.read", "git.read"}),
+        "PLAN":     frozenset({"fs.read", "git.read"}),           # Read-only: no execution during planning
+        "RETRIEVE": frozenset({"fs.read", "git.read"}),
+        "PATCH":    frozenset({"fs.read", "fs.write", "git.write"}),  # Write only through patch engine
+        "CRITIQUE": frozenset({"fs.read", "git.read"}),
+        "RUN":      frozenset({"fs.read", "verify.run"}),
+        "FIX":      frozenset({"fs.read", "git.read"}),
+        "FINALIZE": frozenset({"fs.read", "git.read"}),
+    },
     description="Full software development pipeline with repo map, patching, and test loop.",
 )
 
@@ -712,6 +728,8 @@ sessions/<campaign_id>/
   steps/
     <step_id>/
       workflow.json      # Selected WorkflowTemplate
+      step_plan.json     # StepPlan contract (intent, capabilities, success criteria, digest)
+      scope_grant.json   # What was requested vs granted, with reasons
       artifacts/         # Step-local artifacts (standard session layout)
       handoff_in/        # Materialized imports from upstream steps
       handoff_out/       # Exports available to downstream steps
@@ -721,6 +739,55 @@ Three properties:
 1. **Isolation:** Each step has its own session + artifacts. Steps cannot read each other's artifacts directly.
 2. **Explicit handoff:** Only declared artifacts cross step boundaries, via `handoff_in/` / `handoff_out/`.
 3. **Traceability:** Campaign report can cite exactly which step produced what, from which artifact.
+
+**StepPlan — The Execution Contract:**
+
+If `CampaignPlan` is "what and why," each step needs a `StepPlan` that is "how, with receipts." The StepPlan is generated in the step's PLAN phase (before EXECUTE) and declares the step's intent, boundaries, capabilities, and failure strategy. It is a **contract**, not a script — it declares what the step will accomplish and what it needs, not every individual API call.
+
+```python
+class StepPlan(BaseModel):
+    step_id: str
+    workflow_id: str                          # Must match an installed WorkflowTemplate
+    objective: str
+    inputs: List[ArtifactRef] = []            # What this step reads from handoff_in/
+    outputs_expected: List[ArtifactRef] = []  # What this step will write to handoff_out/
+    capabilities_required: List[str] = []     # Capability tags (not tool names) needed
+    success_criteria: List[str]               # Measurable outcomes
+    rollback_strategy: Literal["retry", "backtrack", "abort", "human_review"] = "backtrack"
+    digest: str = ""                          # SHA256 of ordered fields — for caching + replay detection
+```
+
+**StepPlan is NOT a BPMN script.** It does not enumerate individual tool calls or action sequences. The workflow's phases handle sequencing; the ToolBus handles access control; the kernel handles retry logic. The StepPlan declares *intent and boundaries*. The existing phase artifacts (`ChangePlan`, `PatchSet`, `RunReport`) remain the action-level plans within each phase.
+
+**StepPlan validation rules:**
+* `workflow_id` must match an installed `WorkflowTemplate`
+* `capabilities_required` must be a subset of `workflow.required_scopes` (can't request what the workflow doesn't offer)
+* `outputs_expected` artifact paths must resolve under the step's `handoff_out/` or `artifacts/`
+* Network/file capabilities require corresponding grants in the campaign's approval
+
+**StepPlan stored as:** `sessions/<campaign_id>/steps/<step_id>/step_plan.json`
+
+**ActionDigest** — the `digest` field is a SHA256 hash of the StepPlan's ordered fields (objective, inputs, outputs, capabilities, success criteria). Stored in the session and used for:
+* **Caching:** If a step is retried with an identical digest, prior results can be reused.
+* **Replay detection:** "This step executed under digest X, produced artifacts A/B/C."
+* **Audit:** Deterministic proof that the agent executed what was approved.
+
+**EffectiveScope — Least Privilege by Intersection:**
+
+The CapabilityEngine computes the effective tool scope for every tool call as a strict intersection:
+
+```
+EffectiveScope = GlobalPolicy ∩ WorkflowScope ∩ StepScope ∩ PhaseScope
+```
+
+| Layer | Source | What it constrains |
+|-------|--------|--------------------|
+| **GlobalPolicy** | `CapabilityEngine` (deny-by-default, grants, god mode) | What the kernel allows at all |
+| **WorkflowScope** | `workflow.required_scopes` | What the workflow template permits (coding gets repo tools, generic gets minimal I/O) |
+| **StepScope** | `step_plan.capabilities_required` (campaign) or full WorkflowScope (single-task) | What this specific step declared it needs |
+| **PhaseScope** | `workflow.phase_capabilities[current_phase]` | What the current phase allows (PLAN = read-only, EXECUTE = read+write) |
+
+The intersection means the LLM can never escalate — it can only narrow. A coding workflow cannot gain `net.scan` even if a prompt injection requests it. A PLAN phase cannot write files even if the workflow allows writes in EXECUTE. Capabilities are the stable abstraction layer — tools change, capabilities are the API contract.
 
 **HUMAN_REVIEW Gate:**
 
@@ -751,18 +818,23 @@ Campaigns do not violate "Workflow Templates Are Static" because:
 * Not an LLM execution loop — the LLM generates the plan, the human approves it, the system dispatches it
 * Not a replacement for `--task` — single tasks bypass Tier 0 entirely
 
-**Implementation tasks (Campaign):**
+**Implementation tasks (Campaign + StepPlan + Scope Intersection):**
 
 15. Namespace + session layout for parent/child steps (`campaign_id/step_id` dirs) in `SessionManager`
 16. `CampaignPlan` + `MissionStep` + `CampaignLimits` + `ArtifactRef` schemas in `core/contracts/campaign.py`
-17. DAG validator (acyclic, unique step_ids, artifact declarations, template existence)
-18. HUMAN_REVIEW file-edit loop (`$EDITOR` open + Pydantic revalidation on save)
-19. Step dispatcher: instantiate existing `Orchestrator` with selected workflow template, `handoff_in/` bundle, budget/capability overrides
-20. Artifact handoff: `handoff_out/` → `handoff_in/` materialization between steps
-21. Synthesis step: compose final campaign report from declared step exports
-22. `CampaignOrchestrator` macro loop: MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS
-23. CLI: `--campaign "mission description"` flag, `--campaign-plan plan.json` for pre-authored plans
-24. Contract-first planner prompt: explicitly forbid adding steps after approval, referencing chat history beyond user prompt + constraints, outputting anything except valid `CampaignPlan` JSON
+17. `StepPlan` schema with ActionDigest (SHA256 hash of ordered fields for caching + replay)
+18. DAG validator (acyclic, unique step_ids, artifact declarations, template existence)
+19. StepPlan validator (workflow_id exists, capabilities ⊆ workflow.required_scopes, outputs under handoff_out/)
+20. HUMAN_REVIEW file-edit loop (`$EDITOR` open + Pydantic revalidation on save)
+21. `phase_capabilities` field on `WorkflowTemplate` — per-phase capability allowlists
+22. EffectiveScope intersection in CapabilityEngine: `Global ∩ Workflow ∩ Step ∩ Phase` computed per tool call
+23. `scope_grant.json` artifact per step: what was requested vs granted, with reasons
+24. Step dispatcher: instantiate existing `Orchestrator` with selected workflow template, `handoff_in/` bundle, computed `EffectiveScope`, budget overrides
+25. Artifact handoff: `handoff_out/` → `handoff_in/` materialization between steps
+26. Synthesis step: compose final campaign report from declared step exports
+27. `CampaignOrchestrator` macro loop: MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS
+28. CLI: `--campaign "mission description"` flag, `--campaign-plan plan.json` for pre-authored plans
+29. Contract-first planner prompt: explicitly forbid adding steps after approval, referencing chat history beyond user prompt + constraints, outputting anything except valid `CampaignPlan` JSON
 
 **Other implementation tasks (Workflows, Judge, Critic):**
 
@@ -784,12 +856,12 @@ Campaigns do not violate "Workflow Templates Are Static" because:
 **Suggested implementation order (low drama, high leverage):**
 
 Phase 7 breaks into four sub-phases that can be delivered incrementally:
-1. **7.0** — WorkflowTemplate abstraction (tasks 1–4). Pure refactor, zero behavioral change.
+1. **7.0** — WorkflowTemplate abstraction + phase_capabilities + EffectiveScope intersection (tasks 1–4, 21–22). Pure refactor + scope enforcement. `CODING_WORKFLOW` with `phase_capabilities` produces identical behavior to Phase 6 (existing capabilities already satisfy the intersection). Zero behavioral change for existing tests.
 2. **7.1–7.2** — Composite Judge + Candidate Sampling (tasks 5–6). Requires 7.0.
 3. **7.3** — External Critic (tasks 7–14). Independent of 7.4. Can ship before or after campaigns.
-4. **7.4** — Campaign Orchestrator (tasks 15–24). Requires 7.0 (needs WorkflowTemplate registry). Independent of 7.1–7.3.
+4. **7.4** — Campaign Orchestrator + StepPlan + scope grants (tasks 15–20, 23–29). Requires 7.0 (needs WorkflowTemplate registry + EffectiveScope). Independent of 7.1–7.3.
 
-**Definition of Done:** State machine is parameterized by `WorkflowTemplate`. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline. Campaign Orchestrator can decompose a multi-step mission into a `CampaignPlan` DAG, present it for HITL approval, dispatch isolated child workflows with artifact handoff, and synthesize a final report. Single tasks (`--task`) bypass the campaign layer entirely.
+**Definition of Done:** State machine is parameterized by `WorkflowTemplate` with `phase_capabilities` enforcing temporal sandboxing. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. EffectiveScope intersection (`Global ∩ Workflow ∩ Step ∩ Phase`) is computed and enforced on every tool call. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline. Campaign Orchestrator can decompose a multi-step mission into a `CampaignPlan` DAG with `StepPlan` contracts per step, present them for HITL approval, dispatch isolated child workflows with computed scope grants and artifact handoff, and synthesize a final report. ActionDigest hashes enable caching, replay detection, and audit. Single tasks (`--task`) bypass the campaign layer entirely — EffectiveScope still applies (Global ∩ Workflow ∩ Phase, with StepScope = WorkflowScope).
 
 ### Phase 8 – Retrieval, Context Discipline & Local Inference
 
@@ -856,6 +928,8 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 | **Campaign HITL Rejected** | Human rejects plan at HUMAN_REVIEW | Return to PLAN_DRAFTING or abort | `campaign_rejected.json` | Re-draft or user aborts campaign |
 | **Campaign Step Failed** | Child workflow halts or exceeds budget | Mark step failed, continue or abort per policy | `step_<id>_failed.json` | Retry step, skip step, or abort campaign |
 | **Handoff Artifact Missing** | Upstream step didn't produce declared export | Block downstream step, surface to user | `handoff_missing_<id>.json` | Retry upstream step or user intervenes |
+| **Step Invalidates Downstream** | Step results contradict downstream assumptions | Halt dispatch, return to HUMAN_REVIEW (Invariant 9) | `campaign_replan_<n>.json` | Human re-approves modified plan or aborts |
+| **Scope Overreach** | StepPlan requests capabilities outside WorkflowScope | Reject at StepPlan validation, before execution | `scope_denied_<id>.json` | Re-generate StepPlan with narrower scope |
 
 ---
 
@@ -876,7 +950,8 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 ## 7. Design Philosophy
 
 * **Artifacts over Chat:** State is on disk, not in a sliding text window.
-* **Capabilities over Trust:** The model is assumed hostile; the sandbox and network gates keep it safe.
+* **Capabilities over Trust:** The model is assumed hostile; the sandbox and network gates keep it safe. Scope is computed from the intersection of policy, workflow, step plan, and phase — never requested freely at runtime.
+* **Capabilities over Tools:** The permission model uses stable capability tags (`repo.read`, `net.scan`, `verify.run`), not tool names. Tools are implementation details that change; capabilities are the API contract. A `StepPlan` declares it needs `repo.write`; the kernel maps that to whichever tool provides it. This keeps plans evolvable without breaking old sessions.
 * **Determinism over Vibes:** Tests dictate success; LLMs only suggest code.
 * **Budgets over Infinite Loops:** Everything has a timeout and a retry cap.
 * **Dumb Tools, Smart Kernel:** Tools execute. They do not decide, retry, repair, or escalate. All intelligence lives in the kernel. If a tool contains an `if/else` about what to do next, it has too much agency.
