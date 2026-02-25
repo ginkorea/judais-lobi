@@ -27,8 +27,14 @@ setup(
     extras_require={
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
         "treesitter": [
-            "tree-sitter>=0.21.0",
-            "tree-sitter-languages>=1.10.0",
+            "tree-sitter>=0.23.0",
+            "tree-sitter-c>=0.21.0",
+            "tree-sitter-cpp>=0.22.0",
+            "tree-sitter-rust>=0.23.0",
+            "tree-sitter-go>=0.23.0",
+            "tree-sitter-javascript>=0.23.0",
+            "tree-sitter-typescript>=0.23.0",
+            "tree-sitter-java>=0.23.0",
         ],
         "voice": [
             "simpleaudio>=1.0.4",
