@@ -8,6 +8,7 @@ from core.context.formatter import (
     format_file_entry,
     format_excerpt,
     format_symbol,
+    _normalize_whitespace,
 )
 
 
@@ -152,3 +153,72 @@ class TestFormatExcerpt:
         ranked = [(f"file_{i:03d}.py", 1.0) for i in range(5)]
         excerpt, shown, omitted = format_excerpt(data, ranked, token_budget=1)
         assert shown >= 1
+
+    def test_char_budget_enforced(self):
+        data = self._make_data(100)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(100)]
+        excerpt, shown, omitted = format_excerpt(
+            data, ranked, token_budget=999999, char_budget=200,
+        )
+        assert shown < 100
+        assert len(excerpt) <= 300  # some slack for footer
+
+    def test_header_prepended(self):
+        data = self._make_data(3)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(3)]
+        excerpt, shown, omitted = format_excerpt(
+            data, ranked, token_budget=4096, header="# Test header",
+        )
+        assert excerpt.startswith("# Test header")
+
+    def test_header_counts_toward_budget(self):
+        """A massive header should eat into the token budget."""
+        data = self._make_data(50)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(50)]
+        big_header = "# " + "x" * 4000  # ~1000 tokens
+        excerpt, shown, omitted = format_excerpt(
+            data, ranked, token_budget=1050, header=big_header,
+        )
+        # With most budget consumed by header, few files should fit
+        assert shown < 50
+
+
+# ---------------------------------------------------------------------------
+# Whitespace normalization
+# ---------------------------------------------------------------------------
+
+class TestNormalizeWhitespace:
+    def test_collapses_internal_spaces(self):
+        result = _normalize_whitespace("| def  foo(  x:  int )  ->  str")
+        assert result == "| def foo( x: int ) -> str"
+
+    def test_preserves_tree_prefix(self):
+        result = _normalize_whitespace("|   def  bar(self)")
+        assert result.startswith("|   ")
+        assert "  " not in result[4:]
+
+    def test_file_header_normalized(self):
+        result = _normalize_whitespace("  src/main.py  ")
+        assert result == "src/main.py"
+
+    def test_multiline(self):
+        text = "file.py\n| def  foo()\n|   def  bar()"
+        result = _normalize_whitespace(text)
+        lines = result.split("\n")
+        assert lines[0] == "file.py"
+        assert "  " not in lines[1][2:]  # after "| "
+        assert "  " not in lines[2][4:]  # after "|   "
+
+
+# ---------------------------------------------------------------------------
+# Deterministic symbol formatting
+# ---------------------------------------------------------------------------
+
+class TestDeterministicFormatting:
+    def test_signature_whitespace_normalized(self):
+        sym = SymbolDef(
+            name="foo", kind="function",
+            signature="def  foo(  x:  int ,  y:  str )  ->  None",
+        )
+        result = format_symbol(sym)
+        assert result == "def foo( x: int , y: str ) -> None"

@@ -6,6 +6,16 @@ from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 from core.context.models import RepoMapData
 
 
+# Filenames that act as barrel/re-export files (inflated centrality).
+_BARREL_FILENAMES: Set[str] = {
+    "__init__.py", "index.js", "index.ts", "index.tsx", "index.jsx",
+    "mod.rs", "__init__.pyi",
+}
+
+# Centrality damping factor for barrel files.
+_BARREL_DAMPING: float = 0.3
+
+
 class DependencyGraph:
     """Import-based dependency graph for relevance ranking.
 
@@ -20,7 +30,20 @@ class DependencyGraph:
         self._deps: Dict[str, Set[str]] = defaultdict(set)
         # Reverse edges: file → set of files that import it
         self._rdeps: Dict[str, Set[str]] = defaultdict(set)
+        # Edge resolution statistics
+        self._edges_resolved: int = 0
+        self._edges_unresolved: int = 0
         self._build(data)
+
+    @property
+    def edges_resolved(self) -> int:
+        """Number of import edges that resolved to a known file."""
+        return self._edges_resolved
+
+    @property
+    def edges_unresolved(self) -> int:
+        """Number of import edges that could not be resolved."""
+        return self._edges_unresolved
 
     def _build(self, data: RepoMapData) -> None:
         """Build adjacency lists from import edges."""
@@ -33,6 +56,9 @@ class DependencyGraph:
                 if resolved and resolved != rel_path:
                     self._deps[rel_path].add(resolved)
                     self._rdeps[resolved].add(rel_path)
+                    self._edges_resolved += 1
+                else:
+                    self._edges_unresolved += 1
 
     def _resolve_module_to_file(
         self,
@@ -278,12 +304,20 @@ class DependencyGraph:
         """Rank files by graph centrality (in-degree + out-degree).
 
         Used for overview mode (no target files).
+        Barrel/index files (__init__.py, index.js, mod.rs, etc.) are
+        damped to prevent them from dominating the ranking.
         """
+        import posixpath
         scores: Dict[str, float] = {}
         for f in self._known_files:
             in_deg = len(self._rdeps.get(f, set()))
             out_deg = len(self._deps.get(f, set()))
-            scores[f] = float(in_deg + out_deg)
+            raw = float(in_deg + out_deg)
+            # Damp barrel files
+            basename = posixpath.basename(f)
+            if basename in _BARREL_FILENAMES:
+                raw *= _BARREL_DAMPING
+            scores[f] = raw
         # Normalize
         max_score = max(scores.values()) if scores else 1.0
         if max_score > 0:

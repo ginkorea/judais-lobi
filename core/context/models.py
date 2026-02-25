@@ -69,3 +69,5 @@ class RepoMapResult(BaseModel):
     excerpt_token_estimate: int = 0
     files_shown: int = 0
     files_omitted: int = 0
+    edges_resolved: int = 0
+    edges_unresolved: int = 0

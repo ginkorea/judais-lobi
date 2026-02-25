@@ -85,6 +85,36 @@ class TestExcerpt:
         # With such a tiny budget, not all files should be shown
         assert result.files_shown <= result.total_files
 
+    def test_edge_stats_populated(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task()
+        # main imports helper, helper imports util → at least 2 resolved
+        assert result.edges_resolved >= 2
+        # Some imports may be unresolvable (if third-party)
+        assert result.edges_resolved + result.edges_unresolved > 0
+
+    def test_excerpt_has_header(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task()
+        assert result.excerpt.startswith("# Repo map:")
+        assert "files" in result.excerpt.split("\n")[0]
+        assert "# Languages:" in result.excerpt
+        assert "# Ranking: centrality" in result.excerpt
+
+    def test_focused_excerpt_header_says_relevance(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task(target_files=["main.py"])
+        assert "# Ranking: relevance" in result.excerpt
+
+    def test_char_budget_param(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task(char_budget=200)
+        assert len(result.excerpt) <= 400  # some slack for footer
+
 
 # ---------------------------------------------------------------------------
 # Visualize

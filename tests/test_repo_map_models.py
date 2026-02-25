@@ -128,6 +128,8 @@ class TestRepoMapResult:
         assert r.excerpt_token_estimate == 0
         assert r.files_shown == 0
         assert r.files_omitted == 0
+        assert r.edges_resolved == 0
+        assert r.edges_unresolved == 0
 
     def test_full_construction(self):
         r = RepoMapResult(
@@ -137,9 +139,13 @@ class TestRepoMapResult:
             excerpt_token_estimate=1024,
             files_shown=20,
             files_omitted=30,
+            edges_resolved=15,
+            edges_unresolved=5,
         )
         assert r.total_files == 50
         assert r.files_shown + r.files_omitted == r.total_files
+        assert r.edges_resolved == 15
+        assert r.edges_unresolved == 5
 
     def test_serialization_roundtrip(self):
         r = RepoMapResult(

@@ -1,6 +1,7 @@
 # core/context/formatter.py — Compact tree-style formatting with token budget
 
-from typing import List, Tuple
+import re
+from typing import List, Optional, Tuple
 
 from core.context.models import FileSymbols, RepoMapData, SymbolDef
 
@@ -10,10 +11,36 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _normalize_whitespace(text: str) -> str:
+    """Collapse runs of spaces/tabs within a line to single spaces.
+
+    Preserves leading indentation structure (| and |   prefixes)
+    but normalizes whitespace inside signatures for deterministic output.
+    """
+    lines = text.split("\n")
+    result = []
+    for line in lines:
+        # Preserve the tree prefix (| or |   ) then normalize the rest
+        if line.startswith("|   "):
+            prefix = "|   "
+            body = line[4:]
+        elif line.startswith("| "):
+            prefix = "| "
+            body = line[2:]
+        else:
+            # File path header or footer — normalize fully
+            result.append(" ".join(line.split()))
+            continue
+        body = " ".join(body.split())
+        result.append(prefix + body)
+    return "\n".join(result)
+
+
 def format_symbol(sym: SymbolDef) -> str:
     """Format a single symbol for display."""
     if sym.signature:
-        return sym.signature
+        # Normalize internal whitespace for deterministic output
+        return " ".join(sym.signature.split())
     prefix = ""
     if sym.kind == "class":
         prefix = "class "
@@ -56,14 +83,32 @@ def format_excerpt(
     map_data: RepoMapData,
     ranked_files: List[Tuple[str, float]],
     token_budget: int = 4096,
+    char_budget: Optional[int] = None,
+    header: str = "",
 ) -> Tuple[str, int, int]:
     """Format a repo map excerpt within a token budget.
+
+    Args:
+        map_data: The full repo map data.
+        ranked_files: List of (rel_path, score) in priority order.
+        token_budget: Maximum estimated tokens for the excerpt body.
+        char_budget: Optional hard character limit. When set, output is
+            also capped at this many characters (regardless of token estimate).
+        header: Optional metadata header prepended to the excerpt.
+            Header chars/tokens count toward the budgets.
 
     Returns (excerpt_text, files_shown, files_omitted).
     """
     parts: List[str] = []
     tokens_used = 0
+    chars_used = 0
     files_shown = 0
+
+    # Account for header in budgets
+    if header:
+        parts.append(header)
+        tokens_used += estimate_tokens(header)
+        chars_used += len(header) + 1  # +1 for joining newline
 
     for rel_path, _score in ranked_files:
         fs = map_data.files.get(rel_path)
@@ -71,14 +116,20 @@ def format_excerpt(
             continue
         entry = format_file_entry(fs)
         entry_tokens = estimate_tokens(entry)
+        entry_chars = len(entry) + 1  # +1 for joining newline
 
-        # Check if adding this entry would exceed budget
-        # Reserve ~20 tokens for the footer
+        # Check token budget (reserve ~20 tokens for footer)
         if tokens_used + entry_tokens > token_budget - 20 and files_shown > 0:
             break
 
+        # Check char budget
+        if char_budget is not None:
+            if chars_used + entry_chars > char_budget - 80 and files_shown > 0:
+                break
+
         parts.append(entry)
         tokens_used += entry_tokens
+        chars_used += entry_chars
         files_shown += 1
 
     files_omitted = len(ranked_files) - files_shown

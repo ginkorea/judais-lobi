@@ -97,11 +97,13 @@ class RepoMap:
     def excerpt_for_task(
         self,
         target_files: Optional[List[str]] = None,
+        char_budget: Optional[int] = None,
     ) -> RepoMapResult:
         """Generate a token-budgeted excerpt.
 
         target_files=None → overview mode (centrality ranking)
         target_files provided → focused mode (relevance ranking)
+        char_budget: optional hard character limit (in addition to token budget).
         """
         if self._data is None:
             self.build()
@@ -111,11 +113,29 @@ class RepoMap:
 
         if target_files:
             ranked = self._graph.rank_by_relevance(target_files)
+            mode = "relevance"
         else:
             ranked = self._graph.rank_by_centrality()
+            mode = "centrality"
+
+        # Build metadata header
+        languages = set()
+        for fs in self._data.files.values():
+            if fs.language:
+                languages.add(fs.language)
+        lang_str = ", ".join(sorted(languages)[:8])
+        if len(languages) > 8:
+            lang_str += f", +{len(languages) - 8} more"
+        header = (
+            f"# Repo map: {self._data.total_files} files, "
+            f"{self._data.total_symbols} symbols\n"
+            f"# Languages: {lang_str}\n"
+            f"# Ranking: {mode} | Budget: {self._token_budget} tokens"
+        )
 
         excerpt, files_shown, files_omitted = format_excerpt(
             self._data, ranked, self._token_budget,
+            char_budget=char_budget, header=header,
         )
 
         return RepoMapResult(
@@ -125,6 +145,8 @@ class RepoMap:
             excerpt_token_estimate=estimate_tokens(excerpt),
             files_shown=files_shown,
             files_omitted=files_omitted,
+            edges_resolved=self._graph.edges_resolved,
+            edges_unresolved=self._graph.edges_unresolved,
         )
 
     def visualize(

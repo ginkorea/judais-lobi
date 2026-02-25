@@ -254,3 +254,99 @@ class TestPackageResolution:
         })
         g = DependencyGraph(data)
         assert ("a.py", "pkg/__init__.py") in g.edges
+
+
+# ---------------------------------------------------------------------------
+# Edge resolution statistics
+# ---------------------------------------------------------------------------
+
+class TestEdgeResolution:
+    def test_resolved_edges_counted(self):
+        data = _make_data({
+            "a.py": ["b"],
+            "b.py": [],
+        })
+        g = DependencyGraph(data)
+        assert g.edges_resolved == 1
+
+    def test_unresolved_edges_counted(self):
+        data = _make_data({
+            "a.py": ["os", "nonexistent_lib"],
+        })
+        g = DependencyGraph(data)
+        assert g.edges_unresolved == 2
+        assert g.edges_resolved == 0
+
+    def test_mixed_resolution(self):
+        data = _make_data({
+            "a.py": ["b", "os"],
+            "b.py": [],
+        })
+        g = DependencyGraph(data)
+        assert g.edges_resolved == 1
+        assert g.edges_unresolved == 1
+
+    def test_empty_graph_zero_edges(self):
+        data = RepoMapData(repo_root="/tmp", files={})
+        g = DependencyGraph(data)
+        assert g.edges_resolved == 0
+        assert g.edges_unresolved == 0
+
+
+# ---------------------------------------------------------------------------
+# Barrel file penalty in centrality
+# ---------------------------------------------------------------------------
+
+class TestBarrelFilePenalty:
+    def test_init_py_damped(self):
+        """__init__.py should be ranked lower than a regular file with same degree."""
+        data = _make_data({
+            "pkg/__init__.py": ["a", "b", "c"],
+            "hub.py": ["a", "b", "c"],
+            "a.py": [],
+            "b.py": [],
+            "c.py": [],
+        })
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_centrality())
+        # hub.py and __init__.py both have out-degree 3,
+        # but __init__.py should be damped
+        assert scores["hub.py"] > scores["pkg/__init__.py"]
+
+    def test_index_js_damped(self):
+        """index.js barrel files should be damped."""
+        files = {
+            "src/index.js": FileSymbols(
+                rel_path="src/index.js", language="javascript",
+                symbols=[SymbolDef(name="x", kind="function")],
+                imports=[ImportEdge(module="./a"), ImportEdge(module="./b")],
+            ),
+            "src/app.js": FileSymbols(
+                rel_path="src/app.js", language="javascript",
+                symbols=[SymbolDef(name="x", kind="function")],
+                imports=[ImportEdge(module="./a"), ImportEdge(module="./b")],
+            ),
+            "src/a.js": FileSymbols(
+                rel_path="src/a.js", language="javascript",
+                symbols=[SymbolDef(name="a", kind="function")],
+            ),
+            "src/b.js": FileSymbols(
+                rel_path="src/b.js", language="javascript",
+                symbols=[SymbolDef(name="b", kind="function")],
+            ),
+        }
+        data = RepoMapData(repo_root="/tmp", files=files)
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_centrality())
+        assert scores["src/app.js"] > scores["src/index.js"]
+
+    def test_non_barrel_not_damped(self):
+        """Regular .py files should not be damped."""
+        data = _make_data({
+            "main.py": ["a", "b"],
+            "a.py": [],
+            "b.py": [],
+        })
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_centrality())
+        assert scores["main.py"] == 1.0
