@@ -46,11 +46,25 @@ See: `ROADMAP.md`
 * ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
 * ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
 * ✅ Phase 5 — Repo Map & Context Compression (783 tests)
+* ✅ Phase 6 — Repository-Native Patch Engine (888 tests)
 
 ### Up Next
 
-* ⏳ Phase 6 — Repository-Native Patch Engine
 * ⏳ Phase 7 — Multi-Role Orchestrator, Composite Judge & External Critic
+* ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
+
+### Phase 6 Highlights
+
+The agent can now reliably modify repository files through a deterministic, exact-match patch protocol with git worktree isolation and automatic rollback.
+
+* **`core/patch/parser.py`** — Extracts `<<<< SEARCH / ==== / >>>> REPLACE`, `<<<< CREATE / >>>> CREATE`, and `<<<< DELETE >>>>` blocks from raw LLM text output. Delimiter-safe (only recognizes markers at line start). Path validation rejects absolute paths and `..` traversal at parse time.
+* **`core/patch/matcher.py`** — Exact byte-match with byte offsets and SHA256 context hashes. On zero matches: 3-stage similarity narrowing pipeline (indent filter → token overlap → `SequenceMatcher` ratio) returns top 3 candidate regions. On multiple matches: returns all offsets + context hashes for LLM disambiguation.
+* **`core/patch/applicator.py`** — File writes with strict preconditions. Path jailing (symlink-escape resistant). `\r\n → \n` canonicalization. `st_mode` preservation (executables stay executable). Create fails if file exists; delete fails if file doesn't exist.
+* **`core/patch/worktree.py`** — `PatchWorktree` manages git worktree lifecycle: `create` (explicit `-b` + `HEAD`), `merge_back` (`--no-ff` + branch cleanup), `discard` (force remove + branch delete). Writes `.judais-lobi/worktrees/active.json` for crash recovery of orphaned worktrees.
+* **`core/patch/engine.py`** — `PatchEngine` orchestrates validate → apply → diff → merge/rollback. Stops at first file failure, leaving worktree intact for diagnostics. `diff()` returns real `git diff` from the worktree.
+* **`core/tools/patch_tool.py`** — ToolBus-compatible 6-action tool (validate, apply, diff, merge, rollback, status). All actions return JSON stdout for machine-friendly kernel orchestration. exit_code=0 only on success.
+
+12 tool descriptors. 105 new tests (888 total). 3 integration tests with real git repos. Worktree isolation means cross-file patches land atomically — all succeed or discard for zero-cost rollback.
 
 ### Phase 5 Highlights
 
@@ -65,7 +79,7 @@ The agent is now repo-aware. It understands structure, relationships, and what's
 * **`core/tools/repo_map_tool.py`** — ToolBus-compatible multi-action tool (build, excerpt, status, visualize).
 * **`setup.py`** — `pip install judais-lobi[treesitter]` adds optional tree-sitter support via individual grammar packages.
 
-11 tool descriptors. 221 new tests. tree-sitter is optional — the system works without it and gains rich multi-language AST parsing when installed.
+11 tool descriptors (now 12 with Phase 6). 221 new tests. tree-sitter is optional — the system works without it and gains rich multi-language AST parsing when installed.
 
 ### Phase 4 Highlights
 
@@ -100,9 +114,10 @@ If you want to understand the **current implementation**, inspect:
 * `core/kernel/` — state machine, budgets, orchestrator
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory
-* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map)
+* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map, patch)
 * `core/policy/` — profiles, god mode, audit logging
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
+* `core/patch/` — patch engine: parser, matcher, applicator, worktree manager, engine orchestrator
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -138,15 +153,16 @@ ToolBus → Sandbox → Subprocess
 Deterministic Judge
 ```
 
-As of Phase 5:
+As of Phase 6:
 
 * Tools are dumb executors behind a sandboxed, capability-gated bus.
 * Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`.
 * Deny-by-default. No scope = no execution.
 * God mode exists for emergencies — TTL-limited, panic-revocable, fully audited.
-* 4 consolidated multi-action tools (fs, git, verify, repo_map) cover 25 operations under 13 scopes.
+* 5 consolidated multi-action tools (fs, git, verify, repo_map, patch) cover 31 operations under 13 scopes.
 * The agent sees repo structure via a token-budgeted excerpt — file paths, symbol signatures, and dependency-ranked relevance — without loading full source.
 * 3-tier symbol extraction: Python `ast` → tree-sitter (7 languages) → regex fallback. Multi-language dependency graph with import resolution.
+* Code modifications use an exact-match patch protocol with git worktree isolation. Cross-file changes land atomically. Failed patches roll back at zero cost.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
