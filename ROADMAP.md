@@ -11,7 +11,7 @@
 - [x] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating (ToolBus, CapabilityEngine, BwrapSandbox, 3 consolidated tools, profiles, god mode, audit, 562 tests)
 - [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
 - [x] **Phase 6** – Repository-Native Patch Engine (parser, exact-match matcher with similarity diagnostics, path-jailed applicator, git worktree isolation with crash recovery, PatchEngine orchestrator, ToolBus-integrated PatchTool with 6 actions, 888 tests)
-- [ ] **Phase 7** – Pluggable Workflows, Multi-Role Orchestrator, Composite Judge & External Critic
+- [ ] **Phase 7** – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic
 - [ ] **Phase 8** – Retrieval, Context Discipline & Local Inference
 - [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
 - [ ] **Phase 10** – Evaluation & Benchmarks
@@ -26,6 +26,7 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
 * **Native Sandboxing:** Tool execution runs in native Linux namespaces (bwrap/nsjail) to maintain a microkernel architecture.
 * **Hard Budgets:** Strict caps on retries, compute time, and context size prevent infinite loops.
 * **Pluggable Workflows:** The state machine is parameterized by a `WorkflowTemplate` — a static, auditable definition of phases, transitions, schemas, and branch rules. The coding pipeline is the first workflow, not the only one. Red teaming, data analysis, optimization, and arbitrary structured tasks run on the same kernel with different templates. The LLM selects which template to use at INTAKE; it never rewrites the transition graph at runtime.
+* **Campaign Orchestration:** Multi-step missions run as a hierarchical state machine — a `CampaignOrchestrator` (Tier 0) drafts a DAG of steps, each assigned a workflow template, gets human approval, then dispatches isolated child workflows with explicit artifact handoff. The campaign plan is immutable once approved. The system graduates from "task runner" to "mission manager" without adding a second orchestration universe — campaigns are workflow-of-workflows, reusing the entire existing stack.
 * **Deterministic Workflows:** Repository-native patch workflows using Search/Replace blocks, governed by a rigid scoring hierarchy (Tests > Static Analysis > LLM).
 * **GPU-Aware Orchestration:** VRAM-aware scheduling and KV cache prefixing that adapts to the available hardware — from a single RTX 5090 (32GB) to multi-GPU configurations (e.g., 4x L4, RTX 6000 Pro 96GB).
 
@@ -37,8 +38,21 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
                           ┌─────────────────────────┐
                           │     CLI / Task Input     │
                           │  (lobi/judais commands)  │
-                          │  --task / --workflow      │
+                          │  --task / --campaign      │
+                          │  --workflow               │
                           └────────────┬────────────┘
+                                       │
+                            ┌──────────▼──────────┐
+                            │  --campaign?         │
+                            │  ┌────────────────┐  │
+                            │  │ Campaign       │  │  Tier 0: DAG of steps
+                            │  │ Orchestrator   │  │  HITL approval gate
+                            │  │ (plan→approve  │  │  artifact handoff
+                            │  │  →dispatch     │  │
+                            │  │  →synthesis)   │  │
+                            │  └───────┬────────┘  │
+                            │          │ per step  │
+                            └──────────┼──────────┘
                                        │
                           ┌────────────▼────────────┐
                           │  WorkflowSelector        │
@@ -46,11 +60,11 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
                           │   INTAKE artifact or CLI) │
                           └────────────┬────────────┘
                                        │
-                          ┌────────────▼────────────┐
-                          │     core/kernel/         │
+                          ┌────────────▼────────────┐  Tier 1: static
+                          │     core/kernel/         │  workflow graph
                           │  Orchestrator + Budgets  │
-                          │  WorkflowTemplate drives │
-                          │  phases & transitions    │
+                          │  WorkflowTemplate drives │  Tier 2: adaptive
+                          │  phases & transitions    │  phase-internal
                           └──┬───────────────────┬──┘
                              │                   │
               ┌──────────────▼──────┐   ┌───────▼──────────────┐
@@ -96,8 +110,15 @@ core/
     orchestrator.py      # Main loop (parameterized by WorkflowTemplate)
     budgets.py           # Hard budget enforcement
     workflows.py         # WorkflowTemplate, WorkflowSelector, built-in templates
+  campaign/              # Campaign orchestrator (Tier 0)
+    orchestrator.py      # CampaignOrchestrator: plan → approve → dispatch → synthesis
+    models.py            # CampaignPlan, MissionStep, CampaignState
+    validator.py         # DAG acyclicity, artifact declarations, step_id uniqueness
+    hitl.py              # HUMAN_REVIEW: $EDITOR file-edit loop + Pydantic revalidation
+    handoff.py           # Artifact materialization: handoff_out/ → handoff_in/
   contracts/             # JSON schemas + Pydantic validation
     schemas.py           # All Pydantic models (workflow-registered, not hardcoded)
+    campaign.py          # CampaignPlan, MissionStep, CampaignLimits, ArtifactRef
     validation.py        # Schema lookup via workflow.phase_schemas
   runtime/               # LLM provider backends (OpenAI/Mistral API + Local HTTP/vLLM/TRT-LLM)
   capabilities/          # PermissionRequest and PermissionGrant engine
@@ -115,15 +136,31 @@ tools/
   (domain packages)      # fs, git, patch, verify, repo_map + future: redteam/, data/
 
 sessions/
+  # Single-task session (workflow mode):
   <timestamp_taskid>/
     artifacts/           # The ONLY source of truth for the session
     workflow.json        # Which WorkflowTemplate was used (for replay)
+
+  # Multi-step campaign session (campaign mode):
+  <campaign_id>/
+    campaign.json        # CampaignPlan + current state (frozen after HUMAN_REVIEW)
+    synthesis/           # Final compiled outputs from all steps
+    steps/
+      <step_id>/
+        workflow.json    # Selected WorkflowTemplate for this step
+        artifacts/       # Step-local artifacts (isolated from other steps)
+        handoff_in/      # Materialized imports from upstream steps
+        handoff_out/     # Exports declared by this step (available to downstream)
 
 ```
 
 ### 2.3 Execution Model & Hard Budgets
 
-Every task follows a strict state machine defined by a `WorkflowTemplate`. The template is selected at INTAKE (by CLI flag, policy, or LLM classification) and is **immutable for the session**. The LLM never modifies the transition graph at runtime.
+Execution operates at three tiers. Each tier has a strict boundary: the layer above dispatches, the layer below executes. No tier reaches into another's internals.
+
+* **Tier 0 — Campaign graph** (DAG of steps). A `CampaignOrchestrator` decomposes a complex mission into isolated steps, each assigned a workflow template. The plan is human-approved and immutable. Artifact handoff between steps is explicit. Campaigns are optional — single tasks bypass Tier 0 entirely.
+* **Tier 1 — Workflow graph** (static template). Each task (or campaign step) follows a strict state machine defined by a `WorkflowTemplate`. The template is selected at INTAKE (by CLI flag, policy, or LLM classification) and is **immutable for the session**. The LLM never modifies the transition graph at runtime.
+* **Tier 2 — Phase-internal planning** (adaptive, tool-gated). The LLM controls what happens *inside* a phase — which tools to call, what plan to propose, what patch to emit. Bounded by budgets and capability gates.
 
 The **Coding Workflow** (default, current):
 `INTAKE` -> `CONTRACT` -> `REPO_MAP` -> `PLAN` -> `RETRIEVE` -> `PATCH` -> `CRITIQUE` -> `RUN` -> `FIX (loop)` -> `FINALIZE`
@@ -131,7 +168,10 @@ The **Coding Workflow** (default, current):
 The **Generic Workflow** (for tasks that don't fit a named template):
 `INTAKE` -> `PLAN` -> `EXECUTE` -> `EVALUATE` -> `(loop to PLAN or EXECUTE)` -> `FINALIZE`
 
-Future named workflows (Red Team, Data Analysis, etc.) define their own phases but share the same kernel, budgets, ToolBus, and artifact system.
+The **Campaign Lifecycle** (Tier 0, for multi-step missions):
+`MISSION_ANALYSIS` -> `OPTION_DEVELOPMENT` -> `PLAN_DRAFTING` -> `HUMAN_REVIEW` -> `DISPATCH` -> `SYNTHESIS`
+
+Future named workflows (Red Team, Data Analysis, etc.) define their own phases but share the same kernel, budgets, ToolBus, and artifact system. Campaigns compose any combination of workflows into a mission.
 
 Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the ToolBus on **every tool call**. Any tool invocation — in any phase — triggers a capability check. If the required scope is not granted, the ToolBus returns a structured error and the kernel prompts for a `PermissionRequest`. This happens inline, not as a discrete step in the state machine.
 
@@ -149,7 +189,8 @@ Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the Tool
 5. **GPU Scheduling in Runtime, Not Kernel:** The kernel asks `runtime.get_parallelism_budget()` and receives a number. It does not know about VRAM, device counts, or compute capability. Clean separation — the kernel orchestrates phases, the runtime owns hardware awareness.
 6. **One ToolBus, Both Modes:** Direct mode and agentic mode use the **same ToolBus and SandboxRunner**. The difference between modes is orchestration depth (direct mode skips the kernel state machine), not the execution path. If direct mode bypasses the bus, you build two security models that drift apart. Every `--shell`, `--python`, and `--search` call in direct mode goes through the bus with the same policy enforcement. The bus is the only door.
 7. **Kernel Never Touches the Filesystem:** The kernel reads artifacts and dispatches to tools. It never reads from the working directory, never opens project files, never writes outside the session directory. All repository interaction goes through a `RepoServer` tool via the ToolBus. Even read-only access must be sandboxed — if the kernel can read files directly, that is an unsandboxed path to the repo that bypasses policy. Kernel orchestrates. Tools touch the world.
-8. **Workflow Templates Are Static:** The `WorkflowTemplate` — its phases, transitions, and schema registry — is selected once at INTAKE and is immutable for the session. The LLM controls what happens *inside* a phase. The kernel controls *which phase runs next.* The LLM picks from a menu of templates; it never writes the menu. This is the one invariant that protects every budget and safety constraint from circumvention. Two-tier orchestration: static workflow graph (Tier 1), adaptive phase-internal planning (Tier 2).
+8. **Workflow Templates Are Static:** The `WorkflowTemplate` — its phases, transitions, and schema registry — is selected once at INTAKE and is immutable for the session. The LLM controls what happens *inside* a phase. The kernel controls *which phase runs next.* The LLM picks from a menu of templates; it never writes the menu. This is the one invariant that protects every budget and safety constraint from circumvention. Three-tier orchestration: static campaign graph (Tier 0), static workflow graph (Tier 1), adaptive phase-internal planning (Tier 2).
+9. **Campaign Plans Are Static Once Approved:** After the human approves a `CampaignPlan` at HUMAN_REVIEW, the step DAG is frozen. Steps can only be **(a)** retried, **(b)** skipped, or **(c)** aborted. No inserting new steps, no reordering, no changing workflow assignments — unless the campaign returns to HUMAN_REVIEW for re-approval. This prevents "LLM silently expands scope" and ensures the human-approved plan is the plan that executes.
 
 
 
@@ -336,9 +377,9 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 
 **Definition of Done:** ✅ Patch protocol produces reproducible edits. Exact-match validation with structured diagnostics. Git worktree isolation for atomic cross-file changes. Automatic rollback on failure. 12 tool descriptors, 31 operations under 13 scopes.
 
-### Phase 7 – Pluggable Workflows, Multi-Role Orchestrator, Composite Judge & External Critic
+### Phase 7 – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic
 
-**Goal:** Abstract the state machine into pluggable `WorkflowTemplate` objects, implement role dispatchers per domain, and add a deterministic scoring hierarchy with an optional external critic.
+**Goal:** Abstract the state machine into pluggable `WorkflowTemplate` objects, add a Campaign Orchestrator for multi-step missions with HITL approval, implement role dispatchers per domain, and add a deterministic scoring hierarchy with an optional external critic.
 
 #### 7.0 WorkflowTemplate & State Machine Abstraction
 
@@ -577,7 +618,153 @@ Grants are logged to the session. All requests and payload hashes are recorded f
 * Trigger-based invocation only (not every loop)
 * **Critic caching:** Hash the `CritiquePack`. If the same content is reviewed again (e.g., after a no-op retry), reuse the prior report. Cache keyed by `sha256(redacted_payload)`.
 
-**Implementation tasks:**
+#### 7.4 Campaign Orchestrator (Tier 0 — Workflow of Workflows)
+
+**Motivation:** A single workflow handles one task. Real missions require multiple coordinated tasks — analyzing data *then* building a model, mapping an attack surface *then* exploiting vulnerabilities, refactoring a module *then* updating all callers. The Campaign Orchestrator is a thin macro loop that decomposes complex missions into a DAG of steps, gets human sign-off, and dispatches each step as an isolated workflow with explicit artifact handoff.
+
+The key insight: campaigns are **orchestration of artifacts and permissions**, not "a smarter agent." The kernel stays deterministic; the plan becomes the executable artifact; the human owns the moment where risk and scope get locked.
+
+**Campaign Lifecycle:**
+
+```text
+MISSION_ANALYSIS       Ingest raw user prompt. Identify constraints, domains, success criteria.
+        │
+OPTION_DEVELOPMENT     Generate potential approaches (strategies, not implementations).
+        │
+PLAN_DRAFTING          Break chosen approach into a DAG of MissionSteps.
+        │               Assign a WorkflowTemplate to each step.
+        │               Declare artifact handoff between steps.
+        │
+HUMAN_REVIEW           *** Execution halts. ***
+        │               Present plan to human ($EDITOR file-edit loop).
+        │               Human approves, rejects, or modifies.
+        │               Capability grants locked per step.
+        │               Plan frozen on approval (Invariant 9).
+        │
+DISPATCH               Loop through approved steps in DAG order.
+        │               For each step: spawn Orchestrator with assigned workflow,
+        │               materialized handoff_in/ bundle, budgets, capabilities.
+        │               Each step runs in an isolated child session.
+        │
+SYNTHESIS              Compile declared exports from all steps into campaign report.
+```
+
+**`CampaignPlan` Schema:**
+
+```python
+class ArtifactRef(BaseModel):
+    step_id: str                    # Source step
+    artifact_name: str              # e.g., "cleaned_data.csv", "recon_report.json"
+
+class CampaignLimits(BaseModel):
+    max_steps: int = 10
+    max_total_tool_calls: int = 500
+    max_total_tokens: int = 2_000_000
+    deadline_seconds: Optional[int] = None
+
+class MissionStep(BaseModel):
+    step_id: str
+    description: str
+    target_workflow: str            # Template ID: "coding", "generic", "redteam", "datasci"
+    capabilities_required: List[str]  # Hard requirement: ["net.scan", "fs.write"]
+    capabilities_optional: List[str] = []  # Nice-to-have
+    risk_flags: List[str] = []      # ["network-active", "writes-repo", "installs-deps"]
+    inputs_from: List[str] = []     # step_ids this step depends on (DAG edges)
+    handoff_artifacts: List[ArtifactRef] = []  # Explicit artifact imports from upstream
+    exports: List[str] = []         # Artifact names this step declares as output
+    success_criteria: str
+    budget_overrides: Dict[str, Any] = {}
+
+class CampaignPlan(BaseModel):
+    campaign_id: str
+    objective: str
+    assumptions: List[str]
+    steps: List[MissionStep]
+    limits: CampaignLimits = CampaignLimits()
+```
+
+**DAG Validation (enforced in code, nudged in prompts):**
+
+* All `step_id` values unique
+* All `inputs_from` references point to existing `step_id` values
+* DAG is acyclic (topological sort succeeds)
+* Every step has at least one success criterion with a measurable outcome
+* Every step declares its exports
+* `target_workflow` matches an installed template name
+
+**Artifact Handoff — Artifacts Over Chat:**
+
+Each workflow step starts with a clean slate, seeded only with the crystallized artifacts of upstream steps. No conversation history, no chat log teleportation, no mystery meat context.
+
+The handoff is literal file operations:
+1. Step N finishes, writes outputs to `handoff_out/`
+2. `CampaignOrchestrator` marks Step N complete
+3. `CampaignOrchestrator` initializes Step N+1
+4. Parent copies declared `ArtifactRef` items from Step N's `handoff_out/` into Step N+1's `handoff_in/`
+5. Step N+1's `INTAKE` phase reads from `handoff_in/` — not from Step N's session
+
+**Session Namespace Design:**
+
+```text
+sessions/<campaign_id>/
+  campaign.json          # CampaignPlan + current state (frozen after HUMAN_REVIEW)
+  synthesis/             # Final compiled outputs
+  steps/
+    <step_id>/
+      workflow.json      # Selected WorkflowTemplate
+      artifacts/         # Step-local artifacts (standard session layout)
+      handoff_in/        # Materialized imports from upstream steps
+      handoff_out/       # Exports available to downstream steps
+```
+
+Three properties:
+1. **Isolation:** Each step has its own session + artifacts. Steps cannot read each other's artifacts directly.
+2. **Explicit handoff:** Only declared artifacts cross step boundaries, via `handoff_in/` / `handoff_out/`.
+3. **Traceability:** Campaign report can cite exactly which step produced what, from which artifact.
+
+**HUMAN_REVIEW Gate:**
+
+When the `CampaignOrchestrator` reaches HUMAN_REVIEW:
+
+1. Serialize `CampaignPlan` to `campaign.plan.json` (or YAML) on disk
+2. Open in `$EDITOR` (like `git rebase -i` or `git commit`)
+3. On save/close: validate strictly via Pydantic. If invalid: show errors, reopen editor
+4. If valid: freeze plan (Invariant 9) and proceed to DISPATCH
+
+The approval UI also shows and locks **capability grants**:
+* Step list + workflow assignments
+* Capabilities requested per step (required vs. optional)
+* Whether each capability is currently permitted by policy
+* User can: approve all, approve but downgrade capabilities, approve with per-step overrides
+
+**How Campaigns Preserve the "Static Workflows" Doctrine:**
+
+Campaigns do not violate "Workflow Templates Are Static" because:
+* Campaigns don't rewrite workflow graphs — they *select* from installed templates
+* Step execution is bounded by the selected workflow's template, budgets, and transitions
+* Adaptation happens inside phases (Tier 2), not in the campaign graph (Tier 0) or workflow graph (Tier 1)
+* The Campaign layer is a **workflow router + artifact courier** with a human checkpoint
+
+**What CampaignOrchestrator is NOT:**
+
+* Not a second, less-audited orchestrator — it has exactly 6 phases, all deterministic
+* Not an LLM execution loop — the LLM generates the plan, the human approves it, the system dispatches it
+* Not a replacement for `--task` — single tasks bypass Tier 0 entirely
+
+**Implementation tasks (Campaign):**
+
+15. Namespace + session layout for parent/child steps (`campaign_id/step_id` dirs) in `SessionManager`
+16. `CampaignPlan` + `MissionStep` + `CampaignLimits` + `ArtifactRef` schemas in `core/contracts/campaign.py`
+17. DAG validator (acyclic, unique step_ids, artifact declarations, template existence)
+18. HUMAN_REVIEW file-edit loop (`$EDITOR` open + Pydantic revalidation on save)
+19. Step dispatcher: instantiate existing `Orchestrator` with selected workflow template, `handoff_in/` bundle, budget/capability overrides
+20. Artifact handoff: `handoff_out/` → `handoff_in/` materialization between steps
+21. Synthesis step: compose final campaign report from declared step exports
+22. `CampaignOrchestrator` macro loop: MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS
+23. CLI: `--campaign "mission description"` flag, `--campaign-plan plan.json` for pre-authored plans
+24. Contract-first planner prompt: explicitly forbid adding steps after approval, referencing chat history beyond user prompt + constraints, outputting anything except valid `CampaignPlan` JSON
+
+**Other implementation tasks (Workflows, Judge, Critic):**
 
 1. `WorkflowTemplate` dataclass + `CODING_WORKFLOW` + `GENERIC_WORKFLOW` (see 7.0)
 2. Refactor `SessionState`, `Orchestrator`, `validation.py` to accept workflow parameter
@@ -594,7 +781,15 @@ Grants are logged to the session. All requests and payload hashes are recorded f
 13. CLI: `--workflow <name>` flag to select workflow, `--critic` flag to enable, `--no-critic` to force off
 14. Manual invocation: `lobi critic --session <id>` for post-hoc review of any session
 
-**Definition of Done:** State machine is parameterized by `WorkflowTemplate`. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline.
+**Suggested implementation order (low drama, high leverage):**
+
+Phase 7 breaks into four sub-phases that can be delivered incrementally:
+1. **7.0** — WorkflowTemplate abstraction (tasks 1–4). Pure refactor, zero behavioral change.
+2. **7.1–7.2** — Composite Judge + Candidate Sampling (tasks 5–6). Requires 7.0.
+3. **7.3** — External Critic (tasks 7–14). Independent of 7.4. Can ship before or after campaigns.
+4. **7.4** — Campaign Orchestrator (tasks 15–24). Requires 7.0 (needs WorkflowTemplate registry). Independent of 7.1–7.3.
+
+**Definition of Done:** State machine is parameterized by `WorkflowTemplate`. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline. Campaign Orchestrator can decompose a multi-step mission into a `CampaignPlan` DAG, present it for HITL approval, dispatch isolated child workflows with artifact handoff, and synthesize a final report. Single tasks (`--task`) bypass the campaign layer entirely.
 
 ### Phase 8 – Retrieval, Context Discipline & Local Inference
 
@@ -657,6 +852,10 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 | **Critic Unavailable** | Network error, timeout, or critic disabled | Silent no-op, continue pipeline | `critic_unavailable_<n>.json` | No retry consumed |
 | **Workflow Mismatch** | Task requires phases not in selected template | Halt with diagnostic | `workflow_mismatch.json` | User re-runs with `--workflow <correct>` |
 | **Unknown Workflow** | `--workflow <name>` not in registry | Reject at CLI parse time | N/A | User selects from known templates |
+| **Campaign DAG Invalid** | Cyclic dependencies, missing step_ids, undeclared artifacts | Reject at PLAN_DRAFTING, return to LLM | `campaign_dag_error_<n>.json` | Burn 1 retry in PLAN_DRAFTING phase |
+| **Campaign HITL Rejected** | Human rejects plan at HUMAN_REVIEW | Return to PLAN_DRAFTING or abort | `campaign_rejected.json` | Re-draft or user aborts campaign |
+| **Campaign Step Failed** | Child workflow halts or exceeds budget | Mark step failed, continue or abort per policy | `step_<id>_failed.json` | Retry step, skip step, or abort campaign |
+| **Handoff Artifact Missing** | Upstream step didn't produce declared export | Block downstream step, surface to user | `handoff_missing_<id>.json` | Retry upstream step or user intervenes |
 
 ---
 
@@ -672,7 +871,7 @@ To prevent system collapse under edge cases, the kernel must handle failures str
   * Not a chat product (though direct chat remains available for simple queries).
   * Not a web-first IDE.
   * Not dependent on vendor lock-in.
-  * Not a framework where LLMs design their own execution pipelines. The LLM operates within a phase; the kernel decides which phase runs next. Workflow templates are static, auditable, and human-authored.
+  * Not a framework where LLMs design their own execution pipelines. The LLM operates within a phase; the kernel decides which phase runs next. Workflow templates are static, auditable, and human-authored. Campaign plans are LLM-proposed but human-approved and frozen — the LLM drafts the DAG, the human owns the approval gate, and no step can be inserted after HUMAN_REVIEW without returning for re-approval.
 
 ## 7. Design Philosophy
 
@@ -681,7 +880,8 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 * **Determinism over Vibes:** Tests dictate success; LLMs only suggest code.
 * **Budgets over Infinite Loops:** Everything has a timeout and a retry cap.
 * **Dumb Tools, Smart Kernel:** Tools execute. They do not decide, retry, repair, or escalate. All intelligence lives in the kernel. If a tool contains an `if/else` about what to do next, it has too much agency.
-* **Static Graphs, Adaptive Phases:** The workflow template (phase topology, transitions, schemas) is static and auditable. The LLM controls what happens *inside* a phase — which tools to call, what plan to propose, what patch to emit. The LLM never controls *which phase runs next.* This is two-tier orchestration: rigid outer loop, flexible inner loop. If the LLM can rewrite the transition graph, every budget and safety constraint has a backdoor.
+* **Static Graphs, Adaptive Phases:** The workflow template (phase topology, transitions, schemas) is static and auditable. The LLM controls what happens *inside* a phase — which tools to call, what plan to propose, what patch to emit. The LLM never controls *which phase runs next.* This is three-tier orchestration: rigid campaign graph (Tier 0), rigid workflow graph (Tier 1), flexible phase-internal loop (Tier 2). If the LLM can rewrite any transition graph, every budget and safety constraint has a backdoor.
+* **Plans over Prompts:** Complex missions are decomposed into a structured `CampaignPlan` artifact — a DAG of steps with explicit workflow assignments, artifact declarations, and capability requests. The human reviews and freezes this plan before a single tool call fires. The plan is the executable artifact. The human owns the moment where risk and scope get locked. This is the difference between "run tasks" and "run missions."
 * **Migration over Rewrite:** Each phase must leave the system in a working state. No big-bang rewrites.
 * **Air-Gap Ready:** Every external dependency (frontier critic, API backends, network tools) is optional and capability-gated. The system must run identically with or without network access. External services add value when available but never gate execution. A `refused` response from any external service is a non-event, not a blocker.
 * **Commit or Abort:** The greatest architectural risk is partial refactor — a half-agentic, half-chatbot chimera where some paths use artifacts and others use `self.history`, where some tools go through the bus and others call subprocess directly. Each phase must fully replace the subsystem it targets. Release 0.8 can break backward compatibility. That is allowed. What is not allowed is two systems of truth running in parallel.
@@ -699,7 +899,7 @@ lobi --rag crawl ./docs               # RAG indexing
 lobi --recall 5                       # Adventure history
 ```
 
-### Agentic Mode (New)
+### Agentic Mode — Single Task (New)
 ```bash
 lobi --task "add pagination to the /users endpoint"
 lobi --task "fix the race condition in worker.py" --grant net.any
@@ -707,12 +907,27 @@ lobi --task "analyze sales.csv and find outliers" --workflow generic
 lobi --task "recon target.example.com" --workflow redteam --grant net.scan
 ```
 
-* `--task` enters the full state machine (INTAKE through FINALIZE).
+* `--task` enters the full state machine (INTAKE through FINALIZE). Bypasses Tier 0 (campaign layer).
 * `--workflow <name>` selects a `WorkflowTemplate` explicitly. If omitted, `WorkflowSelector` classifies at INTAKE (default: `coding` for repo-context tasks, `generic` for everything else).
 * `--grant` pre-authorizes capability scopes for the session.
 * Session artifacts are written to `sessions/<timestamp_taskid>/artifacts/`.
 * `workflow.json` records which template was used (for deterministic replay).
 * The user can inspect, resume, or replay any session from its artifacts.
+
+### Campaign Mode — Multi-Step Missions (New)
+```bash
+lobi --campaign "migrate the auth system from sessions to JWT"
+lobi --campaign "full red team assessment of example.com" --grant net.scan,net.exploit
+lobi --campaign-plan ./mission.json                # Pre-authored plan, skip LLM drafting
+judais --campaign "analyze sales data, build model, deploy API" --workflow-override step3=coding
+```
+
+* `--campaign` enters the Campaign Orchestrator (Tier 0): MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS.
+* `--campaign-plan <file>` loads a pre-authored `CampaignPlan` JSON, skipping MISSION_ANALYSIS through PLAN_DRAFTING. Still requires HUMAN_REVIEW.
+* `--workflow-override <step>=<template>` forces a specific workflow for a named step (overrides LLM's assignment).
+* At HUMAN_REVIEW, the plan is serialized and opened in `$EDITOR`. The user approves, modifies, or rejects. Capability grants are locked per step at approval time.
+* Campaign sessions are written to `sessions/<campaign_id>/` with per-step child sessions under `steps/<step_id>/`.
+* Each step runs in isolation with explicit artifact handoff — no shared state, no chat log transfer.
 
 **Capability grant UX** — three modes, from most manual to most automated:
 1. **Interactive approval:** Kernel pauses, CLI prompts the user: `"Tool 'git_fetch' requests scope 'net.any'. Allow? [y/N/y+60s]"`. User can grant permanently, for a duration, or deny.
@@ -740,10 +955,11 @@ Phase 0 (Tests & Baseline)
   │       │                                                    │
   │       │                                    ┌───────────────┘
   │       │                                    │
-  │       │                              Phase 7 (Workflows + Orchestrator + Judge)
+  │       │                              Phase 7 (Workflows + Campaign + Judge)
   │       │                                ├── 7.0: WorkflowTemplate abstraction
   │       │                                ├── 7.1-7.2: Judge + Candidates
-  │       │                                └── 7.3: External Critic
+  │       │                                ├── 7.3: External Critic
+  │       │                                └── 7.4: Campaign Orchestrator
   │       │                                    │
   │       │                              Phase 8 (Retrieval & Local Inference)
   │       │                                    │
@@ -760,10 +976,11 @@ Phase 0 (Tests & Baseline)
 
 **Key parallelism opportunities:**
 * Phase 5 (Repo Map) and Phase 6 (Patch Engine) are independent and can be built concurrently after Phase 3.
-* Phase 7.0 (WorkflowTemplate) is a prerequisite for 7.1–7.3 but can be implemented and tested independently.
+* Phase 7.0 (WorkflowTemplate) is a prerequisite for 7.1–7.4 but can be implemented and tested independently.
+* Phase 7.4 (Campaign Orchestrator) requires 7.0 (WorkflowTemplate registry) but is independent of 7.1–7.3 (Judge/Critic). Can ship before or after the critic subsystem.
 * Phase 10 (Benchmarks) baseline capture starts in Phase 0; the full suite is built last but metrics collection is continuous.
 * Local inference bring-up (Phase 8) can begin prototyping as soon as the runtime interface is defined (Phase 1), though full integration requires Phase 3 contracts.
-* Domain-specific workflow templates (RedTeam, DataSci) can be added at any point after Phase 7.0 ships — they are content, not infrastructure.
+* Domain-specific workflow templates (RedTeam, DataSci) can be added at any point after Phase 7.0 ships — they are content, not infrastructure. Campaign mode can compose any combination of installed templates.
 
 ## 10. Point of No Return: The Deletion of `elf.py`
 
