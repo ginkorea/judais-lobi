@@ -166,6 +166,24 @@ REPO_MAP_DESCRIPTOR = ToolDescriptor(
     description="Repository map: build, excerpt (task-scoped), status, visualize (DOT/Mermaid).",
 )
 
+# ---------------------------------------------------------------------------
+# Phase 6: Patch engine tool
+# ---------------------------------------------------------------------------
+
+PATCH_DESCRIPTOR = ToolDescriptor(
+    tool_name="patch",
+    required_scopes=["fs.read", "fs.write", "git.read", "git.write"],
+    action_scopes={
+        "validate": ["fs.read"],
+        "apply":    ["fs.read", "fs.write", "git.write"],
+        "diff":     ["fs.read", "git.read"],
+        "rollback": ["git.write"],
+        "merge":    ["git.write"],
+        "status":   ["fs.read", "git.read"],
+    },
+    description="Patch engine: validate, apply, diff, rollback, merge, status.",
+)
+
 # All pre-built descriptors for iteration
 ALL_DESCRIPTORS = [
     SHELL_DESCRIPTOR,
@@ -179,4 +197,5 @@ ALL_DESCRIPTORS = [
     GIT_DESCRIPTOR,
     VERIFY_DESCRIPTOR,
     REPO_MAP_DESCRIPTOR,
+    PATCH_DESCRIPTOR,
 ]

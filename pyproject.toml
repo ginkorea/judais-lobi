@@ -4,3 +4,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: tests requiring real git (skip with -m 'not integration')",
+]

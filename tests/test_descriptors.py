@@ -112,7 +112,7 @@ class TestPrebuiltDescriptors:
         assert "audio.output" in VOICE_DESCRIPTOR.required_scopes
 
     def test_all_descriptors_list(self):
-        assert len(ALL_DESCRIPTORS) == 11
+        assert len(ALL_DESCRIPTORS) == 12
         names = [d.tool_name for d in ALL_DESCRIPTORS]
         assert "run_shell_command" in names
         assert "speak_text" in names
@@ -120,6 +120,7 @@ class TestPrebuiltDescriptors:
         assert "git" in names
         assert "verify" in names
         assert "repo_map" in names
+        assert "patch" in names
 
     def test_all_descriptors_have_descriptions(self):
         for d in ALL_DESCRIPTORS:

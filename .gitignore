@@ -19,5 +19,8 @@ speech.wav
 .lobienv/
 .judaisenv/
 
+# Runtime worktree directory
+.judais-lobi/worktrees/
+
 # Byte-compiled and temporary files
 .DS_Store

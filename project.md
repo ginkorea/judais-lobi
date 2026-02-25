@@ -6,9 +6,9 @@
 |:--|:--|
 | Root Directory | `/home/gompert/data/workspace/judais-lobi` |
 | Total Directories | 30 |
-| Total Indexed Files | 141 |
+| Total Indexed Files | 162 |
 | Skipped Files | 5 |
-| Indexed Size | 658.53 KB |
+| Indexed Size | 791.55 KB |
 | Max File Size Limit | 2 MB |
 
 ## 📚 Table of Contents
@@ -49,8 +49,18 @@
 - [core/bootstrap.py](#core-bootstrap-py)
 - [core/cli.py](#core-cli-py)
 - [core/context/__init__.py](#core-context-init-py)
+- [core/context/cache.py](#core-context-cache-py)
 - [core/context/file_discovery.py](#core-context-file-discovery-py)
+- [core/context/formatter.py](#core-context-formatter-py)
+- [core/context/graph.py](#core-context-graph-py)
 - [core/context/models.py](#core-context-models-py)
+- [core/context/repo_map.py](#core-context-repo-map-py)
+- [core/context/symbols/__init__.py](#core-context-symbols-init-py)
+- [core/context/symbols/base.py](#core-context-symbols-base-py)
+- [core/context/symbols/generic_extractor.py](#core-context-symbols-generic-extractor-py)
+- [core/context/symbols/python_extractor.py](#core-context-symbols-python-extractor-py)
+- [core/context/symbols/treesitter_extractor.py](#core-context-symbols-treesitter-extractor-py)
+- [core/context/visualize.py](#core-context-visualize-py)
 - [core/contracts/__init__.py](#core-contracts-init-py)
 - [core/contracts/schemas.py](#core-contracts-schemas-py)
 - [core/contracts/validation.py](#core-contracts-validation-py)
@@ -90,6 +100,7 @@
 - [core/tools/recon/__init__.py](#core-tools-recon-init-py)
 - [core/tools/recon/google_hacks.py](#core-tools-recon-google-hacks-py)
 - [core/tools/recon/whois.py](#core-tools-recon-whois-py)
+- [core/tools/repo_map_tool.py](#core-tools-repo-map-tool-py)
 - [core/tools/run_python.py](#core-tools-run-python-py)
 - [core/tools/run_shell.py](#core-tools-run-shell-py)
 - [core/tools/sandbox.py](#core-tools-sandbox-py)
@@ -128,12 +139,16 @@
 - [tests/test_cli_smoke.py](#tests-test-cli-smoke-py)
 - [tests/test_config_loader.py](#tests-test-config-loader-py)
 - [tests/test_contracts.py](#tests-test-contracts-py)
+- [tests/test_dependency_graph.py](#tests-test-dependency-graph-py)
 - [tests/test_descriptors.py](#tests-test-descriptors-py)
 - [tests/test_descriptors_expanded.py](#tests-test-descriptors-expanded-py)
 - [tests/test_file_discovery.py](#tests-test-file-discovery-py)
+- [tests/test_formatter.py](#tests-test-formatter-py)
 - [tests/test_fs_tools.py](#tests-test-fs-tools-py)
+- [tests/test_generic_extractor.py](#tests-test-generic-extractor-py)
 - [tests/test_git_tools.py](#tests-test-git-tools-py)
 - [tests/test_god_mode.py](#tests-test-god-mode-py)
+- [tests/test_graph_multilang.py](#tests-test-graph-multilang-py)
 - [tests/test_judais.py](#tests-test-judais-py)
 - [tests/test_kernel_budgets.py](#tests-test-kernel-budgets-py)
 - [tests/test_kernel_orchestrator.py](#tests-test-kernel-orchestrator-py)
@@ -145,15 +160,21 @@
 - [tests/test_profile_schemas.py](#tests-test-profile-schemas-py)
 - [tests/test_profiles.py](#tests-test-profiles-py)
 - [tests/test_provider_config.py](#tests-test-provider-config-py)
+- [tests/test_python_extractor.py](#tests-test-python-extractor-py)
+- [tests/test_repo_map.py](#tests-test-repo-map-py)
+- [tests/test_repo_map_cache.py](#tests-test-repo-map-cache-py)
 - [tests/test_repo_map_models.py](#tests-test-repo-map-models-py)
+- [tests/test_repo_map_tool.py](#tests-test-repo-map-tool-py)
 - [tests/test_sandbox.py](#tests-test-sandbox-py)
 - [tests/test_session_manager.py](#tests-test-session-manager-py)
 - [tests/test_tool_stripping.py](#tests-test-tool-stripping-py)
 - [tests/test_tools_registry.py](#tests-test-tools-registry-py)
+- [tests/test_treesitter_extractor.py](#tests-test-treesitter-extractor-py)
 - [tests/test_unified_client.py](#tests-test-unified-client-py)
 - [tests/test_unified_memory.py](#tests-test-unified-memory-py)
 - [tests/test_validation.py](#tests-test-validation-py)
 - [tests/test_verify_tools.py](#tests-test-verify-tools-py)
+- [tests/test_visualize.py](#tests-test-visualize-py)
 
 ## 📂 Project Structure
 
@@ -195,9 +216,19 @@
 📁 core/
     📁 context/
         📁 symbols/
+            📄 __init__.py
+            📄 base.py
+            📄 generic_extractor.py
+            📄 python_extractor.py
+            📄 treesitter_extractor.py
         📄 __init__.py
+        📄 cache.py
         📄 file_discovery.py
+        📄 formatter.py
+        📄 graph.py
         📄 models.py
+        📄 repo_map.py
+        📄 visualize.py
     📁 contracts/
         📄 __init__.py
         📄 schemas.py
@@ -245,6 +276,7 @@
         📄 git_tools.py
         📄 install_project.py
         📄 rag_crawler.py
+        📄 repo_map_tool.py
         📄 run_python.py
         📄 run_shell.py
         📄 sandbox.py
@@ -296,12 +328,16 @@
     📄 test_cli_smoke.py
     📄 test_config_loader.py
     📄 test_contracts.py
+    📄 test_dependency_graph.py
     📄 test_descriptors.py
     📄 test_descriptors_expanded.py
     📄 test_file_discovery.py
+    📄 test_formatter.py
     📄 test_fs_tools.py
+    📄 test_generic_extractor.py
     📄 test_git_tools.py
     📄 test_god_mode.py
+    📄 test_graph_multilang.py
     📄 test_judais.py
     📄 test_kernel_budgets.py
     📄 test_kernel_orchestrator.py
@@ -313,15 +349,21 @@
     📄 test_profile_schemas.py
     📄 test_profiles.py
     📄 test_provider_config.py
+    📄 test_python_extractor.py
+    📄 test_repo_map.py
+    📄 test_repo_map_cache.py
     📄 test_repo_map_models.py
+    📄 test_repo_map_tool.py
     📄 test_sandbox.py
     📄 test_session_manager.py
     📄 test_tool_stripping.py
     📄 test_tools_registry.py
+    📄 test_treesitter_extractor.py
     📄 test_unified_client.py
     📄 test_unified_memory.py
     📄 test_validation.py
     📄 test_verify_tools.py
+    📄 test_visualize.py
 📄 LICENSE
 📄 main.py
 📄 Makefile
@@ -1502,11 +1544,27 @@ See: `ROADMAP.md`
 * ✅ Phase 2 — Kernel State Machine & Hard Budgets (164 tests)
 * ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
 * ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
+* ✅ Phase 5 — Repo Map & Context Compression (783 tests)
 
 ### Up Next
 
-* ⏳ Phase 5 — Repo Map (Context Compression)
 * ⏳ Phase 6 — Repository-Native Patch Engine
+* ⏳ Phase 7 — Multi-Role Orchestrator, Composite Judge & External Critic
+
+### Phase 5 Highlights
+
+The agent is now repo-aware. It understands structure, relationships, and what's irrelevant — without eating the entire repo in context.
+
+* **`core/context/repo_map.py`** — Top-level `RepoMap` orchestrator. Dual-use: overview mode (centrality-ranked for REPO_MAP phase) and focused mode (relevance-ranked by `target_files` for RETRIEVE phase). Lazy build with git-commit-keyed caching and dirty-file overlay.
+* **`core/context/symbols/`** — 3-tier symbol extraction: Python `ast` (full import + signature extraction), tree-sitter (7 languages: C, C++, Rust, Go, JS, TS, Java), regex fallback. `get_extractor(language)` factory auto-selects the best available.
+* **`core/context/graph.py`** — `DependencyGraph` with multi-language module resolution (Python dotted paths, C `#include`, Rust `use crate::`, Go package imports, JS/TS relative imports with extension guessing). Relevance ranking (1.0/0.8/0.6/0.4/0.1 scoring by hop distance) and centrality ranking with barrel file damping (`__init__.py`, `index.js`, `mod.rs`).
+* **`core/context/formatter.py`** — Compact tree-style formatting with token budget, optional char cap, whitespace normalization for deterministic output, and metadata header (file/symbol counts, languages, ranking mode).
+* **`core/context/visualize.py`** — DOT (Graphviz) and Mermaid graph export with highlight styling and node cap.
+* **`core/context/cache.py`** — Git-commit-keyed persistent cache at `.judais-lobi/cache/repo_map/<hash>.json`. Clean commit = full cache hit; dirty state = cache + re-extract only modified files.
+* **`core/tools/repo_map_tool.py`** — ToolBus-compatible multi-action tool (build, excerpt, status, visualize).
+* **`setup.py`** — `pip install judais-lobi[treesitter]` adds optional tree-sitter support via individual grammar packages.
+
+11 tool descriptors. 221 new tests. tree-sitter is optional — the system works without it and gains rich multi-language AST parsing when installed.
 
 ### Phase 4 Highlights
 
@@ -1516,7 +1574,7 @@ Tools are dumb executors behind a capability-gated bus. The kernel decides every
 * **`core/tools/fs_tools.py`** — Consolidated `FsTool` with 5 actions (read, write, delete, list, stat). Pure `pathlib` I/O, no subprocess.
 * **`core/tools/git_tools.py`** — Consolidated `GitTool` with 12 actions (status, diff, log, add, commit, branch, push, pull, fetch, stash, tag, reset) via `run_subprocess`.
 * **`core/tools/verify_tools.py`** — Config-driven `VerifyTool` (lint, test, typecheck, format). Reads `.judais-lobi.yml` for project-specific commands, falls back to sensible defaults.
-* **`core/tools/descriptors.py`** — 10 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
+* **`core/tools/descriptors.py`** — 11 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
 * **`core/tools/capability.py`** — Deny-by-default `CapabilityEngine` with wildcard `"*"` support, profile switching, and grant revocation.
 * **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard).
 * **`core/policy/god_mode.py`** — `GodModeSession` with TTL auto-downgrade, panic switch (instant revocation to SAFE), and full audit trail.
@@ -1541,8 +1599,9 @@ If you want to understand the **current implementation**, inspect:
 * `core/kernel/` — state machine, budgets, orchestrator
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory
-* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify)
+* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map)
 * `core/policy/` — profiles, god mode, audit logging
+* `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -1578,13 +1637,15 @@ ToolBus → Sandbox → Subprocess
 Deterministic Judge
 ```
 
-As of Phase 4:
+As of Phase 5:
 
 * Tools are dumb executors behind a sandboxed, capability-gated bus.
 * Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`.
 * Deny-by-default. No scope = no execution.
 * God mode exists for emergencies — TTL-limited, panic-revocable, fully audited.
-* 3 consolidated multi-action tools (fs, git, verify) cover 21 operations under 13 scopes.
+* 4 consolidated multi-action tools (fs, git, verify, repo_map) cover 25 operations under 13 scopes.
+* The agent sees repo structure via a token-budgeted excerpt — file paths, symbol signatures, and dependency-ranked relevance — without loading full source.
+* 3-tier symbol extraction: Python `ast` → tree-sitter (7 languages) → regex fallback. Multi-language dependency graph with import resolution.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
@@ -1721,6 +1782,631 @@ This is an architectural project, not a feature factory.
 # 🧾 License
 
 GPLv3 — see LICENSE.
+
+```
+
+## `ROADMAP.md`
+
+```markdown
+# ROADMAP.md
+**Project:** judais-lobi
+**Objective:** Transform judais-lobi into a local-first, contract-driven, agentic open developer system.
+
+## Implementation Status
+
+- [x] **Phase 0** – Dependency Injection, Test Harness & Baseline (73 tests, DI seams, pytest harness)
+- [x] **Phase 1** – Extract Runtime & Stabilize the Spine (runtime extracted, 107 tests, `elf.py` provider-free)
+- [x] **Phase 2** – Kernel State Machine & Hard Budgets (state machine, budgets, orchestrator, 164 tests)
+- [x] **Phase 3** – Session Artifacts, Contracts & KV Prefixing (`elf.py` deleted, Agent class, Pydantic contracts, SessionManager, 269 tests)
+- [x] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating (ToolBus, CapabilityEngine, BwrapSandbox, 3 consolidated tools, profiles, god mode, audit, 562 tests)
+- [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
+- [ ] **Phase 6** – Repository-Native Patch Engine
+- [ ] **Phase 7** – Multi-Role Orchestrator, Composite Judge & External Critic
+- [ ] **Phase 8** – Retrieval, Context Discipline & Local Inference
+- [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
+- [ ] **Phase 10** – Evaluation & Benchmarks
+
+---
+
+## 1. Mission Statement
+Judais-lobi will evolve from a CLI assistant with tools into a local-first autonomous developer agent with:
+
+* **Artifact-Driven State:** Artifacts are the *only* source of truth. No conversational history drives execution.
+* **Capability Gating:** Network and host access are deny-by-default, requested via structured artifacts, and powerful when explicitly granted.
+* **Native Sandboxing:** Tool execution runs in native Linux namespaces (bwrap/nsjail) to maintain a microkernel architecture.
+* **Hard Budgets:** Strict caps on retries, compute time, and context size prevent infinite loops.
+* **Deterministic Workflows:** Repository-native patch workflows using Search/Replace blocks, governed by a rigid scoring hierarchy (Tests > Static Analysis > LLM).
+* **GPU-Aware Orchestration:** VRAM-aware scheduling and KV cache prefixing that adapts to the available hardware — from a single RTX 5090 (32GB) to multi-GPU configurations (e.g., 4x L4, RTX 6000 Pro 96GB).
+
+## 2. Architectural Target State
+
+### 2.1 System Overview
+
+```text
+                          ┌─────────────────────────┐
+                          │     CLI / Task Input     │
+                          │  (lobi/judais commands)  │
+                          └────────────┬────────────┘
+                                       │
+                          ┌────────────▼────────────┐
+                          │     core/kernel/         │
+                          │  State Machine + Budgets │
+                          │  INTAKE → ... → FINALIZE │
+                          └──┬───────────────────┬──┘
+                             │                   │
+              ┌──────────────▼──────┐   ┌───────▼──────────────┐
+              │  core/contracts/    │   │  core/roles/          │
+              │  JSON Schemas +     │   │  Planner / Coder /    │
+              │  Pydantic models    │   │  Reviewer prompts     │
+              └──────────┬─────────┘   │  (+ Lobi/JudAIs       │
+                         │             │   personality layers)  │
+              ┌──────────▼─────────┐   └───────┬───────────────┘
+              │  core/runtime/     │           │
+              │  Provider backends │◄──────────┘
+              │  OpenAI │ Mistral  │
+              │  vLLM │ TRT-LLM   │
+              └──────────┬─────────┘
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+   ┌──────▼──────┐ ┌────▼──────┐ ┌────▼──────────┐
+   │ tools/bus/  │ │core/      │ │ core/scoring/ │
+   │ Tool Reg +  │ │context/   │ │ Tests > Lint  │
+   │ Policy      │ │Repo-map + │ │ > LLM Review  │
+   └──────┬──────┘ │Retrieval  │ └───────────────┘
+          │        └───────────┘
+   ┌──────▼──────┐
+   │ tools/      │
+   │ sandbox/    │
+   │ bwrap/nsjail│
+   └──────┬──────┘
+          │
+   ┌──────▼──────────────────────────┐
+   │ tools/servers/                  │
+   │ repo, git, runner, test, memory │
+   │ web_search, rag, voice (opt)   │
+   └─────────────────────────────────┘
+```
+
+### 2.2 Core Components
+```text
+core/
+  kernel/                # Orchestration state machine & hard budgets
+  contracts/             # JSON schemas + Pydantic validation
+  runtime/               # LLM provider backends (OpenAI/Mistral API + Local HTTP/vLLM/TRT-LLM)
+  capabilities/          # PermissionRequest and PermissionGrant engine
+  context/               # Repo-map, Retrieval + compression
+  memory/                # Unified memory (SQLite + FAISS vectors, carried forward)
+  roles/                 # Planner / Coder / Reviewer static prompts
+  scoring/               # Composite judge (Tests > Lint > LLM)
+
+tools/
+  bus/                   # MCP-style tool registry + Policy enforcement
+  sandbox/               # SandboxRunner backends (bwrap, nsjail, none)
+  servers/               # repo, git, runner, test, memory, web_search, rag
+
+sessions/
+  <timestamp_taskid>/
+    artifacts/           # The ONLY source of truth for the session
+
+```
+
+### 2.3 Execution Model & Hard Budgets
+
+Every task follows a strict state machine:
+`INTAKE` -> `CONTRACT` -> `REPO_MAP` -> `PLAN` -> `RETRIEVE` -> `PATCH` -> `CRITIQUE` -> `RUN` -> `FIX (loop)` -> `FINALIZE`
+
+Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the ToolBus on **every tool call**. Any tool invocation — in any phase — triggers a capability check. If the required scope is not granted, the ToolBus returns a structured error and the kernel prompts for a `PermissionRequest`. This happens inline, not as a discrete step in the state machine.
+
+**The Invariants:**
+
+1. **Artifacts Only:** Every phase reads *only* current session artifacts, retrieved repo context, and tool traces.
+2. **Hard Budgets:** The system enforces strict limits to prevent runaway loops:
+* `max_phase_retries`: (e.g., 3 retries for invalid schema or patch failure).
+* `max_total_iterations`: Absolute cap per task.
+* `max_tool_output_bytes_in_context`: Truncation threshold for stdout/stderr.
+* `max_context_tokens_per_role`: Bounded context window.
+* `max_time_per_phase_seconds`: Hard timeout.
+3. **Execution Path:** All tool execution flows through `ToolBus -> SandboxRunner -> Subprocess`. No tool ever calls `subprocess` directly. This is non-negotiable — without it, capability gating is cosmetic.
+4. **Dumb Tools, Smart Kernel:** Tools are pure executors. They run a command, return stdout/stderr/exit code, and nothing else. All retry logic, repair logic, and decision-making lives in the kernel. The current `RunPythonTool.repair_code()` and `RunSubprocessTool` retry loops must be extracted into the kernel's FIX phase. If a tool fails, it reports failure. The kernel decides what happens next.
+5. **GPU Scheduling in Runtime, Not Kernel:** The kernel asks `runtime.get_parallelism_budget()` and receives a number. It does not know about VRAM, device counts, or compute capability. Clean separation — the kernel orchestrates phases, the runtime owns hardware awareness.
+6. **One ToolBus, Both Modes:** Direct mode and agentic mode use the **same ToolBus and SandboxRunner**. The difference between modes is orchestration depth (direct mode skips the kernel state machine), not the execution path. If direct mode bypasses the bus, you build two security models that drift apart. Every `--shell`, `--python`, and `--search` call in direct mode goes through the bus with the same policy enforcement. The bus is the only door.
+7. **Kernel Never Touches the Filesystem:** The kernel reads artifacts and dispatches to tools. It never reads from the working directory, never opens project files, never writes outside the session directory. All repository interaction goes through a `RepoServer` tool via the ToolBus. Even read-only access must be sandboxed — if the kernel can read files directly, that is an unsandboxed path to the repo that bypasses policy. Kernel orchestrates. Tools touch the world.
+
+
+
+---
+
+## 3. Current System Inventory & Migration Map
+
+Before building forward, the roadmap must account for every existing subsystem. The current codebase (v0.7.2, ~1,100 LOC) provides:
+
+### 3.1 What Exists Today
+
+| Subsystem | Files | Status in Target Architecture |
+| --- | --- | --- |
+| **Elf base class** (`core/elf.py`) | Provider selection, history mgmt, memory enrichment, web search, code gen, system prompt assembly, streaming chat | **Decomposed** across `core/runtime/`, `core/kernel/`, `core/context/`, `core/roles/`. Deleted once extraction is complete. |
+| **CLI** (`core/cli.py`) | Arg parsing, tool registration, RAG ops, memory mgmt, code execution hooks, output formatting | **Gutted and thinned.** In agentic mode, CLI becomes: `submit_task()` -> `wait_for_kernel()` -> `print_result()`. Current logic (tool registration, code execution hooks, inline sudo, summarization) moves into the kernel and ToolBus. Direct mode retains current behavior for simple chat/search/RAG queries. See Section 8. |
+| **UnifiedClient** (`core/unified_client.py`) | OpenAI SDK + Mistral cURL/SSE backends | **Moved** to `core/runtime/backends/`. Becomes `openai_backend.py` and `mistral_backend.py`. |
+| **Memory system** (`core/memory/memory.py`) | SQLite + FAISS vectors, short-term/long-term/RAG/adventures | **Retained** under `core/memory/` with modifications. Short-term history is replaced by session artifacts. Long-term semantic memory and adventure tracking persist as cross-session knowledge. **Requires embedding backend abstraction** — current code hardcodes `OpenAI("text-embedding-3-large")` inside `UnifiedMemory`, which breaks offline/local-first operation. Must support local embedding models (e.g., sentence-transformers) as an alternative. |
+| **Tool registry** (`core/tools/`) | Base class, subprocess template, shell/python/web/fetch/RAG/install/voice/recon | **Migrated** to `tools/bus/` registry. Existing tools become tool servers. Voice and recon remain optional. |
+| **Agent personalities** (`lobi/lobi.py`, `judais/judais.py`) | System prompts, few-shot examples, character voice, color schemes | **Preserved** as personality layers in `core/roles/`. The Coder role loads a personality overlay (Lobi or JudAIs) that shapes tone and style. Agent identity is not discarded. |
+
+### 3.2 What Is Deliberately Cut
+
+* **Conversational history as execution state.** Short-term memory (`load_short`/`add_short`) no longer drives the LLM context. Session artifacts replace it.
+* **Implicit tool invocation via prompt patterns.** Tools are invoked structurally through the ToolBus, not by LLM free-text matching.
+
+### 3.3 What Is Carried Forward
+
+* **FAISS + SQLite long-term memory.** Semantic recall across sessions remains valuable for the Planner and Reviewer roles.
+* **RAG archive system.** Crawling, chunking, and embedding of project docs feeds into the `ContextPack` artifact.
+* **Adventure tracking.** Past code execution history (prompt, code, result, success) informs the Coder role's retry strategy.
+* **Web search and page fetch.** Available as capability-gated tools via the ToolBus.
+* **Voice (optional).** Remains an output mode, loaded lazily.
+* **Dual-agent identity.** Lobi and JudAIs remain distinct CLI entry points with personality-specific system prompts and behavior.
+
+---
+
+## 4. Phase Plan
+
+### Phase 0 – Dependency Injection, Test Harness & Baseline
+
+**Goal:** Make the system testable, then test it. Establish the safety net required before any refactoring begins.
+
+The current codebase has zero tests. But you cannot write meaningful tests against it as-is, because side effects are baked into constructors:
+* `Elf.__init__()` directly instantiates `UnifiedClient`, `UnifiedMemory`, and `Tools` — no injection points.
+* `UnifiedMemory.__init__()` directly instantiates `OpenAI()` for embeddings — cannot be mocked without monkeypatching.
+* `RunSubprocessTool` calls `subprocess.run(cmd, shell=True)` directly — no seam for test interception.
+
+Writing tests against live API calls, live subprocesses, and live FAISS indexes is not testing. It is praying.
+
+**Tasks:**
+
+* **Introduce dependency injection** into the core constructors:
+  * `Elf(client=..., memory=..., tools=...)` — all three injectable, with current behavior as defaults.
+  * `UnifiedMemory(embedding_client=...)` — abstract the embedding call behind an interface. Current `OpenAI("text-embedding-3-large")` becomes the default; tests inject a deterministic fake.
+  * `RunSubprocessTool(executor=...)` — wrap `subprocess.run` behind a callable, injectable for tests.
+* Set up `pytest` with a `tests/` directory and a `make test` target.
+* Write **golden transcript tests** for each backend (OpenAI, Mistral): fixed input messages, expected response shape, streaming behavior. Use injected mock clients.
+* Write integration smoke tests: CLI end-to-end (`lobi "hello"`, `lobi --shell "list files"`, `lobi --recall`). Mock at the client boundary.
+* Write unit tests for `UnifiedClient`, `UnifiedMemory` (add/search/purge), and the subprocess tool base class.
+* Capture **baseline metrics** (response latency, token usage per interaction) to measure against later phases.
+**Definition of Done:** `make test` passes with zero network calls. Every existing feature has at least one test covering its happy path. DI seams exist for client, memory, and subprocess execution. Regressions from subsequent phases are immediately detectable.
+
+### Phase 1 – Extract Runtime & Stabilize the Spine
+
+**Goal:** Pull provider backends and message building out of `elf.py` into a clean runtime layer.
+
+**Tasks:**
+
+* Create `core/runtime/backends/openai_backend.py` (extract from `unified_client.py`).
+* Create `core/runtime/backends/mistral_backend.py` (extract cURL/SSE logic from `unified_client.py`).
+* Create `core/runtime/backends/local_backend.py` as a **stub** — local inference is not deployed until Phase 8, but the interface is defined now. The interface must be GPU-topology-agnostic: it talks to a serving endpoint (vLLM/TRT-LLM), not directly to devices. Single-GPU vs. multi-GPU is a serving-layer concern, not a backend concern.
+* Create `core/runtime/messages.py` for one canonical message builder (extract from `elf._system_with_examples()` and `elf.chat()`).
+* Define provider capability flags per backend (supports JSON mode, supports tool calls, supports streaming).
+* `unified_client.py` becomes a thin router delegating to backends.
+**Definition of Done:** All golden transcript tests still pass. Message assembly is centralized. `elf.py` no longer contains provider-specific logic.
+
+### Phase 2 – Kernel State Machine & Hard Budgets
+
+**Goal:** Implement the orchestration core that governs phase transitions and enforces limits.
+
+**Tasks:**
+
+* Implement `core/kernel/state.py` (Phase enum, session state, transition rules).
+* Implement `core/kernel/budgets.py` (configuration for all hard budget parameters).
+* Implement `core/kernel/orchestrator.py` (the main loop: read artifacts, select phase, dispatch to role, enforce budgets).
+* `elf.py` is reduced to a thin adapter that delegates to the kernel for agentic tasks, while still supporting direct chat for simple queries. This is `elf.py`'s last phase as a living file — see Section 10.
+**Definition of Done:** The state machine can be driven through all phases with mock artifacts. Budget enforcement is tested (exceeding `max_phase_retries` halts the phase, exceeding `max_total_iterations` halts the session).
+
+### Phase 3 – Session Artifacts, Contracts & KV Prefixing
+
+**Goal:** Establish artifacts as the sole driver of state and optimize for KV Cache reuse.
+
+**Critical Decision:** This phase kills conversational state. `self.history = [...]` stops being the execution driver. If you keep both conversational state and artifact state running in parallel "just in case," you create hidden divergence — two sources of truth that will silently disagree. Rip the bandage off.
+
+**Tasks:**
+
+* Build `core/contracts/schemas/*.json` and corresponding Pydantic models (`TaskContract`, `ChangePlan`, `ContextPack`, `PatchSet`, `PermissionRequest`, `PermissionGrant`, `PolicyPack`, etc.).
+* **`PolicyPack`** is a first-class artifact — not scattered config, not implicit defaults. It declares: allowed tools, allowed scopes, sandbox backend, budget overrides, allowed mounts, allowed network domains. It is the single auditable document that explains "why the system refused" or "why the system was allowed to." It ships with the session and can be version-controlled per project. **Scope boundary:** PolicyPack governs permissions and resource limits only. It is not a general config registry — runtime settings, model selection, role prompts, and retrieval parameters live elsewhere. If PolicyPack starts accumulating non-permission concerns, it has bloated.
+* Implement `SessionManager` to create session directories, write artifacts, and load latest versions. Must support **checkpoint & rollback** — if a patch fails tests in the RUN phase, the session can be reset to the last known-good artifact set instantly, without replaying intermediate phases.
+* **Disable short-term history loading for agentic mode.** Stub out `memory.load_short()` / `memory.add_short()` in the agentic code path. Replace with artifact read/write. Direct chat mode retains history for backward compatibility.
+* Implement `validate-or-retry` loop with schema invalidation burning the `max_phase_retries` budget.
+* Define `STATIC_PREFIX` for KV caching (System Prompt + Tool Schemas + Policy). Roles append only small deltas. The local backend should leverage vLLM's Automatic Prefix Caching (APC) so the Planner -> Coder -> Reviewer handoff reuses the cached prefix instead of reprocessing tokens.
+* **Delete `elf.py`.** At this point, all of its responsibilities have been extracted: runtime (Phase 1), kernel (Phase 2), artifacts (this phase). The `Elf` class is replaced by the kernel + role system. Lobi and JudAIs become personality configs loaded by roles, not subclasses of a god object. See Section 10.
+**Definition of Done:** Sessions are replayable entirely from disk artifacts. `elf.py` is deleted. Invalid outputs trigger structured, budget-constrained retries. `PermissionGrant` artifacts are recorded so that session replay can re-apply the same grants deterministically. Any retrieval from long-term memory pins its results in the session artifacts (embedding backend ID, model name, query, returned chunk IDs, similarity scores) so that replays reproduce the same retrieval results even if embeddings change over time.
+
+### Phase 4 – MCP-Style Tool Bus, Sandboxing & Capability Gating
+
+**Goal:** Implement strict execution isolation and deny-by-default capabilities.
+
+**Architectural constraint:** The current tools (`RunShellTool`, `RunPythonTool`, etc.) call `subprocess.run(cmd, shell=True)` directly. That is wide open. After this phase, no tool touches subprocess. The execution path is always `ToolBus -> SandboxRunner -> Subprocess`. Tools become pure declarative units: they describe *what* to run, the SandboxRunner decides *how*.
+
+**Tasks:**
+
+* **Strip agency from tools.** Remove retry loops, `repair_code()`, dependency auto-install, and sudo fallback from `RunSubprocessTool`, `RunPythonTool`, and `RunShellTool`. These behaviors move to the kernel (retries, repair) and the ToolBus policy layer (dependency install, privilege escalation). Tools return `(stdout, stderr, exit_code)` and nothing else.
+* **Migrate existing tools** to the new ToolBus registry format. Each tool from `core/tools/` declares its capabilities, network requirements, and required scopes.
+* **SandboxRunner:** `bwrap` is the **Tier-1** backend — it ships as default, gets full test coverage, and is the only backend that must work on day one. `nsjail` is **Tier-2** — same interface, stronger seccomp policy, added when bwrap is stable. `none` exists for dev/debug only. Do not try to keep two sandbox backends fully working simultaneously early on. Enforce filesystem isolation (workspace RW, rest RO, explicit tool caches) and rlimits (CPU time, max procs). **Support mount caching** — project `node_modules`, `venv`, and other dependency directories should be bind-mounted RO into the sandbox to avoid cold-start latency on every tool call.
+* **Capability Engine:** Implement `PermissionRequest` and `PermissionGrant` artifacts. Grants are persisted to the session artifact directory so that **session replay can re-apply identical grants** without manual intervention — this is critical for deterministic replay. Grants support **time-scoping** (e.g., `git.fetch` allowed for 60 seconds) and **invocation-scoping** (e.g., `net.any` for this single tool call only). A grant that outlives its scope expires automatically. This prevents a single interactive approval from becoming a permanent backdoor if the agent drifts. **Replay semantics:** grants store `grant_issued_at`, `grant_duration_seconds`, and `grant_scope`. During replay, the original grant is reapplied without re-evaluating wall clock — expiry only governs live execution. Without this rule, deterministic replay collapses the moment a time-scoped grant crosses its original wall-clock boundary.
+* **Network Scopes:** Define `net.any`, `http.read`, `git.fetch`. Network is structurally denied at the namespace level unless a valid `PermissionGrant` artifact exists for the active tool.
+* **ToolBus Registry:** Every tool declares `requires_network` and `required_scope`. If missing, the bus returns a structured error template forcing the LLM to generate a `PermissionRequest`. The kernel pauses and waits for a user signal (or a pre-signed policy file) before granting.
+**Definition of Done:** All execution is sandboxed. No tool calls subprocess directly. Tools cannot hit the network or unauthorized filesystem paths without an explicit, auditable grant artifact. Grant artifacts are replayable.
+
+### Phase 5 – The Repo Map (Context Compression) ✅
+
+**Goal:** Feed the model the project structure deterministically without blowing the context limit.
+
+**Implementation (Phase 5a — Core Infrastructure):**
+
+* **`core/context/models.py`** — `SymbolDef`, `ImportEdge`, `FileSymbols`, `RepoMapData` (dataclasses) + `RepoMapResult` (Pydantic, registered in `PHASE_SCHEMAS`).
+* **`core/context/file_discovery.py`** — `git ls-files` + pathlib walk fallback. 50+ extension→language mappings, binary filtering, configurable ignore patterns.
+* **`core/context/symbols/`** — `SymbolExtractor` protocol with 3 implementations:
+  * `PythonExtractor` — `ast`-based. Full import/signature extraction with type annotations, decorators, constants, async support.
+  * `GenericExtractor` — Regex fallback for unknown languages. 9 patterns covering JS/TS/Go/Rust/C/C++/Java.
+  * `get_extractor(language)` factory — auto-selects best available extractor per language.
+* **`core/context/graph.py`** — `DependencyGraph` with multi-language module resolution (Python dotted paths, C `#include`, Rust `use crate::`, Go package imports, JS/TS relative imports with extension guessing). Relevance ranking (1.0/0.8/0.6/0.4/0.1 by hop distance from targets) and centrality ranking with barrel file damping. Edge resolution stats tracking.
+* **`core/context/formatter.py`** — Compact tree-style formatting. Token budget (default 4096) + optional char cap. Whitespace normalization for deterministic output. Metadata header (file/symbol counts, languages, ranking mode).
+* **`core/context/visualize.py`** — DOT (Graphviz) and Mermaid graph export with highlight styling and max-node cap.
+* **`core/context/cache.py`** — Git-commit-keyed persistent cache (`.judais-lobi/cache/repo_map/<hash>.json`). Clean commit = full cache hit. Dirty state = cache + re-extract only modified files.
+* **`core/context/repo_map.py`** — `RepoMap` orchestrator. `build()` → `excerpt_for_task()` → `visualize()`. Dual-use: REPO_MAP phase (overview/centrality) and RETRIEVE phase (focused/relevance by `target_files`).
+* **`core/tools/repo_map_tool.py`** — ToolBus-compatible tool with 4 actions: `build`, `excerpt`, `status`, `visualize`.
+
+**Implementation (Phase 5b — tree-sitter Multi-Language Support):**
+
+* **`core/context/symbols/treesitter_extractor.py`** — `TreeSitterExtractor` using modern individual grammar packages (tree-sitter-c, tree-sitter-cpp, tree-sitter-rust, tree-sitter-go, tree-sitter-javascript, tree-sitter-typescript, tree-sitter-java). Full AST symbol + import extraction for 7 languages. Optional dependency: `pip install judais-lobi[treesitter]`.
+* **Multi-language graph resolution** — C `#include` path matching, Rust `crate::` → `src/module.rs` resolution, Go package→directory matching, JS/TS relative path resolution with extension guessing (`.js`/`.ts`/`.tsx`/`.jsx`, index files).
+
+**Quality improvements from review feedback:**
+
+* Deterministic output: whitespace normalization in signatures and formatted entries.
+* Char cap: hard character limit alongside token budget.
+* Edge resolution stats: `edges_resolved`/`edges_unresolved` tracked in graph, wired to `RepoMapResult`.
+* Barrel file penalty: `__init__.py`, `index.js`, `mod.rs` etc. damped in centrality ranking (0.3x factor).
+* Excerpt header: 3-line metadata header (file/symbol counts, languages, ranking mode, budget).
+
+**Test coverage:** 221 new tests (783 total). 25 tree-sitter tests skip gracefully when tree-sitter is not installed (758 pass on base install, 783 pass with `[treesitter]` extra).
+
+**Definition of Done:** ✅ The Planner role can ingest a 100+ file, multi-language repository architecture in under ~4k tokens. Dependency graph ranks files by relevance to target files. Visualization exports support human inspection. Cache prevents redundant extraction.
+
+### Phase 6 – Repository-Native Patch Engine
+
+**Goal:** Reliable code modification using exact-match constraints.
+**Tasks:**
+
+* Implement **Search/Replace block parsing** (`<<<< SEARCH / ==== / >>>> REPLACE`).
+* Enforce exact match strategy: The SEARCH block *must* match exactly once in the target file.
+* **Canonicalization before matching:** normalize line endings to `\n` (strip `\r`), but **preserve indentation exactly** — tabs vs. spaces and indentation depth must match the file. Do not offer a "whitespace-insensitive mode" as default; it weakens determinism. If needed later, it can exist as a separate explicit tool variant, not a flag.
+* If ambiguous (0 or >1 matches), the tool returns a structured failure with surrounding context hashes. On **zero matches**, additionally return the 3 most similar lines in the file — but do not brute-force edit distance against every line in large files. Narrow first: filter by matching indentation depth, then by shared token overlap, then compute edit distance on the short list. This keeps similarity search fast in large repos.
+* Automatically sandbox changes in a git worktree.
+* Implement automatic rollback on patch failure.
+**Definition of Done:** Patch protocol produces reproducible edits. Edits failing exact-match validation automatically trigger a budget-constrained retry.
+
+### Phase 7 – Multi-Role Orchestrator, Composite Judge & External Critic
+
+**Goal:** Team-of-teams behavior via deterministic scoring hierarchy, with an optional external frontier-model critic for catching "confident wrong" failures from local models.
+
+#### 7.1 Composite Judge
+
+Implement the **Composite Judge** as hard policy, not vibes:
+
+1. `pytest`/`stdout` (Hard Pass/Fail — stops everything).
+2. `pyright`/`lint` (Static analysis — blocks promotion unless explicitly waived by policy).
+3. `LLM Reviewer` (Qualitative — breaks ties only, flags risks). *LLM never overrides green/red tests.*
+4. `External Critic` (Optional — frontier-model logic auditor, see 7.3). *Never blocks if unavailable or refuses. Never overrides green/red tests.*
+
+#### 7.2 Candidate Sampling
+
+Implement candidate sampling with hardware-adaptive concurrency (see VRAM Budget Note).
+
+**VRAM Budget Note:** Candidate sampling concurrency is dictated by the GPU profile, not hardcoded. The system must query available VRAM at startup and select a strategy accordingly:
+
+| GPU Profile | VRAM | 7B FP8 (~8-10GB/gen) | 13B+ FP8 (~16-20GB/gen) | Strategy |
+| --- | --- | --- | --- | --- |
+| 1x RTX 5090 | 32GB | Concurrent N=2 feasible | Sequential only | Shared KV prefix, sequential fallback |
+| 1x RTX 6000 Pro | 96GB | Concurrent N=3+ | Concurrent N=2-3 | Full parallel candidate generation |
+| 4x L4 | 4x 24GB | N=1 per GPU, 4 parallel | N=1 per GPU (tight) | Tensor-parallel or pipeline-parallel serving; candidates distributed across GPUs |
+| 1x consumer (16-24GB) | 16-24GB | Sequential N=2 | Not feasible | Sequential with aggressive KV eviction |
+
+The runtime must expose a `gpu_profile` configuration (auto-detected or user-specified) that feeds into the kernel's budget system. Candidate count `N` becomes a derived parameter, not a constant. Empirical validation is required per profile before committing to concurrent batching.
+
+**Deterministic candidate ordering:** When candidates are generated in parallel (across GPUs or concurrent requests), assign deterministic candidate IDs (`candidate_0`, `candidate_1`, ...) **before dispatch**. The Composite Judge scores candidates in ID order, not completion order. Otherwise the winning candidate depends on which GPU returns first — a race condition that breaks reproducibility.
+
+#### 7.3 External Critic (Optional Frontier-Model Auditor)
+
+**Motivation:** Local models are effective builders but vulnerable to "confident wrong" — logically coherent plans that miss critical assumptions, patches that pass tests but violate deeper constraints, or review loops that converge on the wrong answer. An external frontier model provides an independent logic audit without replacing local execution.
+
+**Architecture:**
+
+* **Local model = builder** (Planner/Coder/Reviewer roles, patch generation, repo ops)
+* **Deterministic judge = truth oracle** (tests/lint/bench — always authoritative)
+* **External frontier model = critic** (logic auditor, risk assessor, plan sanity checker)
+
+The critic does **not** write code. It does not get tools. It does not get repo access. It only critiques artifacts. It is a judge in the balcony, not a player on the field.
+
+**Air-gap design:** The entire critic subsystem is optional. When disabled (no API key, no network, air-gapped environment, or `external_critic.enabled: false` in policy), the pipeline runs identically — the critic checkpoints become no-ops. This is enforced structurally: critic calls are **interceptors on phase transitions**, not phases in the state machine. The orchestrator checks "should I call the critic before entering this next phase?" and skips silently when the critic is unavailable.
+
+**When to call the critic (trigger-based, not every loop):**
+
+High-leverage checkpoints only:
+
+1. **After PLAN (before RETRIEVE)** — catch missing assumptions, wrong file targets, untestable approach.
+2. **After RUN passes (before FINALIZE)** — catch "green tests but wrong semantics", latent risk.
+
+Escalation triggers (automatic, budget-permitting):
+
+* \> N iterations without progress (FIX loop spinning)
+* Patch touches security-sensitive surfaces (auth, crypto, permissions)
+* Dependency changes (new packages, version bumps)
+* Large refactor scope (> K files or > M lines changed)
+* Local reviewer disagreement with local planner
+* Planning uncertainty flagged by the local model itself
+
+**What the critic sees (minimal, structured `CritiquePack`):**
+
+* `TaskContract` (constraints, allowed commands, acceptance criteria)
+* `ChangePlan` (steps, files targeted)
+* `RepoMap excerpt` (only signatures + file paths, no full source)
+* `PatchSet` summary (diff stats + snippets of changed regions only)
+* `RunReport` (if tests ran: failures or pass summary)
+* `LocalReviewerReport` (what the local reviewer thought)
+
+No full repo. No secrets. No giant logs. No tool output dumps.
+
+**Redactor (non-negotiable, runs before any external call):**
+
+* Strip secrets (keys, tokens, passwords) by pattern matching
+* Strip hostnames/IPs if redaction level is `strict`
+* Replace file contents with diff snippets or function signatures only
+* Clamp payload size hard (cost + leakage control)
+* Log: `payload_size_bytes`, `redaction_ruleset_version`, `sha256(payload)`
+
+**Critic response contract (`ExternalCriticReport`):**
+
+* `verdict`: `approve` | `caution` | `block` | `refused`
+* `top_risks`: list (severity, rationale)
+* `missing_tests`: list
+* `logic_concerns`: list
+* `suggested_plan_adjustments`: list
+* `suggested_patch_adjustments`: list
+* `questions_for_builder`: list (bounded)
+* `confidence`: 0–1
+
+**Verdict policy — the critic never kneecaps the pipeline:**
+
+| Verdict | Kernel response |
+| --- | --- |
+| `approve` | Logged, pipeline continues |
+| `caution` | Logged, surfaced to user, does **not** halt |
+| `block` | Requires plan revision **or** explicit user override recorded as artifact |
+| `refused` | Logged, **ignored**, pipeline continues as if critic was not called |
+| `unavailable` | Silent no-op, pipeline continues |
+
+The `refused` verdict is the critical design constraint. If a frontier model returns a refusal (e.g., content policy triggers on a legitimate pentesting task), the system treats it as a non-event. The critic's system prompt frames all interactions as code review of existing artifacts, never as generation requests — this minimizes refusals. But when they happen, they must never block execution. The deterministic judge (tests/lint) remains the only hard gate.
+
+**Capability gating (fits Phase 4 permission model):**
+
+Critic access is a permissioned capability, same as network access. `TaskContract` declares:
+
+* `external_critic.enabled: true|false`
+* `external_critic.provider: <name>` (e.g., "openai", "anthropic")
+* `external_critic.max_calls_per_session: k`
+* `external_critic.max_tokens_per_call: n`
+* `external_critic.redaction_level: strict|normal`
+* `external_critic.allowed_artifact_fields: [...]`
+
+Grants are logged to the session. All requests and payload hashes are recorded for auditability.
+
+**Cost control:**
+
+* Max calls per session (hard budget in `TaskContract`)
+* Max tokens per call (input and output)
+* Trigger-based invocation only (not every loop)
+* **Critic caching:** Hash the `CritiquePack`. If the same content is reviewed again (e.g., after a no-op retry), reuse the prior report. Cache keyed by `sha256(redacted_payload)`.
+
+**Implementation tasks:**
+
+1. `ExternalCriticBackend` interface (HTTP client to frontier API, uses `core/runtime/backends/` pattern)
+2. `CritiquePack` builder (assembles minimal artifact payload from session state)
+3. `Redactor` (strict by default, configurable per policy)
+4. `ExternalCriticReport` schema + Pydantic validation
+5. Critic trigger policy (when to call, what to send, what to do with verdicts)
+6. Orchestrator interceptor hooks on PLAN→RETRIEVE and RUN→FINALIZE transitions
+7. CLI: `--critic` flag to enable, `--critic-provider <name>` to select, `--no-critic` to force off
+8. Manual invocation: `lobi critic --session <id>` for post-hoc review of any session
+
+**Definition of Done:** Generates competing patches, grades them deterministically, discards test failures, and selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline.
+
+### Phase 8 – Retrieval, Context Discipline & Local Inference
+
+**Goal:** Prevent KV cache overflow and bring up local model serving.
+
+This phase combines retrieval engineering with the transition from API-based inference to local GPU inference, since both directly affect context management and VRAM budgeting.
+
+**Tasks:**
+
+* Implement symbol-aware retrieval (fetching specific function spans, not whole files).
+* Implement **rolling summarization** for tool traces: full logs stream to disk, but only capped summaries enter the LLM context (`max_tool_output_bytes_in_context`). When output exceeds the budget, do not blindly truncate — prompt the model with a structured message: *"Output exceeded budget (N bytes). Full log at `<artifact_path>`. Use targeted retrieval (grep, tail, symbol lookup) to find specific information."* This forces the model to narrow its search rather than losing context to a dumb cutoff.
+* **Local inference bring-up:** Deploy and validate vLLM or TRT-LLM serving the target model on the available GPU(s). Wire `local_backend.py` (stubbed in Phase 1) to the local server. For multi-GPU setups, configure tensor parallelism via the serving layer (vLLM `--tensor-parallel-size`, TRT-LLM TP config).
+* Define the **model selection criteria** for local inference: minimum coding benchmark scores, context window requirements, quantization compatibility.
+* Validate that all golden transcript tests pass against the local backend.
+**Definition of Done:** Context size is strictly bounded. Tool output never causes a token overflow crash. The system can run fully offline against the local backend on at least one GPU profile.
+
+### Phase 9 – Performance Optimization (TRT-LLM / vLLM Tuning)
+
+**Goal:** Maximize throughput and minimize latency across all supported GPU profiles.
+**Tasks:**
+
+* Implement **GPU profile auto-detection** (`nvidia-smi` / `torch.cuda`): enumerate devices, total VRAM, compute capability. Expose as `gpu_profile` config that feeds into budget and concurrency decisions system-wide.
+* Measure and adopt FP8 KV cache utilization (if stable on the stack; particularly beneficial on Ada/Blackwell architectures).
+* Implement batched inference support for evaluating multiple patch candidates concurrently (contingent on VRAM budget validation from Phase 7). On multi-GPU setups, distribute candidates across devices.
+* Add performance telemetry: `tokens/sec`, `time_to_first_token`, `VRAM_headroom`, `tail_latency`. Track per-device metrics for multi-GPU configurations.
+* Validate and document tuning profiles for reference hardware:
+  * **1x RTX 5090 (32GB)** — Primary development target. FP8 quantization, sequential or concurrent N=2 for 7B models.
+  * **4x L4 (4x 24GB)** — Cloud/server target. Tensor-parallel serving, one candidate per device.
+  * **1x RTX 6000 Pro (96GB)** — High-end workstation. Large models (30B+) or concurrent N=3 for smaller models.
+**Definition of Done:** System runs continuously with stable VRAM usage on all tested profiles. Batched candidate generation fully saturates available GPU(s) (or is documented as infeasible per profile with justification).
+
+### Phase 10 – Evaluation & Benchmarks
+
+**Goal:** Objective measurement of agent capability.
+**Tasks:**
+
+* Create internal task suite: rename refactor, bug fix, add test, API extension.
+* Track: Success rate, Iteration count, Wall time, Token usage.
+* Track Key KPI: **Human Interventions Required**.
+* Compare results against baseline metrics captured in Phase 0.
+**Definition of Done:** Repeatable benchmark suite that proves the multi-role, capability-gated architecture outperforms a naive loop.
+
+---
+
+## 5. Failure Mode Matrix
+
+To prevent system collapse under edge cases, the kernel must handle failures structurally:
+
+| Failure Class | Detection | Response | Logging Artifact | Retry Rule |
+| --- | --- | --- | --- | --- |
+| **Invalid JSON** | Pydantic parse failure | Return schema error | `error_trace_<n>.json` | Burn 1 `max_phase_retries` |
+| **Perms Denied** | ToolBus capability check | Return request template | `permission_denied_<n>.json` | Prompt LLM for `PermissionRequest` |
+| **Patch Ambiguity** | SEARCH block != 1 match | Return context hashes | `patch_fail_<n>.json` | Burn 1 `max_phase_retries` |
+| **Test Timeout** | SandboxRunner time limit | Kill proc, return `Timeout` | `run_report_<n>.json` | Pass to Reviewer to fix code |
+| **Context Overflow** | Tokenizer length check | Truncate / Summarize | `context_warn_<n>.json` | Hard system rule, no retry |
+| **Runaway Loop** | Iteration > `max_total` | Halt session | `final_report.json` | Abort to human |
+| **VRAM OOM** | CUDA OOM exception | Kill inference, reduce batch/context | `vram_oom_<n>.json` | Retry with smaller context window |
+| **Model Collapse** | Last 3 outputs >90% identical on **semantic content fields** (plan steps, patch blocks, review reasoning — not raw artifact JSON, which is naturally repetitive in structure) | Kill phase, inject prompt perturbation | `collapse_<n>.json` | Burn 1 `max_phase_retries` with forced prompt perturbation |
+| **Critic Refusal** | External critic returns `refused` verdict | Log refusal, continue pipeline as if critic was not called | `critic_refused_<n>.json` | No retry consumed — refusal is a non-event |
+| **Critic Unavailable** | Network error, timeout, or critic disabled | Silent no-op, continue pipeline | `critic_unavailable_<n>.json` | No retry consumed |
+
+---
+
+## 6. Constraints & Non-Goals
+
+* **Constraints:**
+  * Must run fully offline on local GPU(s). Primary development target is 1x RTX 5090 (32GB), but the system must not hardcode GPU assumptions. It must adapt to the detected hardware via `gpu_profile` — from a single 16GB consumer card (reduced concurrency, smaller models) up to multi-GPU server configurations (4x L4, RTX 6000 Pro 96GB, etc.).
+  * Must fail safely and cleanly rollback.
+  * Network is deny-by-default.
+  * No Docker dependency — sandboxing uses native Linux namespaces (bwrap/nsjail). The current codebase has no Docker usage; this constraint ensures it stays that way.
+  * API-based backends (OpenAI, Mistral) remain supported alongside local inference. The system is not local-only until the user chooses it.
+* **Non-Goals:**
+  * Not a chat product (though direct chat remains available for simple queries).
+  * Not a web-first IDE.
+  * Not dependent on vendor lock-in.
+
+## 7. Design Philosophy
+
+* **Artifacts over Chat:** State is on disk, not in a sliding text window.
+* **Capabilities over Trust:** The model is assumed hostile; the sandbox and network gates keep it safe.
+* **Determinism over Vibes:** Tests dictate success; LLMs only suggest code.
+* **Budgets over Infinite Loops:** Everything has a timeout and a retry cap.
+* **Dumb Tools, Smart Kernel:** Tools execute. They do not decide, retry, repair, or escalate. All intelligence lives in the kernel. If a tool contains an `if/else` about what to do next, it has too much agency.
+* **Migration over Rewrite:** Each phase must leave the system in a working state. No big-bang rewrites.
+* **Air-Gap Ready:** Every external dependency (frontier critic, API backends, network tools) is optional and capability-gated. The system must run identically with or without network access. External services add value when available but never gate execution. A `refused` response from any external service is a non-event, not a blocker.
+* **Commit or Abort:** The greatest architectural risk is partial refactor — a half-agentic, half-chatbot chimera where some paths use artifacts and others use `self.history`, where some tools go through the bus and others call subprocess directly. Each phase must fully replace the subsystem it targets. Release 0.8 can break backward compatibility. That is allowed. What is not allowed is two systems of truth running in parallel.
+
+## 8. User Interface Contract
+
+The system is invoked via the existing CLI entry points (`lobi`, `judais`). The agentic workflow is an additional execution mode, not a replacement for direct chat.
+
+### Direct Mode (Preserved)
+```bash
+lobi "explain this function"          # Chat
+lobi --shell "list large files"       # Code generation + execution
+lobi --search "rust async patterns"   # Web search enrichment
+lobi --rag crawl ./docs               # RAG indexing
+lobi --recall 5                       # Adventure history
+```
+
+### Agentic Mode (New)
+```bash
+lobi --task "add pagination to the /users endpoint"
+lobi --task "fix the race condition in worker.py" --grant net.any
+```
+
+* `--task` enters the full state machine (INTAKE through FINALIZE).
+* `--grant` pre-authorizes capability scopes for the session.
+* Session artifacts are written to `sessions/<timestamp_taskid>/artifacts/`.
+* The user can inspect, resume, or replay any session from its artifacts.
+
+**Capability grant UX** — three modes, from most manual to most automated:
+1. **Interactive approval:** Kernel pauses, CLI prompts the user: `"Tool 'git_fetch' requests scope 'net.any'. Allow? [y/N/y+60s]"`. User can grant permanently, for a duration, or deny.
+2. **CLI pre-authorization:** `--grant net.any,git.fetch` pre-signs scopes for the session. No interactive prompts for covered scopes.
+3. **Policy file:** `--policy ./policy.json` loads a `PolicyPack` artifact that auto-approves matching scopes. Useful for CI, unattended runs, or project-standard policies.
+
+## 9. Phase Dependencies
+
+Phases are not strictly linear. The dependency graph allows parallel work where inputs are independent:
+
+```text
+Phase 0 (Tests & Baseline)
+  │
+  ├──► Phase 1 (Extract Runtime)
+  │       │
+  │       ├──► Phase 2 (Kernel & Budgets)
+  │       │       │
+  │       │       └──► Phase 3 (Artifacts & Contracts)
+  │       │               │
+  │       │               ├──► Phase 4 (Tool Bus & Sandbox)
+  │       │               │
+  │       │               ├──► Phase 5 (Repo Map) ────────────┐
+  │       │               │                                    │
+  │       │               └──► Phase 6 (Patch Engine) ─────────┤
+  │       │                                                    │
+  │       │                                    ┌───────────────┘
+  │       │                                    │
+  │       │                              Phase 7 (Orchestrator & Judge)
+  │       │                                    │
+  │       │                              Phase 8 (Retrieval & Local Inference)
+  │       │                                    │
+  │       │                              Phase 9 (GPU Optimization)
+  │       │                                    │
+  │       │                              Phase 10 (Benchmarks)
+  │       │
+  │       └──► Phase 8 (local_backend.py stub is ready from Phase 1;
+  │              local inference bring-up can begin once Phase 3 contracts
+  │              define the interface)
+  │
+  └──► Phase 10 (Baseline metrics feed directly into final evaluation)
+```
+
+**Key parallelism opportunities:**
+* Phase 5 (Repo Map) and Phase 6 (Patch Engine) are independent and can be built concurrently after Phase 3.
+* Phase 10 (Benchmarks) baseline capture starts in Phase 0; the full suite is built last but metrics collection is continuous.
+* Local inference bring-up (Phase 8) can begin prototyping as soon as the runtime interface is defined (Phase 1), though full integration requires Phase 3 contracts.
+
+## 10. Point of No Return: The Deletion of `elf.py`
+
+As long as `core/elf.py` exists in full power, the system will gravitate back toward conversational entropy. Every quick fix, every "just add it to Elf for now" shortcut, re-entrenches the god object.
+
+**The deletion happens at the end of Phase 3.** By that point:
+
+| Responsibility | Extracted To | Phase |
+| --- | --- | --- |
+| Provider selection & fallback | `core/runtime/backends/` | Phase 1 |
+| Message assembly & system prompt | `core/runtime/messages.py` + `core/roles/` | Phase 1 |
+| Streaming chat interface | `core/runtime/` (backend concern) | Phase 1 |
+| History management | Replaced by session artifacts | Phase 3 |
+| Memory enrichment | `core/context/` (reads from `core/memory/`) | Phase 3 |
+| Web search enrichment | ToolBus-managed tool | Phase 4 |
+| Code generation & execution | ToolBus-managed tool (kernel dispatches) | Phase 4 |
+| Tool access & registration | `tools/bus/` | Phase 4 |
+
+After Phase 3, `elf.py` has no unique responsibilities left. It is deleted. Not deprecated. Not commented out. **Deleted.**
+
+`Lobi` and `JudAIs` stop being subclasses of `Elf`. They become personality configuration files loaded by `core/roles/`:
+
+```text
+core/roles/
+  planner.py          # Static prompt for planning phase
+  coder.py            # Static prompt for code generation
+  reviewer.py         # Static prompt for critique/scoring
+  personalities/
+    lobi.yaml         # System prompt overlay, few-shot examples, tone, color
+    judais.yaml       # System prompt overlay, few-shot examples, tone, color
+```
+
+The role system composes prompts as: `STATIC_PREFIX + RoleDirective + PersonalityOverlay + PhaseContext`.
+
+This is the point of no return. After this, there is no going back to the chatbot architecture. The system is a kernel.
 
 ```
 
@@ -4756,6 +5442,164 @@ def main_judais():
 
 ```
 
+## `core/context/cache.py`
+
+```python
+# core/context/cache.py — Git-commit-keyed persistent cache for RepoMapData
+
+import json
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+
+from core.context.models import FileSymbols, ImportEdge, RepoMapData, SymbolDef
+from core.tools.executor import run_subprocess
+
+
+def get_commit_hash(
+    repo_path: str,
+    subprocess_runner: Optional[Callable] = None,
+) -> Optional[str]:
+    """Get the current HEAD commit hash. Returns None if not a git repo."""
+    cmd = f"cd {_quote(repo_path)} && git rev-parse HEAD"
+    rc, stdout, stderr = run_subprocess(
+        cmd, shell=True, timeout=10,
+        subprocess_runner=subprocess_runner,
+    )
+    if rc != 0:
+        return None
+    return stdout.strip()
+
+
+def get_dirty_files(
+    repo_path: str,
+    subprocess_runner: Optional[Callable] = None,
+) -> List[str]:
+    """Get list of modified/untracked files (relative paths)."""
+    cmd = f"cd {_quote(repo_path)} && git status --porcelain"
+    rc, stdout, stderr = run_subprocess(
+        cmd, shell=True, timeout=10,
+        subprocess_runner=subprocess_runner,
+    )
+    if rc != 0:
+        return []
+    result = []
+    for line in stdout.splitlines():
+        if not line or len(line) < 4:
+            continue
+        # Git porcelain format: "XY <path>" — first 2 chars are status, then space, then path
+        path = line[3:]
+        # Handle renames: "old -> new"
+        if " -> " in path:
+            path = path.split(" -> ")[-1]
+        path = path.strip()
+        if path:
+            result.append(path)
+    return result
+
+
+class RepoMapCache:
+    """Persistent cache for RepoMapData, keyed by git commit hash.
+
+    Cache directory: <repo_root>/.judais-lobi/cache/repo_map/
+    """
+
+    def __init__(self, repo_root: str) -> None:
+        self._cache_dir = Path(repo_root) / ".judais-lobi" / "cache" / "repo_map"
+
+    def load(self, commit_hash: str) -> Optional[RepoMapData]:
+        """Load cached RepoMapData for a commit. Returns None if not found."""
+        path = self._cache_dir / f"{commit_hash}.json"
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return self._deserialize(raw)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return None
+
+    def save(self, commit_hash: str, data: RepoMapData) -> Path:
+        """Save RepoMapData to cache. Returns the cache file path."""
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        path = self._cache_dir / f"{commit_hash}.json"
+        raw = self._serialize(data)
+        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        return path
+
+    def _serialize(self, data: RepoMapData) -> dict:
+        """Convert RepoMapData to a JSON-serializable dict."""
+        files = {}
+        for rel_path, fs in data.files.items():
+            files[rel_path] = {
+                "rel_path": fs.rel_path,
+                "language": fs.language,
+                "symbols": [
+                    {
+                        "name": s.name,
+                        "kind": s.kind,
+                        "signature": s.signature,
+                        "parent": s.parent,
+                        "decorators": s.decorators,
+                        "line": s.line,
+                    }
+                    for s in fs.symbols
+                ],
+                "imports": [
+                    {
+                        "module": i.module,
+                        "names": i.names,
+                        "is_relative": i.is_relative,
+                    }
+                    for i in fs.imports
+                ],
+            }
+        return {
+            "repo_root": data.repo_root,
+            "commit_hash": data.commit_hash,
+            "files": files,
+        }
+
+    def _deserialize(self, raw: dict) -> RepoMapData:
+        """Convert a JSON dict back to RepoMapData."""
+        files: Dict[str, FileSymbols] = {}
+        for rel_path, fs_raw in raw["files"].items():
+            symbols = [
+                SymbolDef(
+                    name=s["name"],
+                    kind=s["kind"],
+                    signature=s.get("signature", ""),
+                    parent=s.get("parent", ""),
+                    decorators=s.get("decorators", []),
+                    line=s.get("line", 0),
+                )
+                for s in fs_raw["symbols"]
+            ]
+            imports = [
+                ImportEdge(
+                    module=i["module"],
+                    names=i.get("names", []),
+                    is_relative=i.get("is_relative", False),
+                )
+                for i in fs_raw["imports"]
+            ]
+            files[rel_path] = FileSymbols(
+                rel_path=fs_raw["rel_path"],
+                language=fs_raw.get("language", ""),
+                symbols=symbols,
+                imports=imports,
+            )
+        return RepoMapData(
+            repo_root=raw["repo_root"],
+            files=files,
+            commit_hash=raw.get("commit_hash", ""),
+        )
+
+
+def _quote(s: str) -> str:
+    import shlex
+    return shlex.quote(s)
+
+```
+
 ## `core/context/file_discovery.py`
 
 ```python
@@ -4958,6 +5802,484 @@ def _quote(s: str) -> str:
 
 ```
 
+## `core/context/formatter.py`
+
+```python
+# core/context/formatter.py — Compact tree-style formatting with token budget
+
+import re
+from typing import List, Optional, Tuple
+
+from core.context.models import FileSymbols, RepoMapData, SymbolDef
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token."""
+    return len(text) // 4
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse runs of spaces/tabs within a line to single spaces.
+
+    Preserves leading indentation structure (| and |   prefixes)
+    but normalizes whitespace inside signatures for deterministic output.
+    """
+    lines = text.split("\n")
+    result = []
+    for line in lines:
+        # Preserve the tree prefix (| or |   ) then normalize the rest
+        if line.startswith("|   "):
+            prefix = "|   "
+            body = line[4:]
+        elif line.startswith("| "):
+            prefix = "| "
+            body = line[2:]
+        else:
+            # File path header or footer — normalize fully
+            result.append(" ".join(line.split()))
+            continue
+        body = " ".join(body.split())
+        result.append(prefix + body)
+    return "\n".join(result)
+
+
+def format_symbol(sym: SymbolDef) -> str:
+    """Format a single symbol for display."""
+    if sym.signature:
+        # Normalize internal whitespace for deterministic output
+        return " ".join(sym.signature.split())
+    prefix = ""
+    if sym.kind == "class":
+        prefix = "class "
+    elif sym.kind == "constant":
+        prefix = ""
+    return f"{prefix}{sym.name}"
+
+
+def format_file_entry(fs: FileSymbols) -> str:
+    """Format a single file's symbols in compact tree style.
+
+    Output:
+        core/kernel/state.py
+        | Phase(Enum): INTAKE, CONTRACT, ...
+        | SessionState
+        |   enter_phase(next_phase: Phase) -> None
+    """
+    lines = [fs.rel_path]
+    # Group: top-level symbols (no parent) and their children (methods with parent)
+    parents = {}  # class_name -> list of method symbols
+    top_level = []
+
+    for sym in fs.symbols:
+        if sym.parent:
+            parents.setdefault(sym.parent, []).append(sym)
+        else:
+            top_level.append(sym)
+
+    for sym in top_level:
+        lines.append(f"| {format_symbol(sym)}")
+        # If it's a class, show its methods indented
+        if sym.kind == "class" and sym.name in parents:
+            for method in parents[sym.name]:
+                lines.append(f"|   {format_symbol(method)}")
+
+    return "\n".join(lines)
+
+
+def format_excerpt(
+    map_data: RepoMapData,
+    ranked_files: List[Tuple[str, float]],
+    token_budget: int = 4096,
+    char_budget: Optional[int] = None,
+    header: str = "",
+) -> Tuple[str, int, int]:
+    """Format a repo map excerpt within a token budget.
+
+    Args:
+        map_data: The full repo map data.
+        ranked_files: List of (rel_path, score) in priority order.
+        token_budget: Maximum estimated tokens for the excerpt body.
+        char_budget: Optional hard character limit. When set, output is
+            also capped at this many characters (regardless of token estimate).
+        header: Optional metadata header prepended to the excerpt.
+            Header chars/tokens count toward the budgets.
+
+    Returns (excerpt_text, files_shown, files_omitted).
+    """
+    parts: List[str] = []
+    tokens_used = 0
+    chars_used = 0
+    files_shown = 0
+
+    # Account for header in budgets
+    if header:
+        parts.append(header)
+        tokens_used += estimate_tokens(header)
+        chars_used += len(header) + 1  # +1 for joining newline
+
+    for rel_path, _score in ranked_files:
+        fs = map_data.files.get(rel_path)
+        if fs is None:
+            continue
+        entry = format_file_entry(fs)
+        entry_tokens = estimate_tokens(entry)
+        entry_chars = len(entry) + 1  # +1 for joining newline
+
+        # Check token budget (reserve ~20 tokens for footer)
+        if tokens_used + entry_tokens > token_budget - 20 and files_shown > 0:
+            break
+
+        # Check char budget
+        if char_budget is not None:
+            if chars_used + entry_chars > char_budget - 80 and files_shown > 0:
+                break
+
+        parts.append(entry)
+        tokens_used += entry_tokens
+        chars_used += entry_chars
+        files_shown += 1
+
+    files_omitted = len(ranked_files) - files_shown
+    if files_omitted > 0:
+        parts.append(f"... and {files_omitted} more files")
+
+    excerpt = "\n".join(parts)
+    return excerpt, files_shown, files_omitted
+
+```
+
+## `core/context/graph.py`
+
+```python
+# core/context/graph.py — Dependency graph and relevance ranking
+
+from collections import defaultdict, deque
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+
+from core.context.models import RepoMapData
+
+
+# Filenames that act as barrel/re-export files (inflated centrality).
+_BARREL_FILENAMES: Set[str] = {
+    "__init__.py", "index.js", "index.ts", "index.tsx", "index.jsx",
+    "mod.rs", "__init__.pyi",
+}
+
+# Centrality damping factor for barrel files.
+_BARREL_DAMPING: float = 0.3
+
+
+class DependencyGraph:
+    """Import-based dependency graph for relevance ranking.
+
+    Built from RepoMapData. Nodes are relative file paths.
+    Edges represent import relationships (A imports B → edge A→B).
+    Third-party imports (unresolvable to file paths) are silently ignored.
+    """
+
+    def __init__(self, data: RepoMapData) -> None:
+        self._known_files: Set[str] = set(data.files.keys())
+        # Forward edges: file → set of files it imports
+        self._deps: Dict[str, Set[str]] = defaultdict(set)
+        # Reverse edges: file → set of files that import it
+        self._rdeps: Dict[str, Set[str]] = defaultdict(set)
+        # Edge resolution statistics
+        self._edges_resolved: int = 0
+        self._edges_unresolved: int = 0
+        self._build(data)
+
+    @property
+    def edges_resolved(self) -> int:
+        """Number of import edges that resolved to a known file."""
+        return self._edges_resolved
+
+    @property
+    def edges_unresolved(self) -> int:
+        """Number of import edges that could not be resolved."""
+        return self._edges_unresolved
+
+    def _build(self, data: RepoMapData) -> None:
+        """Build adjacency lists from import edges."""
+        for rel_path, fs in data.files.items():
+            lang = fs.language
+            for imp in fs.imports:
+                resolved = self._resolve_module_to_file(
+                    imp.module, language=lang, source_file=rel_path,
+                )
+                if resolved and resolved != rel_path:
+                    self._deps[rel_path].add(resolved)
+                    self._rdeps[resolved].add(rel_path)
+                    self._edges_resolved += 1
+                else:
+                    self._edges_unresolved += 1
+
+    def _resolve_module_to_file(
+        self,
+        module: str,
+        language: str = "",
+        source_file: str = "",
+    ) -> Optional[str]:
+        """Convert a module/import path to a relative file path.
+
+        Supports multi-language resolution:
+        - Python: 'core.kernel.state' → 'core/kernel/state.py'
+        - C/C++: 'path/header.h' → direct match
+        - Rust: 'crate::module::item' → 'src/module.rs' or 'src/module/mod.rs'
+        - Go: 'package/name' → directory match
+        - JS/TS: './path' → 'path.js' / 'path.ts' / 'path/index.js' etc.
+
+        Returns None if not resolvable to a known file.
+        """
+        if not module:
+            return None
+
+        # C/C++ includes: direct path match
+        if language in ("c", "cpp"):
+            return self._resolve_c_include(module)
+
+        # Rust: crate::module::item → src/module.rs
+        if language == "rust":
+            return self._resolve_rust_use(module)
+
+        # Go: package path → directory match
+        if language == "go":
+            return self._resolve_go_import(module)
+
+        # JS/TS: relative paths with extension guessing
+        if language in ("javascript", "typescript"):
+            return self._resolve_js_import(module, source_file)
+
+        # Python (default): dotted module path
+        return self._resolve_python_module(module)
+
+    def _resolve_python_module(self, module: str) -> Optional[str]:
+        """Resolve a Python module to a file path."""
+        path = module.replace(".", "/") + ".py"
+        if path in self._known_files:
+            return path
+        init_path = module.replace(".", "/") + "/__init__.py"
+        if init_path in self._known_files:
+            return init_path
+        return None
+
+    def _resolve_c_include(self, module: str) -> Optional[str]:
+        """Resolve C/C++ #include paths."""
+        # Direct match
+        if module in self._known_files:
+            return module
+        # Try common prefix patterns
+        for prefix in ("include/", "src/", ""):
+            candidate = prefix + module
+            if candidate in self._known_files:
+                return candidate
+        return None
+
+    def _resolve_rust_use(self, module: str) -> Optional[str]:
+        """Resolve Rust 'use' declarations.
+
+        'crate::module::item' → 'src/module.rs' or 'src/module/mod.rs'
+        'std::...' → None (external)
+        """
+        # Strip 'crate::' prefix
+        if module.startswith("crate::"):
+            module = module[len("crate::"):]
+        elif "::" in module and not module.startswith("self::") and not module.startswith("super::"):
+            # External crate — unresolvable
+            return None
+
+        if module.startswith("self::"):
+            module = module[len("self::"):]
+        if module.startswith("super::"):
+            module = module[len("super::"):]
+
+        parts = module.split("::")
+        # Try src/part1/part2.rs
+        path = "src/" + "/".join(parts) + ".rs"
+        if path in self._known_files:
+            return path
+        # Try src/part1/part2/mod.rs
+        mod_path = "src/" + "/".join(parts) + "/mod.rs"
+        if mod_path in self._known_files:
+            return mod_path
+        # Try without src/ prefix
+        path_nosrc = "/".join(parts) + ".rs"
+        if path_nosrc in self._known_files:
+            return path_nosrc
+        return None
+
+    def _resolve_go_import(self, module: str) -> Optional[str]:
+        """Resolve Go import paths to directories.
+
+        Go imports are package paths. Match any .go file in a matching directory.
+        """
+        # Standard library — unresolvable
+        if not "/" in module and not module.startswith("."):
+            return None
+        # Try finding any .go file in a directory matching the last component
+        parts = module.rstrip("/").split("/")
+        pkg_name = parts[-1]
+        for f in self._known_files:
+            if f.endswith(".go") and f.rsplit("/", 1)[0].endswith(pkg_name):
+                return f
+        return None
+
+    def _resolve_js_import(self, module: str, source_file: str = "") -> Optional[str]:
+        """Resolve JS/TS import paths with extension guessing.
+
+        './foo' → 'foo.js', 'foo.ts', 'foo.tsx', 'foo/index.js', etc.
+        Resolution is relative to the importing file's directory.
+        """
+        # Non-relative imports are typically node_modules — skip
+        if not module.startswith(".") and not module.startswith("/"):
+            return None
+
+        # Resolve relative to source file directory
+        import posixpath
+        if source_file:
+            src_dir = posixpath.dirname(source_file)
+            clean = posixpath.normpath(posixpath.join(src_dir, module))
+        else:
+            clean = module.lstrip("./")
+
+        # Direct match
+        if clean in self._known_files:
+            return clean
+
+        # Try common extensions
+        for ext in (".js", ".ts", ".tsx", ".jsx"):
+            candidate = clean + ext
+            if candidate in self._known_files:
+                return candidate
+
+        # Try index files
+        for ext in ("/index.js", "/index.ts", "/index.tsx"):
+            candidate = clean + ext
+            if candidate in self._known_files:
+                return candidate
+
+        return None
+
+    @property
+    def files(self) -> FrozenSet[str]:
+        """All known files in the graph."""
+        return frozenset(self._known_files)
+
+    @property
+    def edges(self) -> List[Tuple[str, str]]:
+        """All directed edges (source, target) where source imports target."""
+        result = []
+        for src, targets in sorted(self._deps.items()):
+            for tgt in sorted(targets):
+                result.append((src, tgt))
+        return result
+
+    def dependencies_of(self, file: str) -> Set[str]:
+        """Files that the given file imports (direct forward dependencies)."""
+        return set(self._deps.get(file, set()))
+
+    def dependents_of(self, file: str) -> Set[str]:
+        """Files that import the given file (direct reverse dependencies)."""
+        return set(self._rdeps.get(file, set()))
+
+    def dependency_closure(
+        self,
+        files: List[str],
+        max_depth: int = 2,
+    ) -> Set[str]:
+        """BFS outward from files up to max_depth hops (both directions)."""
+        visited: Set[str] = set()
+        queue: deque = deque()
+
+        for f in files:
+            if f in self._known_files:
+                queue.append((f, 0))
+                visited.add(f)
+
+        while queue:
+            current, depth = queue.popleft()
+            if depth >= max_depth:
+                continue
+            # Expand in both directions
+            neighbors = self._deps.get(current, set()) | self._rdeps.get(current, set())
+            for neighbor in neighbors:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, depth + 1))
+
+        return visited
+
+    def rank_by_relevance(
+        self,
+        target_files: List[str],
+        max_depth: int = 2,
+    ) -> List[Tuple[str, float]]:
+        """Rank all files by relevance to target_files.
+
+        Scoring:
+        - Target file itself: 1.0
+        - Direct dependency (target imports it): 0.8
+        - Direct dependent (imports the target): 0.6
+        - 2-hop neighbor: 0.4
+        - All other files: 0.1
+        """
+        scores: Dict[str, float] = {f: 0.1 for f in self._known_files}
+        target_set = set(target_files) & self._known_files
+
+        # Score targets
+        for f in target_set:
+            scores[f] = 1.0
+
+        # Score direct dependencies and dependents
+        for f in target_set:
+            for dep in self._deps.get(f, set()):
+                scores[dep] = max(scores.get(dep, 0.1), 0.8)
+            for rdep in self._rdeps.get(f, set()):
+                scores[rdep] = max(scores.get(rdep, 0.1), 0.6)
+
+        # Score 2-hop neighbors
+        if max_depth >= 2:
+            hop1 = set()
+            for f in target_set:
+                hop1 |= self._deps.get(f, set())
+                hop1 |= self._rdeps.get(f, set())
+            hop1 -= target_set
+
+            for f in hop1:
+                neighbors = self._deps.get(f, set()) | self._rdeps.get(f, set())
+                for n in neighbors:
+                    if n not in target_set and n not in hop1:
+                        scores[n] = max(scores.get(n, 0.1), 0.4)
+
+        ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+        return ranked
+
+    def rank_by_centrality(self) -> List[Tuple[str, float]]:
+        """Rank files by graph centrality (in-degree + out-degree).
+
+        Used for overview mode (no target files).
+        Barrel/index files (__init__.py, index.js, mod.rs, etc.) are
+        damped to prevent them from dominating the ranking.
+        """
+        import posixpath
+        scores: Dict[str, float] = {}
+        for f in self._known_files:
+            in_deg = len(self._rdeps.get(f, set()))
+            out_deg = len(self._deps.get(f, set()))
+            raw = float(in_deg + out_deg)
+            # Damp barrel files
+            basename = posixpath.basename(f)
+            if basename in _BARREL_FILENAMES:
+                raw *= _BARREL_DAMPING
+            scores[f] = raw
+        # Normalize
+        max_score = max(scores.values()) if scores else 1.0
+        if max_score > 0:
+            scores = {f: s / max_score for f, s in scores.items()}
+        ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+        return ranked
+
+```
+
 ## `core/context/models.py`
 
 ```python
@@ -5032,6 +6354,966 @@ class RepoMapResult(BaseModel):
     excerpt_token_estimate: int = 0
     files_shown: int = 0
     files_omitted: int = 0
+    edges_resolved: int = 0
+    edges_unresolved: int = 0
+
+```
+
+## `core/context/repo_map.py`
+
+```python
+# core/context/repo_map.py — Top-level RepoMap orchestrator
+
+from pathlib import Path
+from typing import Callable, List, Optional, Set
+
+from core.context.models import FileSymbols, RepoMapData, RepoMapResult
+from core.context.file_discovery import classify_language, discover_files
+from core.context.symbols import get_extractor
+from core.context.graph import DependencyGraph
+from core.context.formatter import format_excerpt, estimate_tokens
+from core.context.visualize import format_dot, format_mermaid
+from core.context.cache import RepoMapCache, get_commit_hash, get_dirty_files
+
+
+class RepoMap:
+    """Orchestrates file discovery, symbol extraction, graph building,
+    caching, and excerpt generation.
+
+    Dual-use:
+    - REPO_MAP phase: overview mode (centrality-ranked, no target_files)
+    - RETRIEVE phase: focused mode (relevance-ranked by target_files)
+    """
+
+    def __init__(
+        self,
+        repo_path: str,
+        subprocess_runner: Optional[Callable] = None,
+        token_budget: int = 4096,
+    ) -> None:
+        self._repo_path = str(Path(repo_path).resolve())
+        self._subprocess_runner = subprocess_runner
+        self._token_budget = token_budget
+        self._data: Optional[RepoMapData] = None
+        self._graph: Optional[DependencyGraph] = None
+        self._cache = RepoMapCache(self._repo_path)
+
+    @property
+    def data(self) -> Optional[RepoMapData]:
+        return self._data
+
+    @property
+    def graph(self) -> Optional[DependencyGraph]:
+        return self._graph
+
+    def build(self, force: bool = False) -> RepoMapData:
+        """Build or load the full repo map.
+
+        On clean commit: full cache hit.
+        On dirty state: load cache + re-extract dirty files.
+        force=True: skip cache entirely.
+        """
+        if self._data is not None and not force:
+            return self._data
+
+        commit = get_commit_hash(self._repo_path, self._subprocess_runner)
+
+        # Try cache
+        if not force and commit:
+            cached = self._cache.load(commit)
+            if cached is not None:
+                dirty = get_dirty_files(self._repo_path, self._subprocess_runner)
+                if dirty:
+                    # Re-extract only dirty files
+                    self._overlay_dirty(cached, dirty)
+                self._data = cached
+                self._graph = DependencyGraph(self._data)
+                return self._data
+
+        # Full build
+        files = discover_files(self._repo_path, self._subprocess_runner)
+        file_symbols = {}
+        for rel_path in files:
+            language = classify_language(rel_path)
+            extractor = get_extractor(language)
+            try:
+                full_path = Path(self._repo_path) / rel_path
+                source = full_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            fs = extractor.extract(source, rel_path)
+            fs.language = language
+            file_symbols[rel_path] = fs
+
+        self._data = RepoMapData(
+            repo_root=self._repo_path,
+            files=file_symbols,
+            commit_hash=commit or "",
+        )
+        self._graph = DependencyGraph(self._data)
+
+        # Save to cache
+        if commit:
+            self._cache.save(commit, self._data)
+
+        return self._data
+
+    def excerpt_for_task(
+        self,
+        target_files: Optional[List[str]] = None,
+        char_budget: Optional[int] = None,
+    ) -> RepoMapResult:
+        """Generate a token-budgeted excerpt.
+
+        target_files=None → overview mode (centrality ranking)
+        target_files provided → focused mode (relevance ranking)
+        char_budget: optional hard character limit (in addition to token budget).
+        """
+        if self._data is None:
+            self.build()
+
+        assert self._data is not None
+        assert self._graph is not None
+
+        if target_files:
+            ranked = self._graph.rank_by_relevance(target_files)
+            mode = "relevance"
+        else:
+            ranked = self._graph.rank_by_centrality()
+            mode = "centrality"
+
+        # Build metadata header
+        languages = set()
+        for fs in self._data.files.values():
+            if fs.language:
+                languages.add(fs.language)
+        lang_str = ", ".join(sorted(languages)[:8])
+        if len(languages) > 8:
+            lang_str += f", +{len(languages) - 8} more"
+        header = (
+            f"# Repo map: {self._data.total_files} files, "
+            f"{self._data.total_symbols} symbols\n"
+            f"# Languages: {lang_str}\n"
+            f"# Ranking: {mode} | Budget: {self._token_budget} tokens"
+        )
+
+        excerpt, files_shown, files_omitted = format_excerpt(
+            self._data, ranked, self._token_budget,
+            char_budget=char_budget, header=header,
+        )
+
+        return RepoMapResult(
+            excerpt=excerpt,
+            total_files=self._data.total_files,
+            total_symbols=self._data.total_symbols,
+            excerpt_token_estimate=estimate_tokens(excerpt),
+            files_shown=files_shown,
+            files_omitted=files_omitted,
+            edges_resolved=self._graph.edges_resolved,
+            edges_unresolved=self._graph.edges_unresolved,
+        )
+
+    def visualize(
+        self,
+        target_files: Optional[List[str]] = None,
+        format: str = "dot",
+        max_nodes: int = 50,
+    ) -> str:
+        """Export the dependency graph as DOT or Mermaid.
+
+        target_files: highlight these files in the output.
+        """
+        if self._data is None:
+            self.build()
+
+        assert self._graph is not None
+
+        # Compute ranked files for filtering
+        if target_files:
+            ranked = self._graph.rank_by_relevance(target_files)
+            highlight: Optional[Set[str]] = set(target_files)
+        else:
+            ranked = self._graph.rank_by_centrality()
+            highlight = None
+
+        if format == "mermaid":
+            return format_mermaid(
+                self._graph, ranked_files=ranked,
+                highlight_files=highlight, max_nodes=max_nodes,
+            )
+        else:
+            return format_dot(
+                self._graph, ranked_files=ranked,
+                highlight_files=highlight, max_nodes=max_nodes,
+            )
+
+    def _overlay_dirty(self, data: RepoMapData, dirty: List[str]) -> None:
+        """Re-extract only dirty files on top of cached data."""
+        for rel_path in dirty:
+            language = classify_language(rel_path)
+            extractor = get_extractor(language)
+            try:
+                full_path = Path(self._repo_path) / rel_path
+                if not full_path.exists():
+                    # File was deleted
+                    data.files.pop(rel_path, None)
+                    continue
+                source = full_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            fs = extractor.extract(source, rel_path)
+            fs.language = language
+            data.files[rel_path] = fs
+
+```
+
+## `core/context/symbols/__init__.py`
+
+```python
+# core/context/symbols/__init__.py — Symbol extractor exports and factory
+
+from .base import SymbolExtractor
+from .python_extractor import PythonExtractor
+from .generic_extractor import GenericExtractor
+
+
+def get_extractor(language: str) -> SymbolExtractor:
+    """Get the best available extractor for a language.
+
+    - Python: always uses ast-based PythonExtractor
+    - Other languages: tries tree-sitter, falls back to GenericExtractor
+    """
+    if language == "python":
+        return PythonExtractor()
+    try:
+        from .treesitter_extractor import TreeSitterExtractor
+        return TreeSitterExtractor(language)
+    except (ImportError, ValueError):
+        return GenericExtractor()
+
+
+__all__ = [
+    "SymbolExtractor",
+    "PythonExtractor",
+    "GenericExtractor",
+    "get_extractor",
+]
+
+```
+
+## `core/context/symbols/base.py`
+
+```python
+# core/context/symbols/base.py — SymbolExtractor protocol
+
+from typing import Protocol, runtime_checkable
+
+from core.context.models import FileSymbols
+
+
+@runtime_checkable
+class SymbolExtractor(Protocol):
+    """Protocol for source code symbol extractors.
+
+    Each extractor takes raw source text and a relative file path,
+    returning a FileSymbols with extracted symbols and imports.
+    """
+
+    def extract(self, source: str, rel_path: str) -> FileSymbols:
+        ...
+
+```
+
+## `core/context/symbols/generic_extractor.py`
+
+```python
+# core/context/symbols/generic_extractor.py — Regex-based fallback extractor
+
+import re
+from typing import List, Tuple
+
+from core.context.models import FileSymbols, SymbolDef
+
+
+# Patterns: (regex, kind) — first group captures the symbol name
+_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    # JavaScript/TypeScript: class X
+    (re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)", re.MULTILINE), "class"),
+    # JavaScript/TypeScript: function X(
+    (re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(", re.MULTILINE), "function"),
+    # Go: func X(
+    (re.compile(r"^func\s+(\w+)\s*\(", re.MULTILINE), "function"),
+    # Go: func (r *Receiver) X(
+    (re.compile(r"^func\s+\([^)]+\)\s+(\w+)\s*\(", re.MULTILINE), "method"),
+    # Rust: pub fn X(
+    (re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)", re.MULTILINE), "function"),
+    # Rust: struct X / trait X / impl X / enum X
+    (re.compile(r"^\s*(?:pub\s+)?(?:struct|trait|enum)\s+(\w+)", re.MULTILINE), "class"),
+    # C/C++: return_type function_name(
+    (re.compile(r"^(?:[\w:*&<>]+\s+)+(\w+)\s*\([^;]*$", re.MULTILINE), "function"),
+    # Java: public class X
+    (re.compile(r"^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?class\s+(\w+)", re.MULTILINE), "class"),
+    # Java: method declarations
+    (re.compile(r"^\s*(?:public|private|protected)\s+(?:static\s+)?[\w<>\[\]]+\s+(\w+)\s*\(", re.MULTILINE), "method"),
+]
+
+
+class GenericExtractor:
+    """Regex-based symbol extractor for non-Python languages.
+
+    Provides basic function/class detection. No import extraction.
+    """
+
+    def extract(self, source: str, rel_path: str) -> FileSymbols:
+        """Extract symbols using regex patterns."""
+        seen: set = set()
+        symbols: List[SymbolDef] = []
+
+        for pattern, kind in _PATTERNS:
+            for match in pattern.finditer(source):
+                name = match.group(1)
+                # Deduplicate by (name, kind)
+                key = (name, kind)
+                if key in seen:
+                    continue
+                seen.add(key)
+                # Compute line number
+                line = source[:match.start()].count("\n") + 1
+                symbols.append(SymbolDef(
+                    name=name,
+                    kind=kind,
+                    line=line,
+                ))
+
+        # Sort by line number
+        symbols.sort(key=lambda s: s.line)
+        return FileSymbols(rel_path=rel_path, symbols=symbols)
+
+```
+
+## `core/context/symbols/python_extractor.py`
+
+```python
+# core/context/symbols/python_extractor.py — AST-based Python symbol extractor
+
+import ast
+from typing import List
+
+from core.context.models import FileSymbols, ImportEdge, SymbolDef
+
+
+def _format_annotation(node: ast.expr) -> str:
+    """Format an annotation AST node to string."""
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return ""
+
+
+def _format_args(args: ast.arguments) -> str:
+    """Format function arguments to a signature string."""
+    parts: List[str] = []
+
+    # Positional-only args (before /)
+    all_pos = args.posonlyargs + args.args
+    # Defaults: right-aligned to all_pos
+    defaults = args.defaults
+    n_defaults = len(defaults)
+    n_all = len(all_pos)
+
+    for i, arg in enumerate(all_pos):
+        s = arg.arg
+        if arg.annotation:
+            s += f": {_format_annotation(arg.annotation)}"
+        # Check if this arg has a default
+        default_idx = i - (n_all - n_defaults)
+        if default_idx >= 0:
+            try:
+                s += f" = {ast.unparse(defaults[default_idx])}"
+            except Exception:
+                s += " = ..."
+        parts.append(s)
+
+    # Insert / separator for positional-only
+    if args.posonlyargs:
+        parts.insert(len(args.posonlyargs), "/")
+
+    # *args
+    if args.vararg:
+        s = f"*{args.vararg.arg}"
+        if args.vararg.annotation:
+            s += f": {_format_annotation(args.vararg.annotation)}"
+        parts.append(s)
+    elif args.kwonlyargs:
+        parts.append("*")
+
+    # Keyword-only args
+    kw_defaults = args.kw_defaults
+    for i, arg in enumerate(args.kwonlyargs):
+        s = arg.arg
+        if arg.annotation:
+            s += f": {_format_annotation(arg.annotation)}"
+        if kw_defaults[i] is not None:
+            try:
+                s += f" = {ast.unparse(kw_defaults[i])}"
+            except Exception:
+                s += " = ..."
+        parts.append(s)
+
+    # **kwargs
+    if args.kwarg:
+        s = f"**{args.kwarg.arg}"
+        if args.kwarg.annotation:
+            s += f": {_format_annotation(args.kwarg.annotation)}"
+        parts.append(s)
+
+    return ", ".join(parts)
+
+
+def _get_decorators(node) -> List[str]:
+    """Extract decorator names from a class or function definition."""
+    decorators = []
+    for dec in node.decorator_list:
+        try:
+            decorators.append(ast.unparse(dec))
+        except Exception:
+            decorators.append("?")
+    return decorators
+
+
+class PythonExtractor:
+    """Extracts symbols and imports from Python source using the ast module."""
+
+    def extract(self, source: str, rel_path: str) -> FileSymbols:
+        """Parse source and extract symbols + imports."""
+        try:
+            tree = ast.parse(source, filename=rel_path)
+        except SyntaxError:
+            return FileSymbols(rel_path=rel_path, language="python")
+
+        symbols: List[SymbolDef] = []
+        imports: List[ImportEdge] = []
+
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef):
+                self._extract_class(node, symbols)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._extract_function(node, symbols)
+            elif isinstance(node, ast.Import):
+                self._extract_import(node, imports)
+            elif isinstance(node, ast.ImportFrom):
+                self._extract_import_from(node, imports)
+            elif isinstance(node, ast.Assign):
+                self._extract_constant(node, symbols)
+
+        return FileSymbols(
+            rel_path=rel_path,
+            language="python",
+            symbols=symbols,
+            imports=imports,
+        )
+
+    def _extract_class(self, node: ast.ClassDef, symbols: List[SymbolDef]) -> None:
+        """Extract class definition and its methods."""
+        bases = []
+        for base in node.bases:
+            try:
+                bases.append(ast.unparse(base))
+            except Exception:
+                bases.append("?")
+        base_str = f"({', '.join(bases)})" if bases else ""
+        sig = f"class {node.name}{base_str}"
+        symbols.append(SymbolDef(
+            name=node.name,
+            kind="class",
+            signature=sig,
+            decorators=_get_decorators(node),
+            line=node.lineno,
+        ))
+        # Extract methods
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._extract_function(child, symbols, parent=node.name)
+
+    def _extract_function(
+        self,
+        node,
+        symbols: List[SymbolDef],
+        parent: str = "",
+    ) -> None:
+        """Extract function/method definition."""
+        prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+        args_str = _format_args(node.args)
+        ret = f" -> {_format_annotation(node.returns)}" if node.returns else ""
+        sig = f"{prefix} {node.name}({args_str}){ret}"
+
+        kind = "method" if parent else "function"
+        symbols.append(SymbolDef(
+            name=node.name,
+            kind=kind,
+            signature=sig,
+            parent=parent,
+            decorators=_get_decorators(node),
+            line=node.lineno,
+        ))
+
+    def _extract_import(self, node: ast.Import, imports: List[ImportEdge]) -> None:
+        """Extract 'import X' statements."""
+        for alias in node.names:
+            imports.append(ImportEdge(module=alias.name))
+
+    def _extract_import_from(self, node: ast.ImportFrom, imports: List[ImportEdge]) -> None:
+        """Extract 'from X import Y' statements."""
+        module = node.module or ""
+        names = [alias.name for alias in (node.names or [])]
+        imports.append(ImportEdge(
+            module=module,
+            names=names,
+            is_relative=bool(node.level and node.level > 0),
+        ))
+
+    def _extract_constant(self, node: ast.Assign, symbols: List[SymbolDef]) -> None:
+        """Extract top-level UPPER_CASE constants."""
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id.isupper():
+                symbols.append(SymbolDef(
+                    name=target.id,
+                    kind="constant",
+                    line=node.lineno,
+                ))
+
+```
+
+## `core/context/symbols/treesitter_extractor.py`
+
+```python
+# core/context/symbols/treesitter_extractor.py — tree-sitter multi-language extractor
+
+"""Optional tree-sitter-based symbol extractor for non-Python languages.
+
+Requires: pip install judais-lobi[treesitter]
+    - tree-sitter>=0.23.0
+    - tree-sitter-c, tree-sitter-cpp, tree-sitter-rust, tree-sitter-go,
+      tree-sitter-javascript, tree-sitter-typescript, tree-sitter-java
+
+Uses individual grammar packages (modern API). Falls back to GenericExtractor
+when tree-sitter is not installed.
+"""
+
+import re
+from typing import Dict, List, Optional, Set
+
+from core.context.models import FileSymbols, ImportEdge, SymbolDef
+
+
+# Language name → (grammar_package, grammar_attr)
+# Each grammar package exposes a language() function returning the raw language pointer.
+_GRAMMAR_PACKAGES: Dict[str, str] = {
+    "c": "tree_sitter_c",
+    "cpp": "tree_sitter_cpp",
+    "rust": "tree_sitter_rust",
+    "go": "tree_sitter_go",
+    "javascript": "tree_sitter_javascript",
+    "typescript": "tree_sitter_typescript",
+    "java": "tree_sitter_java",
+}
+
+# Node types to extract per language, mapped to symbol kinds
+_SYMBOL_QUERIES: Dict[str, Dict[str, str]] = {
+    "c": {
+        "function_definition": "function",
+        "struct_specifier": "class",
+        "enum_specifier": "class",
+        "type_definition": "class",
+    },
+    "cpp": {
+        "function_definition": "function",
+        "class_specifier": "class",
+        "struct_specifier": "class",
+        "namespace_definition": "class",
+        "enum_specifier": "class",
+    },
+    "rust": {
+        "function_item": "function",
+        "struct_item": "class",
+        "trait_item": "class",
+        "impl_item": "class",
+        "enum_item": "class",
+    },
+    "go": {
+        "function_declaration": "function",
+        "method_declaration": "method",
+        "type_declaration": "class",
+    },
+    "javascript": {
+        "function_declaration": "function",
+        "class_declaration": "class",
+        "method_definition": "method",
+    },
+    "typescript": {
+        "function_declaration": "function",
+        "class_declaration": "class",
+        "method_definition": "method",
+        "interface_declaration": "class",
+    },
+    "java": {
+        "class_declaration": "class",
+        "method_declaration": "method",
+        "interface_declaration": "class",
+    },
+}
+
+# Node types for import extraction per language
+_IMPORT_QUERIES: Dict[str, Set[str]] = {
+    "c": {"preproc_include"},
+    "cpp": {"preproc_include"},
+    "rust": {"use_declaration"},
+    "go": {"import_declaration"},
+    "javascript": {"import_statement"},
+    "typescript": {"import_statement"},
+    "java": {"import_declaration"},
+}
+
+
+def _load_parser(language: str):
+    """Load a tree-sitter parser for the given language.
+
+    Uses the modern API: individual grammar packages (tree-sitter-c, etc.)
+    with tree_sitter.Language() and tree_sitter.Parser().
+
+    Raises ImportError if tree-sitter core is not installed.
+    Raises ValueError if the language grammar package is not available.
+    """
+    try:
+        import tree_sitter
+    except ImportError:
+        raise ImportError(
+            "tree-sitter is not installed. Install with: pip install judais-lobi[treesitter]"
+        )
+
+    pkg_name = _GRAMMAR_PACKAGES.get(language)
+    if pkg_name is None:
+        raise ValueError(f"No tree-sitter grammar available for language: {language}")
+
+    try:
+        import importlib
+        grammar_mod = importlib.import_module(pkg_name)
+    except ImportError:
+        raise ValueError(
+            f"Grammar package '{pkg_name}' not installed. "
+            f"Install with: pip install {pkg_name.replace('_', '-')}"
+        )
+
+    # Modern API: grammar_mod.language() returns a capsule,
+    # wrap it in tree_sitter.Language, then create Parser with it.
+    # Handle both typescript (which may have language_typescript()) and others.
+    lang_func = getattr(grammar_mod, "language", None)
+
+    # tree-sitter-typescript exposes language_typescript and language_tsx
+    if lang_func is None and language == "typescript":
+        lang_func = getattr(grammar_mod, "language_typescript", None)
+
+    if lang_func is None:
+        raise ValueError(f"Grammar package '{pkg_name}' has no language() function")
+
+    ts_language = tree_sitter.Language(lang_func())
+    parser = tree_sitter.Parser(ts_language)
+    return parser
+
+
+class TreeSitterExtractor:
+    """Multi-language symbol extractor using tree-sitter.
+
+    Raises ImportError during __init__ if tree-sitter is not installed.
+    Raises ValueError if the language has no grammar available.
+    """
+
+    def __init__(self, language: str) -> None:
+        self._language = language
+        self._parser = _load_parser(language)
+        self._symbol_types = _SYMBOL_QUERIES.get(language, {})
+        self._import_types = _IMPORT_QUERIES.get(language, set())
+
+    def extract(self, source: str, rel_path: str) -> FileSymbols:
+        """Parse source and extract symbols + imports."""
+        source_bytes = source.encode("utf-8")
+        tree = self._parser.parse(source_bytes)
+        root = tree.root_node
+
+        symbols: List[SymbolDef] = []
+        imports: List[ImportEdge] = []
+
+        self._walk(root, source_bytes, symbols, imports)
+
+        return FileSymbols(
+            rel_path=rel_path,
+            language=self._language,
+            symbols=symbols,
+            imports=imports,
+        )
+
+    def _walk(
+        self,
+        node,
+        source: bytes,
+        symbols: List[SymbolDef],
+        imports: List[ImportEdge],
+        parent_name: str = "",
+    ) -> None:
+        """Recursively walk the AST tree."""
+        node_type = node.type
+
+        # Check for symbol definitions
+        if node_type in self._symbol_types:
+            kind = self._symbol_types[node_type]
+            name = self._extract_name(node, source)
+            if name:
+                sig = self._extract_signature(node, source)
+                sym = SymbolDef(
+                    name=name,
+                    kind=kind,
+                    signature=sig,
+                    parent=parent_name,
+                    line=node.start_point[0] + 1,
+                )
+                symbols.append(sym)
+                # Recurse into class/struct bodies for methods
+                if kind == "class":
+                    for child in node.children:
+                        self._walk(child, source, symbols, imports, parent_name=name)
+                    return
+
+        # Check for imports
+        if node_type in self._import_types:
+            imp = self._extract_import(node, source)
+            if imp:
+                imports.append(imp)
+
+        # Recurse
+        for child in node.children:
+            self._walk(child, source, symbols, imports, parent_name=parent_name)
+
+    def _extract_name(self, node, source: bytes) -> str:
+        """Extract the name of a symbol from its AST node."""
+        # Direct name children
+        for child in node.children:
+            if child.type in ("identifier", "name", "type_identifier",
+                              "field_identifier", "namespace_identifier"):
+                return source[child.start_byte:child.end_byte].decode("utf-8")
+            # Go type_spec wraps the identifier
+            if child.type == "type_spec":
+                return self._extract_name(child, source)
+            # C/C++: function_declarator wraps the identifier
+            if child.type in ("function_declarator", "declarator",
+                              "pointer_declarator", "reference_declarator"):
+                name = self._extract_name(child, source)
+                if name:
+                    return name
+        # Rust impl blocks
+        if node.type == "impl_item":
+            for child in node.children:
+                if child.type == "type_identifier":
+                    return source[child.start_byte:child.end_byte].decode("utf-8")
+        return ""
+
+    def _extract_signature(self, node, source: bytes) -> str:
+        """Extract the signature (declaration without body)."""
+        body_types = {
+            "block", "compound_statement", "declaration_list",
+            "field_declaration_list", "class_body", "function_body",
+            "statement_block", "body",
+        }
+        for child in node.children:
+            if child.type in body_types or child.type.endswith("_body"):
+                sig_text = source[node.start_byte:child.start_byte].decode("utf-8").strip()
+                return " ".join(sig_text.split())
+
+        text = source[node.start_byte:node.end_byte].decode("utf-8")
+        first_line = text.split("\n")[0].strip()
+        return first_line[:200]
+
+    def _extract_import(self, node, source: bytes) -> Optional[ImportEdge]:
+        """Extract an import from an AST node."""
+        text = source[node.start_byte:node.end_byte].decode("utf-8").strip()
+
+        if self._language in ("c", "cpp"):
+            return self._parse_c_include(text)
+        elif self._language == "rust":
+            return self._parse_rust_use(text)
+        elif self._language == "go":
+            return self._parse_go_import(node, source)
+        elif self._language in ("javascript", "typescript"):
+            return self._parse_js_import(text)
+        elif self._language == "java":
+            return self._parse_java_import(text)
+        return None
+
+    def _parse_c_include(self, text: str) -> Optional[ImportEdge]:
+        match = re.match(r'#include\s+[<"]([^>"]+)[>"]', text)
+        if match:
+            return ImportEdge(module=match.group(1))
+        return None
+
+    def _parse_rust_use(self, text: str) -> Optional[ImportEdge]:
+        match = re.match(r'use\s+([\w:]+)', text)
+        if match:
+            return ImportEdge(module=match.group(1))
+        return None
+
+    def _parse_go_import(self, node, source: bytes) -> Optional[ImportEdge]:
+        text = source[node.start_byte:node.end_byte].decode("utf-8").strip()
+        match = re.match(r'import\s+"([^"]+)"', text)
+        if match:
+            return ImportEdge(module=match.group(1))
+        matches = re.findall(r'"([^"]+)"', text)
+        if matches:
+            return ImportEdge(module=matches[0], names=matches[1:] if len(matches) > 1 else [])
+        return None
+
+    def _parse_js_import(self, text: str) -> Optional[ImportEdge]:
+        match = re.search(r"""from\s+['"]([^'"]+)['"]""", text)
+        if match:
+            module = match.group(1)
+            names_match = re.match(r'import\s+\{([^}]+)\}', text)
+            names = []
+            if names_match:
+                names = [n.strip() for n in names_match.group(1).split(",")]
+            return ImportEdge(module=module, names=names)
+        match = re.search(r"""import\s+['"]([^'"]+)['"]""", text)
+        if match:
+            return ImportEdge(module=match.group(1))
+        return None
+
+    def _parse_java_import(self, text: str) -> Optional[ImportEdge]:
+        match = re.match(r'import\s+(?:static\s+)?([\w.]+)', text)
+        if match:
+            return ImportEdge(module=match.group(1))
+        return None
+
+```
+
+## `core/context/visualize.py`
+
+```python
+# core/context/visualize.py — DOT and Mermaid graph export
+
+from typing import Dict, List, Optional, Set, Tuple
+
+from core.context.graph import DependencyGraph
+
+
+def _sanitize_id(path: str) -> str:
+    """Convert a file path to a valid DOT/Mermaid node ID."""
+    return path.replace("/", "_").replace(".", "_").replace("-", "_")
+
+
+def _short_label(path: str) -> str:
+    """Shorten a file path for display."""
+    return path
+
+
+def format_dot(
+    graph: DependencyGraph,
+    ranked_files: Optional[List[Tuple[str, float]]] = None,
+    highlight_files: Optional[Set[str]] = None,
+    max_nodes: int = 50,
+) -> str:
+    """Export the dependency graph as a Graphviz DOT string.
+
+    Parameters
+    ----------
+    graph : DependencyGraph
+        The graph to export.
+    ranked_files : list of (path, score), optional
+        If provided, only include the top max_nodes files by rank.
+    highlight_files : set of str, optional
+        Files to highlight with bold styling.
+    max_nodes : int
+        Maximum number of nodes to include.
+    """
+    highlight = highlight_files or set()
+
+    # Determine which files to include
+    if ranked_files:
+        included = set()
+        for path, _ in ranked_files[:max_nodes]:
+            included.add(path)
+    else:
+        included = set(sorted(graph.files)[:max_nodes])
+
+    lines = ["digraph repo_map {"]
+    lines.append("    rankdir=LR;")
+    lines.append('    node [shape=box, fontsize=10];')
+    lines.append("")
+
+    # Nodes
+    for path in sorted(included):
+        node_id = _sanitize_id(path)
+        label = _short_label(path)
+        if path in highlight:
+            lines.append(f'    {node_id} [label="{label}", style=bold, color=blue];')
+        else:
+            lines.append(f'    {node_id} [label="{label}"];')
+
+    lines.append("")
+
+    # Edges
+    for src, tgt in graph.edges:
+        if src in included and tgt in included:
+            lines.append(f"    {_sanitize_id(src)} -> {_sanitize_id(tgt)};")
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def format_mermaid(
+    graph: DependencyGraph,
+    ranked_files: Optional[List[Tuple[str, float]]] = None,
+    highlight_files: Optional[Set[str]] = None,
+    max_nodes: int = 50,
+) -> str:
+    """Export the dependency graph as a Mermaid diagram string.
+
+    Parameters
+    ----------
+    graph : DependencyGraph
+        The graph to export.
+    ranked_files : list of (path, score), optional
+        If provided, only include the top max_nodes files by rank.
+    highlight_files : set of str, optional
+        Files to highlight with styling.
+    max_nodes : int
+        Maximum number of nodes to include.
+    """
+    highlight = highlight_files or set()
+
+    # Determine which files to include
+    if ranked_files:
+        included = set()
+        for path, _ in ranked_files[:max_nodes]:
+            included.add(path)
+    else:
+        included = set(sorted(graph.files)[:max_nodes])
+
+    lines = ["graph TD"]
+
+    # Node declarations with labels
+    for path in sorted(included):
+        node_id = _sanitize_id(path)
+        label = _short_label(path)
+        lines.append(f'    {node_id}["{label}"]')
+
+    # Edges
+    for src, tgt in graph.edges:
+        if src in included and tgt in included:
+            lines.append(f"    {_sanitize_id(src)} --> {_sanitize_id(tgt)}")
+
+    # Styling for highlighted files
+    if highlight & included:
+        highlighted_ids = [_sanitize_id(f) for f in sorted(highlight & included)]
+        lines.append(f"    style {','.join(highlighted_ids)} stroke:#00f,stroke-width:3px")
+
+    return "\n".join(lines)
 
 ```
 
@@ -6989,11 +9271,13 @@ from core.tools.descriptors import (
     FS_DESCRIPTOR,
     GIT_DESCRIPTOR,
     VERIFY_DESCRIPTOR,
+    REPO_MAP_DESCRIPTOR,
     ToolDescriptor,
 )
 from core.tools.fs_tools import FsTool
 from core.tools.git_tools import GitTool
 from core.tools.verify_tools import VerifyTool
+from core.tools.repo_map_tool import RepoMapTool
 from core.tools.config_loader import load_project_config
 
 
@@ -7050,6 +9334,10 @@ class Tools:
         self._bus.register(FS_DESCRIPTOR, fs_tool)
         self._bus.register(GIT_DESCRIPTOR, git_tool)
         self._bus.register(VERIFY_DESCRIPTOR, verify_tool)
+
+        # Phase 5: Repo map tool
+        repo_map_tool = RepoMapTool()
+        self._bus.register(REPO_MAP_DESCRIPTOR, repo_map_tool)
 
         if memory:
             rag_tool = RagCrawlerTool(memory)
@@ -7878,6 +10166,18 @@ NETWORK_ACTIONS: Set[Tuple[str, str]] = {
     ("git", "fetch"),
 }
 
+REPO_MAP_DESCRIPTOR = ToolDescriptor(
+    tool_name="repo_map",
+    required_scopes=["fs.read", "git.read"],
+    action_scopes={
+        "build":     ["fs.read", "git.read"],
+        "excerpt":   ["fs.read", "git.read"],
+        "status":    ["fs.read", "git.read"],
+        "visualize": ["fs.read", "git.read"],
+    },
+    description="Repository map: build, excerpt (task-scoped), status, visualize (DOT/Mermaid).",
+)
+
 # All pre-built descriptors for iteration
 ALL_DESCRIPTORS = [
     SHELL_DESCRIPTOR,
@@ -7890,6 +10190,7 @@ ALL_DESCRIPTORS = [
     FS_DESCRIPTOR,
     GIT_DESCRIPTOR,
     VERIFY_DESCRIPTOR,
+    REPO_MAP_DESCRIPTOR,
 ]
 
 ```
@@ -8663,6 +10964,96 @@ if __name__ == "__main__":
 
 ```
 
+## `core/tools/repo_map_tool.py`
+
+```python
+# core/tools/repo_map_tool.py — ToolBus-compatible repo map tool
+
+from typing import List, Optional, Tuple
+
+from core.context.repo_map import RepoMap
+
+
+class RepoMapTool:
+    """Multi-action tool for repo map operations.
+
+    Actions: build, excerpt, status, visualize
+    Returns (exit_code, stdout, stderr) per convention.
+    """
+
+    def __init__(
+        self,
+        repo_path: str = ".",
+        subprocess_runner=None,
+        token_budget: int = 4096,
+    ) -> None:
+        self._repo_map = RepoMap(
+            repo_path=repo_path,
+            subprocess_runner=subprocess_runner,
+            token_budget=token_budget,
+        )
+
+    def __call__(self, action: str, **kwargs) -> Tuple[int, str, str]:
+        handler = getattr(self, f"_do_{action}", None)
+        if handler is None:
+            return (1, "", f"Unknown repo_map action: {action}")
+        try:
+            return handler(**kwargs)
+        except Exception as exc:
+            return (1, "", f"{type(exc).__name__}: {exc}")
+
+    def _do_build(self, *, force: bool = False, **kw) -> Tuple[int, str, str]:
+        """Build or reload the repo map."""
+        data = self._repo_map.build(force=force)
+        return (
+            0,
+            f"Repo map built: {data.total_files} files, {data.total_symbols} symbols",
+            "",
+        )
+
+    def _do_excerpt(
+        self,
+        *,
+        target_files: Optional[List[str]] = None,
+        **kw,
+    ) -> Tuple[int, str, str]:
+        """Generate a token-budgeted excerpt."""
+        result = self._repo_map.excerpt_for_task(target_files=target_files)
+        return (0, result.excerpt, "")
+
+    def _do_status(self, **kw) -> Tuple[int, str, str]:
+        """Report current repo map status."""
+        data = self._repo_map.data
+        if data is None:
+            return (0, "Repo map not built yet.", "")
+        return (
+            0,
+            (
+                f"Files: {data.total_files}\n"
+                f"Symbols: {data.total_symbols}\n"
+                f"Commit: {data.commit_hash or 'unknown'}"
+            ),
+            "",
+        )
+
+    def _do_visualize(
+        self,
+        *,
+        target_files: Optional[List[str]] = None,
+        format: str = "dot",
+        max_nodes: int = 50,
+        **kw,
+    ) -> Tuple[int, str, str]:
+        """Export dependency graph as DOT or Mermaid."""
+        output = self._repo_map.visualize(
+            target_files=target_files,
+            format=format,
+            max_nodes=max_nodes,
+        )
+        return (0, output, "")
+
+```
+
 ## `core/tools/run_python.py`
 
 ```python
@@ -9283,6 +11674,18 @@ Requires-Dist: sniffio>=1.3.1
 Requires-Dist: pydantic>=2.11.0
 Requires-Dist: annotated-types>=0.7.0
 Requires-Dist: certifi>=2025.8.3
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+Provides-Extra: treesitter
+Requires-Dist: tree-sitter>=0.23.0; extra == "treesitter"
+Requires-Dist: tree-sitter-c>=0.21.0; extra == "treesitter"
+Requires-Dist: tree-sitter-cpp>=0.22.0; extra == "treesitter"
+Requires-Dist: tree-sitter-rust>=0.23.0; extra == "treesitter"
+Requires-Dist: tree-sitter-go>=0.23.0; extra == "treesitter"
+Requires-Dist: tree-sitter-javascript>=0.23.0; extra == "treesitter"
+Requires-Dist: tree-sitter-typescript>=0.23.0; extra == "treesitter"
+Requires-Dist: tree-sitter-java>=0.23.0; extra == "treesitter"
 Provides-Extra: voice
 Requires-Dist: simpleaudio>=1.0.4; extra == "voice"
 Requires-Dist: TTS>=0.22.0; extra == "voice"
@@ -9309,162 +11712,270 @@ Dynamic: summary
 
 # 🧠 judais-lobi
 
-> *"The mind was sacred once. But we sold it—  
-> and no refund is coming."*
+> Artifact-driven. Capability-gated. GPU-aware.
+> Not a chatbot. A kernel.
 
 ---
 
-[![PyPI](https://img.shields.io/pypi/v/judais-lobi?color=blue&label=PyPI)](https://pypi.org/project/judais-lobi/)
+[![PyPI](https://img.shields.io/pypi/v/judais-lobi?color=blue\&label=PyPI)](https://pypi.org/project/judais-lobi/)
 [![Python](https://img.shields.io/pypi/pyversions/judais-lobi.svg)](https://pypi.org/project/judais-lobi/)
 [![License](https://img.shields.io/github/license/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi/blob/main/LICENSE)
 [![Last Commit](https://img.shields.io/github/last-commit/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi/commits/main)
-[![GitHub stars](https://img.shields.io/github/stars/ginkorea/judais-lobi?style=social)](https://github.com/ginkorea/judais-lobi/stargazers)
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png" alt="JudAIs & Lobi" width="400">
-</p>
+[![Repo Size](https://img.shields.io/github/repo-size/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi)
+[![Code Size](https://img.shields.io/github/languages/code-size/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi)
+[![Issues](https://img.shields.io/github/issues/ginkorea/judais-lobi)](https://github.com/ginkorea/judais-lobi/issues)
+[![Stars](https://img.shields.io/github/stars/ginkorea/judais-lobi?style=social)](https://github.com/ginkorea/judais-lobi/stargazers)
 
 ---
 
 ## 🔴 JudAIs & 🔵 Lobi
 
-JudAIs & Lobi are dual AI agents that share a powerful toolchain and memory system:
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginkorea/judais-lobi/master/images/judais-lobi.png" alt="JudAIs & Lobi" width="420">
+</p>
 
-- 🧝 **Lobi**: your helpful Linux elf—mischievous, whimsical, full of magic and madness.  
-- 🧠 **JudAIs**: your autonomous adversarial intelligence—strategic, efficient, subversive.  
+Two agents. One spine.
 
-They share:
-- 🛠 Tools for shell, Python, web scraping, and project installation  
-- 🧠 Unified SQLite + FAISS memory (short-term, long-term, archive, adventures)  
-- 📚 Archive (RAG) system with PDF/DOCX/TXT/code ingestion  
-- ⚙️ Modular architecture to execute, reflect, and evolve  
+* 🧝 **Lobi** — whimsical Linux elf, creative, narrative, curious.
+* 🧠 **JudAIs** — strategic adversarial twin, efficient, ruthless, execution-first.
 
-> Looking for the lore? See [STORY.md](STORY.md).
+They are no longer just terminal personalities.
+
+They are evolving into a **local-first, contract-driven autonomous developer system**.
+
+To find out why read the [Manifesto](https://github.com/ginkorea/judais-lobi/blob/master/MANIFESTO.md)!
+---
+
+# 🚧 Current Status
+
+See: `ROADMAP.md` 
+
+### Completed
+
+* ✅ Phase 0 — Dependency Injection & Test Harness (73 tests)
+* ✅ Phase 1 — Runtime extraction (provider separation, 107 tests)
+* ✅ Phase 2 — Kernel State Machine & Hard Budgets (164 tests)
+* ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
+* ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
+
+### Up Next
+
+* ⏳ Phase 5 — Repo Map (Context Compression)
+* ⏳ Phase 6 — Repository-Native Patch Engine
+
+### Phase 4 Highlights
+
+Tools are dumb executors behind a capability-gated bus. The kernel decides everything.
+
+* **`core/tools/bus.py`** — Action-aware `ToolBus` with preflight hooks, panic switch integration, and JSONL audit logging. Structured JSON denial errors replace plain text.
+* **`core/tools/fs_tools.py`** — Consolidated `FsTool` with 5 actions (read, write, delete, list, stat). Pure `pathlib` I/O, no subprocess.
+* **`core/tools/git_tools.py`** — Consolidated `GitTool` with 12 actions (status, diff, log, add, commit, branch, push, pull, fetch, stash, tag, reset) via `run_subprocess`.
+* **`core/tools/verify_tools.py`** — Config-driven `VerifyTool` (lint, test, typecheck, format). Reads `.judais-lobi.yml` for project-specific commands, falls back to sensible defaults.
+* **`core/tools/descriptors.py`** — 10 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
+* **`core/tools/capability.py`** — Deny-by-default `CapabilityEngine` with wildcard `"*"` support, profile switching, and grant revocation.
+* **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard).
+* **`core/policy/god_mode.py`** — `GodModeSession` with TTL auto-downgrade, panic switch (instant revocation to SAFE), and full audit trail.
+* **`core/policy/audit.py`** — Append-only JSONL `AuditLogger` with regex-based secret redaction (OpenAI, GitHub, AWS, Slack tokens).
+* **`core/tools/sandbox.py`** — `NoneSandbox` (dev/debug) and `BwrapSandbox` (Tier-1 production) behind a common `SandboxRunner` interface.
+
+3 consolidated multi-action tools replaced 21 separate descriptors. Git is the spine, not nice-to-have.
 
 ---
 
-## 📦 Install
+# 🧭 Where To Look
 
-### Requirements
-- Python 3.11+
-- OpenAI API key
+If you want to understand the **future**, read:
 
-### Install package
+* 📜 `ROADMAP.md` — architectural blueprint 
+
+If you want to understand the **current implementation**, inspect:
+
+* `core/agent.py` — concrete Agent class (replaced `elf.py` in Phase 3)
+* `core/contracts/` — Pydantic v2 contract models for all session data
+* `core/sessions/` — SessionManager for disk artifact persistence
+* `core/kernel/` — state machine, budgets, orchestrator
+* `core/cli.py`  — CLI interface layer
+* `core/memory/memory.py`  — FAISS-backed long-term memory
+* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify)
+* `core/policy/` — profiles, god mode, audit logging
+* `lobi/`  and `judais/`  — personality configs extending Agent
+
+If you want to understand the **entry point**, see:
+
+* `main.py` 
+* `setup.py` 
+
+---
+
+# 🏗 Architectural Direction
+
+The target architecture (from the roadmap) is:
+
+* Artifact-driven state (no conversational drift)
+* Deterministic state machine
+* Capability-gated tool execution
+* Sandbox isolation (bwrap / nsjail)
+* Tests > Lint > LLM scoring hierarchy
+* GPU-aware orchestration (vLLM / TRT-LLM)
+* Optional external critic (frontier logic auditor)
+
+The system is moving toward:
+
+```
+CLI
+  ↓
+Kernel State Machine
+  ↓
+Roles (Planner / Coder / Reviewer)
+  ↓
+ToolBus → Sandbox → Subprocess
+  ↓
+Deterministic Judge
+```
+
+As of Phase 4:
+
+* Tools are dumb executors behind a sandboxed, capability-gated bus.
+* Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`.
+* Deny-by-default. No scope = no execution.
+* God mode exists for emergencies — TTL-limited, panic-revocable, fully audited.
+* 3 consolidated multi-action tools (fs, git, verify) cover 21 operations under 13 scopes.
+
+The kernel is the only intelligence. Tools report. The kernel decides.
+
+---
+
+# 🧠 Memory System (Current)
+
+Long-term memory uses:
+
+* SQLite-backed JSON persistence
+* FAISS vector index
+* OpenAI embeddings (currently)
+
+See: `core/memory/memory.py` 
+
+This will be abstracted for local embeddings in later phases.
+
+Short-term history remains for direct chat mode.
+Agentic mode uses session artifacts as the sole source of truth (Phase 3).
+
+---
+
+# 🛠 Current Capabilities
+
+Direct mode still works.
+
+```bash
+lobi "explain this function"
+lobi --shell "list files"
+lobi --python "plot sine wave"
+lobi --search "latest linux kernel"
+lobi --install-project
+```
+
+JudAIs:
+
+```bash
+judais "analyze this target" --shell
+```
+
+Voice (optional extra):
+
+```bash
+pip install judais-lobi[voice]
+lobi "sing" --voice
+```
+
+---
+
+# 🧪 Install
 
 ```bash
 pip install judais-lobi
-````
-
-### Setup API key
-
-Create a file `~/.elf_env` with:
-
-```env
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
 
-Or export inline:
+Requires:
+
+* Python 3.10+
+* OpenAI API key (for now)
+* Linux recommended
+
+Set API key:
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
----
+Or create:
 
-## 🚀 Examples
-
-### 🧝 Run Lobi
-
-```bash
-lobi "hello Lobi"
 ```
-
-### 🧠 Run JudAIs
-
-```bash
-judais "who should we target today?" --shell
+~/.elf_env
 ```
 
 ---
 
-### 📂 Archive (RAG)
+# 🔮 What This Is Becoming
 
-```bash
-# Crawl Markdown docs
-lobi "summarize project docs" --archive crawl --dir ~/workspace/docs --include "*.md"
+Judais-Lobi is not trying to be:
 
-# Crawl a PDF
-lobi "summarize contract" --archive crawl ~/contracts/deal.pdf
+* Another chat wrapper
+* Another SaaS IDE
+* Another prompt toy
 
-# Find knowledge in archive
-lobi "how does memory work?" --archive find "UnifiedMemory" --dir ~/workspace/judais-lobi
+It is attempting to become:
 
-# Overwrite (delete + reindex)
-lobi "refresh docs" --archive overwrite --dir ~/workspace/docs
+* A local-first agentic developer kernel
+* Deterministic and replayable
+* Hardware-aware
+* Capability-constrained
+* Air-gap ready
 
-# Delete from archive
-lobi "forget this" --archive delete --dir ~/contracts/deal.pdf
+The design philosophy is explicit in `ROADMAP.md` :
 
-# Check archive status
-lobi "status check" --archive status
-```
+* Artifacts over chat
+* Budgets over infinite loops
+* Capabilities over trust
+* Dumb tools, smart kernel
+* Commit or abort
 
----
+That last one matters.
 
-### 🛠 Tools
-
-JudAIs & Lobi include a shared toolchain that can be invoked directly from the CLI.
-
-#### 🔧 Shell
-
-```bash
-lobi "list all Python files" --shell
-lobi "check disk usage" --shell --summarize
-```
-
-#### 🐍 Python
-
-```bash
-lobi "plot a sine wave with matplotlib" --python
-lobi "fetch bitcoin price using requests" --python
-```
-
-#### 🌐 Web Search
-
-```bash
-lobi "what is the latest Linux kernel release?" --search
-lobi "explain llama.cpp server mode" --search --deep
-```
-
-#### 📦 Install Project
-
-```bash
-lobi "install this project" --install-project
-```
-
-#### 📚 Archive + RAG
-
-* `crawl`: index directories and files (PDF, DOCX, TXT, Markdown, code)
-* `find`: semantic search across archive
-* `delete`: remove from archive
-* `overwrite`: recrawl + replace
-* `status`: list indexed directories/files
+There will not be two systems of truth.
 
 ---
 
-### 🔊 Voice
+# 🧠 Philosophy
 
-```bash
-lobi "sing me a song" --voice
-```
+Lobi sings.
+JudAIs calculates.
 
-> Powered by Coqui TTS (`tts_models/en/vctk/vits`).
+But the system beneath them is becoming something else:
+
+A disciplined orchestration engine for machine reasoning.
+
+The aesthetic may be mythic.
+The architecture is not.
 
 ---
 
-⭐️ **If you find JudAIs or Lobi helpful, give this project a star!**
-Every ⭐️ helps us build stronger tools for AI autonomy.
+# ⭐ Contributing
 
+If you are contributing:
+
+1. Read the roadmap.
+2. Understand the phase ordering.
+3. Do not bypass tool execution through direct subprocess calls.
+4. Every structural change must preserve deterministic replay.
+5. New functionality goes through `Agent` + contracts, not ad-hoc methods.
+
+This is an architectural project, not a feature factory.
+
+---
+
+# 🧾 License
+
+GPLv3 — see LICENSE.
 
 ```
 
@@ -9476,20 +11987,65 @@ README.md
 pyproject.toml
 setup.py
 core/__init__.py
+core/agent.py
 core/bootstrap.py
 core/cli.py
-core/elf.py
+core/kv_prefix.py
 core/unified_client.py
+core/context/__init__.py
+core/context/cache.py
+core/context/file_discovery.py
+core/context/formatter.py
+core/context/graph.py
+core/context/models.py
+core/context/repo_map.py
+core/context/visualize.py
+core/context/symbols/__init__.py
+core/context/symbols/base.py
+core/context/symbols/generic_extractor.py
+core/context/symbols/python_extractor.py
+core/context/symbols/treesitter_extractor.py
+core/contracts/__init__.py
+core/contracts/schemas.py
+core/contracts/validation.py
+core/kernel/__init__.py
+core/kernel/budgets.py
+core/kernel/orchestrator.py
+core/kernel/state.py
 core/memory/__init__.py
 core/memory/memory.py
+core/policy/__init__.py
+core/policy/audit.py
+core/policy/god_mode.py
+core/policy/profiles.py
+core/runtime/__init__.py
+core/runtime/messages.py
+core/runtime/provider_config.py
+core/runtime/backends/__init__.py
+core/runtime/backends/base.py
+core/runtime/backends/local_backend.py
+core/runtime/backends/mistral_backend.py
+core/runtime/backends/openai_backend.py
+core/sessions/__init__.py
+core/sessions/manager.py
 core/tools/__init__.py
 core/tools/base_subprocess.py
+core/tools/bus.py
+core/tools/capability.py
+core/tools/config_loader.py
+core/tools/descriptors.py
+core/tools/executor.py
 core/tools/fetch_page.py
+core/tools/fs_tools.py
+core/tools/git_tools.py
 core/tools/install_project.py
 core/tools/rag_crawler.py
+core/tools/repo_map_tool.py
 core/tools/run_python.py
 core/tools/run_shell.py
+core/tools/sandbox.py
 core/tools/tool.py
+core/tools/verify_tools.py
 core/tools/voice.py
 core/tools/web_search.py
 core/tools/recon/__init__.py
@@ -9505,6 +12061,56 @@ judais_lobi.egg-info/requires.txt
 judais_lobi.egg-info/top_level.txt
 lobi/__init__.py
 lobi/lobi.py
+tests/__init__.py
+tests/conftest.py
+tests/test_agent.py
+tests/test_agent_run_task.py
+tests/test_audit.py
+tests/test_backends.py
+tests/test_base_subprocess.py
+tests/test_bus.py
+tests/test_bus_grants.py
+tests/test_bus_preflight.py
+tests/test_capability.py
+tests/test_cli_smoke.py
+tests/test_config_loader.py
+tests/test_contracts.py
+tests/test_dependency_graph.py
+tests/test_descriptors.py
+tests/test_descriptors_expanded.py
+tests/test_file_discovery.py
+tests/test_formatter.py
+tests/test_fs_tools.py
+tests/test_generic_extractor.py
+tests/test_git_tools.py
+tests/test_god_mode.py
+tests/test_graph_multilang.py
+tests/test_judais.py
+tests/test_kernel_budgets.py
+tests/test_kernel_orchestrator.py
+tests/test_kernel_state.py
+tests/test_kv_prefix.py
+tests/test_lobi.py
+tests/test_messages.py
+tests/test_orchestrator_sessions.py
+tests/test_profile_schemas.py
+tests/test_profiles.py
+tests/test_provider_config.py
+tests/test_python_extractor.py
+tests/test_repo_map.py
+tests/test_repo_map_cache.py
+tests/test_repo_map_models.py
+tests/test_repo_map_tool.py
+tests/test_sandbox.py
+tests/test_session_manager.py
+tests/test_tool_stripping.py
+tests/test_tools_registry.py
+tests/test_treesitter_extractor.py
+tests/test_unified_client.py
+tests/test_unified_memory.py
+tests/test_validation.py
+tests/test_verify_tools.py
+tests/test_visualize.py
 ```
 
 ## `judais_lobi.egg-info/dependency_links.txt`
@@ -9542,6 +12148,20 @@ pydantic>=2.11.0
 annotated-types>=0.7.0
 certifi>=2025.8.3
 
+[dev]
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+[treesitter]
+tree-sitter>=0.23.0
+tree-sitter-c>=0.21.0
+tree-sitter-cpp>=0.22.0
+tree-sitter-rust>=0.23.0
+tree-sitter-go>=0.23.0
+tree-sitter-javascript>=0.23.0
+tree-sitter-typescript>=0.23.0
+tree-sitter-java>=0.23.0
+
 [voice]
 simpleaudio>=1.0.4
 TTS>=0.22.0
@@ -9564,6 +12184,7 @@ trainer>=0.0.36
 core
 judais
 lobi
+tests
 
 ```
 
@@ -9931,6 +12552,16 @@ setup(
     ],
     extras_require={
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
+        "treesitter": [
+            "tree-sitter>=0.23.0",
+            "tree-sitter-c>=0.21.0",
+            "tree-sitter-cpp>=0.22.0",
+            "tree-sitter-rust>=0.23.0",
+            "tree-sitter-go>=0.23.0",
+            "tree-sitter-javascript>=0.23.0",
+            "tree-sitter-typescript>=0.23.0",
+            "tree-sitter-java>=0.23.0",
+        ],
         "voice": [
             "simpleaudio>=1.0.4",
             "TTS>=0.22.0",
@@ -12159,6 +14790,364 @@ class TestPhaseSchemas:
 
 ```
 
+## `tests/test_dependency_graph.py`
+
+```python
+# tests/test_dependency_graph.py — Tests for dependency graph and relevance ranking
+
+import pytest
+
+from core.context.models import FileSymbols, ImportEdge, RepoMapData, SymbolDef
+from core.context.graph import DependencyGraph
+
+
+def _make_data(files_dict):
+    """Helper: build RepoMapData from {rel_path: [import_modules]}."""
+    files = {}
+    for rel_path, imports in files_dict.items():
+        imp_edges = [ImportEdge(module=m) for m in imports]
+        files[rel_path] = FileSymbols(
+            rel_path=rel_path,
+            language="python",
+            symbols=[SymbolDef(name="x", kind="function")],
+            imports=imp_edges,
+        )
+    return RepoMapData(repo_root="/tmp", files=files)
+
+
+# ---------------------------------------------------------------------------
+# Graph building
+# ---------------------------------------------------------------------------
+
+class TestGraphBuilding:
+    def test_empty_data(self):
+        data = RepoMapData(repo_root="/tmp", files={})
+        g = DependencyGraph(data)
+        assert g.files == frozenset()
+        assert g.edges == []
+
+    def test_simple_edge(self):
+        data = _make_data({
+            "a.py": ["b"],
+            "b.py": [],
+        })
+        g = DependencyGraph(data)
+        assert ("a.py", "b.py") in g.edges
+
+    def test_unresolvable_imports_ignored(self):
+        data = _make_data({
+            "a.py": ["os", "sys", "unknown_third_party"],
+        })
+        g = DependencyGraph(data)
+        assert g.edges == []
+
+    def test_self_import_ignored(self):
+        """A file importing itself should not create a self-edge."""
+        data = _make_data({
+            "a.py": ["a"],
+        })
+        g = DependencyGraph(data)
+        assert g.edges == []
+
+
+# ---------------------------------------------------------------------------
+# Dependencies and dependents
+# ---------------------------------------------------------------------------
+
+class TestDepsAndRdeps:
+    def test_dependencies_of(self):
+        data = _make_data({
+            "a.py": ["b", "c"],
+            "b.py": [],
+            "c.py": [],
+        })
+        g = DependencyGraph(data)
+        assert g.dependencies_of("a.py") == {"b.py", "c.py"}
+
+    def test_dependents_of(self):
+        data = _make_data({
+            "a.py": ["c"],
+            "b.py": ["c"],
+            "c.py": [],
+        })
+        g = DependencyGraph(data)
+        assert g.dependents_of("c.py") == {"a.py", "b.py"}
+
+    def test_no_dependencies(self):
+        data = _make_data({"a.py": []})
+        g = DependencyGraph(data)
+        assert g.dependencies_of("a.py") == set()
+
+    def test_no_dependents(self):
+        data = _make_data({"a.py": []})
+        g = DependencyGraph(data)
+        assert g.dependents_of("a.py") == set()
+
+
+# ---------------------------------------------------------------------------
+# Dependency closure
+# ---------------------------------------------------------------------------
+
+class TestDependencyClosure:
+    def test_depth_0_returns_seeds(self):
+        data = _make_data({
+            "a.py": ["b"],
+            "b.py": ["c"],
+            "c.py": [],
+        })
+        g = DependencyGraph(data)
+        closure = g.dependency_closure(["a.py"], max_depth=0)
+        assert closure == {"a.py"}
+
+    def test_depth_1(self):
+        data = _make_data({
+            "a.py": ["b"],
+            "b.py": ["c"],
+            "c.py": [],
+        })
+        g = DependencyGraph(data)
+        closure = g.dependency_closure(["a.py"], max_depth=1)
+        assert "a.py" in closure
+        assert "b.py" in closure
+        assert "c.py" not in closure
+
+    def test_depth_2(self):
+        data = _make_data({
+            "a.py": ["b"],
+            "b.py": ["c"],
+            "c.py": [],
+        })
+        g = DependencyGraph(data)
+        closure = g.dependency_closure(["a.py"], max_depth=2)
+        assert closure == {"a.py", "b.py", "c.py"}
+
+    def test_circular_imports(self):
+        data = _make_data({
+            "a.py": ["b"],
+            "b.py": ["a"],
+        })
+        g = DependencyGraph(data)
+        closure = g.dependency_closure(["a.py"], max_depth=5)
+        assert closure == {"a.py", "b.py"}
+
+    def test_unknown_file_ignored(self):
+        data = _make_data({"a.py": []})
+        g = DependencyGraph(data)
+        closure = g.dependency_closure(["nonexistent.py"], max_depth=2)
+        assert closure == set()
+
+
+# ---------------------------------------------------------------------------
+# Relevance ranking
+# ---------------------------------------------------------------------------
+
+class TestRelevanceRanking:
+    def test_target_gets_highest_score(self):
+        data = _make_data({
+            "target.py": [],
+            "other.py": [],
+        })
+        g = DependencyGraph(data)
+        ranked = g.rank_by_relevance(["target.py"])
+        scores = dict(ranked)
+        assert scores["target.py"] == 1.0
+        assert scores["other.py"] == 0.1
+
+    def test_direct_dependency_gets_0_8(self):
+        data = _make_data({
+            "target.py": ["dep"],
+            "dep.py": [],
+            "other.py": [],
+        })
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_relevance(["target.py"]))
+        assert scores["dep.py"] == 0.8
+
+    def test_direct_dependent_gets_0_6(self):
+        data = _make_data({
+            "target.py": [],
+            "user.py": ["target"],
+            "other.py": [],
+        })
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_relevance(["target.py"]))
+        assert scores["user.py"] == 0.6
+
+    def test_two_hop_gets_0_4(self):
+        data = _make_data({
+            "target.py": ["hop1"],
+            "hop1.py": ["hop2"],
+            "hop2.py": [],
+            "other.py": [],
+        })
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_relevance(["target.py"]))
+        assert scores["hop2.py"] == 0.4
+
+    def test_ranked_order(self):
+        data = _make_data({
+            "target.py": ["dep"],
+            "dep.py": [],
+            "user.py": ["target"],
+            "other.py": [],
+        })
+        g = DependencyGraph(data)
+        ranked = g.rank_by_relevance(["target.py"])
+        names = [f for f, _ in ranked]
+        # target should be first
+        assert names[0] == "target.py"
+
+
+# ---------------------------------------------------------------------------
+# Centrality ranking
+# ---------------------------------------------------------------------------
+
+class TestCentralityRanking:
+    def test_hub_file_ranks_highest(self):
+        data = _make_data({
+            "hub.py": ["a", "b", "c"],
+            "a.py": [],
+            "b.py": [],
+            "c.py": [],
+            "lonely.py": [],
+        })
+        g = DependencyGraph(data)
+        ranked = g.rank_by_centrality()
+        scores = dict(ranked)
+        # hub has out-degree 3, each of a/b/c has in-degree 1
+        assert scores["hub.py"] > scores["lonely.py"]
+        assert scores["hub.py"] == 1.0
+        assert scores["lonely.py"] == 0.0
+
+    def test_empty_graph(self):
+        data = RepoMapData(repo_root="/tmp", files={})
+        g = DependencyGraph(data)
+        assert g.rank_by_centrality() == []
+
+    def test_all_isolated(self):
+        data = _make_data({
+            "a.py": [],
+            "b.py": [],
+        })
+        g = DependencyGraph(data)
+        ranked = g.rank_by_centrality()
+        scores = dict(ranked)
+        # All scores 0
+        assert scores["a.py"] == 0.0
+        assert scores["b.py"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Package __init__ resolution
+# ---------------------------------------------------------------------------
+
+class TestPackageResolution:
+    def test_resolves_to_init(self):
+        data = _make_data({
+            "a.py": ["pkg"],
+            "pkg/__init__.py": [],
+        })
+        g = DependencyGraph(data)
+        assert ("a.py", "pkg/__init__.py") in g.edges
+
+
+# ---------------------------------------------------------------------------
+# Edge resolution statistics
+# ---------------------------------------------------------------------------
+
+class TestEdgeResolution:
+    def test_resolved_edges_counted(self):
+        data = _make_data({
+            "a.py": ["b"],
+            "b.py": [],
+        })
+        g = DependencyGraph(data)
+        assert g.edges_resolved == 1
+
+    def test_unresolved_edges_counted(self):
+        data = _make_data({
+            "a.py": ["os", "nonexistent_lib"],
+        })
+        g = DependencyGraph(data)
+        assert g.edges_unresolved == 2
+        assert g.edges_resolved == 0
+
+    def test_mixed_resolution(self):
+        data = _make_data({
+            "a.py": ["b", "os"],
+            "b.py": [],
+        })
+        g = DependencyGraph(data)
+        assert g.edges_resolved == 1
+        assert g.edges_unresolved == 1
+
+    def test_empty_graph_zero_edges(self):
+        data = RepoMapData(repo_root="/tmp", files={})
+        g = DependencyGraph(data)
+        assert g.edges_resolved == 0
+        assert g.edges_unresolved == 0
+
+
+# ---------------------------------------------------------------------------
+# Barrel file penalty in centrality
+# ---------------------------------------------------------------------------
+
+class TestBarrelFilePenalty:
+    def test_init_py_damped(self):
+        """__init__.py should be ranked lower than a regular file with same degree."""
+        data = _make_data({
+            "pkg/__init__.py": ["a", "b", "c"],
+            "hub.py": ["a", "b", "c"],
+            "a.py": [],
+            "b.py": [],
+            "c.py": [],
+        })
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_centrality())
+        # hub.py and __init__.py both have out-degree 3,
+        # but __init__.py should be damped
+        assert scores["hub.py"] > scores["pkg/__init__.py"]
+
+    def test_index_js_damped(self):
+        """index.js barrel files should be damped."""
+        files = {
+            "src/index.js": FileSymbols(
+                rel_path="src/index.js", language="javascript",
+                symbols=[SymbolDef(name="x", kind="function")],
+                imports=[ImportEdge(module="./a"), ImportEdge(module="./b")],
+            ),
+            "src/app.js": FileSymbols(
+                rel_path="src/app.js", language="javascript",
+                symbols=[SymbolDef(name="x", kind="function")],
+                imports=[ImportEdge(module="./a"), ImportEdge(module="./b")],
+            ),
+            "src/a.js": FileSymbols(
+                rel_path="src/a.js", language="javascript",
+                symbols=[SymbolDef(name="a", kind="function")],
+            ),
+            "src/b.js": FileSymbols(
+                rel_path="src/b.js", language="javascript",
+                symbols=[SymbolDef(name="b", kind="function")],
+            ),
+        }
+        data = RepoMapData(repo_root="/tmp", files=files)
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_centrality())
+        assert scores["src/app.js"] > scores["src/index.js"]
+
+    def test_non_barrel_not_damped(self):
+        """Regular .py files should not be damped."""
+        data = _make_data({
+            "main.py": ["a", "b"],
+            "a.py": [],
+            "b.py": [],
+        })
+        g = DependencyGraph(data)
+        scores = dict(g.rank_by_centrality())
+        assert scores["main.py"] == 1.0
+
+```
+
 ## `tests/test_descriptors.py`
 
 ```python
@@ -12276,13 +15265,14 @@ class TestPrebuiltDescriptors:
         assert "audio.output" in VOICE_DESCRIPTOR.required_scopes
 
     def test_all_descriptors_list(self):
-        assert len(ALL_DESCRIPTORS) == 10
+        assert len(ALL_DESCRIPTORS) == 11
         names = [d.tool_name for d in ALL_DESCRIPTORS]
         assert "run_shell_command" in names
         assert "speak_text" in names
         assert "fs" in names
         assert "git" in names
         assert "verify" in names
+        assert "repo_map" in names
 
     def test_all_descriptors_have_descriptions(self):
         for d in ALL_DESCRIPTORS:
@@ -12429,7 +15419,7 @@ class TestActionMetadataSets:
         assert "fs" in names
         assert "git" in names
         assert "verify" in names
-        assert len(ALL_DESCRIPTORS) == 10
+        assert len(ALL_DESCRIPTORS) == 11
 
 ```
 
@@ -12628,6 +15618,236 @@ class TestConstants:
 
 ```
 
+## `tests/test_formatter.py`
+
+```python
+# tests/test_formatter.py — Tests for compact formatting with token budget
+
+import pytest
+
+from core.context.models import FileSymbols, RepoMapData, SymbolDef
+from core.context.formatter import (
+    estimate_tokens,
+    format_file_entry,
+    format_excerpt,
+    format_symbol,
+    _normalize_whitespace,
+)
+
+
+# ---------------------------------------------------------------------------
+# Token estimation
+# ---------------------------------------------------------------------------
+
+class TestEstimateTokens:
+    def test_empty_string(self):
+        assert estimate_tokens("") == 0
+
+    def test_short_string(self):
+        assert estimate_tokens("hello") == 1
+
+    def test_known_length(self):
+        # 100 chars = 25 tokens
+        assert estimate_tokens("a" * 100) == 25
+
+
+# ---------------------------------------------------------------------------
+# Symbol formatting
+# ---------------------------------------------------------------------------
+
+class TestFormatSymbol:
+    def test_function_with_signature(self):
+        sym = SymbolDef(name="foo", kind="function", signature="def foo(x: int) -> str")
+        assert format_symbol(sym) == "def foo(x: int) -> str"
+
+    def test_class_without_signature(self):
+        sym = SymbolDef(name="Foo", kind="class")
+        assert format_symbol(sym) == "class Foo"
+
+    def test_constant(self):
+        sym = SymbolDef(name="MAX_SIZE", kind="constant")
+        assert format_symbol(sym) == "MAX_SIZE"
+
+
+# ---------------------------------------------------------------------------
+# File entry formatting
+# ---------------------------------------------------------------------------
+
+class TestFormatFileEntry:
+    def test_file_with_symbols(self):
+        fs = FileSymbols(
+            rel_path="src/main.py",
+            language="python",
+            symbols=[
+                SymbolDef(name="main", kind="function", signature="def main() -> None"),
+                SymbolDef(name="Config", kind="class", signature="class Config"),
+                SymbolDef(name="load", kind="method", signature="def load(self)", parent="Config"),
+            ],
+        )
+        result = format_file_entry(fs)
+        assert "src/main.py" in result
+        assert "| def main() -> None" in result
+        assert "| class Config" in result
+        assert "|   def load(self)" in result
+
+    def test_empty_file(self):
+        fs = FileSymbols(rel_path="empty.py")
+        result = format_file_entry(fs)
+        assert result == "empty.py"
+
+    def test_methods_indented_under_class(self):
+        fs = FileSymbols(
+            rel_path="a.py",
+            symbols=[
+                SymbolDef(name="Foo", kind="class"),
+                SymbolDef(name="bar", kind="method", parent="Foo"),
+                SymbolDef(name="baz", kind="method", parent="Foo"),
+            ],
+        )
+        result = format_file_entry(fs)
+        lines = result.split("\n")
+        # Class line
+        assert lines[1] == "| class Foo"
+        # Method lines indented
+        assert lines[2].startswith("|   ")
+        assert lines[3].startswith("|   ")
+
+
+# ---------------------------------------------------------------------------
+# Excerpt formatting
+# ---------------------------------------------------------------------------
+
+class TestFormatExcerpt:
+    def _make_data(self, n_files: int) -> RepoMapData:
+        files = {}
+        for i in range(n_files):
+            rel = f"file_{i:03d}.py"
+            files[rel] = FileSymbols(
+                rel_path=rel,
+                language="python",
+                symbols=[
+                    SymbolDef(name=f"func_{i}", kind="function",
+                              signature=f"def func_{i}() -> None"),
+                ],
+            )
+        return RepoMapData(repo_root="/tmp", files=files)
+
+    def test_all_files_fit(self):
+        data = self._make_data(3)
+        ranked = [(f"file_{i:03d}.py", 1.0 - i * 0.1) for i in range(3)]
+        excerpt, shown, omitted = format_excerpt(data, ranked, token_budget=4096)
+        assert shown == 3
+        assert omitted == 0
+        assert "file_000.py" in excerpt
+        assert "... and" not in excerpt
+
+    def test_budget_enforced(self):
+        data = self._make_data(100)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(100)]
+        # Very small budget
+        excerpt, shown, omitted = format_excerpt(data, ranked, token_budget=50)
+        assert shown < 100
+        assert omitted > 0
+        assert "... and" in excerpt
+
+    def test_truncation_footer(self):
+        data = self._make_data(10)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(10)]
+        excerpt, shown, omitted = format_excerpt(data, ranked, token_budget=50)
+        assert f"... and {omitted} more files" in excerpt
+
+    def test_empty_map(self):
+        data = RepoMapData(repo_root="/tmp", files={})
+        excerpt, shown, omitted = format_excerpt(data, [], token_budget=4096)
+        assert shown == 0
+        assert omitted == 0
+        assert excerpt == ""
+
+    def test_missing_file_in_ranked_skipped(self):
+        data = self._make_data(1)
+        ranked = [("nonexistent.py", 1.0), ("file_000.py", 0.5)]
+        excerpt, shown, omitted = format_excerpt(data, ranked, token_budget=4096)
+        assert shown == 1
+        assert "file_000.py" in excerpt
+
+    def test_at_least_one_file_shown(self):
+        """Even with tiny budget, at least one file should be shown."""
+        data = self._make_data(5)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(5)]
+        excerpt, shown, omitted = format_excerpt(data, ranked, token_budget=1)
+        assert shown >= 1
+
+    def test_char_budget_enforced(self):
+        data = self._make_data(100)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(100)]
+        excerpt, shown, omitted = format_excerpt(
+            data, ranked, token_budget=999999, char_budget=200,
+        )
+        assert shown < 100
+        assert len(excerpt) <= 300  # some slack for footer
+
+    def test_header_prepended(self):
+        data = self._make_data(3)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(3)]
+        excerpt, shown, omitted = format_excerpt(
+            data, ranked, token_budget=4096, header="# Test header",
+        )
+        assert excerpt.startswith("# Test header")
+
+    def test_header_counts_toward_budget(self):
+        """A massive header should eat into the token budget."""
+        data = self._make_data(50)
+        ranked = [(f"file_{i:03d}.py", 1.0) for i in range(50)]
+        big_header = "# " + "x" * 4000  # ~1000 tokens
+        excerpt, shown, omitted = format_excerpt(
+            data, ranked, token_budget=1050, header=big_header,
+        )
+        # With most budget consumed by header, few files should fit
+        assert shown < 50
+
+
+# ---------------------------------------------------------------------------
+# Whitespace normalization
+# ---------------------------------------------------------------------------
+
+class TestNormalizeWhitespace:
+    def test_collapses_internal_spaces(self):
+        result = _normalize_whitespace("| def  foo(  x:  int )  ->  str")
+        assert result == "| def foo( x: int ) -> str"
+
+    def test_preserves_tree_prefix(self):
+        result = _normalize_whitespace("|   def  bar(self)")
+        assert result.startswith("|   ")
+        assert "  " not in result[4:]
+
+    def test_file_header_normalized(self):
+        result = _normalize_whitespace("  src/main.py  ")
+        assert result == "src/main.py"
+
+    def test_multiline(self):
+        text = "file.py\n| def  foo()\n|   def  bar()"
+        result = _normalize_whitespace(text)
+        lines = result.split("\n")
+        assert lines[0] == "file.py"
+        assert "  " not in lines[1][2:]  # after "| "
+        assert "  " not in lines[2][4:]  # after "|   "
+
+
+# ---------------------------------------------------------------------------
+# Deterministic symbol formatting
+# ---------------------------------------------------------------------------
+
+class TestDeterministicFormatting:
+    def test_signature_whitespace_normalized(self):
+        sym = SymbolDef(
+            name="foo", kind="function",
+            signature="def  foo(  x:  int ,  y:  str )  ->  None",
+        )
+        result = format_symbol(sym)
+        assert result == "def foo( x: int , y: str ) -> None"
+
+```
+
 ## `tests/test_fs_tools.py`
 
 ```python
@@ -12761,6 +15981,105 @@ class TestFsUnknownAction:
         rc, out, err = fs("explode", str(tmp_path))
         assert rc == 1
         assert "unknown" in err.lower()
+
+```
+
+## `tests/test_generic_extractor.py`
+
+```python
+# tests/test_generic_extractor.py — Tests for regex-based fallback extractor
+
+import pytest
+
+from core.context.symbols.generic_extractor import GenericExtractor
+from core.context.symbols.base import SymbolExtractor
+
+
+@pytest.fixture
+def extractor():
+    return GenericExtractor()
+
+
+class TestProtocol:
+    def test_implements_symbol_extractor(self):
+        assert isinstance(GenericExtractor(), SymbolExtractor)
+
+
+class TestJavaScript:
+    def test_function_declaration(self, extractor):
+        src = "function greet(name) {\n  return 'hello ' + name;\n}\n"
+        fs = extractor.extract(src, "app.js")
+        names = [s.name for s in fs.symbols]
+        assert "greet" in names
+
+    def test_class_declaration(self, extractor):
+        src = "export class Widget {\n  constructor() {}\n}\n"
+        fs = extractor.extract(src, "widget.js")
+        classes = [s for s in fs.symbols if s.kind == "class"]
+        assert any(s.name == "Widget" for s in classes)
+
+    def test_async_function(self, extractor):
+        src = "async function fetchData() {\n  return await fetch(url);\n}\n"
+        fs = extractor.extract(src, "api.js")
+        assert any(s.name == "fetchData" for s in fs.symbols)
+
+
+class TestGo:
+    def test_func(self, extractor):
+        src = "func main() {\n\tfmt.Println(\"hello\")\n}\n"
+        fs = extractor.extract(src, "main.go")
+        names = [s.name for s in fs.symbols]
+        assert "main" in names
+
+    def test_method(self, extractor):
+        src = "func (s *Server) Start() error {\n\treturn nil\n}\n"
+        fs = extractor.extract(src, "server.go")
+        methods = [s for s in fs.symbols if s.kind == "method"]
+        assert any(s.name == "Start" for s in methods)
+
+
+class TestRust:
+    def test_pub_fn(self, extractor):
+        src = "pub fn process(data: &[u8]) -> Result<()> {\n    Ok(())\n}\n"
+        fs = extractor.extract(src, "lib.rs")
+        assert any(s.name == "process" for s in fs.symbols)
+
+    def test_struct(self, extractor):
+        src = "pub struct Config {\n    pub name: String,\n}\n"
+        fs = extractor.extract(src, "config.rs")
+        classes = [s for s in fs.symbols if s.kind == "class"]
+        assert any(s.name == "Config" for s in classes)
+
+    def test_trait(self, extractor):
+        src = "pub trait Handler {\n    fn handle(&self);\n}\n"
+        fs = extractor.extract(src, "handler.rs")
+        classes = [s for s in fs.symbols if s.kind == "class"]
+        assert any(s.name == "Handler" for s in classes)
+
+
+class TestNoMatches:
+    def test_empty_source(self, extractor):
+        fs = extractor.extract("", "empty.txt")
+        assert fs.symbols == []
+
+    def test_comments_only(self, extractor):
+        src = "# This is a comment\n// Another comment\n"
+        fs = extractor.extract(src, "comments.py")
+        # May or may not match — just shouldn't crash
+        assert isinstance(fs.symbols, list)
+
+    def test_no_imports_extracted(self, extractor):
+        src = "function foo() {}\n"
+        fs = extractor.extract(src, "a.js")
+        assert fs.imports == []
+
+
+class TestDeduplication:
+    def test_no_duplicates(self, extractor):
+        src = "pub fn process() {}\n"
+        fs = extractor.extract(src, "lib.rs")
+        names = [s.name for s in fs.symbols]
+        assert names.count("process") == 1
 
 ```
 
@@ -13117,6 +16436,176 @@ class TestGodModeReactivation:
         time.sleep(0.5)
         # Old timer (0.3s) should have been cancelled
         assert engine.current_profile == "god"
+
+```
+
+## `tests/test_graph_multilang.py`
+
+```python
+# tests/test_graph_multilang.py — Tests for multi-language graph resolution
+
+import pytest
+
+from core.context.models import FileSymbols, ImportEdge, RepoMapData, SymbolDef
+from core.context.graph import DependencyGraph
+
+
+def _make_data(files_dict):
+    """Helper: build RepoMapData from {rel_path: (language, [import_modules])}.
+
+    Unlike the Python-only helper, this takes language info per file.
+    """
+    files = {}
+    for rel_path, (language, imports) in files_dict.items():
+        imp_edges = [ImportEdge(module=m) for m in imports]
+        files[rel_path] = FileSymbols(
+            rel_path=rel_path,
+            language=language,
+            symbols=[SymbolDef(name="x", kind="function")],
+            imports=imp_edges,
+        )
+    return RepoMapData(repo_root="/tmp", files=files)
+
+
+# ---------------------------------------------------------------------------
+# C include resolution
+# ---------------------------------------------------------------------------
+
+class TestCIncludeResolution:
+    def test_direct_header_match(self):
+        data = _make_data({
+            "main.c": ("c", ["util.h"]),
+            "util.h": ("c", []),
+        })
+        g = DependencyGraph(data)
+        assert ("main.c", "util.h") in g.edges
+
+    def test_include_dir_prefix(self):
+        data = _make_data({
+            "main.c": ("c", ["mylib.h"]),
+            "include/mylib.h": ("c", []),
+        })
+        g = DependencyGraph(data)
+        assert ("main.c", "include/mylib.h") in g.edges
+
+    def test_system_include_ignored(self):
+        data = _make_data({
+            "main.c": ("c", ["stdio.h"]),
+        })
+        g = DependencyGraph(data)
+        assert g.edges == []
+
+
+# ---------------------------------------------------------------------------
+# Rust use resolution
+# ---------------------------------------------------------------------------
+
+class TestRustUseResolution:
+    def test_crate_module(self):
+        data = _make_data({
+            "src/main.rs": ("rust", ["crate::config"]),
+            "src/config.rs": ("rust", []),
+        })
+        g = DependencyGraph(data)
+        assert ("src/main.rs", "src/config.rs") in g.edges
+
+    def test_crate_module_mod_rs(self):
+        data = _make_data({
+            "src/main.rs": ("rust", ["crate::utils"]),
+            "src/utils/mod.rs": ("rust", []),
+        })
+        g = DependencyGraph(data)
+        assert ("src/main.rs", "src/utils/mod.rs") in g.edges
+
+    def test_external_crate_ignored(self):
+        data = _make_data({
+            "src/main.rs": ("rust", ["serde::Deserialize"]),
+        })
+        g = DependencyGraph(data)
+        assert g.edges == []
+
+
+# ---------------------------------------------------------------------------
+# Go import resolution
+# ---------------------------------------------------------------------------
+
+class TestGoImportResolution:
+    def test_package_import(self):
+        data = _make_data({
+            "cmd/main.go": ("go", ["myapp/pkg/config"]),
+            "pkg/config/config.go": ("go", []),
+        })
+        g = DependencyGraph(data)
+        assert ("cmd/main.go", "pkg/config/config.go") in g.edges
+
+    def test_stdlib_ignored(self):
+        data = _make_data({
+            "main.go": ("go", ["fmt"]),
+        })
+        g = DependencyGraph(data)
+        assert g.edges == []
+
+
+# ---------------------------------------------------------------------------
+# JS/TS import resolution
+# ---------------------------------------------------------------------------
+
+class TestJSImportResolution:
+    def test_relative_import_with_extension_guess(self):
+        data = _make_data({
+            "src/app.js": ("javascript", ["./utils"]),
+            "src/utils.js": ("javascript", []),
+        })
+        g = DependencyGraph(data)
+        assert ("src/app.js", "src/utils.js") in g.edges
+
+    def test_relative_import_ts(self):
+        data = _make_data({
+            "src/app.ts": ("typescript", ["./config"]),
+            "src/config.ts": ("typescript", []),
+        })
+        g = DependencyGraph(data)
+        assert ("src/app.ts", "src/config.ts") in g.edges
+
+    def test_index_resolution(self):
+        data = _make_data({
+            "src/app.js": ("javascript", ["./components"]),
+            "src/components/index.js": ("javascript", []),
+        })
+        g = DependencyGraph(data)
+        assert ("src/app.js", "src/components/index.js") in g.edges
+
+    def test_node_modules_ignored(self):
+        data = _make_data({
+            "src/app.js": ("javascript", ["react"]),
+        })
+        g = DependencyGraph(data)
+        assert g.edges == []
+
+
+# ---------------------------------------------------------------------------
+# Mixed-language repo
+# ---------------------------------------------------------------------------
+
+class TestMixedLanguageRepo:
+    def test_mixed_repo_graph(self):
+        data = _make_data({
+            "main.py": ("python", ["config"]),
+            "config.py": ("python", []),
+            "src/main.c": ("c", ["util.h"]),
+            "util.h": ("c", []),
+            "src/app.js": ("javascript", ["./helpers"]),
+            "src/helpers.js": ("javascript", []),
+        })
+        g = DependencyGraph(data)
+        # Python edge
+        assert ("main.py", "config.py") in g.edges
+        # C edge
+        assert ("src/main.c", "util.h") in g.edges
+        # JS edge
+        assert ("src/app.js", "src/helpers.js") in g.edges
+        # No cross-language edges
+        assert len(g.edges) == 3
 
 ```
 
@@ -14513,6 +18002,531 @@ class TestResolveProvider:
 
 ```
 
+## `tests/test_python_extractor.py`
+
+```python
+# tests/test_python_extractor.py — Tests for AST-based Python symbol extraction
+
+import pytest
+
+from core.context.symbols.python_extractor import PythonExtractor
+from core.context.symbols.base import SymbolExtractor
+
+
+@pytest.fixture
+def extractor():
+    return PythonExtractor()
+
+
+# ---------------------------------------------------------------------------
+# Protocol compliance
+# ---------------------------------------------------------------------------
+
+class TestProtocol:
+    def test_implements_symbol_extractor(self):
+        assert isinstance(PythonExtractor(), SymbolExtractor)
+
+
+# ---------------------------------------------------------------------------
+# Function extraction
+# ---------------------------------------------------------------------------
+
+class TestFunctions:
+    def test_simple_function(self, extractor):
+        src = "def hello():\n    pass\n"
+        fs = extractor.extract(src, "hello.py")
+        assert len(fs.symbols) == 1
+        assert fs.symbols[0].name == "hello"
+        assert fs.symbols[0].kind == "function"
+
+    def test_function_with_annotations(self, extractor):
+        src = "def add(x: int, y: int) -> int:\n    return x + y\n"
+        fs = extractor.extract(src, "math.py")
+        sym = fs.symbols[0]
+        assert "x: int" in sym.signature
+        assert "y: int" in sym.signature
+        assert "-> int" in sym.signature
+
+    def test_async_function(self, extractor):
+        src = "async def fetch(url: str) -> bytes:\n    pass\n"
+        fs = extractor.extract(src, "net.py")
+        sym = fs.symbols[0]
+        assert sym.signature.startswith("async def")
+        assert sym.kind == "function"
+
+    def test_function_with_defaults(self, extractor):
+        src = 'def greet(name: str = "world") -> str:\n    pass\n'
+        fs = extractor.extract(src, "greet.py")
+        assert "= " in fs.symbols[0].signature
+
+    def test_function_with_decorators(self, extractor):
+        src = "@staticmethod\ndef helper():\n    pass\n"
+        fs = extractor.extract(src, "util.py")
+        assert fs.symbols[0].decorators == ["staticmethod"]
+
+    def test_function_with_star_args(self, extractor):
+        src = "def f(*args, **kwargs):\n    pass\n"
+        fs = extractor.extract(src, "f.py")
+        assert "*args" in fs.symbols[0].signature
+        assert "**kwargs" in fs.symbols[0].signature
+
+    def test_function_with_kwonly(self, extractor):
+        src = "def f(a, *, b=1):\n    pass\n"
+        fs = extractor.extract(src, "f.py")
+        sig = fs.symbols[0].signature
+        assert "a" in sig
+        assert "b" in sig
+
+
+# ---------------------------------------------------------------------------
+# Class extraction
+# ---------------------------------------------------------------------------
+
+class TestClasses:
+    def test_simple_class(self, extractor):
+        src = "class Foo:\n    pass\n"
+        fs = extractor.extract(src, "foo.py")
+        sym = fs.symbols[0]
+        assert sym.name == "Foo"
+        assert sym.kind == "class"
+        assert sym.signature == "class Foo"
+
+    def test_class_with_bases(self, extractor):
+        src = "class Foo(Bar, Baz):\n    pass\n"
+        fs = extractor.extract(src, "foo.py")
+        assert "Bar" in fs.symbols[0].signature
+        assert "Baz" in fs.symbols[0].signature
+
+    def test_class_with_decorators(self, extractor):
+        src = "@dataclass\nclass Point:\n    x: int\n    y: int\n"
+        fs = extractor.extract(src, "point.py")
+        assert fs.symbols[0].decorators == ["dataclass"]
+
+    def test_class_methods_extracted(self, extractor):
+        src = (
+            "class Calc:\n"
+            "    def add(self, a: int, b: int) -> int:\n"
+            "        return a + b\n"
+            "    def sub(self, a, b):\n"
+            "        return a - b\n"
+        )
+        fs = extractor.extract(src, "calc.py")
+        names = [s.name for s in fs.symbols]
+        assert "Calc" in names
+        assert "add" in names
+        assert "sub" in names
+        add_sym = [s for s in fs.symbols if s.name == "add"][0]
+        assert add_sym.kind == "method"
+        assert add_sym.parent == "Calc"
+
+
+# ---------------------------------------------------------------------------
+# Import extraction
+# ---------------------------------------------------------------------------
+
+class TestImports:
+    def test_import(self, extractor):
+        src = "import os\nimport sys\n"
+        fs = extractor.extract(src, "a.py")
+        assert len(fs.imports) == 2
+        modules = [i.module for i in fs.imports]
+        assert "os" in modules
+        assert "sys" in modules
+
+    def test_from_import(self, extractor):
+        src = "from os.path import join, exists\n"
+        fs = extractor.extract(src, "a.py")
+        assert len(fs.imports) == 1
+        imp = fs.imports[0]
+        assert imp.module == "os.path"
+        assert "join" in imp.names
+        assert "exists" in imp.names
+
+    def test_relative_import(self, extractor):
+        src = "from .sibling import helper\n"
+        fs = extractor.extract(src, "a.py")
+        assert fs.imports[0].is_relative is True
+        assert fs.imports[0].module == "sibling"
+
+    def test_import_star(self, extractor):
+        src = "from typing import *\n"
+        fs = extractor.extract(src, "a.py")
+        assert "*" in fs.imports[0].names
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+class TestConstants:
+    def test_upper_case_constant(self, extractor):
+        src = "MAX_SIZE = 1024\nDEFAULT = 'hello'\n"
+        fs = extractor.extract(src, "config.py")
+        constants = [s for s in fs.symbols if s.kind == "constant"]
+        names = [c.name for c in constants]
+        assert "MAX_SIZE" in names
+        assert "DEFAULT" in names
+
+    def test_lowercase_not_constant(self, extractor):
+        src = "my_var = 42\n"
+        fs = extractor.extract(src, "a.py")
+        constants = [s for s in fs.symbols if s.kind == "constant"]
+        assert len(constants) == 0
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+class TestEdgeCases:
+    def test_syntax_error_returns_empty(self, extractor):
+        src = "def broken(\n"
+        fs = extractor.extract(src, "bad.py")
+        assert fs.symbols == []
+        assert fs.imports == []
+        assert fs.language == "python"
+
+    def test_empty_file(self, extractor):
+        fs = extractor.extract("", "empty.py")
+        assert fs.symbols == []
+        assert fs.imports == []
+
+    def test_line_numbers(self, extractor):
+        src = "# comment\n\ndef foo():\n    pass\n"
+        fs = extractor.extract(src, "a.py")
+        assert fs.symbols[0].line == 3
+
+    def test_language_set(self, extractor):
+        fs = extractor.extract("pass", "a.py")
+        assert fs.language == "python"
+
+```
+
+## `tests/test_repo_map.py`
+
+```python
+# tests/test_repo_map.py — Tests for RepoMap orchestrator
+
+import pytest
+from pathlib import Path
+
+from core.context.repo_map import RepoMap
+from core.context.models import RepoMapResult
+
+
+def _make_repo(tmp_path):
+    """Create a synthetic Python repo for testing."""
+    # main.py imports helper
+    (tmp_path / "main.py").write_text(
+        "from helper import do_stuff\n\ndef main():\n    do_stuff()\n"
+    )
+    # helper.py imports util
+    (tmp_path / "helper.py").write_text(
+        "from util import format_output\n\ndef do_stuff():\n    format_output()\n"
+    )
+    # util.py — leaf node
+    (tmp_path / "util.py").write_text(
+        "MAX_LEN = 80\n\ndef format_output() -> str:\n    return ''\n"
+    )
+    return tmp_path
+
+
+def _fake_git_runner_failure(cmd, *, shell=False, timeout=None, executable=None):
+    """Runner that fails git commands (simulates non-git repo)."""
+    return 128, "", "fatal: not a git repository"
+
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+
+class TestBuild:
+    def test_build_on_synthetic_repo(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        data = rm.build()
+        assert data.total_files == 3
+        assert data.total_symbols > 0
+
+    def test_build_is_idempotent(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        data1 = rm.build()
+        data2 = rm.build()
+        assert data1 is data2
+
+    def test_force_rebuild(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        data1 = rm.build()
+        data2 = rm.build(force=True)
+        assert data2 is not data1
+        assert data2.total_files == data1.total_files
+
+
+# ---------------------------------------------------------------------------
+# Excerpt
+# ---------------------------------------------------------------------------
+
+class TestExcerpt:
+    def test_overview_mode(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task()
+        assert isinstance(result, RepoMapResult)
+        assert result.total_files == 3
+        assert result.total_symbols > 0
+        assert result.excerpt != ""
+        assert result.files_shown > 0
+
+    def test_focused_mode_with_targets(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task(target_files=["main.py"])
+        assert "main.py" in result.excerpt
+
+    def test_token_budget_respected(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure, token_budget=10)
+        result = rm.excerpt_for_task()
+        # With such a tiny budget, not all files should be shown
+        assert result.files_shown <= result.total_files
+
+    def test_edge_stats_populated(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task()
+        # main imports helper, helper imports util → at least 2 resolved
+        assert result.edges_resolved >= 2
+        # Some imports may be unresolvable (if third-party)
+        assert result.edges_resolved + result.edges_unresolved > 0
+
+    def test_excerpt_has_header(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task()
+        assert result.excerpt.startswith("# Repo map:")
+        assert "files" in result.excerpt.split("\n")[0]
+        assert "# Languages:" in result.excerpt
+        assert "# Ranking: centrality" in result.excerpt
+
+    def test_focused_excerpt_header_says_relevance(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task(target_files=["main.py"])
+        assert "# Ranking: relevance" in result.excerpt
+
+    def test_char_budget_param(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        result = rm.excerpt_for_task(char_budget=200)
+        assert len(result.excerpt) <= 400  # some slack for footer
+
+
+# ---------------------------------------------------------------------------
+# Visualize
+# ---------------------------------------------------------------------------
+
+class TestVisualize:
+    def test_dot_output(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        dot = rm.visualize(format="dot")
+        assert "digraph repo_map" in dot
+
+    def test_mermaid_output(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        md = rm.visualize(format="mermaid")
+        assert "graph TD" in md
+
+    def test_visualize_with_targets(self, tmp_path):
+        _make_repo(tmp_path)
+        rm = RepoMap(str(tmp_path), subprocess_runner=_fake_git_runner_failure)
+        dot = rm.visualize(target_files=["main.py"], format="dot")
+        assert "main_py" in dot
+
+
+# ---------------------------------------------------------------------------
+# Cache integration
+# ---------------------------------------------------------------------------
+
+class TestCacheIntegration:
+    def test_cache_hit(self, tmp_path):
+        _make_repo(tmp_path)
+        call_count = 0
+
+        def runner(cmd, *, shell=False, timeout=None, executable=None):
+            nonlocal call_count
+            call_count += 1
+            if "rev-parse" in cmd:
+                return 0, "deadbeef", ""
+            if "ls-files" in cmd:
+                return 0, "main.py\nhelper.py\nutil.py\n", ""
+            if "status --porcelain" in cmd:
+                return 0, "", ""
+            return 128, "", "unknown"
+
+        rm1 = RepoMap(str(tmp_path), subprocess_runner=runner)
+        rm1.build()
+
+        rm2 = RepoMap(str(tmp_path), subprocess_runner=runner)
+        data = rm2.build()
+        assert data.total_files == 3
+
+    def test_dirty_overlay(self, tmp_path):
+        _make_repo(tmp_path)
+
+        def runner(cmd, *, shell=False, timeout=None, executable=None):
+            if "rev-parse" in cmd:
+                return 0, "deadbeef", ""
+            if "ls-files" in cmd:
+                return 0, "main.py\nhelper.py\nutil.py\n", ""
+            if "status --porcelain" in cmd:
+                return 0, " M main.py\n", ""
+            return 128, "", "unknown"
+
+        # First build caches
+        rm1 = RepoMap(str(tmp_path), subprocess_runner=runner)
+        rm1.build()
+
+        # Modify main.py
+        (tmp_path / "main.py").write_text(
+            "from helper import do_stuff\n\ndef main_v2():\n    do_stuff()\n"
+        )
+
+        # Second build should overlay dirty file
+        rm2 = RepoMap(str(tmp_path), subprocess_runner=runner)
+        data = rm2.build()
+        syms = data.files["main.py"].symbols
+        names = [s.name for s in syms]
+        assert "main_v2" in names
+
+```
+
+## `tests/test_repo_map_cache.py`
+
+```python
+# tests/test_repo_map_cache.py — Tests for git-commit-keyed cache
+
+import pytest
+
+from core.context.models import FileSymbols, ImportEdge, RepoMapData, SymbolDef
+from core.context.cache import (
+    get_commit_hash,
+    get_dirty_files,
+    RepoMapCache,
+)
+
+
+# ---------------------------------------------------------------------------
+# get_commit_hash
+# ---------------------------------------------------------------------------
+
+class TestGetCommitHash:
+    def test_returns_hash(self):
+        def runner(cmd, *, shell=False, timeout=None, executable=None):
+            return 0, "abc123def456", ""
+        assert get_commit_hash("/tmp/repo", subprocess_runner=runner) == "abc123def456"
+
+    def test_returns_none_on_failure(self):
+        def runner(cmd, *, shell=False, timeout=None, executable=None):
+            return 128, "", "fatal: not a git repository"
+        assert get_commit_hash("/tmp/repo", subprocess_runner=runner) is None
+
+
+# ---------------------------------------------------------------------------
+# get_dirty_files
+# ---------------------------------------------------------------------------
+
+class TestGetDirtyFiles:
+    def test_modified_files(self):
+        def runner(cmd, *, shell=False, timeout=None, executable=None):
+            return 0, " M src/main.py\n?? new_file.py\n", ""
+        files = get_dirty_files("/tmp/repo", subprocess_runner=runner)
+        assert "src/main.py" in files
+        assert "new_file.py" in files
+
+    def test_clean_repo(self):
+        def runner(cmd, *, shell=False, timeout=None, executable=None):
+            return 0, "", ""
+        assert get_dirty_files("/tmp/repo", subprocess_runner=runner) == []
+
+    def test_failure_returns_empty(self):
+        def runner(cmd, *, shell=False, timeout=None, executable=None):
+            return 128, "", "error"
+        assert get_dirty_files("/tmp/repo", subprocess_runner=runner) == []
+
+
+# ---------------------------------------------------------------------------
+# RepoMapCache save/load
+# ---------------------------------------------------------------------------
+
+class TestRepoMapCache:
+    def _sample_data(self) -> RepoMapData:
+        return RepoMapData(
+            repo_root="/tmp/repo",
+            commit_hash="abc123",
+            files={
+                "main.py": FileSymbols(
+                    rel_path="main.py",
+                    language="python",
+                    symbols=[
+                        SymbolDef(name="main", kind="function",
+                                  signature="def main() -> None", line=1),
+                        SymbolDef(name="Config", kind="class",
+                                  decorators=["dataclass"], line=5),
+                    ],
+                    imports=[
+                        ImportEdge(module="os.path", names=["join"]),
+                        ImportEdge(module=".helper", is_relative=True),
+                    ],
+                ),
+            },
+        )
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        cache = RepoMapCache(str(tmp_path))
+        data = self._sample_data()
+        cache.save("abc123", data)
+        loaded = cache.load("abc123")
+        assert loaded is not None
+        assert loaded.repo_root == data.repo_root
+        assert loaded.commit_hash == data.commit_hash
+        assert loaded.total_files == data.total_files
+        assert loaded.total_symbols == data.total_symbols
+        # Check symbol details
+        fs = loaded.files["main.py"]
+        assert fs.symbols[0].name == "main"
+        assert fs.symbols[0].signature == "def main() -> None"
+        assert fs.symbols[1].decorators == ["dataclass"]
+        # Check import details
+        assert fs.imports[0].module == "os.path"
+        assert fs.imports[0].names == ["join"]
+        assert fs.imports[1].is_relative is True
+
+    def test_load_missing_returns_none(self, tmp_path):
+        cache = RepoMapCache(str(tmp_path))
+        assert cache.load("nonexistent") is None
+
+    def test_save_creates_directories(self, tmp_path):
+        cache = RepoMapCache(str(tmp_path))
+        data = self._sample_data()
+        path = cache.save("abc123", data)
+        assert path.exists()
+
+    def test_overwrite_existing(self, tmp_path):
+        cache = RepoMapCache(str(tmp_path))
+        data1 = self._sample_data()
+        cache.save("abc123", data1)
+        # Overwrite with different data
+        data2 = RepoMapData(repo_root="/tmp/repo", commit_hash="abc123", files={})
+        cache.save("abc123", data2)
+        loaded = cache.load("abc123")
+        assert loaded.total_files == 0
+
+```
+
 ## `tests/test_repo_map_models.py`
 
 ```python
@@ -14646,6 +18660,8 @@ class TestRepoMapResult:
         assert r.excerpt_token_estimate == 0
         assert r.files_shown == 0
         assert r.files_omitted == 0
+        assert r.edges_resolved == 0
+        assert r.edges_unresolved == 0
 
     def test_full_construction(self):
         r = RepoMapResult(
@@ -14655,9 +18671,13 @@ class TestRepoMapResult:
             excerpt_token_estimate=1024,
             files_shown=20,
             files_omitted=30,
+            edges_resolved=15,
+            edges_unresolved=5,
         )
         assert r.total_files == 50
         assert r.files_shown + r.files_omitted == r.total_files
+        assert r.edges_resolved == 15
+        assert r.edges_unresolved == 5
 
     def test_serialization_roundtrip(self):
         r = RepoMapResult(
@@ -14673,6 +18693,104 @@ class TestRepoMapResult:
         json_str = r.model_dump_json()
         restored = RepoMapResult.model_validate_json(json_str)
         assert restored == r
+
+```
+
+## `tests/test_repo_map_tool.py`
+
+```python
+# tests/test_repo_map_tool.py — Tests for RepoMapTool
+
+import pytest
+from pathlib import Path
+
+from core.tools.repo_map_tool import RepoMapTool
+from core.tools.descriptors import REPO_MAP_DESCRIPTOR
+
+
+def _make_repo(tmp_path):
+    (tmp_path / "main.py").write_text("def main():\n    pass\n")
+    (tmp_path / "util.py").write_text("def helper():\n    pass\n")
+    return tmp_path
+
+
+def _fake_runner(cmd, *, shell=False, timeout=None, executable=None):
+    return 128, "", "not a git repo"
+
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+
+class TestActions:
+    def test_build_action(self, tmp_path):
+        _make_repo(tmp_path)
+        tool = RepoMapTool(str(tmp_path), subprocess_runner=_fake_runner)
+        rc, stdout, stderr = tool("build")
+        assert rc == 0
+        assert "2 files" in stdout
+
+    def test_excerpt_action(self, tmp_path):
+        _make_repo(tmp_path)
+        tool = RepoMapTool(str(tmp_path), subprocess_runner=_fake_runner)
+        rc, stdout, stderr = tool("excerpt")
+        assert rc == 0
+        assert "main.py" in stdout or "util.py" in stdout
+
+    def test_status_action_before_build(self, tmp_path):
+        tool = RepoMapTool(str(tmp_path), subprocess_runner=_fake_runner)
+        rc, stdout, stderr = tool("status")
+        assert rc == 0
+        assert "not built" in stdout.lower()
+
+    def test_status_action_after_build(self, tmp_path):
+        _make_repo(tmp_path)
+        tool = RepoMapTool(str(tmp_path), subprocess_runner=_fake_runner)
+        tool("build")
+        rc, stdout, stderr = tool("status")
+        assert rc == 0
+        assert "Files: 2" in stdout
+
+    def test_visualize_action_dot(self, tmp_path):
+        _make_repo(tmp_path)
+        tool = RepoMapTool(str(tmp_path), subprocess_runner=_fake_runner)
+        rc, stdout, stderr = tool("visualize", format="dot")
+        assert rc == 0
+        assert "digraph" in stdout
+
+    def test_visualize_action_mermaid(self, tmp_path):
+        _make_repo(tmp_path)
+        tool = RepoMapTool(str(tmp_path), subprocess_runner=_fake_runner)
+        rc, stdout, stderr = tool("visualize", format="mermaid")
+        assert rc == 0
+        assert "graph TD" in stdout
+
+    def test_unknown_action(self, tmp_path):
+        tool = RepoMapTool(str(tmp_path), subprocess_runner=_fake_runner)
+        rc, stdout, stderr = tool("nonexistent")
+        assert rc == 1
+        assert "Unknown" in stderr
+
+
+# ---------------------------------------------------------------------------
+# Descriptor
+# ---------------------------------------------------------------------------
+
+class TestDescriptor:
+    def test_descriptor_name(self):
+        assert REPO_MAP_DESCRIPTOR.tool_name == "repo_map"
+
+    def test_descriptor_scopes(self):
+        assert "fs.read" in REPO_MAP_DESCRIPTOR.required_scopes
+        assert "git.read" in REPO_MAP_DESCRIPTOR.required_scopes
+
+    def test_descriptor_actions(self):
+        assert set(REPO_MAP_DESCRIPTOR.action_scopes.keys()) == {
+            "build", "excerpt", "status", "visualize"
+        }
+
+    def test_descriptor_has_description(self):
+        assert REPO_MAP_DESCRIPTOR.description != ""
 
 ```
 
@@ -15386,6 +19504,271 @@ class TestToolsToolBusIntegration:
 
 ```
 
+## `tests/test_treesitter_extractor.py`
+
+```python
+# tests/test_treesitter_extractor.py — Tests for tree-sitter multi-language extractor
+#
+# Tests skip gracefully when tree-sitter is not installed.
+
+import pytest
+
+try:
+    import tree_sitter
+    HAS_TREE_SITTER = True
+except ImportError:
+    HAS_TREE_SITTER = False
+
+needs_ts = pytest.mark.skipif(not HAS_TREE_SITTER, reason="tree-sitter not installed")
+
+
+# ---------------------------------------------------------------------------
+# Protocol compliance
+# ---------------------------------------------------------------------------
+
+@needs_ts
+class TestProtocol:
+    def test_implements_symbol_extractor(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        from core.context.symbols.base import SymbolExtractor
+        ext = TreeSitterExtractor("c")
+        assert isinstance(ext, SymbolExtractor)
+
+
+# ---------------------------------------------------------------------------
+# C extraction
+# ---------------------------------------------------------------------------
+
+@needs_ts
+class TestCExtraction:
+    def test_function(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "int main(int argc, char **argv) {\n    return 0;\n}\n"
+        ext = TreeSitterExtractor("c")
+        fs = ext.extract(src, "main.c")
+        names = [s.name for s in fs.symbols]
+        assert "main" in names
+
+    def test_struct(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "struct Point {\n    int x;\n    int y;\n};\n"
+        ext = TreeSitterExtractor("c")
+        fs = ext.extract(src, "point.c")
+        classes = [s for s in fs.symbols if s.kind == "class"]
+        assert any(s.name == "Point" for s in classes)
+
+    def test_include(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = '#include <stdio.h>\n#include "myheader.h"\n'
+        ext = TreeSitterExtractor("c")
+        fs = ext.extract(src, "main.c")
+        modules = [i.module for i in fs.imports]
+        assert "stdio.h" in modules
+        assert "myheader.h" in modules
+
+
+# ---------------------------------------------------------------------------
+# C++ extraction
+# ---------------------------------------------------------------------------
+
+@needs_ts
+class TestCppExtraction:
+    def test_class_with_methods(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = (
+            "class Widget {\n"
+            "public:\n"
+            "    void draw() {\n"
+            "    }\n"
+            "};\n"
+        )
+        ext = TreeSitterExtractor("cpp")
+        fs = ext.extract(src, "widget.cpp")
+        names = [s.name for s in fs.symbols]
+        assert "Widget" in names
+
+    def test_namespace(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "namespace ui {\n    void init() {}\n}\n"
+        ext = TreeSitterExtractor("cpp")
+        fs = ext.extract(src, "ui.cpp")
+        names = [s.name for s in fs.symbols]
+        assert "ui" in names
+
+    def test_function(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "void helper(int x) {\n    return;\n}\n"
+        ext = TreeSitterExtractor("cpp")
+        fs = ext.extract(src, "helper.cpp")
+        funcs = [s for s in fs.symbols if s.kind == "function"]
+        assert any(s.name == "helper" for s in funcs)
+
+
+# ---------------------------------------------------------------------------
+# Rust extraction
+# ---------------------------------------------------------------------------
+
+@needs_ts
+class TestRustExtraction:
+    def test_fn(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "fn process(data: &[u8]) -> Result<()> {\n    Ok(())\n}\n"
+        ext = TreeSitterExtractor("rust")
+        fs = ext.extract(src, "lib.rs")
+        names = [s.name for s in fs.symbols]
+        assert "process" in names
+
+    def test_struct(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "pub struct Config {\n    pub name: String,\n}\n"
+        ext = TreeSitterExtractor("rust")
+        fs = ext.extract(src, "config.rs")
+        classes = [s for s in fs.symbols if s.kind == "class"]
+        assert any(s.name == "Config" for s in classes)
+
+    def test_trait(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "pub trait Handler {\n    fn handle(&self);\n}\n"
+        ext = TreeSitterExtractor("rust")
+        fs = ext.extract(src, "handler.rs")
+        classes = [s for s in fs.symbols if s.kind == "class"]
+        assert any(s.name == "Handler" for s in classes)
+
+    def test_use_declaration(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "use std::io::Read;\n"
+        ext = TreeSitterExtractor("rust")
+        fs = ext.extract(src, "lib.rs")
+        assert any(i.module.startswith("std") for i in fs.imports)
+
+
+# ---------------------------------------------------------------------------
+# Go extraction
+# ---------------------------------------------------------------------------
+
+@needs_ts
+class TestGoExtraction:
+    def test_func(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = 'package main\n\nfunc main() {\n\tfmt.Println("hello")\n}\n'
+        ext = TreeSitterExtractor("go")
+        fs = ext.extract(src, "main.go")
+        names = [s.name for s in fs.symbols]
+        assert "main" in names
+
+    def test_method(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "func (s *Server) Start() error {\n\treturn nil\n}\n"
+        ext = TreeSitterExtractor("go")
+        fs = ext.extract(src, "server.go")
+        methods = [s for s in fs.symbols if s.kind == "method"]
+        assert any(s.name == "Start" for s in methods)
+
+    def test_struct_type(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "type Config struct {\n\tName string\n}\n"
+        ext = TreeSitterExtractor("go")
+        fs = ext.extract(src, "config.go")
+        classes = [s for s in fs.symbols if s.kind == "class"]
+        assert any(s.name == "Config" for s in classes)
+
+    def test_import(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = 'import "fmt"\n'
+        ext = TreeSitterExtractor("go")
+        fs = ext.extract(src, "main.go")
+        assert any(i.module == "fmt" for i in fs.imports)
+
+
+# ---------------------------------------------------------------------------
+# JavaScript/TypeScript extraction
+# ---------------------------------------------------------------------------
+
+@needs_ts
+class TestJSExtraction:
+    def test_function(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "function greet(name) {\n    return 'hello ' + name;\n}\n"
+        ext = TreeSitterExtractor("javascript")
+        fs = ext.extract(src, "app.js")
+        names = [s.name for s in fs.symbols]
+        assert "greet" in names
+
+    def test_class(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "class Widget {\n    constructor() {}\n    render() {}\n}\n"
+        ext = TreeSitterExtractor("javascript")
+        fs = ext.extract(src, "widget.js")
+        names = [s.name for s in fs.symbols]
+        assert "Widget" in names
+
+    def test_export_function(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "export function helper() {}\n"
+        ext = TreeSitterExtractor("javascript")
+        fs = ext.extract(src, "util.js")
+        funcs = [s for s in fs.symbols if s.kind == "function"]
+        assert any(s.name == "helper" for s in funcs)
+
+    def test_import(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "import { useState } from 'react';\n"
+        ext = TreeSitterExtractor("javascript")
+        fs = ext.extract(src, "app.js")
+        assert any(i.module == "react" for i in fs.imports)
+
+
+# ---------------------------------------------------------------------------
+# Import extraction across languages
+# ---------------------------------------------------------------------------
+
+@needs_ts
+class TestImportExtraction:
+    def test_c_include(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = '#include "utils.h"\n'
+        ext = TreeSitterExtractor("c")
+        fs = ext.extract(src, "main.c")
+        assert any(i.module == "utils.h" for i in fs.imports)
+
+    def test_rust_use(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = "use crate::config::Settings;\n"
+        ext = TreeSitterExtractor("rust")
+        fs = ext.extract(src, "lib.rs")
+        assert len(fs.imports) > 0
+
+    def test_go_import(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        src = 'import (\n\t"fmt"\n\t"os"\n)\n'
+        ext = TreeSitterExtractor("go")
+        fs = ext.extract(src, "main.go")
+        assert len(fs.imports) > 0
+
+
+# ---------------------------------------------------------------------------
+# Fallback behavior + error handling
+# ---------------------------------------------------------------------------
+
+@needs_ts
+class TestFallbackBehavior:
+    def test_get_extractor_returns_treesitter_when_installed(self):
+        from core.context.symbols import get_extractor
+        ext = get_extractor("c")
+        assert type(ext).__name__ == "TreeSitterExtractor"
+
+    def test_invalid_language_raises(self):
+        from core.context.symbols.treesitter_extractor import TreeSitterExtractor
+        with pytest.raises(ValueError, match="No tree-sitter grammar"):
+            TreeSitterExtractor("nonexistent_language_xyz")
+
+    def test_python_always_uses_ast(self):
+        from core.context.symbols import get_extractor
+        ext = get_extractor("python")
+        assert type(ext).__name__ == "PythonExtractor"
+
+```
+
 ## `tests/test_unified_client.py`
 
 ```python
@@ -15786,6 +20169,138 @@ class TestVerifyFailure:
 
 ```
 
+## `tests/test_visualize.py`
+
+```python
+# tests/test_visualize.py — Tests for DOT and Mermaid graph export
+
+import pytest
+
+from core.context.models import FileSymbols, ImportEdge, RepoMapData, SymbolDef
+from core.context.graph import DependencyGraph
+from core.context.visualize import format_dot, format_mermaid
+
+
+def _make_graph(files_dict):
+    """Helper: build DependencyGraph from {rel_path: [import_modules]}."""
+    files = {}
+    for rel_path, imports in files_dict.items():
+        imp_edges = [ImportEdge(module=m) for m in imports]
+        files[rel_path] = FileSymbols(
+            rel_path=rel_path,
+            symbols=[SymbolDef(name="x", kind="function")],
+            imports=imp_edges,
+        )
+    data = RepoMapData(repo_root="/tmp", files=files)
+    return DependencyGraph(data)
+
+
+# ---------------------------------------------------------------------------
+# DOT format
+# ---------------------------------------------------------------------------
+
+class TestFormatDot:
+    def test_basic_structure(self):
+        g = _make_graph({"a.py": ["b"], "b.py": []})
+        dot = format_dot(g)
+        assert "digraph repo_map {" in dot
+        assert "}" in dot
+
+    def test_contains_nodes(self):
+        g = _make_graph({"a.py": [], "b.py": []})
+        dot = format_dot(g)
+        assert "a_py" in dot
+        assert "b_py" in dot
+
+    def test_contains_edges(self):
+        g = _make_graph({"a.py": ["b"], "b.py": []})
+        dot = format_dot(g)
+        assert "a_py -> b_py" in dot
+
+    def test_highlight_files(self):
+        g = _make_graph({"a.py": [], "b.py": []})
+        dot = format_dot(g, highlight_files={"a.py"})
+        assert "style=bold" in dot
+        assert "color=blue" in dot
+
+    def test_max_nodes_caps_output(self):
+        files = {f"file{i}.py": [] for i in range(20)}
+        g = _make_graph(files)
+        dot = format_dot(g, max_nodes=5)
+        # Should have at most 5 node definitions
+        node_count = dot.count('[label=')
+        assert node_count <= 5
+
+    def test_empty_graph(self):
+        data = RepoMapData(repo_root="/tmp", files={})
+        g = DependencyGraph(data)
+        dot = format_dot(g)
+        assert "digraph repo_map {" in dot
+
+    def test_ranked_files_limits_output(self):
+        g = _make_graph({"a.py": [], "b.py": [], "c.py": []})
+        ranked = [("a.py", 1.0), ("b.py", 0.5)]
+        dot = format_dot(g, ranked_files=ranked, max_nodes=50)
+        assert "a_py" in dot
+        assert "b_py" in dot
+        assert "c_py" not in dot
+
+
+# ---------------------------------------------------------------------------
+# Mermaid format
+# ---------------------------------------------------------------------------
+
+class TestFormatMermaid:
+    def test_basic_structure(self):
+        g = _make_graph({"a.py": ["b"], "b.py": []})
+        md = format_mermaid(g)
+        assert md.startswith("graph TD")
+
+    def test_contains_nodes(self):
+        g = _make_graph({"a.py": [], "b.py": []})
+        md = format_mermaid(g)
+        assert "a_py" in md
+        assert "b_py" in md
+
+    def test_contains_edges(self):
+        g = _make_graph({"a.py": ["b"], "b.py": []})
+        md = format_mermaid(g)
+        assert "a_py --> b_py" in md
+
+    def test_highlight_styling(self):
+        g = _make_graph({"a.py": [], "b.py": []})
+        md = format_mermaid(g, highlight_files={"a.py"})
+        assert "style" in md
+        assert "stroke:#00f" in md
+
+    def test_max_nodes_caps_output(self):
+        files = {f"file{i}.py": [] for i in range(20)}
+        g = _make_graph(files)
+        md = format_mermaid(g, max_nodes=5)
+        # Count node declarations (lines with [...])
+        node_lines = [l for l in md.split("\n") if "[" in l and "]" in l]
+        assert len(node_lines) <= 5
+
+    def test_empty_graph(self):
+        data = RepoMapData(repo_root="/tmp", files={})
+        g = DependencyGraph(data)
+        md = format_mermaid(g)
+        assert "graph TD" in md
+
+    def test_no_highlight_styling_when_empty(self):
+        g = _make_graph({"a.py": []})
+        md = format_mermaid(g)
+        assert "style" not in md
+
+    def test_ranked_files_limits_output(self):
+        g = _make_graph({"a.py": [], "b.py": [], "c.py": []})
+        ranked = [("a.py", 1.0)]
+        md = format_mermaid(g, ranked_files=ranked, max_nodes=50)
+        assert "a_py" in md
+        assert "c_py" not in md
+
+```
+
 <details>
 <summary>📁 Final Project Structure</summary>
 
@@ -15827,9 +20342,19 @@ class TestVerifyFailure:
 📁 core/
     📁 context/
         📁 symbols/
+            📄 __init__.py
+            📄 base.py
+            📄 generic_extractor.py
+            📄 python_extractor.py
+            📄 treesitter_extractor.py
         📄 __init__.py
+        📄 cache.py
         📄 file_discovery.py
+        📄 formatter.py
+        📄 graph.py
         📄 models.py
+        📄 repo_map.py
+        📄 visualize.py
     📁 contracts/
         📄 __init__.py
         📄 schemas.py
@@ -15877,6 +20402,7 @@ class TestVerifyFailure:
         📄 git_tools.py
         📄 install_project.py
         📄 rag_crawler.py
+        📄 repo_map_tool.py
         📄 run_python.py
         📄 run_shell.py
         📄 sandbox.py
@@ -15928,12 +20454,16 @@ class TestVerifyFailure:
     📄 test_cli_smoke.py
     📄 test_config_loader.py
     📄 test_contracts.py
+    📄 test_dependency_graph.py
     📄 test_descriptors.py
     📄 test_descriptors_expanded.py
     📄 test_file_discovery.py
+    📄 test_formatter.py
     📄 test_fs_tools.py
+    📄 test_generic_extractor.py
     📄 test_git_tools.py
     📄 test_god_mode.py
+    📄 test_graph_multilang.py
     📄 test_judais.py
     📄 test_kernel_budgets.py
     📄 test_kernel_orchestrator.py
@@ -15945,15 +20475,21 @@ class TestVerifyFailure:
     📄 test_profile_schemas.py
     📄 test_profiles.py
     📄 test_provider_config.py
+    📄 test_python_extractor.py
+    📄 test_repo_map.py
+    📄 test_repo_map_cache.py
     📄 test_repo_map_models.py
+    📄 test_repo_map_tool.py
     📄 test_sandbox.py
     📄 test_session_manager.py
     📄 test_tool_stripping.py
     📄 test_tools_registry.py
+    📄 test_treesitter_extractor.py
     📄 test_unified_client.py
     📄 test_unified_memory.py
     📄 test_validation.py
     📄 test_verify_tools.py
+    📄 test_visualize.py
 📄 LICENSE
 📄 main.py
 📄 Makefile

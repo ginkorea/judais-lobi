@@ -134,4 +134,5 @@ class TestActionMetadataSets:
         assert "fs" in names
         assert "git" in names
         assert "verify" in names
-        assert len(ALL_DESCRIPTORS) == 11
+        assert "patch" in names
+        assert len(ALL_DESCRIPTORS) == 12
