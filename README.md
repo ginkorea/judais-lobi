@@ -45,11 +45,27 @@ See: `ROADMAP.md`
 * ✅ Phase 2 — Kernel State Machine & Hard Budgets (164 tests)
 * ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
 * ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
+* ✅ Phase 5 — Repo Map & Context Compression (783 tests)
 
 ### Up Next
 
-* ⏳ Phase 5 — Repo Map (Context Compression)
 * ⏳ Phase 6 — Repository-Native Patch Engine
+* ⏳ Phase 7 — Multi-Role Orchestrator, Composite Judge & External Critic
+
+### Phase 5 Highlights
+
+The agent is now repo-aware. It understands structure, relationships, and what's irrelevant — without eating the entire repo in context.
+
+* **`core/context/repo_map.py`** — Top-level `RepoMap` orchestrator. Dual-use: overview mode (centrality-ranked for REPO_MAP phase) and focused mode (relevance-ranked by `target_files` for RETRIEVE phase). Lazy build with git-commit-keyed caching and dirty-file overlay.
+* **`core/context/symbols/`** — 3-tier symbol extraction: Python `ast` (full import + signature extraction), tree-sitter (7 languages: C, C++, Rust, Go, JS, TS, Java), regex fallback. `get_extractor(language)` factory auto-selects the best available.
+* **`core/context/graph.py`** — `DependencyGraph` with multi-language module resolution (Python dotted paths, C `#include`, Rust `use crate::`, Go package imports, JS/TS relative imports with extension guessing). Relevance ranking (1.0/0.8/0.6/0.4/0.1 scoring by hop distance) and centrality ranking with barrel file damping (`__init__.py`, `index.js`, `mod.rs`).
+* **`core/context/formatter.py`** — Compact tree-style formatting with token budget, optional char cap, whitespace normalization for deterministic output, and metadata header (file/symbol counts, languages, ranking mode).
+* **`core/context/visualize.py`** — DOT (Graphviz) and Mermaid graph export with highlight styling and node cap.
+* **`core/context/cache.py`** — Git-commit-keyed persistent cache at `.judais-lobi/cache/repo_map/<hash>.json`. Clean commit = full cache hit; dirty state = cache + re-extract only modified files.
+* **`core/tools/repo_map_tool.py`** — ToolBus-compatible multi-action tool (build, excerpt, status, visualize).
+* **`setup.py`** — `pip install judais-lobi[treesitter]` adds optional tree-sitter support via individual grammar packages.
+
+11 tool descriptors. 221 new tests. tree-sitter is optional — the system works without it and gains rich multi-language AST parsing when installed.
 
 ### Phase 4 Highlights
 
@@ -59,7 +75,7 @@ Tools are dumb executors behind a capability-gated bus. The kernel decides every
 * **`core/tools/fs_tools.py`** — Consolidated `FsTool` with 5 actions (read, write, delete, list, stat). Pure `pathlib` I/O, no subprocess.
 * **`core/tools/git_tools.py`** — Consolidated `GitTool` with 12 actions (status, diff, log, add, commit, branch, push, pull, fetch, stash, tag, reset) via `run_subprocess`.
 * **`core/tools/verify_tools.py`** — Config-driven `VerifyTool` (lint, test, typecheck, format). Reads `.judais-lobi.yml` for project-specific commands, falls back to sensible defaults.
-* **`core/tools/descriptors.py`** — 10 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
+* **`core/tools/descriptors.py`** — 11 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
 * **`core/tools/capability.py`** — Deny-by-default `CapabilityEngine` with wildcard `"*"` support, profile switching, and grant revocation.
 * **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard).
 * **`core/policy/god_mode.py`** — `GodModeSession` with TTL auto-downgrade, panic switch (instant revocation to SAFE), and full audit trail.
@@ -84,8 +100,9 @@ If you want to understand the **current implementation**, inspect:
 * `core/kernel/` — state machine, budgets, orchestrator
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory
-* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify)
+* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map)
 * `core/policy/` — profiles, god mode, audit logging
+* `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -121,13 +138,15 @@ ToolBus → Sandbox → Subprocess
 Deterministic Judge
 ```
 
-As of Phase 4:
+As of Phase 5:
 
 * Tools are dumb executors behind a sandboxed, capability-gated bus.
 * Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`.
 * Deny-by-default. No scope = no execution.
 * God mode exists for emergencies — TTL-limited, panic-revocable, fully audited.
-* 3 consolidated multi-action tools (fs, git, verify) cover 21 operations under 13 scopes.
+* 4 consolidated multi-action tools (fs, git, verify, repo_map) cover 25 operations under 13 scopes.
+* The agent sees repo structure via a token-budgeted excerpt — file paths, symbol signatures, and dependency-ranked relevance — without loading full source.
+* 3-tier symbol extraction: Python `ast` → tree-sitter (7 languages) → regex fallback. Multi-language dependency graph with import resolution.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
