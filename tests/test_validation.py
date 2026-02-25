@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from core.kernel.state import Phase
+from core.context.models import RepoMapResult
 from core.contracts.schemas import (
     TaskContract,
     ChangePlan,
@@ -33,9 +34,9 @@ class TestGetSchemaForPhase:
     def test_finalize_returns_final_report(self):
         assert get_schema_for_phase(Phase.FINALIZE) is FinalReport
 
-    def test_repo_map_returns_none(self):
-        """REPO_MAP has no structured schema."""
-        assert get_schema_for_phase(Phase.REPO_MAP) is None
+    def test_repo_map_returns_repo_map_result(self):
+        """REPO_MAP now has a structured schema."""
+        assert get_schema_for_phase(Phase.REPO_MAP) is RepoMapResult
 
     def test_critique_returns_none(self):
         assert get_schema_for_phase(Phase.CRITIQUE) is None
@@ -108,7 +109,7 @@ class TestValidatePhaseOutputHappy:
 class TestValidatePhaseOutputErrors:
     def test_no_schema_for_phase(self):
         with pytest.raises(ValueError, match="No schema defined"):
-            validate_phase_output(Phase.REPO_MAP, {})
+            validate_phase_output(Phase.CRITIQUE, {})
 
     def test_invalid_dict_data(self):
         """Missing required fields should raise ValidationError."""

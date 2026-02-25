@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from core.context.models import RepoMapResult
+
 
 # ---------------------------------------------------------------------------
 # Personality configuration (replaces Elf's abstract properties)
@@ -217,6 +219,7 @@ class AuditEntry(BaseModel):
 PHASE_SCHEMAS: Dict[str, type] = {
     "INTAKE": TaskContract,
     "CONTRACT": TaskContract,
+    "REPO_MAP": RepoMapResult,
     "PLAN": ChangePlan,
     "RETRIEVE": ContextPack,
     "PATCH": PatchSet,

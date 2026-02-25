@@ -261,7 +261,7 @@ class TestFinalReport:
 
 class TestPhaseSchemas:
     def test_contains_expected_phases(self):
-        expected = {"INTAKE", "CONTRACT", "PLAN", "RETRIEVE", "PATCH", "RUN", "FINALIZE"}
+        expected = {"INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE", "PATCH", "RUN", "FINALIZE"}
         assert set(PHASE_SCHEMAS.keys()) == expected
 
     def test_intake_maps_to_task_contract(self):

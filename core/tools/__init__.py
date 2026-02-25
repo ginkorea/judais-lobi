@@ -25,11 +25,13 @@ from core.tools.descriptors import (
     FS_DESCRIPTOR,
     GIT_DESCRIPTOR,
     VERIFY_DESCRIPTOR,
+    REPO_MAP_DESCRIPTOR,
     ToolDescriptor,
 )
 from core.tools.fs_tools import FsTool
 from core.tools.git_tools import GitTool
 from core.tools.verify_tools import VerifyTool
+from core.tools.repo_map_tool import RepoMapTool
 from core.tools.config_loader import load_project_config
 
 
@@ -86,6 +88,10 @@ class Tools:
         self._bus.register(FS_DESCRIPTOR, fs_tool)
         self._bus.register(GIT_DESCRIPTOR, git_tool)
         self._bus.register(VERIFY_DESCRIPTOR, verify_tool)
+
+        # Phase 5: Repo map tool
+        repo_map_tool = RepoMapTool()
+        self._bus.register(REPO_MAP_DESCRIPTOR, repo_map_tool)
 
         if memory:
             rag_tool = RagCrawlerTool(memory)

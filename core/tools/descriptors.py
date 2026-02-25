@@ -154,6 +154,18 @@ NETWORK_ACTIONS: Set[Tuple[str, str]] = {
     ("git", "fetch"),
 }
 
+REPO_MAP_DESCRIPTOR = ToolDescriptor(
+    tool_name="repo_map",
+    required_scopes=["fs.read", "git.read"],
+    action_scopes={
+        "build":     ["fs.read", "git.read"],
+        "excerpt":   ["fs.read", "git.read"],
+        "status":    ["fs.read", "git.read"],
+        "visualize": ["fs.read", "git.read"],
+    },
+    description="Repository map: build, excerpt (task-scoped), status, visualize (DOT/Mermaid).",
+)
+
 # All pre-built descriptors for iteration
 ALL_DESCRIPTORS = [
     SHELL_DESCRIPTOR,
@@ -166,4 +178,5 @@ ALL_DESCRIPTORS = [
     FS_DESCRIPTOR,
     GIT_DESCRIPTOR,
     VERIFY_DESCRIPTOR,
+    REPO_MAP_DESCRIPTOR,
 ]
