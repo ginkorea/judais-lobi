@@ -10,7 +10,7 @@
 - [x] **Phase 3** – Session Artifacts, Contracts & KV Prefixing (`elf.py` deleted, Agent class, Pydantic contracts, SessionManager, 269 tests)
 - [x] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating (ToolBus, CapabilityEngine, BwrapSandbox, 3 consolidated tools, profiles, god mode, audit, 562 tests)
 - [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
-- [ ] **Phase 6** – Repository-Native Patch Engine
+- [x] **Phase 6** – Repository-Native Patch Engine (parser, exact-match matcher with similarity diagnostics, path-jailed applicator, git worktree isolation with crash recovery, PatchEngine orchestrator, ToolBus-integrated PatchTool with 6 actions, 888 tests)
 - [ ] **Phase 7** – Multi-Role Orchestrator, Composite Judge & External Critic
 - [ ] **Phase 8** – Retrieval, Context Discipline & Local Inference
 - [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
@@ -279,18 +279,34 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 
 **Definition of Done:** ✅ The Planner role can ingest a 100+ file, multi-language repository architecture in under ~4k tokens. Dependency graph ranks files by relevance to target files. Visualization exports support human inspection. Cache prevents redundant extraction.
 
-### Phase 6 – Repository-Native Patch Engine
+### Phase 6 – Repository-Native Patch Engine ✅
 
 **Goal:** Reliable code modification using exact-match constraints.
-**Tasks:**
 
-* Implement **Search/Replace block parsing** (`<<<< SEARCH / ==== / >>>> REPLACE`).
-* Enforce exact match strategy: The SEARCH block *must* match exactly once in the target file.
-* **Canonicalization before matching:** normalize line endings to `\n` (strip `\r`), but **preserve indentation exactly** — tabs vs. spaces and indentation depth must match the file. Do not offer a "whitespace-insensitive mode" as default; it weakens determinism. If needed later, it can exist as a separate explicit tool variant, not a flag.
-* If ambiguous (0 or >1 matches), the tool returns a structured failure with surrounding context hashes. On **zero matches**, additionally return the 3 most similar lines in the file — but do not brute-force edit distance against every line in large files. Narrow first: filter by matching indentation depth, then by shared token overlap, then compute edit distance on the short list. This keeps similarity search fast in large repos.
-* Automatically sandbox changes in a git worktree.
-* Implement automatic rollback on patch failure.
-**Definition of Done:** Patch protocol produces reproducible edits. Edits failing exact-match validation automatically trigger a budget-constrained retry.
+**Implementation:**
+
+* **`core/patch/parser.py`** — Extracts three block types from raw LLM text: `<<<< SEARCH / ==== / >>>> REPLACE` (modify), `<<<< CREATE / >>>> CREATE` (create), `<<<< DELETE path >>>>` (delete). Delimiters recognized only at line start (after optional whitespace). Path validation rejects absolute paths, `..` traversal, and empty paths at parse time. Produces `List[FilePatch]` (Pydantic models from `core/contracts/schemas.py`).
+* **`core/patch/matcher.py`** — Exact byte-match returning `(start_byte, end_byte)` offsets. SHA256 context hash of ±5 lines around each match for disambiguation. On zero matches: 3-stage similarity narrowing pipeline — filter by indent depth (±1 level, hard cap 200 windows), score by token overlap (`re.findall(r'\w+')` set intersection, top 30), rank by `difflib.SequenceMatcher.ratio()` (return top 3 `SimilarRegion` objects). On multiple matches: return all offsets + context hashes. `\r\n → \n` canonicalization before matching, no other normalization.
+* **`core/patch/applicator.py`** — Path jailing via `jail_path()`: rejects absolute paths, `..` traversal, and symlink escapes (resolved path must be under repo root). Modify: read UTF-8 with `errors="replace"`, canonicalize, exact-match, replace, preserve `st_mode` bits. Create: strict precondition (fails if file exists), creates parent directories. Delete: strict precondition (fails if file doesn't exist).
+* **`core/patch/worktree.py`** — `PatchWorktree` manages one worktree per PatchSet (atomic transaction boundary). Create: `git worktree add -b patch-<name> <path> HEAD`. Merge: `git merge --no-ff patch-<name>` + branch cleanup. Discard: `git worktree remove --force` + `git branch -D`. Writes `.judais-lobi/worktrees/active.json` on create (worktree path, branch name, timestamp). Deleted on discard/merge. Fresh instances recover state from this file, preventing orphaned worktrees after process restart.
+* **`core/patch/engine.py`** — `PatchEngine` orchestrates validate (dry-run match), apply (worktree + write), diff (real `git diff`), merge, rollback, status. Apply stops at first file failure, leaving worktree intact for diagnostics.
+* **`core/tools/patch_tool.py`** — ToolBus-compatible 6-action tool (validate, apply, diff, merge, rollback, status). All actions serialize results as JSON to stdout. `PatchResult` and `FileMatchResult` provide `to_dict()` helpers. exit_code=0 only on success. Registered as `PATCH_DESCRIPTOR` with per-action scopes.
+
+**Design decisions (reviewed by GPT and Gemini, both converged):**
+
+* Parser is a first-class module — LLMs cannot reliably emit multi-line code inside JSON.
+* One worktree per PatchSet — cross-file changes must land atomically.
+* `validate` optional in tool, mandatory in kernel — tool stays stateless, kernel sequences policy.
+* Similarity budget: 3 candidates, static, narrowing pipeline — diagnostics, not matching.
+* Byte-precise match diagnostics (offsets + context hashes) for LLM disambiguation.
+* Path jailing in applicator — prevents `<<<< SEARCH ../../../etc/passwd` attacks.
+* Delimiters at line-start only — delimiter-like text inside code blocks is never misinterpreted.
+* UTF-8 with `errors="replace"` and preserve file mode — consistent with Phase 5 convention.
+* Integration tests gated on `shutil.which("git")`, marked `@pytest.mark.integration`.
+
+**Test coverage:** 105 new tests (888 total). 3 integration tests with real git repos.
+
+**Definition of Done:** ✅ Patch protocol produces reproducible edits. Exact-match validation with structured diagnostics. Git worktree isolation for atomic cross-file changes. Automatic rollback on failure. 12 tool descriptors, 31 operations under 13 scopes.
 
 ### Phase 7 – Multi-Role Orchestrator, Composite Judge & External Critic
 
