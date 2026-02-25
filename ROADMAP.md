@@ -1,6 +1,6 @@
 # ROADMAP.md
 **Project:** judais-lobi
-**Objective:** Transform judais-lobi into a local-first, contract-driven, agentic open developer system.
+**Objective:** Transform judais-lobi into a local-first, contract-driven, autonomous execution kernel — starting with software development, generalizable to any structured task domain.
 
 ## Implementation Status
 
@@ -11,7 +11,7 @@
 - [x] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating (ToolBus, CapabilityEngine, BwrapSandbox, 3 consolidated tools, profiles, god mode, audit, 562 tests)
 - [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
 - [x] **Phase 6** – Repository-Native Patch Engine (parser, exact-match matcher with similarity diagnostics, path-jailed applicator, git worktree isolation with crash recovery, PatchEngine orchestrator, ToolBus-integrated PatchTool with 6 actions, 888 tests)
-- [ ] **Phase 7** – Multi-Role Orchestrator, Composite Judge & External Critic
+- [ ] **Phase 7** – Pluggable Workflows, Multi-Role Orchestrator, Composite Judge & External Critic
 - [ ] **Phase 8** – Retrieval, Context Discipline & Local Inference
 - [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
 - [ ] **Phase 10** – Evaluation & Benchmarks
@@ -19,12 +19,13 @@
 ---
 
 ## 1. Mission Statement
-Judais-lobi will evolve from a CLI assistant with tools into a local-first autonomous developer agent with:
+Judais-lobi will evolve from a CLI assistant with tools into a local-first autonomous execution kernel with:
 
 * **Artifact-Driven State:** Artifacts are the *only* source of truth. No conversational history drives execution.
 * **Capability Gating:** Network and host access are deny-by-default, requested via structured artifacts, and powerful when explicitly granted.
 * **Native Sandboxing:** Tool execution runs in native Linux namespaces (bwrap/nsjail) to maintain a microkernel architecture.
 * **Hard Budgets:** Strict caps on retries, compute time, and context size prevent infinite loops.
+* **Pluggable Workflows:** The state machine is parameterized by a `WorkflowTemplate` — a static, auditable definition of phases, transitions, schemas, and branch rules. The coding pipeline is the first workflow, not the only one. Red teaming, data analysis, optimization, and arbitrary structured tasks run on the same kernel with different templates. The LLM selects which template to use at INTAKE; it never rewrites the transition graph at runtime.
 * **Deterministic Workflows:** Repository-native patch workflows using Search/Replace blocks, governed by a rigid scoring hierarchy (Tests > Static Analysis > LLM).
 * **GPU-Aware Orchestration:** VRAM-aware scheduling and KV cache prefixing that adapts to the available hardware — from a single RTX 5090 (32GB) to multi-GPU configurations (e.g., 4x L4, RTX 6000 Pro 96GB).
 
@@ -36,18 +37,26 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
                           ┌─────────────────────────┐
                           │     CLI / Task Input     │
                           │  (lobi/judais commands)  │
+                          │  --task / --workflow      │
+                          └────────────┬────────────┘
+                                       │
+                          ┌────────────▼────────────┐
+                          │  WorkflowSelector        │
+                          │  (picks template from    │
+                          │   INTAKE artifact or CLI) │
                           └────────────┬────────────┘
                                        │
                           ┌────────────▼────────────┐
                           │     core/kernel/         │
-                          │  State Machine + Budgets │
-                          │  INTAKE → ... → FINALIZE │
+                          │  Orchestrator + Budgets  │
+                          │  WorkflowTemplate drives │
+                          │  phases & transitions    │
                           └──┬───────────────────┬──┘
                              │                   │
               ┌──────────────▼──────┐   ┌───────▼──────────────┐
               │  core/contracts/    │   │  core/roles/          │
-              │  JSON Schemas +     │   │  Planner / Coder /    │
-              │  Pydantic models    │   │  Reviewer prompts     │
+              │  Workflow-scoped    │   │  Dispatchers per      │
+              │  Pydantic schemas   │   │  workflow domain      │
               └──────────┬─────────┘   │  (+ Lobi/JudAIs       │
                          │             │   personality layers)  │
               ┌──────────▼─────────┐   └───────┬───────────────┘
@@ -72,39 +81,57 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
    └──────┬──────┘
           │
    ┌──────▼──────────────────────────┐
-   │ tools/servers/                  │
-   │ repo, git, runner, test, memory │
-   │ web_search, rag, voice (opt)   │
+   │ tools/ (domain packages)        │
+   │ repo, git, patch, verify, fs    │
+   │ web_search, rag, voice (opt)    │
+   │ + future: redteam/, data/, ...  │
    └─────────────────────────────────┘
 ```
 
 ### 2.2 Core Components
 ```text
 core/
-  kernel/                # Orchestration state machine & hard budgets
+  kernel/                # Orchestrator, budgets, workflow engine
+    state.py             # Phase, SessionState, transition validation
+    orchestrator.py      # Main loop (parameterized by WorkflowTemplate)
+    budgets.py           # Hard budget enforcement
+    workflows.py         # WorkflowTemplate, WorkflowSelector, built-in templates
   contracts/             # JSON schemas + Pydantic validation
+    schemas.py           # All Pydantic models (workflow-registered, not hardcoded)
+    validation.py        # Schema lookup via workflow.phase_schemas
   runtime/               # LLM provider backends (OpenAI/Mistral API + Local HTTP/vLLM/TRT-LLM)
   capabilities/          # PermissionRequest and PermissionGrant engine
   context/               # Repo-map, Retrieval + compression
+  patch/                 # Patch engine: parser, matcher, applicator, worktree
   memory/                # Unified memory (SQLite + FAISS vectors, carried forward)
-  roles/                 # Planner / Coder / Reviewer static prompts
+  roles/                 # Domain-specific role dispatchers
+    dispatchers/         # CodeDispatcher, GenericDispatcher, future RedTeamDispatcher...
+    personalities/       # lobi.yaml, judais.yaml — persona overlays
   scoring/               # Composite judge (Tests > Lint > LLM)
 
 tools/
   bus/                   # MCP-style tool registry + Policy enforcement
   sandbox/               # SandboxRunner backends (bwrap, nsjail, none)
-  servers/               # repo, git, runner, test, memory, web_search, rag
+  (domain packages)      # fs, git, patch, verify, repo_map + future: redteam/, data/
 
 sessions/
   <timestamp_taskid>/
     artifacts/           # The ONLY source of truth for the session
+    workflow.json        # Which WorkflowTemplate was used (for replay)
 
 ```
 
 ### 2.3 Execution Model & Hard Budgets
 
-Every task follows a strict state machine:
+Every task follows a strict state machine defined by a `WorkflowTemplate`. The template is selected at INTAKE (by CLI flag, policy, or LLM classification) and is **immutable for the session**. The LLM never modifies the transition graph at runtime.
+
+The **Coding Workflow** (default, current):
 `INTAKE` -> `CONTRACT` -> `REPO_MAP` -> `PLAN` -> `RETRIEVE` -> `PATCH` -> `CRITIQUE` -> `RUN` -> `FIX (loop)` -> `FINALIZE`
+
+The **Generic Workflow** (for tasks that don't fit a named template):
+`INTAKE` -> `PLAN` -> `EXECUTE` -> `EVALUATE` -> `(loop to PLAN or EXECUTE)` -> `FINALIZE`
+
+Future named workflows (Red Team, Data Analysis, etc.) define their own phases but share the same kernel, budgets, ToolBus, and artifact system.
 
 Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the ToolBus on **every tool call**. Any tool invocation — in any phase — triggers a capability check. If the required scope is not granted, the ToolBus returns a structured error and the kernel prompts for a `PermissionRequest`. This happens inline, not as a discrete step in the state machine.
 
@@ -122,6 +149,7 @@ Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the Tool
 5. **GPU Scheduling in Runtime, Not Kernel:** The kernel asks `runtime.get_parallelism_budget()` and receives a number. It does not know about VRAM, device counts, or compute capability. Clean separation — the kernel orchestrates phases, the runtime owns hardware awareness.
 6. **One ToolBus, Both Modes:** Direct mode and agentic mode use the **same ToolBus and SandboxRunner**. The difference between modes is orchestration depth (direct mode skips the kernel state machine), not the execution path. If direct mode bypasses the bus, you build two security models that drift apart. Every `--shell`, `--python`, and `--search` call in direct mode goes through the bus with the same policy enforcement. The bus is the only door.
 7. **Kernel Never Touches the Filesystem:** The kernel reads artifacts and dispatches to tools. It never reads from the working directory, never opens project files, never writes outside the session directory. All repository interaction goes through a `RepoServer` tool via the ToolBus. Even read-only access must be sandboxed — if the kernel can read files directly, that is an unsandboxed path to the repo that bypasses policy. Kernel orchestrates. Tools touch the world.
+8. **Workflow Templates Are Static:** The `WorkflowTemplate` — its phases, transitions, and schema registry — is selected once at INTAKE and is immutable for the session. The LLM controls what happens *inside* a phase. The kernel controls *which phase runs next.* The LLM picks from a menu of templates; it never writes the menu. This is the one invariant that protects every budget and safety constraint from circumvention. Two-tier orchestration: static workflow graph (Tier 1), adaptive phase-internal planning (Tier 2).
 
 
 
@@ -308,9 +336,128 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 
 **Definition of Done:** ✅ Patch protocol produces reproducible edits. Exact-match validation with structured diagnostics. Git worktree isolation for atomic cross-file changes. Automatic rollback on failure. 12 tool descriptors, 31 operations under 13 scopes.
 
-### Phase 7 – Multi-Role Orchestrator, Composite Judge & External Critic
+### Phase 7 – Pluggable Workflows, Multi-Role Orchestrator, Composite Judge & External Critic
 
-**Goal:** Team-of-teams behavior via deterministic scoring hierarchy, with an optional external frontier-model critic for catching "confident wrong" failures from local models.
+**Goal:** Abstract the state machine into pluggable `WorkflowTemplate` objects, implement role dispatchers per domain, and add a deterministic scoring hierarchy with an optional external critic.
+
+#### 7.0 WorkflowTemplate & State Machine Abstraction
+
+The kernel currently hardcodes a coding pipeline: `Phase` enum, `TRANSITIONS` dict, `_PHASE_ORDER` list, and `PHASE_SCHEMAS` mapping are all static globals. To support multiple task domains without duplicating kernel logic, these must become parameters of a `WorkflowTemplate` that the `Orchestrator` and `SessionState` consume.
+
+**The refactor is surgical and backward-compatible.** The coding workflow becomes `CODING_WORKFLOW = WorkflowTemplate(...)` — a constant that produces identical behavior to the current hardcoded enum. Zero existing tests break.
+
+**`WorkflowTemplate` dataclass:**
+
+```python
+@dataclass(frozen=True)
+class WorkflowTemplate:
+    name: str                                           # "coding", "generic", "redteam", ...
+    phases: Tuple[str, ...]                             # Ordered phase names (strings, not enum)
+    transitions: Dict[str, FrozenSet[str]]              # phase -> set of valid next phases
+    phase_schemas: Dict[str, Type[BaseModel]]           # phase -> Pydantic model for artifact validation
+    phase_order: Tuple[str, ...]                        # Linear progression (excludes branch targets)
+    branch_rules: Dict[str, Callable]                   # phase -> function(result) -> next_phase_name
+    terminal_phases: FrozenSet[str]                     # {"HALTED", "COMPLETED"}
+    default_budget_overrides: Dict[str, Any] = field(default_factory=dict)
+    required_scopes: List[str] = field(default_factory=list)  # Scopes needed by this workflow
+    description: str = ""
+```
+
+**Key design points:**
+
+* **Phases are strings, not enum members.** This allows workflow templates to define domain-specific phase names (`RECON`, `VULN_MAP`, `EXPLOIT`) without modifying a global enum. `SessionState.current_phase` becomes `str`. Transition validation uses `workflow.transitions[current]`.
+* **`branch_rules`** replace the hardcoded `if current == Phase.RUN: ...` logic in `_select_next_phase()`. Each workflow declares its own branching — e.g., coding says "RUN success → FINALIZE, RUN failure → FIX"; generic says "EVALUATE success → FINALIZE, EVALUATE failure → PLAN".
+* **`phase_schemas`** replace the global `PHASE_SCHEMAS` dict. `validate_phase_output()` looks up `workflow.phase_schemas[phase_name]`. A workflow can register domain-specific Pydantic models (e.g., `ReconReport`, `ExploitPlan`) for its phases.
+* **`default_budget_overrides`** allow workflows to tune budgets — red teaming may need more iterations than coding, data analysis may need longer phase timeouts for large datasets.
+
+**Built-in templates:**
+
+```python
+CODING_WORKFLOW = WorkflowTemplate(
+    name="coding",
+    phases=("INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE",
+            "PATCH", "CRITIQUE", "RUN", "FIX", "FINALIZE", "HALTED", "COMPLETED"),
+    transitions={...},      # Identical to current TRANSITIONS dict
+    phase_schemas={...},    # Identical to current PHASE_SCHEMAS dict
+    phase_order=("INTAKE", "CONTRACT", "REPO_MAP", "PLAN",
+                 "RETRIEVE", "PATCH", "CRITIQUE", "RUN"),
+    branch_rules={
+        "RUN": lambda result: "FINALIZE" if result.success else "FIX",
+        "FIX": lambda result: "PATCH",
+        "FINALIZE": lambda result: "COMPLETED",
+    },
+    terminal_phases=frozenset({"HALTED", "COMPLETED"}),
+    description="Full software development pipeline with repo map, patching, and test loop.",
+)
+
+GENERIC_WORKFLOW = WorkflowTemplate(
+    name="generic",
+    phases=("INTAKE", "PLAN", "EXECUTE", "EVALUATE", "FINALIZE", "HALTED", "COMPLETED"),
+    transitions={
+        "INTAKE":   frozenset({"PLAN", "HALTED"}),
+        "PLAN":     frozenset({"EXECUTE", "HALTED"}),
+        "EXECUTE":  frozenset({"EVALUATE", "HALTED"}),
+        "EVALUATE": frozenset({"PLAN", "EXECUTE", "FINALIZE", "HALTED"}),
+        "FINALIZE": frozenset({"COMPLETED", "HALTED"}),
+        "HALTED":   frozenset(),
+        "COMPLETED": frozenset(),
+    },
+    phase_schemas={...},    # INTAKE -> TaskContract, PLAN -> ChangePlan, FINALIZE -> FinalReport
+    phase_order=("INTAKE", "PLAN", "EXECUTE", "EVALUATE"),
+    branch_rules={
+        "EVALUATE": lambda result: "FINALIZE" if result.success else "PLAN",
+        "FINALIZE": lambda result: "COMPLETED",
+    },
+    terminal_phases=frozenset({"HALTED", "COMPLETED"}),
+    description="Flexible pipeline for arbitrary structured tasks. EXECUTE dispatches to any tool on the bus.",
+)
+```
+
+**`WorkflowSelector`:**
+
+A function (not a class) that reads the INTAKE artifact and returns a `WorkflowTemplate`. Selection hierarchy:
+1. CLI flag: `--workflow coding` → hardcoded choice, no LLM involved.
+2. Policy file: `workflow: "generic"` in `PolicyPack` → deterministic.
+3. LLM classification: Given the task description, classify into a known template name. If no match → `GENERIC_WORKFLOW`. The LLM picks from a fixed menu; it cannot invent a template.
+
+**Refactored `SessionState`:**
+
+* `current_phase: str` (was `Phase` enum)
+* `workflow: WorkflowTemplate` (new field, passed at construction)
+* `enter_phase()` validates against `workflow.transitions`
+
+**Refactored `Orchestrator`:**
+
+* `__init__(..., workflow: WorkflowTemplate = CODING_WORKFLOW)`
+* `_select_next_phase()` reads `workflow.phase_order` and `workflow.branch_rules`
+* `_is_terminal()` checks `workflow.terminal_phases`
+* `_validate_and_record()` looks up `workflow.phase_schemas`
+
+**Refactored `validation.py`:**
+
+* `get_schema_for_phase(phase, workflow)` instead of reading the global `PHASE_SCHEMAS`
+
+**Implementation order:**
+
+1. Create `core/kernel/workflows.py` with `WorkflowTemplate` dataclass and `CODING_WORKFLOW` constant.
+2. Refactor `SessionState`: `current_phase` becomes `str`, accept `workflow` parameter, validate against `workflow.transitions`.
+3. Refactor `Orchestrator`: accept `workflow` parameter, replace hardcoded phase logic with `workflow.branch_rules` and `workflow.phase_order`.
+4. Refactor `validation.py`: accept workflow parameter for schema lookup.
+5. Update all existing tests to pass `CODING_WORKFLOW` (or default to it). **Zero behavioral change at this step.**
+6. Create `GENERIC_WORKFLOW` constant.
+7. Proof-of-concept: run a non-coding task (e.g., "solve this math problem" or "analyze this CSV") through `GENERIC_WORKFLOW` with a stub dispatcher.
+8. Write `WorkflowSelector` function.
+
+**What this enables (future, not Phase 7 scope):**
+
+Domain-specific workflows are defined as additional `WorkflowTemplate` constants with their own phases, schemas, tools, and capability profiles. Examples:
+
+* **Red Team Workflow:** `INTAKE → RECON → VULN_MAP → EXPLOIT_PLAN → EXECUTE → EVALUATE → FINALIZE`. Registers `ReconReport`, `ExploitPlan`, `ExploitResult` schemas. Requires `net.scan`, `net.exploit` scopes. `BwrapSandbox` drops `--unshare-net` when these scopes are granted. Uses `RedTeamDispatcher` for role prompts.
+* **Data Analysis Workflow:** `INTAKE → DATA_MAP → PLAN → TRANSFORM → ANALYZE → FINALIZE`. Registers `DataProfile`, `TransformPlan`, `AnalysisResult` schemas. Uses `DATA_SCI` capability profile (`fs.read`, `fs.write`, `python.exec` with pandas/numpy venv). Uses `DataDispatcher` for role prompts.
+* **Domain-specific tool packages:** `core/tools/redteam/` (nmap, gobuster, metasploit_rpc), `core/tools/data/` (sql_query, pandas_exec, plot_generator). Same ToolBus, same capability gating.
+* **Domain-specific role dispatchers:** `CodeDispatcher` (Planner/Coder/Reviewer), `RedTeamDispatcher` (OSINT_Analyst/Exploit_Dev/Vuln_Assessor), `DataDispatcher` (Data_Engineer/Statistician/Visualizer). JudAIs and Lobi remain persona overlays applied to any dispatcher.
+
+These are **not Phase 7 deliverables** — they are future workflow templates that the Phase 7 abstraction makes trivially addable. Phase 7 delivers the mechanism (`WorkflowTemplate`, `CODING_WORKFLOW`, `GENERIC_WORKFLOW`, `WorkflowSelector`). Future phases deliver the content.
 
 #### 7.1 Composite Judge
 
@@ -432,16 +579,22 @@ Grants are logged to the session. All requests and payload hashes are recorded f
 
 **Implementation tasks:**
 
-1. `ExternalCriticBackend` interface (HTTP client to frontier API, uses `core/runtime/backends/` pattern)
-2. `CritiquePack` builder (assembles minimal artifact payload from session state)
-3. `Redactor` (strict by default, configurable per policy)
-4. `ExternalCriticReport` schema + Pydantic validation
-5. Critic trigger policy (when to call, what to send, what to do with verdicts)
-6. Orchestrator interceptor hooks on PLAN→RETRIEVE and RUN→FINALIZE transitions
-7. CLI: `--critic` flag to enable, `--critic-provider <name>` to select, `--no-critic` to force off
-8. Manual invocation: `lobi critic --session <id>` for post-hoc review of any session
+1. `WorkflowTemplate` dataclass + `CODING_WORKFLOW` + `GENERIC_WORKFLOW` (see 7.0)
+2. Refactor `SessionState`, `Orchestrator`, `validation.py` to accept workflow parameter
+3. `WorkflowSelector` function (CLI flag → policy → LLM classification → GENERIC fallback)
+4. Proof-of-concept: non-coding task through `GENERIC_WORKFLOW` with stub dispatcher
+5. `CodeDispatcher` (Planner/Coder/Reviewer prompts — extracted from future role system)
+6. `GenericDispatcher` (PLAN/EXECUTE/EVALUATE prompts for arbitrary tasks)
+7. `ExternalCriticBackend` interface (HTTP client to frontier API, uses `core/runtime/backends/` pattern)
+8. `CritiquePack` builder (assembles minimal artifact payload from session state)
+9. `Redactor` (strict by default, configurable per policy)
+10. `ExternalCriticReport` schema + Pydantic validation
+11. Critic trigger policy (when to call, what to send, what to do with verdicts)
+12. Orchestrator interceptor hooks on phase transitions (workflow-aware, not hardcoded to coding phases)
+13. CLI: `--workflow <name>` flag to select workflow, `--critic` flag to enable, `--no-critic` to force off
+14. Manual invocation: `lobi critic --session <id>` for post-hoc review of any session
 
-**Definition of Done:** Generates competing patches, grades them deterministically, discards test failures, and selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline.
+**Definition of Done:** State machine is parameterized by `WorkflowTemplate`. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline.
 
 ### Phase 8 – Retrieval, Context Discipline & Local Inference
 
@@ -502,6 +655,8 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 | **Model Collapse** | Last 3 outputs >90% identical on **semantic content fields** (plan steps, patch blocks, review reasoning — not raw artifact JSON, which is naturally repetitive in structure) | Kill phase, inject prompt perturbation | `collapse_<n>.json` | Burn 1 `max_phase_retries` with forced prompt perturbation |
 | **Critic Refusal** | External critic returns `refused` verdict | Log refusal, continue pipeline as if critic was not called | `critic_refused_<n>.json` | No retry consumed — refusal is a non-event |
 | **Critic Unavailable** | Network error, timeout, or critic disabled | Silent no-op, continue pipeline | `critic_unavailable_<n>.json` | No retry consumed |
+| **Workflow Mismatch** | Task requires phases not in selected template | Halt with diagnostic | `workflow_mismatch.json` | User re-runs with `--workflow <correct>` |
+| **Unknown Workflow** | `--workflow <name>` not in registry | Reject at CLI parse time | N/A | User selects from known templates |
 
 ---
 
@@ -517,6 +672,7 @@ To prevent system collapse under edge cases, the kernel must handle failures str
   * Not a chat product (though direct chat remains available for simple queries).
   * Not a web-first IDE.
   * Not dependent on vendor lock-in.
+  * Not a framework where LLMs design their own execution pipelines. The LLM operates within a phase; the kernel decides which phase runs next. Workflow templates are static, auditable, and human-authored.
 
 ## 7. Design Philosophy
 
@@ -525,6 +681,7 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 * **Determinism over Vibes:** Tests dictate success; LLMs only suggest code.
 * **Budgets over Infinite Loops:** Everything has a timeout and a retry cap.
 * **Dumb Tools, Smart Kernel:** Tools execute. They do not decide, retry, repair, or escalate. All intelligence lives in the kernel. If a tool contains an `if/else` about what to do next, it has too much agency.
+* **Static Graphs, Adaptive Phases:** The workflow template (phase topology, transitions, schemas) is static and auditable. The LLM controls what happens *inside* a phase — which tools to call, what plan to propose, what patch to emit. The LLM never controls *which phase runs next.* This is two-tier orchestration: rigid outer loop, flexible inner loop. If the LLM can rewrite the transition graph, every budget and safety constraint has a backdoor.
 * **Migration over Rewrite:** Each phase must leave the system in a working state. No big-bang rewrites.
 * **Air-Gap Ready:** Every external dependency (frontier critic, API backends, network tools) is optional and capability-gated. The system must run identically with or without network access. External services add value when available but never gate execution. A `refused` response from any external service is a non-event, not a blocker.
 * **Commit or Abort:** The greatest architectural risk is partial refactor — a half-agentic, half-chatbot chimera where some paths use artifacts and others use `self.history`, where some tools go through the bus and others call subprocess directly. Each phase must fully replace the subsystem it targets. Release 0.8 can break backward compatibility. That is allowed. What is not allowed is two systems of truth running in parallel.
@@ -546,11 +703,15 @@ lobi --recall 5                       # Adventure history
 ```bash
 lobi --task "add pagination to the /users endpoint"
 lobi --task "fix the race condition in worker.py" --grant net.any
+lobi --task "analyze sales.csv and find outliers" --workflow generic
+lobi --task "recon target.example.com" --workflow redteam --grant net.scan
 ```
 
 * `--task` enters the full state machine (INTAKE through FINALIZE).
+* `--workflow <name>` selects a `WorkflowTemplate` explicitly. If omitted, `WorkflowSelector` classifies at INTAKE (default: `coding` for repo-context tasks, `generic` for everything else).
 * `--grant` pre-authorizes capability scopes for the session.
 * Session artifacts are written to `sessions/<timestamp_taskid>/artifacts/`.
+* `workflow.json` records which template was used (for deterministic replay).
 * The user can inspect, resume, or replay any session from its artifacts.
 
 **Capability grant UX** — three modes, from most manual to most automated:
@@ -579,7 +740,10 @@ Phase 0 (Tests & Baseline)
   │       │                                                    │
   │       │                                    ┌───────────────┘
   │       │                                    │
-  │       │                              Phase 7 (Orchestrator & Judge)
+  │       │                              Phase 7 (Workflows + Orchestrator + Judge)
+  │       │                                ├── 7.0: WorkflowTemplate abstraction
+  │       │                                ├── 7.1-7.2: Judge + Candidates
+  │       │                                └── 7.3: External Critic
   │       │                                    │
   │       │                              Phase 8 (Retrieval & Local Inference)
   │       │                                    │
@@ -596,8 +760,10 @@ Phase 0 (Tests & Baseline)
 
 **Key parallelism opportunities:**
 * Phase 5 (Repo Map) and Phase 6 (Patch Engine) are independent and can be built concurrently after Phase 3.
+* Phase 7.0 (WorkflowTemplate) is a prerequisite for 7.1–7.3 but can be implemented and tested independently.
 * Phase 10 (Benchmarks) baseline capture starts in Phase 0; the full suite is built last but metrics collection is continuous.
 * Local inference bring-up (Phase 8) can begin prototyping as soon as the runtime interface is defined (Phase 1), though full integration requires Phase 3 contracts.
+* Domain-specific workflow templates (RedTeam, DataSci) can be added at any point after Phase 7.0 ships — they are content, not infrastructure.
 
 ## 10. Point of No Return: The Deletion of `elf.py`
 
