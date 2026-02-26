@@ -23,13 +23,21 @@ from core.kernel.orchestrator import (
     RoleDispatcher,
     PhaseResult,
 )
+from core.kernel.workflows import (
+    WorkflowTemplate,
+    get_coding_workflow,
+    get_generic_workflow,
+    select_workflow,
+)
 
 __all__ = [
+    # State machine
     "Phase",
     "SessionState",
     "TRANSITIONS",
     "InvalidTransition",
     "validate_transition",
+    # Budgets
     "BudgetConfig",
     "BudgetExhausted",
     "PhaseRetriesExhausted",
@@ -39,7 +47,13 @@ __all__ = [
     "check_total_iterations",
     "check_phase_time",
     "check_all_budgets",
+    # Orchestrator
     "Orchestrator",
     "RoleDispatcher",
     "PhaseResult",
+    # Workflows (Phase 7.0)
+    "WorkflowTemplate",
+    "get_coding_workflow",
+    "get_generic_workflow",
+    "select_workflow",
 ]

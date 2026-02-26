@@ -1,4 +1,7 @@
 # core/kernel/orchestrator.py — Main orchestration loop
+#
+# Phase 7.0: Orchestrator accepts a WorkflowTemplate and delegates all phase
+# logic to it. No hardcoded phase names, transitions, or branching rules.
 
 import logging
 from dataclasses import dataclass
@@ -23,26 +26,18 @@ class RoleDispatcher(Protocol):
     """Protocol for phase-specific role execution.
 
     Implementations are injected into the Orchestrator.
-    Phase 7 provides real implementations; Phase 2 tests use stubs.
+    Phase arg is a string (workflow-defined phase name).
     """
 
-    def dispatch(self, phase: Phase, state: SessionState) -> PhaseResult: ...
-
-
-# Linear phase order (excludes FIX, HALTED, COMPLETED — those are branching targets)
-_PHASE_ORDER = [
-    Phase.INTAKE, Phase.CONTRACT, Phase.REPO_MAP, Phase.PLAN,
-    Phase.RETRIEVE, Phase.PATCH, Phase.CRITIQUE, Phase.RUN,
-]
+    def dispatch(self, phase: str, state: SessionState) -> PhaseResult: ...
 
 
 class Orchestrator:
     """Drives the kernel state machine through all phases.
 
-    Reads current state, selects next phase, dispatches to roles,
-    and enforces hard budgets. The orchestrator never touches the
-    filesystem directly — all I/O goes through the injected dispatcher
-    and optional SessionManager.
+    Phase 7.0: All phase logic comes from the injected WorkflowTemplate.
+    The orchestrator is workflow-agnostic — it reads phase_order, branch_rules,
+    and terminal_phases from the template.
     """
 
     def __init__(
@@ -51,6 +46,7 @@ class Orchestrator:
         budget: Optional[BudgetConfig] = None,
         session_manager=None,
         tool_bus=None,
+        workflow=None,
     ):
         self._dispatcher = dispatcher
         self._budget = budget or BudgetConfig()
@@ -58,12 +54,22 @@ class Orchestrator:
         self._tool_bus = tool_bus
         self._artifact_sequence = 0
 
+        # Lazy import to avoid circular dependency
+        if workflow is None:
+            from core.kernel.workflows import get_coding_workflow
+            workflow = get_coding_workflow()
+        self._workflow = workflow
+
     def run(self, task: str) -> SessionState:
         """Execute a complete task through the state machine.
 
         Returns the final SessionState (COMPLETED or HALTED).
         """
-        state = SessionState(task_description=task)
+        state = SessionState(
+            task_description=task,
+            current_phase=self._workflow.phases[0],
+            _transitions=self._workflow.transitions,
+        )
 
         if self._session_manager is not None:
             state.session_id = self._session_manager.session_id
@@ -114,7 +120,10 @@ class Orchestrator:
 
     def _execute_phase(self, state: SessionState) -> PhaseResult:
         """Dispatch current phase to the role handler."""
-        logger.info("Executing phase: %s", state.current_phase.name)
+        phase_name = state.current_phase
+        if hasattr(phase_name, 'name'):
+            phase_name = phase_name.name
+        logger.info("Executing phase: %s", phase_name)
         result = self._dispatcher.dispatch(state.current_phase, state)
         if not isinstance(result, PhaseResult):
             result = PhaseResult(success=True, output=result)
@@ -122,7 +131,7 @@ class Orchestrator:
             retry_count = state.record_phase_retry(state.current_phase)
             logger.info(
                 "Phase %s failed (retry %d/%d): %s",
-                state.current_phase.name,
+                phase_name,
                 retry_count,
                 self._budget.max_phase_retries,
                 result.error,
@@ -137,27 +146,37 @@ class Orchestrator:
         """
         from core.contracts.validation import get_schema_for_phase, validate_phase_output
 
-        schema = get_schema_for_phase(state.current_phase)
+        schema = get_schema_for_phase(
+            state.current_phase,
+            phase_schemas=self._workflow.phase_schemas,
+        )
         if schema is None:
             return None
 
         if result.output is None:
             return None
 
+        phase_name = state.current_phase
+        if hasattr(phase_name, 'name'):
+            phase_name = phase_name.name
+
         try:
-            validated = validate_phase_output(state.current_phase, result.output)
+            validated = validate_phase_output(
+                state.current_phase, result.output,
+                phase_schemas=self._workflow.phase_schemas,
+            )
             path = self._session_manager.write_artifact(
-                state.current_phase.name,
+                phase_name,
                 self._artifact_sequence,
                 validated,
             )
             self._artifact_sequence += 1
-            state.artifacts[state.current_phase.name] = str(path)
+            state.artifacts[phase_name] = str(path)
             return None
         except Exception as exc:
             logger.warning(
                 "Validation failed for phase %s: %s",
-                state.current_phase.name, exc,
+                phase_name, exc,
             )
             retry_count = state.record_phase_retry(state.current_phase)
             return PhaseResult(
@@ -167,38 +186,31 @@ class Orchestrator:
 
     def _select_next_phase(
         self, state: SessionState, result: PhaseResult,
-    ) -> Optional[Phase]:
+    ) -> Optional[str]:
         """Determine the next phase based on current state and phase result.
 
-        Returns None if the current phase should be retried (failure in a
-        non-RUN linear phase). The main loop skips enter_phase in that case,
-        and the next iteration's budget check catches exhausted retries.
+        Uses workflow.branch_rules for phases with special branching.
+        For linear phases: retry on failure, advance through phase_order on success.
+        Returns None if the current phase should be retried.
         """
         current = state.current_phase
 
-        # RUN branches: success → FINALIZE, failure → FIX
-        if current == Phase.RUN:
-            return Phase.FINALIZE if result.success else Phase.FIX
+        # Check branch rules first (RUN, FIX, FINALIZE in coding workflow)
+        if current in self._workflow.branch_rules:
+            rule = self._workflow.branch_rules[current]
+            return rule(result)
 
-        # FIX always loops back to PATCH
-        if current == Phase.FIX:
-            return Phase.PATCH
-
-        # FINALIZE → COMPLETED
-        if current == Phase.FINALIZE:
-            return Phase.COMPLETED
-
-        # For all other phases: retry on failure, advance on success
+        # For phases without branch rules: retry on failure, advance on success
         if not result.success:
             return None
 
-        if current in _PHASE_ORDER:
-            idx = _PHASE_ORDER.index(current)
-            if idx + 1 < len(_PHASE_ORDER):
-                return _PHASE_ORDER[idx + 1]
+        phase_order = self._workflow.phase_order
+        if current in phase_order:
+            idx = list(phase_order).index(current)
+            if idx + 1 < len(phase_order):
+                return phase_order[idx + 1]
 
-        raise InvalidTransition(current, Phase.HALTED)
+        raise InvalidTransition(current, "HALTED")
 
-    @staticmethod
-    def _is_terminal(phase: Phase) -> bool:
-        return phase in (Phase.HALTED, Phase.COMPLETED)
+    def _is_terminal(self, phase: str) -> bool:
+        return phase in self._workflow.terminal_phases

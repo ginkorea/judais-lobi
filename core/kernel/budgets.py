@@ -1,9 +1,12 @@
 # core/kernel/budgets.py — Hard budget configuration and enforcement
+#
+# Phase 7.0: Phase params accept str (was Phase enum). Since Phase is now
+# str,Enum, all existing callers work without changes.
 
 import time
 from dataclasses import dataclass
 
-from core.kernel.state import Phase, SessionState
+from core.kernel.state import SessionState
 
 
 @dataclass(frozen=True)
@@ -24,12 +27,13 @@ class BudgetExhausted(Exception):
 class PhaseRetriesExhausted(BudgetExhausted):
     """Raised when a phase exceeds max_phase_retries."""
 
-    def __init__(self, phase: Phase, retries: int, max_retries: int):
+    def __init__(self, phase: str, retries: int, max_retries: int):
         self.phase = phase
         self.retries = retries
         self.max_retries = max_retries
+        name = phase.name if hasattr(phase, 'name') else phase
         super().__init__(
-            f"Phase {phase.name} exhausted retries: {retries}/{max_retries}"
+            f"Phase {name} exhausted retries: {retries}/{max_retries}"
         )
 
 
@@ -47,12 +51,13 @@ class TotalIterationsExhausted(BudgetExhausted):
 class PhaseTimeoutExhausted(BudgetExhausted):
     """Raised when a single phase exceeds its time budget."""
 
-    def __init__(self, phase: Phase, elapsed: float, max_seconds: float):
+    def __init__(self, phase: str, elapsed: float, max_seconds: float):
         self.phase = phase
         self.elapsed = elapsed
         self.max_seconds = max_seconds
+        name = phase.name if hasattr(phase, 'name') else phase
         super().__init__(
-            f"Phase {phase.name} timed out: {elapsed:.1f}s/{max_seconds:.1f}s"
+            f"Phase {name} timed out: {elapsed:.1f}s/{max_seconds:.1f}s"
         )
 
 

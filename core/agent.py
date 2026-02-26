@@ -266,10 +266,10 @@ class Agent:
         Phase 2 returns a stub that succeeds on every phase.
         Phase 7 overrides this with real role implementations.
         """
-        from core.kernel import PhaseResult, Phase, SessionState
+        from core.kernel import PhaseResult, SessionState
 
         class StubDispatcher:
-            def dispatch(self, phase: Phase, state: SessionState) -> PhaseResult:
+            def dispatch(self, phase: str, state: SessionState) -> PhaseResult:
                 return PhaseResult(success=True)
 
         return StubDispatcher()

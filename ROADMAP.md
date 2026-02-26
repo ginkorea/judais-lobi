@@ -496,14 +496,16 @@ A function (not a class) that reads the INTAKE artifact and returns a `WorkflowT
 
 **Implementation order:**
 
-1. Create `core/kernel/workflows.py` with `WorkflowTemplate` dataclass and `CODING_WORKFLOW` constant.
-2. Refactor `SessionState`: `current_phase` becomes `str`, accept `workflow` parameter, validate against `workflow.transitions`.
-3. Refactor `Orchestrator`: accept `workflow` parameter, replace hardcoded phase logic with `workflow.branch_rules` and `workflow.phase_order`.
-4. Refactor `validation.py`: accept workflow parameter for schema lookup.
-5. Update all existing tests to pass `CODING_WORKFLOW` (or default to it). **Zero behavioral change at this step.**
-6. Create `GENERIC_WORKFLOW` constant.
-7. Proof-of-concept: run a non-coding task (e.g., "solve this math problem" or "analyze this CSV") through `GENERIC_WORKFLOW` with a stub dispatcher.
-8. Write `WorkflowSelector` function.
+1. ~~Create `core/kernel/workflows.py` with `WorkflowTemplate` dataclass and `CODING_WORKFLOW` constant.~~ ✅
+2. ~~Refactor `SessionState`: `current_phase` becomes `str`, accept `workflow` parameter, validate against `workflow.transitions`.~~ ✅
+3. ~~Refactor `Orchestrator`: accept `workflow` parameter, replace hardcoded phase logic with `workflow.branch_rules` and `workflow.phase_order`.~~ ✅
+4. ~~Refactor `validation.py`: accept workflow parameter for schema lookup.~~ ✅
+5. ~~Update all existing tests to pass `CODING_WORKFLOW` (or default to it). **Zero behavioral change at this step.**~~ ✅
+6. ~~Create `GENERIC_WORKFLOW` constant.~~ ✅
+7. ~~Proof-of-concept: run a non-coding task through `GENERIC_WORKFLOW` with a stub dispatcher.~~ ✅
+8. ~~Write `WorkflowSelector` function.~~ ✅
+
+**Phase 7.0 status: COMPLETE.** 86 new tests (974 total). `Phase` is now `str, Enum`. CODING_WORKFLOW produces identical behavior to Phase 6 — zero existing tests broken. GENERIC_WORKFLOW proven end-to-end with evaluate-failure loop, budget halting, and phase retry.
 
 **What this enables (future, not Phase 7 scope):**
 
@@ -856,7 +858,7 @@ Campaigns do not violate "Workflow Templates Are Static" because:
 **Suggested implementation order (low drama, high leverage):**
 
 Phase 7 breaks into four sub-phases that can be delivered incrementally:
-1. **7.0** — WorkflowTemplate abstraction + phase_capabilities + EffectiveScope intersection (tasks 1–4, 21–22). Pure refactor + scope enforcement. `CODING_WORKFLOW` with `phase_capabilities` produces identical behavior to Phase 6 (existing capabilities already satisfy the intersection). Zero behavioral change for existing tests.
+1. **7.0** — ~~WorkflowTemplate abstraction + phase_capabilities + EffectiveScope intersection.~~ **COMPLETE** (974 tests). Pure refactor — `CODING_WORKFLOW` produces identical behavior to Phase 6. `GENERIC_WORKFLOW` proven end-to-end.
 2. **7.1–7.2** — Composite Judge + Candidate Sampling (tasks 5–6). Requires 7.0.
 3. **7.3** — External Critic (tasks 7–14). Independent of 7.4. Can ship before or after campaigns.
 4. **7.4** — Campaign Orchestrator + StepPlan + scope grants (tasks 15–20, 23–29). Requires 7.0 (needs WorkflowTemplate registry + EffectiveScope). Independent of 7.1–7.3.

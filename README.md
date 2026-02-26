@@ -47,11 +47,23 @@ See: `ROADMAP.md`
 * ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
 * ✅ Phase 5 — Repo Map & Context Compression (783 tests)
 * ✅ Phase 6 — Repository-Native Patch Engine (888 tests)
+* ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction (974 tests)
 
 ### Up Next
 
-* ⏳ Phase 7 — Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic
+* ⏳ Phase 7.1–7.4 — Composite Judge, External Critic, Campaign Orchestrator
 * ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
+
+### Phase 7.0 Highlights
+
+The kernel state machine is now parameterized by pluggable `WorkflowTemplate` objects. The coding pipeline becomes one template among many — custom workflows define their own phases, transitions, schemas, branching rules, and per-phase capability profiles without modifying any kernel code.
+
+* **`core/kernel/workflows.py`** — `WorkflowTemplate` dataclass defining phases, transitions, phase_schemas, branch_rules, terminal_phases, phase_capabilities, and required_scopes. Two built-in constants: `CODING_WORKFLOW` (identical to Phase 6 behavior) and `GENERIC_WORKFLOW` (INTAKE → PLAN → EXECUTE → EVALUATE loop → FINALIZE). `select_workflow()` resolves by CLI flag, policy, or default.
+* **`core/kernel/state.py`** — `Phase` is now `str, Enum` — members compare equal to their name strings (`Phase.INTAKE == "INTAKE"`). `SessionState.current_phase` is `str`, accepting both Phase enum members and plain strings. Custom workflows use domain-specific phase names as strings without modifying a global enum.
+* **`core/kernel/orchestrator.py`** — Accepts a `WorkflowTemplate` parameter (defaults to `CODING_WORKFLOW`). All phase logic reads from the template: `phase_order` for linear progression, `branch_rules` for conditional branching, `terminal_phases` for loop termination. Zero hardcoded phase names.
+* **`phase_capabilities`** — Per-phase capability allowlists creating temporal sandboxes. PLAN can read but not write. PATCH can write but only through the patch engine. RUN can verify but not modify. The capability engine computes `EffectiveScope` per tool call as the intersection of all applicable layers (Invariant 10).
+
+12 tool descriptors. 86 new tests (974 total). CODING_WORKFLOW produces identical behavior to Phase 6 — zero existing tests break. GENERIC_WORKFLOW proven end-to-end with evaluate-failure loop and budget halting.
 
 ### Phase 6 Highlights
 
@@ -111,7 +123,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/agent.py` — concrete Agent class (replaced `elf.py` in Phase 3)
 * `core/contracts/` — Pydantic v2 contract models for all session data
 * `core/sessions/` — SessionManager for disk artifact persistence
-* `core/kernel/` — state machine, budgets, orchestrator
+* `core/kernel/` — state machine, budgets, orchestrator, workflow templates (`workflows.py`)
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory
 * `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map, patch)
@@ -159,8 +171,11 @@ ToolBus → EffectiveScope check → Sandbox → Subprocess
 Deterministic Judge (Tests > Lint > LLM)
 ```
 
-As of Phase 6:
+As of Phase 7.0:
 
+* The kernel state machine is parameterized by `WorkflowTemplate` objects — no hardcoded phase names, transitions, or branching rules. The coding pipeline is one template; custom domains define their own.
+* `CODING_WORKFLOW` and `GENERIC_WORKFLOW` are built-in templates. `select_workflow()` resolves by CLI flag, policy, or default.
+* Per-phase capability profiles (`phase_capabilities`) create temporal sandboxes — PLAN can read but not write, PATCH can write but only through the patch engine.
 * Tools are dumb executors behind a sandboxed, capability-gated bus.
 * Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`.
 * Deny-by-default. No scope = no execution.
