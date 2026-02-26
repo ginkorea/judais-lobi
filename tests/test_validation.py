@@ -38,8 +38,9 @@ class TestGetSchemaForPhase:
         """REPO_MAP now has a structured schema."""
         assert get_schema_for_phase(Phase.REPO_MAP) is RepoMapResult
 
-    def test_critique_returns_none(self):
-        assert get_schema_for_phase(Phase.CRITIQUE) is None
+    def test_critique_returns_judge_report(self):
+        from core.judge.models import JudgeReport
+        assert get_schema_for_phase(Phase.CRITIQUE) is JudgeReport
 
     def test_fix_returns_none(self):
         assert get_schema_for_phase(Phase.FIX) is None
@@ -109,7 +110,7 @@ class TestValidatePhaseOutputHappy:
 class TestValidatePhaseOutputErrors:
     def test_no_schema_for_phase(self):
         with pytest.raises(ValueError, match="No schema defined"):
-            validate_phase_output(Phase.CRITIQUE, {})
+            validate_phase_output(Phase.FIX, {})
 
     def test_invalid_dict_data(self):
         """Missing required fields should raise ValidationError."""

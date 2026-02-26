@@ -26,6 +26,7 @@ class TestBudgetConfig:
         assert config.max_time_per_phase_seconds == 300.0
         assert config.max_tool_output_bytes_in_context == 32_768
         assert config.max_context_tokens_per_role == 16_384
+        assert config.max_candidates == 5
 
     def test_frozen(self):
         config = BudgetConfig()
@@ -41,6 +42,19 @@ class TestBudgetConfig:
         assert config.max_phase_retries == 5
         assert config.max_total_iterations == 100
         assert config.max_time_per_phase_seconds == 60.0
+
+    def test_max_candidates_default(self):
+        config = BudgetConfig()
+        assert config.max_candidates == 5
+
+    def test_max_candidates_custom(self):
+        config = BudgetConfig(max_candidates=10)
+        assert config.max_candidates == 10
+
+    def test_max_candidates_frozen(self):
+        config = BudgetConfig()
+        with pytest.raises(FrozenInstanceError):
+            config.max_candidates = 3
 
 
 class TestCheckPhaseRetries:

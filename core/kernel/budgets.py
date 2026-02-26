@@ -17,6 +17,7 @@ class BudgetConfig:
     max_time_per_phase_seconds: float = 300.0
     max_tool_output_bytes_in_context: int = 32_768
     max_context_tokens_per_role: int = 16_384
+    max_candidates: int = 5
 
 
 class BudgetExhausted(Exception):

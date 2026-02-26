@@ -216,13 +216,34 @@ class AuditEntry(BaseModel):
 # Phase → schema mapping (phases with structured output)
 # ---------------------------------------------------------------------------
 
-PHASE_SCHEMAS: Dict[str, type] = {
-    "INTAKE": TaskContract,
-    "CONTRACT": TaskContract,
-    "REPO_MAP": RepoMapResult,
-    "PLAN": ChangePlan,
-    "RETRIEVE": ContextPack,
-    "PATCH": PatchSet,
-    "RUN": RunReport,
-    "FINALIZE": FinalReport,
-}
+def _build_phase_schemas() -> Dict[str, type]:
+    """Build PHASE_SCHEMAS lazily to avoid circular import with core.judge.models."""
+    from core.judge.models import JudgeReport
+    return {
+        "INTAKE": TaskContract,
+        "CONTRACT": TaskContract,
+        "REPO_MAP": RepoMapResult,
+        "PLAN": ChangePlan,
+        "RETRIEVE": ContextPack,
+        "PATCH": PatchSet,
+        "CRITIQUE": JudgeReport,
+        "RUN": RunReport,
+        "FINALIZE": FinalReport,
+    }
+
+
+# Lazy singleton — built on first access
+_PHASE_SCHEMAS = None
+
+
+def get_phase_schemas() -> Dict[str, type]:
+    global _PHASE_SCHEMAS
+    if _PHASE_SCHEMAS is None:
+        _PHASE_SCHEMAS = _build_phase_schemas()
+    return _PHASE_SCHEMAS
+
+
+# Eager constant for backward compatibility — modules that import PHASE_SCHEMAS
+# at import time get the dict. Since core.judge.models has no circular deps
+# back to schemas.py, this is safe.
+PHASE_SCHEMAS: Dict[str, type] = _build_phase_schemas()

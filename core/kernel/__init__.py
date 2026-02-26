@@ -56,4 +56,5 @@ __all__ = [
     "get_coding_workflow",
     "get_generic_workflow",
     "select_workflow",
+    # Judge (Phase 7.1-7.2) — importable via core.judge directly
 ]

@@ -859,7 +859,7 @@ Campaigns do not violate "Workflow Templates Are Static" because:
 
 Phase 7 breaks into four sub-phases that can be delivered incrementally:
 1. **7.0** — ~~WorkflowTemplate abstraction + phase_capabilities + EffectiveScope intersection.~~ **COMPLETE** (974 tests). Pure refactor — `CODING_WORKFLOW` produces identical behavior to Phase 6. `GENERIC_WORKFLOW` proven end-to-end.
-2. **7.1–7.2** — Composite Judge + Candidate Sampling (tasks 5–6). Requires 7.0.
+2. **7.1–7.2** — ~~Composite Judge + Candidate Sampling (tasks 5–6).~~ **COMPLETE** (1059 tests). `CompositeJudge` with 3-tier scoring (test/lint/LLM review). `CandidateManager` with worktree isolation. `JudgeReport` registered as CRITIQUE phase schema. `BudgetConfig.max_candidates` field. `GPUProfile` stub.
 3. **7.3** — External Critic (tasks 7–14). Independent of 7.4. Can ship before or after campaigns.
 4. **7.4** — Campaign Orchestrator + StepPlan + scope grants (tasks 15–20, 23–29). Requires 7.0 (needs WorkflowTemplate registry + EffectiveScope). Independent of 7.1–7.3.
 

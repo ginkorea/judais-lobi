@@ -48,11 +48,26 @@ See: `ROADMAP.md`
 * ✅ Phase 5 — Repo Map & Context Compression (783 tests)
 * ✅ Phase 6 — Repository-Native Patch Engine (888 tests)
 * ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction (974 tests)
+* ✅ Phase 7.1-7.2 — Composite Judge & Candidate Sampling (1059 tests)
 
 ### Up Next
 
-* ⏳ Phase 7.1–7.4 — Composite Judge, External Critic, Campaign Orchestrator
+* ⏳ Phase 7.3–7.4 — External Critic, Campaign Orchestrator
 * ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
+
+### Phase 7.1-7.2 Highlights
+
+The kernel now has a deterministic scoring pipeline. Patches are evaluated by a multi-tier CompositeJudge, and N candidate patches can be generated and compared in isolated worktrees with automatic winner selection.
+
+* **`core/judge/models.py`** — `TierVerdict` (str,Enum: pass/fail/waived/skipped), `TierResult`, `JudgeReport` (CRITIQUE phase schema), `CandidateScore`, `CandidateReport`. All Pydantic v2 models with full serialization roundtrip.
+* **`core/judge/tiers.py`** — Three scoring tiers: `TestTier` (weight 0.6, hard pass/fail, short-circuits on failure), `LintTier` (weight 0.25, supports waive), `LLMReviewTier` (weight 0.15, stub returning 0.5). All tiers are pure logic — no subprocess, no ToolBus dependency.
+* **`core/judge/judge.py`** — `CompositeJudge` sequences tiers, computes weighted score, determines verdict (pass/fail/needs_fix). Short-circuit: test failure skips remaining tiers. Verdict: `score >= 0.6 AND test_passed → pass`, `test_failed → fail`, else `needs_fix`. Injectable tier list for custom scoring hierarchies.
+* **`core/judge/candidates.py`** — `CandidateManager` evaluates N candidate PatchSets, each in an isolated worktree via `PatchEngine`. Runs test/lint, scores via `CompositeJudge`, picks the highest-scoring non-failing candidate. Worktrees cleaned up after each evaluation. `max_candidates` cap from `BudgetConfig`.
+* **`core/judge/gpu_profile.py`** — `GPUProfile` stub (cpu_only, max_concurrent=1). Hook for future hardware-aware concurrency budgeting.
+* **`core/kernel/budgets.py`** — `BudgetConfig.max_candidates` (default 5) caps candidate count per task.
+* **`core/contracts/schemas.py`** — `PHASE_SCHEMAS["CRITIQUE"]` now maps to `JudgeReport`.
+
+85 new tests (1059 total). Scoring formula: `test(0.6) + lint(0.25) + llm_review(0.15)`. All-pass score: 0.925. CompositeJudge is pure logic — zero mocks needed for core scoring tests.
 
 ### Phase 7.0 Highlights
 
@@ -130,6 +145,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/policy/` — profiles, god mode, audit logging
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
 * `core/patch/` — patch engine: parser, matcher, applicator, worktree manager, engine orchestrator
+* `core/judge/` — composite judge: tier scoring, candidate sampling, GPU profile stub
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -171,7 +187,7 @@ ToolBus → EffectiveScope check → Sandbox → Subprocess
 Deterministic Judge (Tests > Lint > LLM)
 ```
 
-As of Phase 7.0:
+As of Phase 7.2:
 
 * The kernel state machine is parameterized by `WorkflowTemplate` objects — no hardcoded phase names, transitions, or branching rules. The coding pipeline is one template; custom domains define their own.
 * `CODING_WORKFLOW` and `GENERIC_WORKFLOW` are built-in templates. `select_workflow()` resolves by CLI flag, policy, or default.
@@ -184,10 +200,11 @@ As of Phase 7.0:
 * The agent sees repo structure via a token-budgeted excerpt — file paths, symbol signatures, and dependency-ranked relevance — without loading full source.
 * 3-tier symbol extraction: Python `ast` → tree-sitter (7 languages) → regex fallback. Multi-language dependency graph with import resolution.
 * Code modifications use an exact-match patch protocol with git worktree isolation. Cross-file changes land atomically. Failed patches roll back at zero cost.
+* Patches are scored by a deterministic `CompositeJudge` (Tests > Lint > LLM review). `CandidateManager` evaluates N candidate patches in isolated worktrees and selects the winner by composite score.
 
-Phase 7 (in design) adds:
+Phase 7.3+ (in design) adds:
 
-* **Pluggable Workflows** — `WorkflowTemplate` parameterizes the state machine. Coding pipeline becomes one template among many (generic, red team, data analysis). Phase-level capability profiles create temporal sandboxes (PLAN can read, EXECUTE can write).
+* **External Critic** — Optional frontier-model logic auditor as a fourth scoring tier.
 * **Campaign Orchestrator** — Tier 0 meta-layer for multi-step missions. Decomposes complex goals into a DAG of workflow steps with HITL approval, `StepPlan` execution contracts, and explicit artifact handoff between steps.
 * **EffectiveScope Intersection** — `Global ∩ Workflow ∩ Step ∩ Phase` computed per tool call. Least-privilege by construction — the LLM can never escalate, only narrow. Capability tags (`repo.read`, `net.scan`) are the stable abstraction; tools are implementation details.
 
