@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Callable, Dict, List, Optional
 
 from core.campaign.handoff import materialize_handoff
@@ -55,8 +56,14 @@ class CampaignOrchestrator:
 
         steps_by_id = {s.step_id: s for s in plan.steps}
         ordered = _toposort(plan)
+        started_at = time.monotonic()
+        deadline = plan.limits.deadline_seconds
 
         for step_id in ordered:
+            if deadline is not None and (time.monotonic() - started_at) > deadline:
+                state.status = "halted"
+                break
+
             step = steps_by_id[step_id]
             state.current_step = step_id
             state.step_status[step_id] = StepStatus.RUNNING

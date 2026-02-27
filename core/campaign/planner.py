@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import uuid
 from typing import Callable, List
 
 from core.contracts.campaign import CampaignPlan
@@ -30,7 +32,9 @@ def draft_campaign_plan(
         ])
         try:
             data = _parse_json(raw)
-            return CampaignPlan.model_validate(data)
+            plan = CampaignPlan.model_validate(data)
+            plan.campaign_id = _sanitize_campaign_id(plan.campaign_id)
+            return plan
         except Exception as exc:
             last_error = exc
 
@@ -102,3 +106,9 @@ def _extract_code_block(text: str) -> str | None:
         if block.startswith("{") and block.endswith("}"):
             return block
     return None
+
+
+def _sanitize_campaign_id(value: str) -> str:
+    if value and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", value):
+        return value
+    return uuid.uuid4().hex[:12]

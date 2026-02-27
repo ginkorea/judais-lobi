@@ -65,6 +65,27 @@ def test_campaign_validator_cycle():
     assert "campaign_dag_cycle" in errors
 
 
+def test_campaign_validator_rejects_unsafe_ids():
+    steps = [
+        MissionStep(
+            step_id="bad/step",
+            description="step1",
+            target_workflow="coding",
+            capabilities_required=["fs.read"],
+            success_criteria="done",
+        ),
+    ]
+    plan = CampaignPlan(
+        campaign_id="../evil",
+        objective="obj",
+        assumptions=[],
+        steps=steps,
+    )
+    errors = validate_campaign_plan(plan)
+    assert "unsafe_campaign_id" in errors
+    assert "unsafe_step_id:bad/step" in errors
+
+
 def test_step_plan_validation():
     step_plan = StepPlan(
         step_id="s1",

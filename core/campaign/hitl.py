@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -27,7 +28,10 @@ def review_plan(plan: CampaignPlan, path: Path,
         raise HumanReviewError("EDITOR not set")
 
     try:
-        subprocess.run([editor_cmd, str(path)], check=True)
+        editor_args = shlex.split(editor_cmd)
+        if not editor_args:
+            raise HumanReviewError("EDITOR empty")
+        subprocess.run(editor_args + [str(path)], check=True)
     except Exception as exc:
         raise HumanReviewError(f"editor_failed:{exc}") from exc
 

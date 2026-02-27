@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,8 @@ class CampaignSession:
     def __init__(self, base_dir: Path, campaign_id: Optional[str] = None):
         self._base_dir = Path(base_dir)
         self._campaign_id = campaign_id or uuid.uuid4().hex[:12]
+        if not _is_safe_id(self._campaign_id):
+            raise ValueError(f"unsafe_campaign_id:{self._campaign_id}")
         self._campaign_dir = self._base_dir / "sessions" / self._campaign_id
         self._steps_dir = self._campaign_dir / "steps"
         self._synthesis_dir = self._campaign_dir / "synthesis"
@@ -47,6 +50,8 @@ class CampaignSession:
         return path
 
     def step_dir(self, step_id: str) -> Path:
+        if not _is_safe_id(step_id):
+            raise ValueError(f"unsafe_step_id:{step_id}")
         path = self._steps_dir / step_id
         for d in (
             path,
@@ -115,3 +120,11 @@ class StepSessionManager:
         for src in checkpoint_dir.glob("*.json"):
             dst = self._artifacts_dir / src.name
             dst.write_text(src.read_text())
+
+
+def _is_safe_id(value: str) -> bool:
+    if not value:
+        return False
+    if len(value) > 64:
+        return False
+    return re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", value) is not None

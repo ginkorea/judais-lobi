@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -19,6 +20,9 @@ def validate_campaign_plan(plan: CampaignPlan) -> List[str]:
     if len(plan.steps) > plan.limits.max_steps:
         errors.append("max_steps_exceeded")
 
+    if not _is_safe_id(plan.campaign_id):
+        errors.append("unsafe_campaign_id")
+
     step_ids = [s.step_id for s in plan.steps]
     if len(step_ids) != len(set(step_ids)):
         errors.append("duplicate_step_ids")
@@ -26,6 +30,8 @@ def validate_campaign_plan(plan: CampaignPlan) -> List[str]:
     steps_by_id = {s.step_id: s for s in plan.steps}
 
     for step in plan.steps:
+        if not _is_safe_id(step.step_id):
+            errors.append(f"unsafe_step_id:{step.step_id}")
         if not step.success_criteria:
             errors.append(f"step_missing_success_criteria:{step.step_id}")
         # workflow existence
@@ -132,3 +138,11 @@ def _is_unsafe_path(path: str) -> bool:
     if ".." in p.parts:
         return True
     return False
+
+
+def _is_safe_id(value: str) -> bool:
+    if not value:
+        return False
+    if len(value) > 64:
+        return False
+    return re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", value) is not None

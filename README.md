@@ -194,7 +194,7 @@ As of Phase 7.4:
 * `CODING_WORKFLOW` and `GENERIC_WORKFLOW` are built-in templates. `select_workflow()` resolves by CLI flag, policy, or default.
 * Per-phase capability profiles (`phase_capabilities`) create temporal sandboxes — PLAN can read but not write, PATCH can write but only through the patch engine.
 * Tools are dumb executors behind a sandboxed, capability-gated bus.
-* Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`.
+* Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`. `HUMAN_REVIEW` uses `$EDITOR` directly (user-initiated TTY) and is an explicit exception.
 * Deny-by-default. No scope = no execution.
 * God mode exists for emergencies — TTL-limited, panic-revocable, fully audited.
 * 5 consolidated multi-action tools (fs, git, verify, repo_map, patch) cover 31 operations under 13 scopes.
