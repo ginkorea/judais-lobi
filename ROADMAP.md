@@ -11,7 +11,7 @@
 - [x] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating (ToolBus, CapabilityEngine, BwrapSandbox, 3 consolidated tools, profiles, god mode, audit, 562 tests)
 - [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
 - [x] **Phase 6** – Repository-Native Patch Engine (parser, exact-match matcher with similarity diagnostics, path-jailed applicator, git worktree isolation with crash recovery, PatchEngine orchestrator, ToolBus-integrated PatchTool with 6 actions, 888 tests)
-- [ ] **Phase 7** – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic
+- [ ] **Phase 7** – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic (7.0–7.3 complete; 7.4 pending)
 - [ ] **Phase 8** – Retrieval, Context Discipline & Local Inference
 - [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
 - [ ] **Phase 10** – Evaluation & Benchmarks
@@ -545,6 +545,7 @@ The runtime must expose a `gpu_profile` configuration (auto-detected or user-spe
 **Deterministic candidate ordering:** When candidates are generated in parallel (across GPUs or concurrent requests), assign deterministic candidate IDs (`candidate_0`, `candidate_1`, ...) **before dispatch**. The Composite Judge scores candidates in ID order, not completion order. Otherwise the winning candidate depends on which GPU returns first — a race condition that breaks reproducibility.
 
 #### 7.3 External Critic (Optional Frontier-Model Auditor)
+**Status:** ✅ COMPLETE.
 
 **Motivation:** Local models are effective builders but vulnerable to "confident wrong" — logically coherent plans that miss critical assumptions, patches that pass tests but violate deeper constraints, or review loops that converge on the wrong answer. An external frontier model provides an independent logic audit without replacing local execution.
 
@@ -860,7 +861,7 @@ Campaigns do not violate "Workflow Templates Are Static" because:
 Phase 7 breaks into four sub-phases that can be delivered incrementally:
 1. **7.0** — ~~WorkflowTemplate abstraction + phase_capabilities + EffectiveScope intersection.~~ **COMPLETE** (974 tests). Pure refactor — `CODING_WORKFLOW` produces identical behavior to Phase 6. `GENERIC_WORKFLOW` proven end-to-end.
 2. **7.1–7.2** — ~~Composite Judge + Candidate Sampling (tasks 5–6).~~ **COMPLETE** (1059 tests). `CompositeJudge` with 3-tier scoring (test/lint/LLM review). `CandidateManager` with worktree isolation. `JudgeReport` registered as CRITIQUE phase schema. `BudgetConfig.max_candidates` field. `GPUProfile` stub.
-3. **7.3** — External Critic (tasks 7–14). Independent of 7.4. Can ship before or after campaigns.
+3. **7.3** — ~~External Critic (tasks 7–14).~~ **COMPLETE** (Phase 7.3 implemented).
 4. **7.4** — Campaign Orchestrator + StepPlan + scope grants (tasks 15–20, 23–29). Requires 7.0 (needs WorkflowTemplate registry + EffectiveScope). Independent of 7.1–7.3.
 
 **Definition of Done:** State machine is parameterized by `WorkflowTemplate` with `phase_capabilities` enforcing temporal sandboxing. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. EffectiveScope intersection (`Global ∩ Workflow ∩ Step ∩ Phase`) is computed and enforced on every tool call. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline. Campaign Orchestrator can decompose a multi-step mission into a `CampaignPlan` DAG with `StepPlan` contracts per step, present them for HITL approval, dispatch isolated child workflows with computed scope grants and artifact handoff, and synthesize a final report. ActionDigest hashes enable caching, replay detection, and audit. Single tasks (`--task`) bypass the campaign layer entirely — EffectiveScope still applies (Global ∩ Workflow ∩ Phase, with StepScope = WorkflowScope).

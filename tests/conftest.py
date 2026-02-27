@@ -97,7 +97,13 @@ def fake_tools():
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
     """Remove API keys and provider env vars so tests never make real calls."""
-    for var in ("OPENAI_API_KEY", "MISTRAL_API_KEY", "ELF_PROVIDER"):
+    for var in (
+        "OPENAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "ELF_PROVIDER",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -203,3 +209,25 @@ def god_mode_session(audit_logger):
     """GodModeSession with temp audit logger."""
     from core.policy.god_mode import GodModeSession
     return GodModeSession(audit_logger)
+
+
+# ---------------------------------------------------------------------------
+# Critic fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def critic_config():
+    from core.critic.config import CriticConfig
+    return CriticConfig(enabled=True)
+
+
+@pytest.fixture
+def disabled_critic_config():
+    from core.critic.config import CriticConfig
+    return CriticConfig(enabled=False)
+
+
+@pytest.fixture
+def critic_keystore():
+    from core.critic.keystore import CriticKeystore
+    return CriticKeystore()

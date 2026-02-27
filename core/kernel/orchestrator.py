@@ -47,12 +47,14 @@ class Orchestrator:
         session_manager=None,
         tool_bus=None,
         workflow=None,
+        critic=None,
     ):
         self._dispatcher = dispatcher
         self._budget = budget or BudgetConfig()
         self._session_manager = session_manager
         self._tool_bus = tool_bus
         self._artifact_sequence = 0
+        self._critic = critic
 
         # Lazy import to avoid circular dependency
         if workflow is None:
@@ -105,6 +107,8 @@ class Orchestrator:
                             logger.info("Rolled back to checkpoint: %s", checkpoint_label)
                         except FileNotFoundError:
                             logger.warning("Checkpoint %s not found for rollback", checkpoint_label)
+
+                self._maybe_invoke_critic(state, result)
 
                 next_phase = self._select_next_phase(state, result)
                 if next_phase is not None:
@@ -214,3 +218,121 @@ class Orchestrator:
 
     def _is_terminal(self, phase: str) -> bool:
         return phase in self._workflow.terminal_phases
+
+    def _maybe_invoke_critic(self, state: SessionState, result: PhaseResult) -> None:
+        if self._critic is None:
+            return
+        try:
+            if not self._critic.is_available:
+                return
+        except Exception:
+            return
+
+        next_phase = self._predict_next_phase(state, result)
+        if next_phase is None:
+            return
+
+        try:
+            from core.critic.models import CriticTriggerContext
+            from core.critic.triggers import (
+                should_invoke_critic,
+                detect_security_surface,
+                detect_dependency_changes,
+            )
+            from core.contracts.schemas import RunReport
+            from core.judge.models import JudgeReport
+        except Exception:
+            return
+
+        target_files, files_changed, lines_changed = self._extract_patch_stats()
+        touches_security = detect_security_surface(target_files)
+        has_deps = detect_dependency_changes(target_files)
+
+        local_disagree = False
+        if self._session_manager is not None:
+            run_artifact = self._session_manager.load_latest_artifact("RUN")
+            critique_artifact = self._session_manager.load_latest_artifact("CRITIQUE")
+            if run_artifact and critique_artifact:
+                try:
+                    run_report = RunReport.model_validate(run_artifact)
+                    judge_report = JudgeReport.model_validate(critique_artifact)
+                    if run_report.passed and judge_report.verdict in ("fail", "needs_fix"):
+                        local_disagree = True
+                except Exception:
+                    pass
+
+        try:
+            max_calls = self._critic.config.max_calls_per_session
+            calls = self._critic.calls_this_session
+        except Exception:
+            max_calls = 10
+            calls = 0
+
+        context = CriticTriggerContext(
+            current_phase=state.current_phase,
+            next_phase=next_phase,
+            total_iterations=state.total_iterations,
+            consecutive_fix_loops=state.phase_retries.get("RUN", 0),
+            files_changed_count=files_changed,
+            lines_changed_count=lines_changed,
+            touches_security_surface=touches_security,
+            has_dependency_changes=has_deps,
+            local_reviewer_disagrees=local_disagree,
+            critic_calls_this_session=calls,
+            max_calls_per_session=max_calls,
+        )
+
+        try:
+            should_call, reason = should_invoke_critic(context, self._critic.config)
+        except Exception:
+            return
+
+        if not should_call:
+            return
+
+        report = self._critic.invoke_multi_round(
+            state,
+            reason,
+            session_manager=self._session_manager,
+            revision_callback=lambda _report, _state: False,
+        )
+        key = f"_critic_{state.total_iterations:03d}"
+        try:
+            state.artifacts[key] = report.model_dump()
+        except Exception:
+            state.artifacts[key] = report
+
+        if report.consensus_verdict == "block":
+            logger.warning("External critic issued BLOCK verdict (round %d)", report.round_number)
+
+    def _predict_next_phase(self, state: SessionState,
+                            result: PhaseResult) -> Optional[str]:
+        try:
+            return self._select_next_phase(state, result)
+        except Exception:
+            return None
+
+    def _extract_patch_stats(self):
+        if self._session_manager is None:
+            return [], 0, 0
+        patch_artifact = self._session_manager.load_latest_artifact("PATCH")
+        if not patch_artifact:
+            plan_artifact = self._session_manager.load_latest_artifact("PLAN")
+            if isinstance(plan_artifact, dict):
+                targets = plan_artifact.get("target_files", []) or []
+                return list(targets), len(targets), 0
+            return [], 0, 0
+        try:
+            from core.contracts.schemas import PatchSet
+            patch_set = PatchSet.model_validate(patch_artifact)
+        except Exception:
+            return [], 0, 0
+
+        target_files = [p.file_path for p in patch_set.patches]
+        files_changed = len(patch_set.patches)
+        lines_changed = 0
+        for p in patch_set.patches:
+            removed = len(p.search_block.splitlines()) if p.search_block else 0
+            added = len(p.replace_block.splitlines()) if p.replace_block else 0
+            lines_changed += added + removed
+        return target_files, files_changed, lines_changed

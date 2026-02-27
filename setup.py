@@ -26,6 +26,12 @@ setup(
     ],
     extras_require={
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
+        "critic": [
+            "anthropic>=0.30.0",
+            "google-generativeai>=0.7.0",
+            "keyring>=25.0.0",
+            "pyyaml>=6.0",
+        ],
         "treesitter": [
             "tree-sitter>=0.23.0",
             "tree-sitter-c>=0.21.0",

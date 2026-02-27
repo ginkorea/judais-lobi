@@ -49,10 +49,11 @@ See: `ROADMAP.md`
 * ✅ Phase 6 — Repository-Native Patch Engine (888 tests)
 * ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction (974 tests)
 * ✅ Phase 7.1-7.2 — Composite Judge & Candidate Sampling (1059 tests)
+* ✅ Phase 7.3 — External Critic (1259 tests)
 
 ### Up Next
 
-* ⏳ Phase 7.3–7.4 — External Critic, Campaign Orchestrator
+* ⏳ Phase 7.4 — Campaign Orchestrator
 * ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
 
 ### Phase 7.1-7.2 Highlights
@@ -202,9 +203,8 @@ As of Phase 7.2:
 * Code modifications use an exact-match patch protocol with git worktree isolation. Cross-file changes land atomically. Failed patches roll back at zero cost.
 * Patches are scored by a deterministic `CompositeJudge` (Tests > Lint > LLM review). `CandidateManager` evaluates N candidate patches in isolated worktrees and selects the winner by composite score.
 
-Phase 7.3+ (in design) adds:
+Phase 7.4+ (in design) adds:
 
-* **External Critic** — Optional frontier-model logic auditor as a fourth scoring tier.
 * **Campaign Orchestrator** — Tier 0 meta-layer for multi-step missions. Decomposes complex goals into a DAG of workflow steps with HITL approval, `StepPlan` execution contracts, and explicit artifact handoff between steps.
 * **EffectiveScope Intersection** — `Global ∩ Workflow ∩ Step ∩ Phase` computed per tool call. Least-privilege by construction — the LLM can never escalate, only narrow. Capability tags (`repo.read`, `net.scan`) are the stable abstraction; tools are implementation details.
 
@@ -278,6 +278,39 @@ Or create:
 
 ```
 ~/.elf_env
+```
+
+---
+
+# 🔐 API Keys & Model APIs
+
+Judais-Lobi uses API keys from your environment or your system keyring. Keys are never stored in config files.
+
+Environment variables (fallbacks):
+
+* `OPENAI_API_KEY` — OpenAI (builder + optional critic)
+* `ANTHROPIC_API_KEY` — Anthropic critic (optional)
+* `GOOGLE_API_KEY` — Google/Gemini critic (optional)
+
+Keyring (preferred, optional):
+
+* Service: `judais-lobi`
+* Keys: `openai_api_key`, `anthropic_api_key`, `google_api_key`
+
+Model API configuration (critic only):
+
+* User defaults: `~/.judais-lobi/critic.yml`
+* Project overrides: `.judais-lobi.yml` under `critic:`
+
+Example `critic.yml`:
+
+```yaml
+enabled: true
+providers:
+  - provider: openai
+    model: gpt-4o
+  - provider: anthropic
+    model: claude-sonnet-4-20250514
 ```
 
 ---
