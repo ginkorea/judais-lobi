@@ -100,19 +100,21 @@ def _main(AgentClass):
 
     # --- Campaign handling ---
     if args.campaign or args.campaign_plan:
-        if args.campaign_plan is None:
-            console.print("⚠️ Campaign planning not yet implemented. Use --campaign-plan.", style=style)
-            return
-        from core.contracts.campaign import CampaignPlan
-        plan_path = args.campaign_plan
-        raw = plan_path.read_text()
-        if plan_path.suffix in {".yml", ".yaml"}:
-            import yaml
-            data = yaml.safe_load(raw) or {}
-            plan = CampaignPlan.model_validate(data)
+        if args.campaign_plan is not None:
+            from core.contracts.campaign import CampaignPlan
+            plan_path = args.campaign_plan
+            raw = plan_path.read_text()
+            if plan_path.suffix in {".yml", ".yaml"}:
+                import yaml
+                data = yaml.safe_load(raw) or {}
+                plan = CampaignPlan.model_validate(data)
+            else:
+                plan = CampaignPlan.model_validate_json(raw)
+            state = elf.run_campaign(plan, base_dir=Path.cwd(), auto_approve=args.auto_approve)
         else:
-            plan = CampaignPlan.model_validate_json(raw)
-        state = elf.run_campaign(plan, base_dir=Path.cwd(), auto_approve=args.auto_approve)
+            state = elf.run_campaign_from_description(
+                args.message, base_dir=Path.cwd(), auto_approve=args.auto_approve
+            )
         console.print(f"Campaign finished: {state.status}", style=style)
         return
 

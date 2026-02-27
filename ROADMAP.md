@@ -640,22 +640,24 @@ Grants are logged to the session. All requests and payload hashes are recorded f
 #### 7.4 Campaign Orchestrator (Tier 0 — Workflow of Workflows)
 **Status:** ✅ COMPLETE.
 
+**Implementation note:** Current code supports **pre-authored CampaignPlan execution** with HUMAN_REVIEW, per-step dispatch, and artifact handoff. Basic plan drafting from `--campaign` is now supported; deeper MISSION_ANALYSIS / OPTION_DEVELOPMENT refinement remains planned.
+
 **Motivation:** A single workflow handles one task. Real missions require multiple coordinated tasks — analyzing data *then* building a model, mapping an attack surface *then* exploiting vulnerabilities, refactoring a module *then* updating all callers. The Campaign Orchestrator is a thin macro loop that decomposes complex missions into a DAG of steps, gets human sign-off, and dispatches each step as an isolated workflow with explicit artifact handoff.
 
 The key insight: campaigns are **orchestration of artifacts and permissions**, not "a smarter agent." The kernel stays deterministic; the plan becomes the executable artifact; the human owns the moment where risk and scope get locked.
 
-**Campaign Lifecycle:**
+**Campaign Lifecycle (planned full flow):**
 
 ```text
 MISSION_ANALYSIS       Ingest raw user prompt. Identify constraints, domains, success criteria.
         │
-OPTION_DEVELOPMENT     Generate potential approaches (strategies, not implementations).
+OPTION_DEVELOPMENT     Generate potential approaches (strategies, not implementations). (planned)
         │
-PLAN_DRAFTING          Break chosen approach into a DAG of MissionSteps.
+PLAN_DRAFTING          Break chosen approach into a DAG of MissionSteps. (implemented via `--campaign`)
         │               Assign a WorkflowTemplate to each step.
         │               Declare artifact handoff between steps.
         │
-HUMAN_REVIEW           *** Execution halts. ***
+HUMAN_REVIEW           *** Execution halts. *** (implemented)
         │               Present plan to human ($EDITOR file-edit loop).
         │               Human approves, rejects, or modifies.
         │               Capability grants locked per step.
@@ -836,9 +838,9 @@ Campaigns do not violate "Workflow Templates Are Static" because:
 24. Step dispatcher: instantiate existing `Orchestrator` with selected workflow template, `handoff_in/` bundle, computed `EffectiveScope`, budget overrides
 25. Artifact handoff: `handoff_out/` → `handoff_in/` materialization between steps
 26. Synthesis step: compose final campaign report from declared step exports
-27. `CampaignOrchestrator` macro loop: MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS
-28. CLI: `--campaign "mission description"` flag, `--campaign-plan plan.json` for pre-authored plans
-29. Contract-first planner prompt: explicitly forbid adding steps after approval, referencing chat history beyond user prompt + constraints, outputting anything except valid `CampaignPlan` JSON
+27. `CampaignOrchestrator` macro loop: MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS (MISSION_ANALYSIS/OPTION_DEVELOPMENT planned; PLAN_DRAFTING implemented)
+28. CLI: `--campaign "mission description"` and `--campaign-plan plan.json` (implemented)
+29. Contract-first planner prompt (implemented)
 
 **Other implementation tasks (Workflows, Judge, Critic):**
 
@@ -865,7 +867,7 @@ Phase 7 breaks into four sub-phases that can be delivered incrementally:
 3. **7.3** — ~~External Critic (tasks 7–14).~~ **COMPLETE** (Phase 7.3 implemented).
 4. **7.4** — ~~Campaign Orchestrator + StepPlan + scope grants (tasks 15–20, 23–29).~~ **COMPLETE**. Requires 7.0 (WorkflowTemplate registry + EffectiveScope). Independent of 7.1–7.3.
 
-**Definition of Done:** State machine is parameterized by `WorkflowTemplate` with `phase_capabilities` enforcing temporal sandboxing. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. EffectiveScope intersection (`Global ∩ Workflow ∩ Step ∩ Phase`) is computed and enforced on every tool call. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline. Campaign Orchestrator can decompose a multi-step mission into a `CampaignPlan` DAG with `StepPlan` contracts per step, present them for HITL approval, dispatch isolated child workflows with computed scope grants and artifact handoff, and synthesize a final report. ActionDigest hashes enable caching, replay detection, and audit. Single tasks (`--task`) bypass the campaign layer entirely — EffectiveScope still applies (Global ∩ Workflow ∩ Phase, with StepScope = WorkflowScope).
+**Definition of Done:** State machine is parameterized by `WorkflowTemplate` with `phase_capabilities` enforcing temporal sandboxing. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. EffectiveScope intersection (`Global ∩ Workflow ∩ Step ∩ Phase`) is computed and enforced on every tool call. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline. Campaign Orchestrator can execute a pre-authored `CampaignPlan` DAG with `StepPlan` contracts per step, present it for HITL approval, dispatch isolated child workflows with computed scope grants and artifact handoff, and synthesize a final report. ActionDigest hashes enable caching, replay detection, and audit. Single tasks (`--task`) bypass the campaign layer entirely — EffectiveScope still applies (Global ∩ Workflow ∩ Phase, with StepScope = WorkflowScope). Auto-drafting of CampaignPlans is planned.
 
 ### Phase 8 – Retrieval, Context Discipline & Local Inference
 
@@ -993,16 +995,14 @@ lobi --task "recon target.example.com" --workflow redteam --grant net.scan
 * `workflow.json` records which template was used (for deterministic replay).
 * The user can inspect, resume, or replay any session from its artifacts.
 
-### Campaign Mode — Multi-Step Missions (New)
+### Campaign Mode — Multi-Step Missions (Current + Planned)
 ```bash
-lobi --campaign "migrate the auth system from sessions to JWT"
-lobi --campaign "full red team assessment of example.com" --grant net.scan,net.exploit
-lobi --campaign-plan ./mission.json                # Pre-authored plan, skip LLM drafting
-judais --campaign "analyze sales data, build model, deploy API" --workflow-override step3=coding
+lobi --campaign "migrate auth system to JWT"       # Draft plan (implemented)
+lobi --campaign-plan ./mission.json                # Pre-authored plan (implemented)
 ```
 
-* `--campaign` enters the Campaign Orchestrator (Tier 0): MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS.
-* `--campaign-plan <file>` loads a pre-authored `CampaignPlan` JSON, skipping MISSION_ANALYSIS through PLAN_DRAFTING. Still requires HUMAN_REVIEW.
+* `--campaign` drafts a `CampaignPlan` from the mission description, then enters HUMAN_REVIEW → DISPATCH → SYNTHESIS.
+* `--campaign-plan <file>` loads a pre-authored `CampaignPlan` JSON and enters HUMAN_REVIEW → DISPATCH → SYNTHESIS.
 * `--workflow-override <step>=<template>` forces a specific workflow for a named step (overrides LLM's assignment).
 * At HUMAN_REVIEW, the plan is serialized and opened in `$EDITOR`. The user approves, modifies, or rejects. Capability grants are locked per step at approval time.
 * Campaign sessions are written to `sessions/<campaign_id>/` with per-step child sessions under `steps/<step_id>/`.

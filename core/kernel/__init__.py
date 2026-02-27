@@ -28,6 +28,7 @@ from core.kernel.workflows import (
     get_coding_workflow,
     get_generic_workflow,
     select_workflow,
+    list_workflows,
 )
 
 __all__ = [
@@ -56,5 +57,6 @@ __all__ = [
     "get_coding_workflow",
     "get_generic_workflow",
     "select_workflow",
+    "list_workflows",
     # Judge (Phase 7.1-7.2) — importable via core.judge directly
 ]

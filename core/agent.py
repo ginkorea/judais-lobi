@@ -277,6 +277,30 @@ class Agent:
         )
         return orch.run(plan, auto_approve=auto_approve, editor=editor)
 
+    def draft_campaign_plan(self, mission: str, max_attempts: int = 2):
+        from core.campaign.planner import draft_campaign_plan
+        from core.kernel.workflows import list_workflows
+
+        def chat_fn(messages):
+            return self.client.chat(model=self.model, messages=messages, stream=False)
+
+        return draft_campaign_plan(
+            mission=mission,
+            chat_fn=chat_fn,
+            available_workflows=list_workflows(),
+            max_attempts=max_attempts,
+        )
+
+    def run_campaign_from_description(
+        self,
+        mission: str,
+        base_dir: Optional[Path] = None,
+        auto_approve: bool = False,
+        editor: Optional[str] = None,
+    ):
+        plan = self.draft_campaign_plan(mission)
+        return self.run_campaign(plan, base_dir=base_dir, auto_approve=auto_approve, editor=editor)
+
     def _make_task_dispatcher(self):
         """Create a role dispatcher for agentic task execution.
 

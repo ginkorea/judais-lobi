@@ -47,10 +47,10 @@ See: `ROADMAP.md`
 * ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
 * ✅ Phase 5 — Repo Map & Context Compression (783 tests)
 * ✅ Phase 6 — Repository-Native Patch Engine (888 tests)
-* ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction (974 tests)
-* ✅ Phase 7.1-7.2 — Composite Judge & Candidate Sampling (1059 tests)
-* ✅ Phase 7.3 — External Critic (1259 tests)
-* ✅ Phase 7.4 — Campaign Orchestrator + StepPlan + EffectiveScope (1269 tests)
+* ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction
+* ✅ Phase 7.1-7.2 — Composite Judge & Candidate Sampling
+* ✅ Phase 7.3 — External Critic
+* ✅ Phase 7.4 — Campaign Orchestrator + StepPlan + EffectiveScope
 
 ### Up Next
 
@@ -141,7 +141,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/sessions/` — SessionManager for disk artifact persistence
 * `core/kernel/` — state machine, budgets, orchestrator, workflow templates (`workflows.py`)
 * `core/cli.py`  — CLI interface layer
-* `core/memory/memory.py`  — FAISS-backed long-term memory
+* `core/memory/memory.py`  — FAISS-backed long-term memory (numpy fallback if FAISS unavailable)
 * `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map, patch)
 * `core/policy/` — profiles, god mode, audit logging
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
@@ -163,7 +163,7 @@ The target architecture (from the roadmap) is:
 * Artifact-driven state (no conversational drift)
 * Three-tier orchestration: Campaign graph (Tier 0) → Workflow graph (Tier 1) → Phase-internal planning (Tier 2)
 * Pluggable workflows — static templates for coding, red teaming, data analysis, and arbitrary tasks
-* Campaign orchestration — multi-step missions with DAG decomposition, HITL approval gates, and artifact handoff
+* Campaign orchestration — multi-step missions with DAG decomposition, HITL approval gates, and artifact handoff (pre-authored plans)
 * Capability-gated tool execution with least-privilege by intersection (Global ∩ Workflow ∩ Step ∩ Phase)
 * Sandbox isolation (bwrap / nsjail)
 * Tests > Lint > LLM scoring hierarchy
@@ -173,7 +173,7 @@ The target architecture (from the roadmap) is:
 The system is moving toward:
 
 ```
-CLI (--task / --campaign / --workflow)
+CLI (--task / --campaign / --campaign-plan / --workflow)
   ↓
 Campaign Orchestrator (Tier 0 — optional, multi-step missions)
   ↓  plan → HITL approve → dispatch → synthesis
@@ -217,7 +217,7 @@ The kernel is the only intelligence. Tools report. The kernel decides.
 Long-term memory uses:
 
 * SQLite-backed JSON persistence
-* FAISS vector index
+* FAISS vector index (numpy fallback when FAISS is unavailable)
 * OpenAI embeddings (currently)
 
 See: `core/memory/memory.py` 

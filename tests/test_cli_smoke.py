@@ -79,3 +79,11 @@ class TestCLISmoke:
         mock_elf.chat.return_value = iter([])
         _main(MockClass)
         mock_elf.enrich_with_search.assert_called_once()
+
+    @patch("sys.argv", ["test", "mission", "--campaign"])
+    def test_campaign_flag(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.run_campaign_from_description.return_value = MagicMock(status="completed")
+        _main(MockClass)
+        mock_elf.run_campaign_from_description.assert_called_once()

@@ -194,3 +194,8 @@ def select_workflow(
 
     # Default: coding workflow
     return get_coding_workflow()
+
+
+def list_workflows() -> List[str]:
+    """Return the list of registered workflow names."""
+    return sorted(_WORKFLOW_REGISTRY.keys())
