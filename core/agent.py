@@ -16,6 +16,7 @@ from core.tools.run_python import RunPythonTool
 from core.tools.capability import CapabilityEngine
 from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
 from core.runtime.messages import build_system_prompt, build_chat_context
+from core.runtime.context_window import ContextWindowManager
 
 
 class Agent:
@@ -56,6 +57,8 @@ class Agent:
         self.tools = tools if tools is not None else Tools(
             elfenv=self.env, memory=self.memory, enable_voice=False
         )
+
+        self._context_manager = ContextWindowManager(project_root=Path.cwd())
 
         # Build initial history
         self.history = self._load_history()
@@ -165,7 +168,18 @@ class Agent:
     ):
         self.history.append({"role": "user", "content": message})
         sys_prompt = self._system_with_examples()
-        context = build_chat_context(sys_prompt, self.history, invoked_tools)
+        if self._context_manager is not None:
+            backend_caps = getattr(self.client, "capabilities", None)
+            context, _stats = self._context_manager.build_messages(
+                system_prompt=sys_prompt,
+                history=self.history,
+                invoked_tools=invoked_tools,
+                provider=self.provider,
+                model=self.model,
+                backend_caps=backend_caps,
+            )
+        else:
+            context = build_chat_context(sys_prompt, self.history, invoked_tools)
         return self.client.chat(model=self.model, messages=context, stream=stream)
 
     # =======================

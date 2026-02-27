@@ -10,6 +10,8 @@ class BackendCapabilities:
     supports_streaming: bool = True
     supports_json_mode: bool = False
     supports_tool_calls: bool = False
+    max_context_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 
 class Backend(ABC):

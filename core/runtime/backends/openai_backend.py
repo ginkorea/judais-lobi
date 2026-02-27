@@ -32,4 +32,6 @@ class OpenAIBackend(Backend):
             supports_streaming=True,
             supports_json_mode=True,
             supports_tool_calls=True,
+            max_context_tokens=None,
+            max_output_tokens=None,
         )

@@ -80,4 +80,6 @@ class MistralBackend(Backend):
             supports_streaming=True,
             supports_json_mode=True,
             supports_tool_calls=False,
+            max_context_tokens=None,
+            max_output_tokens=None,
         )
