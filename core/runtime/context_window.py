@@ -25,8 +25,10 @@ class ModelContextProfile:
 class ContextConfig:
     max_context_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    max_tool_output_bytes_in_context: int = 32_768
     min_tail_messages: int = 6
     max_summary_chars: int = 2400
+    provider_defaults: Dict[str, int] = field(default_factory=dict)
     model_overrides: Dict[str, int] = field(default_factory=dict)
 
     @staticmethod
@@ -36,8 +38,10 @@ class ContextConfig:
         return ContextConfig(
             max_context_tokens=ctx.get("max_context_tokens"),
             max_output_tokens=ctx.get("max_output_tokens"),
+            max_tool_output_bytes_in_context=int(ctx.get("max_tool_output_bytes_in_context", 32768)),
             min_tail_messages=int(ctx.get("min_tail_messages", 6)),
             max_summary_chars=int(ctx.get("max_summary_chars", 2400)),
+            provider_defaults=dict(ctx.get("provider_defaults", {}) or {}),
             model_overrides=dict(ctx.get("model_overrides", {}) or {}),
         )
 
@@ -55,6 +59,11 @@ DEFAULT_MODEL_CONTEXTS: Dict[str, ModelContextProfile] = {
     "mistral-large-latest": ModelContextProfile(32768, 4096, source="default"),
 }
 
+DEFAULT_PROVIDER_CONTEXTS: Dict[str, int] = {
+    "openai": 128000,
+    "mistral": 32768,
+    "local": 32768,
+}
 
 @dataclass
 class ContextStats:
@@ -118,6 +127,17 @@ class ContextWindowManager:
 
         # Default model lookup
         base = DEFAULT_MODEL_CONTEXTS.get(model, ModelContextProfile(16384, 2048, source="fallback"))
+
+        if model not in DEFAULT_MODEL_CONTEXTS:
+            provider_default = DEFAULT_PROVIDER_CONTEXTS.get(provider)
+            if provider_default:
+                base = ModelContextProfile(provider_default, base.max_output_tokens, source="provider_default")
+
+        # Provider default override
+        if cfg.provider_defaults and provider in cfg.provider_defaults:
+            max_ctx = int(cfg.provider_defaults[provider])
+            max_out = int(cfg.max_output_tokens or base.max_output_tokens)
+            base = ModelContextProfile(max_ctx, max_out, source="provider_default")
 
         # GPU-aware cap for local inference (or explicit provider)
         if provider == "local":

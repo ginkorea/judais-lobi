@@ -878,10 +878,11 @@ This phase combines retrieval engineering with the transition from API-based inf
 **Tasks:**
 
 * Implement symbol-aware retrieval (fetching specific function spans, not whole files).
-* Implement **rolling summarization** for tool traces: full logs stream to disk, but only capped summaries enter the LLM context (`max_tool_output_bytes_in_context`). When output exceeds the budget, do not blindly truncate — prompt the model with a structured message: *"Output exceeded budget (N bytes). Full log at `<artifact_path>`. Use targeted retrieval (grep, tail, symbol lookup) to find specific information."* This forces the model to narrow its search rather than losing context to a dumb cutoff.
+* ✅ Implement **rolling summarization** for tool traces: full logs stream to disk, but only capped summaries enter the LLM context (`max_tool_output_bytes_in_context`). When output exceeds the budget, do not blindly truncate — prompt the model with a structured message: *"Output exceeded budget (N bytes). Full log at `<artifact_path>`. Use targeted retrieval (grep, tail, symbol lookup) to find specific information."*
 * **Local inference bring-up:** Deploy and validate vLLM or TRT-LLM serving the target model on the available GPU(s). Wire `local_backend.py` (stubbed in Phase 1) to the local server. For multi-GPU setups, configure tensor parallelism via the serving layer (vLLM `--tensor-parallel-size`, TRT-LLM TP config).
 * Define the **model selection criteria** for local inference: minimum coding benchmark scores, context window requirements, quantization compatibility.
 * Validate that all golden transcript tests pass against the local backend.
+* ✅ Add **context window manager** with GPU-aware caps, instance-aware limits, and auto-compaction.
 **Definition of Done:** Context size is strictly bounded. Tool output never causes a token overflow crash. The system can run fully offline against the local backend on at least one GPU profile.
 
 ### Phase 9 – Performance Optimization (TRT-LLM / vLLM Tuning)

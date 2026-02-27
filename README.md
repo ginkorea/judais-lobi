@@ -205,6 +205,7 @@ As of Phase 7.4:
 * **Campaign Orchestrator** provides a Tier 0 macro loop with HITL approval, step DAG execution, and explicit artifact handoff.
 * **StepPlan contracts** lock intent, boundaries, and capability needs per step with a SHA256 ActionDigest.
 * **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
+* **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
 
 Phase 8+ (in design) focuses on retrieval discipline and local inference. See `ROADMAP.md`.
 
@@ -226,6 +227,30 @@ This will be abstracted for local embeddings in later phases.
 
 Short-term history remains for direct chat mode.
 Agentic mode uses session artifacts as the sole source of truth (Phase 3).
+
+---
+
+# 🧰 Context Window & Tool Output
+
+Judais-Lobi tracks context window limits per model/provider, auto-compacts history when needed, and never drops oversized tool output. Full logs are written to disk with a retrieval hint in the prompt.
+
+Config (project-level) in `.judais-lobi.yml`:
+
+```yaml
+context:
+  max_context_tokens: 32768
+  max_output_tokens: 4096
+  max_tool_output_bytes_in_context: 32768
+  min_tail_messages: 6
+  max_summary_chars: 2400
+  provider_defaults:
+    openai: 128000
+    mistral: 32768
+    local: 32768
+  model_overrides:
+    gpt-4o: 128000
+    codestral-latest: 32768
+```
 
 ---
 

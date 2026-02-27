@@ -176,15 +176,17 @@ class Tools:
             arg_summary = ", ".join(map(str, args))
             kwarg_summary = ", ".join(f"{k}={v}" for k, v in kwargs.items() if k != "elf")
             arg_text = "; ".join(filter(None, [arg_summary, kwarg_summary]))
-            result_str = str(result)
-            if len(result_str) > 500:
-                result_str = result_str[:500] + "..."
+            from core.runtime.context_window import ContextConfig
+            from core.tools.tool_output import build_tool_output_record
+
+            ctx = ContextConfig.from_project()
+            max_bytes = int(getattr(ctx, "max_tool_output_bytes_in_context", 32768))
+            record = build_tool_output_record(name, result, max_bytes=max_bytes)
             elf.history.append({
                 "role": "assistant",
                 "content": (
-                    f"(Tool used: {name})\n"
-                    f"Args: {arg_text or 'none'}\n"
-                    f"Result (truncated):\n{result_str}"
+                    f"{record.summary}\n"
+                    f"Args: {arg_text or 'none'}"
                 )
             })
         return result
