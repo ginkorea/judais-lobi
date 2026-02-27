@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from core.tools.tool import Tool
 from core.tools.web_search import WebSearchTool
 from core.tools.fetch_page import FetchPageTool
+from core.tools.research_sources import get_academic_sources
 
 
 class WebResearchTool(Tool):
@@ -20,13 +21,47 @@ class WebResearchTool(Tool):
         max_pages: int = 3,
         max_chars_per_page: int = 8000,
         include_full_text: bool = False,
+        include_abstracts: bool = True,
+        mode: str = "web",
+        sources: List[str] | None = None,
         sleep_seconds: float = 0.0,
         return_format: str = "json",
     ):
         safe_query = "" if query is None else str(query)
+        if mode == "academic":
+            payload = self._academic_research(
+                safe_query,
+                max_results=max_results,
+                include_abstracts=include_abstracts,
+                sources=sources,
+            )
+        else:
+            payload = self._web_research(
+                safe_query,
+                max_results=max_results,
+                max_pages=max_pages,
+                max_chars_per_page=max_chars_per_page,
+                include_full_text=include_full_text,
+                sleep_seconds=sleep_seconds,
+            )
+
+        if return_format == "json":
+            return json.dumps(payload, ensure_ascii=False)
+        return payload
+
+    def _web_research(
+        self,
+        query: str,
+        *,
+        max_results: int,
+        max_pages: int,
+        max_chars_per_page: int,
+        include_full_text: bool,
+        sleep_seconds: float,
+    ) -> Dict[str, Any]:
         search_tool = WebSearchTool()
         raw = search_tool(
-            safe_query,
+            query,
             max_results=max_results,
             include_snippets=True,
             return_format="json",
@@ -34,11 +69,24 @@ class WebResearchTool(Tool):
         try:
             search_payload = json.loads(raw)
         except Exception:
-            return raw
+            return {
+                "query": query,
+                "source": "duckduckgo",
+                "results": [],
+                "sources": [],
+                "counts": {"results": 0, "sources": 0},
+                "error": "search_parse_failed",
+            }
 
         results = search_payload.get("results", [])
         if not results:
-            return "No results found."
+            return {
+                "query": query,
+                "source": search_payload.get("source", "duckduckgo"),
+                "results": [],
+                "sources": [],
+                "counts": {"results": 0, "sources": 0},
+            }
 
         fetch_tool = FetchPageTool()
         sources: List[Dict[str, Any]] = []
@@ -70,8 +118,8 @@ class WebResearchTool(Tool):
             if sleep_seconds:
                 time.sleep(sleep_seconds)
 
-        payload = {
-            "query": safe_query,
+        return {
+            "query": query,
             "source": search_payload.get("source", "duckduckgo"),
             "results": results,
             "sources": sources,
@@ -81,6 +129,41 @@ class WebResearchTool(Tool):
             },
         }
 
-        if return_format == "json":
-            return json.dumps(payload, ensure_ascii=False)
-        return payload
+    def _academic_research(
+        self,
+        query: str,
+        *,
+        max_results: int,
+        include_abstracts: bool,
+        sources: List[str] | None,
+    ) -> Dict[str, Any]:
+        registry = get_academic_sources()
+        selected = sources or list(registry.keys())
+        seen: set[str] = set()
+        results: List[Dict[str, Any]] = []
+
+        for name in selected:
+            source = registry.get(name)
+            if source is None:
+                continue
+            for item in source.search(query, max_results=max_results):
+                key = item.get("doi") or item.get("url") or item.get("title")
+                if not key or key in seen:
+                    continue
+                if not include_abstracts:
+                    item = dict(item)
+                    item["abstract"] = ""
+                results.append(item)
+                seen.add(key)
+
+        results = results[:max_results]
+        return {
+            "query": query,
+            "source": "academic",
+            "results": results,
+            "sources": results,
+            "counts": {
+                "results": len(results),
+                "sources": len(results),
+            },
+        }

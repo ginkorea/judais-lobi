@@ -284,6 +284,7 @@ lobi --shell "list files"
 lobi --python "plot sine wave"
 lobi --search "latest linux kernel"
 lobi --research "linux kernel LTS release timeline"
+lobi --research --academic "transformer sparsity survey 2023"
 lobi --install-project
 ```
 

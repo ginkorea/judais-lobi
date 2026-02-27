@@ -151,6 +151,7 @@ class Agent:
         user_message: str,
         max_results: int = 5,
         max_pages: int = 3,
+        mode: str = "web",
     ) -> None:
         try:
             results = self.tools.run(
@@ -158,6 +159,7 @@ class Agent:
                 user_message,
                 max_results=max_results,
                 max_pages=max_pages,
+                mode=mode,
                 elf=self,
             )
             self.history.append({

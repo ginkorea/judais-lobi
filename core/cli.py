@@ -40,6 +40,8 @@ def _main(AgentClass):
     parser.add_argument("--search", action="store_true", help="Perform web search")
     parser.add_argument("--deep", action="store_true", help="Deep search")
     parser.add_argument("--research", action="store_true", help="Perform web research")
+    parser.add_argument("--academic", action="store_true",
+                        help="Use academic sources for research")
     parser.add_argument("--research-results", type=int, default=5,
                         help="Max search results for research")
     parser.add_argument("--research-pages", type=int, default=3,
@@ -140,6 +142,7 @@ def _main(AgentClass):
             args.message,
             max_results=args.research_results,
             max_pages=args.research_pages,
+            mode="academic" if args.academic else "web",
         )
         console.print(f"📚 {AgentClass.__name__} researching...", style=style)
 
