@@ -32,6 +32,7 @@ class CapabilityEngine:
         self._policy = policy or PolicyPack()
         self._grants: List[PermissionGrant] = []
         self._current_profile: Optional[str] = None
+        self._scope_constraints: Optional[set] = None
 
     @property
     def policy(self) -> PolicyPack:
@@ -61,6 +62,9 @@ class CapabilityEngine:
         invocation_grants_to_consume = []
 
         for scope in required_scopes:
+            if self._scope_constraints is not None and scope not in self._scope_constraints:
+                denied.append(scope)
+                continue
             if self._is_scope_in_policy(scope):
                 continue
             grant = self._find_active_grant(tool_name, scope)
@@ -85,9 +89,28 @@ class CapabilityEngine:
 
     def is_scope_granted(self, tool_name: str, scope: str) -> bool:
         """Check if a single scope is granted (by policy or active grant)."""
+        if self._scope_constraints is not None and scope not in self._scope_constraints:
+            return False
         if self._is_scope_in_policy(scope):
             return True
         return self._find_active_grant(tool_name, scope) is not None
+
+    def set_scope_constraints(self, scopes: Optional[List[str]]) -> None:
+        """Set an allowlist of scopes to intersect with policy/grants."""
+        if scopes is None:
+            self._scope_constraints = None
+            return
+        self._scope_constraints = set(scopes)
+
+    def clear_scope_constraints(self) -> None:
+        """Clear any scope constraints."""
+        self._scope_constraints = None
+
+    @property
+    def scope_constraints(self) -> Optional[List[str]]:
+        if self._scope_constraints is None:
+            return None
+        return list(self._scope_constraints)
 
     def list_active_grants(self) -> List[PermissionGrant]:
         """Return all non-expired grants."""

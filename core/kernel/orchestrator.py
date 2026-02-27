@@ -48,6 +48,7 @@ class Orchestrator:
         tool_bus=None,
         workflow=None,
         critic=None,
+        step_scopes: Optional[list] = None,
     ):
         self._dispatcher = dispatcher
         self._budget = budget or BudgetConfig()
@@ -55,6 +56,7 @@ class Orchestrator:
         self._tool_bus = tool_bus
         self._artifact_sequence = 0
         self._critic = critic
+        self._step_scopes = step_scopes
 
         # Lazy import to avoid circular dependency
         if workflow is None:
@@ -80,6 +82,7 @@ class Orchestrator:
         while not self._is_terminal(state.current_phase):
             try:
                 check_all_budgets(state, self._budget)
+                self._apply_phase_scopes(state.current_phase)
 
                 # Checkpoint before PATCH for rollback on RUN failure
                 if (state.current_phase == Phase.PATCH
@@ -120,6 +123,7 @@ class Orchestrator:
                 logger.error("Invalid transition: %s", exc)
                 state.halt(str(exc))
 
+        self._clear_phase_scopes()
         return state
 
     def _execute_phase(self, state: SessionState) -> PhaseResult:
@@ -218,6 +222,26 @@ class Orchestrator:
 
     def _is_terminal(self, phase: str) -> bool:
         return phase in self._workflow.terminal_phases
+
+    def _apply_phase_scopes(self, phase: str) -> None:
+        if self._tool_bus is None:
+            return
+        cap = getattr(self._tool_bus, "capability_engine", None)
+        if cap is None or not hasattr(cap, "set_scope_constraints"):
+            return
+        workflow_scopes = set(self._workflow.required_scopes)
+        step_scopes = set(self._step_scopes) if self._step_scopes is not None else set(workflow_scopes)
+        phase_scopes = set(self._workflow.phase_capabilities.get(phase, workflow_scopes))
+        effective = workflow_scopes & step_scopes & phase_scopes
+        cap.set_scope_constraints(list(effective))
+
+    def _clear_phase_scopes(self) -> None:
+        if self._tool_bus is None:
+            return
+        cap = getattr(self._tool_bus, "capability_engine", None)
+        if cap is None or not hasattr(cap, "clear_scope_constraints"):
+            return
+        cap.clear_scope_constraints()
 
     def _maybe_invoke_critic(self, state: SessionState, result: PhaseResult) -> None:
         if self._critic is None:

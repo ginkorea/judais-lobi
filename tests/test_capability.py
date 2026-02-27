@@ -233,3 +233,28 @@ class TestLoadGrants:
         engine.add_grant(PermissionGrant(tool_name="a", scope="x"))
         engine.load_grants([])
         assert len(engine.list_active_grants()) == 0
+
+
+class TestScopeConstraints:
+    def test_constraints_block_scope(self):
+        policy = PolicyPack(allowed_scopes=["shell.exec", "fs.read"])
+        engine = CapabilityEngine(policy)
+        engine.set_scope_constraints(["fs.read"])
+        result = engine.check("tool", ["shell.exec"])
+        assert result.allowed is False
+        assert "shell.exec" in result.denied_scopes
+
+    def test_constraints_allow_scope(self):
+        policy = PolicyPack(allowed_scopes=["shell.exec", "fs.read"])
+        engine = CapabilityEngine(policy)
+        engine.set_scope_constraints(["shell.exec"])
+        result = engine.check("tool", ["shell.exec"])
+        assert result.allowed is True
+
+    def test_clear_constraints(self):
+        policy = PolicyPack(allowed_scopes=["shell.exec"])
+        engine = CapabilityEngine(policy)
+        engine.set_scope_constraints(["fs.read"])
+        engine.clear_scope_constraints()
+        result = engine.check("tool", ["shell.exec"])
+        assert result.allowed is True

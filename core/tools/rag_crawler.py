@@ -4,9 +4,9 @@
 from pathlib import Path
 from typing import Optional, List, Dict
 from core.tools.tool import Tool
-from core.memory.memory import UnifiedMemory
+from core.memory.memory import UnifiedMemory, _make_index
 from openai import OpenAI
-import faiss, numpy as np, hashlib, time
+import numpy as np, hashlib, time
 
 # optional deps
 try:
@@ -126,7 +126,7 @@ class RagCrawlerTool(Tool):
                 )
                 cid = cur.lastrowid
                 if self.memory.rag_index is None:
-                    self.memory.rag_index = faiss.IndexFlatIP(len(emb))
+                    self.memory.rag_index = _make_index(len(emb))
                 self.memory.rag_index.add(emb.reshape(1, -1))
                 self.memory.rag_id_map.append(cid)
                 added_chunks.append({"file": file_abs, "chunk": i, "content": c})

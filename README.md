@@ -50,10 +50,10 @@ See: `ROADMAP.md`
 * ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction (974 tests)
 * ✅ Phase 7.1-7.2 — Composite Judge & Candidate Sampling (1059 tests)
 * ✅ Phase 7.3 — External Critic (1259 tests)
+* ✅ Phase 7.4 — Campaign Orchestrator + StepPlan + EffectiveScope (1269 tests)
 
 ### Up Next
 
-* ⏳ Phase 7.4 — Campaign Orchestrator
 * ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
 
 ### Phase 7.1-7.2 Highlights
@@ -188,7 +188,7 @@ ToolBus → EffectiveScope check → Sandbox → Subprocess
 Deterministic Judge (Tests > Lint > LLM)
 ```
 
-As of Phase 7.2:
+As of Phase 7.4:
 
 * The kernel state machine is parameterized by `WorkflowTemplate` objects — no hardcoded phase names, transitions, or branching rules. The coding pipeline is one template; custom domains define their own.
 * `CODING_WORKFLOW` and `GENERIC_WORKFLOW` are built-in templates. `select_workflow()` resolves by CLI flag, policy, or default.
@@ -202,11 +202,11 @@ As of Phase 7.2:
 * 3-tier symbol extraction: Python `ast` → tree-sitter (7 languages) → regex fallback. Multi-language dependency graph with import resolution.
 * Code modifications use an exact-match patch protocol with git worktree isolation. Cross-file changes land atomically. Failed patches roll back at zero cost.
 * Patches are scored by a deterministic `CompositeJudge` (Tests > Lint > LLM review). `CandidateManager` evaluates N candidate patches in isolated worktrees and selects the winner by composite score.
+* **Campaign Orchestrator** provides a Tier 0 macro loop with HITL approval, step DAG execution, and explicit artifact handoff.
+* **StepPlan contracts** lock intent, boundaries, and capability needs per step with a SHA256 ActionDigest.
+* **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
 
-Phase 7.4+ (in design) adds:
-
-* **Campaign Orchestrator** — Tier 0 meta-layer for multi-step missions. Decomposes complex goals into a DAG of workflow steps with HITL approval, `StepPlan` execution contracts, and explicit artifact handoff between steps.
-* **EffectiveScope Intersection** — `Global ∩ Workflow ∩ Step ∩ Phase` computed per tool call. Least-privilege by construction — the LLM can never escalate, only narrow. Capability tags (`repo.read`, `net.scan`) are the stable abstraction; tools are implementation details.
+Phase 8+ (in design) focuses on retrieval discipline and local inference. See `ROADMAP.md`.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 

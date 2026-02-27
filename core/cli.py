@@ -51,6 +51,9 @@ def _main(AgentClass):
 
     parser.add_argument("--summarize", action="store_true", help="Summarize tool output")
     parser.add_argument("--voice", action="store_true", help="Speak the response aloud (lazy TTS)")
+    parser.add_argument("--campaign", action="store_true", help="Run a multi-step campaign")
+    parser.add_argument("--campaign-plan", type=Path, help="Path to CampaignPlan JSON/YAML")
+    parser.add_argument("--auto-approve", action="store_true", help="Skip HUMAN_REVIEW editor step")
 
     # RAG
     parser.add_argument("--rag", nargs="+",
@@ -94,6 +97,24 @@ def _main(AgentClass):
             console.print(f"📚 Injected {len(hits)} RAG hits", style=style)
         if subcmd != "enhance":
             return
+
+    # --- Campaign handling ---
+    if args.campaign or args.campaign_plan:
+        if args.campaign_plan is None:
+            console.print("⚠️ Campaign planning not yet implemented. Use --campaign-plan.", style=style)
+            return
+        from core.contracts.campaign import CampaignPlan
+        plan_path = args.campaign_plan
+        raw = plan_path.read_text()
+        if plan_path.suffix in {".yml", ".yaml"}:
+            import yaml
+            data = yaml.safe_load(raw) or {}
+            plan = CampaignPlan.model_validate(data)
+        else:
+            plan = CampaignPlan.model_validate_json(raw)
+        state = elf.run_campaign(plan, base_dir=Path.cwd(), auto_approve=args.auto_approve)
+        console.print(f"Campaign finished: {state.status}", style=style)
+        return
 
     # --- memory management ---
     if args.empty:

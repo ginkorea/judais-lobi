@@ -260,6 +260,23 @@ class Agent:
         orchestrator = Orchestrator(**kwargs)
         return orchestrator.run(task_description)
 
+    def run_campaign(self, plan, base_dir: Optional[Path] = None,
+                     auto_approve: bool = False, editor: Optional[str] = None):
+        """Run a multi-step CampaignPlan through the CampaignOrchestrator."""
+        from core.campaign import CampaignOrchestrator
+
+        base = base_dir or Path.cwd()
+
+        def dispatcher_factory(step):
+            return self._make_task_dispatcher()
+
+        orch = CampaignOrchestrator(
+            dispatcher_factory=dispatcher_factory,
+            base_dir=base,
+            tool_bus=self.tools.bus,
+        )
+        return orch.run(plan, auto_approve=auto_approve, editor=editor)
+
     def _make_task_dispatcher(self):
         """Create a role dispatcher for agentic task execution.
 

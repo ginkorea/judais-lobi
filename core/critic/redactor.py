@@ -13,7 +13,7 @@ class Redactor:
     NORMAL_PATTERNS = [
         re.compile(r"(sk-[a-zA-Z0-9]{20,})"),                 # OpenAI keys
         re.compile(r"(sk-ant-[a-zA-Z0-9]{20,})"),             # Anthropic keys
-        re.compile(r"(ghp_[a-zA-Z0-9]{36,})"),                # GitHub PATs
+        re.compile(r"(ghp_[a-zA-Z0-9]{20,})"),                # GitHub PATs
         re.compile(r"(gho_[a-zA-Z0-9]{36,})"),                # GitHub OAuth tokens
         re.compile(r"(glpat-[a-zA-Z0-9\-]{20,})"),            # GitLab PATs
         re.compile(r"(AKIA[0-9A-Z]{16})"),                    # AWS access keys

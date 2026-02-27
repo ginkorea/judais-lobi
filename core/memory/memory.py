@@ -1,11 +1,10 @@
 # core/memory/memory.py
 # UnifiedMemory: Manages short-term and long-term memory using SQLite and FAISS.
 
-import sqlite3, json, time, hashlib
+import sqlite3, json, time, hashlib, os
 from pathlib import Path
 from typing import Optional, List, Dict
 import numpy as np
-import faiss
 from openai import OpenAI
 
 # ---- Helpers ----
@@ -16,6 +15,62 @@ def normalize(vec: np.ndarray) -> np.ndarray:
     vec = vec.astype("float32")
     norm = np.linalg.norm(vec)
     return vec / (norm + 1e-8)
+
+
+class NumpyIndex:
+    """Minimal inner-product index fallback for tests or no-faiss environments."""
+
+    def __init__(self, dim: int):
+        self.dim = dim
+        self._vecs = np.zeros((0, dim), dtype=np.float32)
+
+    def add(self, vecs: np.ndarray) -> None:
+        if vecs.size == 0:
+            return
+        vecs = np.asarray(vecs, dtype=np.float32)
+        if vecs.ndim == 1:
+            vecs = vecs.reshape(1, -1)
+        if vecs.shape[1] != self.dim:
+            raise ValueError("Vector dimension mismatch")
+        self._vecs = np.vstack([self._vecs, vecs])
+
+    def search(self, queries: np.ndarray, k: int):
+        queries = np.asarray(queries, dtype=np.float32)
+        if queries.ndim == 1:
+            queries = queries.reshape(1, -1)
+        if self._vecs.shape[0] == 0:
+            D = np.zeros((queries.shape[0], k), dtype=np.float32)
+            I = -np.ones((queries.shape[0], k), dtype=np.int64)
+            return D, I
+        scores = queries @ self._vecs.T
+        k = min(k, scores.shape[1])
+        idx = np.argpartition(-scores, kth=k-1, axis=1)[:, :k]
+        row = np.arange(scores.shape[0])[:, None]
+        top_scores = scores[row, idx]
+        order = np.argsort(-top_scores, axis=1)
+        sorted_idx = idx[row, order]
+        sorted_scores = top_scores[row, order]
+        return sorted_scores, sorted_idx
+
+
+def _faiss_backend() -> str:
+    override = os.getenv("JUDAIS_LOBI_FAISS_BACKEND")
+    if override:
+        return override.lower()
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return "numpy"
+    return "faiss"
+
+
+def _make_index(dim: int):
+    backend = _faiss_backend()
+    if backend == "faiss":
+        try:
+            import faiss
+            return faiss.IndexFlatIP(dim)
+        except Exception:
+            return NumpyIndex(dim)
+    return NumpyIndex(dim)
 
 # ---- UnifiedMemory ----
 class UnifiedMemory:
@@ -131,7 +186,7 @@ class UnifiedMemory:
             rid = cur.lastrowid
         # Update FAISS
         if self.long_index is None:
-            self.long_index = faiss.IndexFlatIP(len(emb))
+            self.long_index = _make_index(len(emb))
         self.long_index.add(emb.reshape(1, -1))
         self.long_id_map.append(rid)
 
@@ -250,7 +305,7 @@ class UnifiedMemory:
             self.long_id_map = []
             return
         dim = len(np.frombuffer(rows[0][1], dtype=np.float32))
-        self.long_index = faiss.IndexFlatIP(dim)
+        self.long_index = _make_index(dim)
         self.long_id_map = []
         vecs = []
         for rid, eblob in rows:
@@ -267,7 +322,7 @@ class UnifiedMemory:
             self.rag_id_map = []
             return
         dim = len(np.frombuffer(rows[0][1], dtype=np.float32))
-        self.rag_index = faiss.IndexFlatIP(dim)
+        self.rag_index = _make_index(dim)
         self.rag_id_map = []
         vecs = []
         for rid, eblob in rows:
@@ -304,6 +359,4 @@ class UnifiedMemory:
             }
             for r in reversed(rows)
         ]
-
-
 
