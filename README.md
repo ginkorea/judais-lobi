@@ -34,6 +34,39 @@ They are evolving into a **local-first, contract-driven autonomous developer sys
 To find out why read the [Manifesto](https://github.com/ginkorea/judais-lobi/blob/master/MANIFESTO.md)!
 ---
 
+## Why This Exists
+
+Frontier models are expensive, rate-limited, and increasingly censored. If you want to build serious systems, you should not have to rent your agency by the token, or wait for policy filters to decide what is “allowed.” Judais-Lobi is built so you can run your own stack, control your costs, and decide your own boundaries.
+
+## Who It’s For
+
+* Builders who want **lower inference cost** and **predictable behavior**.
+* People who dislike censorship and want **model choice** instead of vendor lock-in.
+* Engineers who care about **deterministic runs** and **auditable decisions**.
+* Anyone who wants an **extensible workflow engine** rather than a chat toy.
+
+## Quickstart
+
+1. Install:
+   `pip install judais-lobi`
+2. Set an API key (OpenAI is the default today):
+   `export OPENAI_API_KEY=sk-...`
+3. Run a task:
+   `lobi "summarize this repo"`
+4. Use tools explicitly:
+   `lobi --shell "ls -la"`
+
+Local inference is the goal and the architecture already separates providers, but the local backend is still a stub until Phase 8. See `ROADMAP.md` for the timeline and `core/runtime/` for provider wiring.
+
+## Extensibility
+
+Judais-Lobi is designed to grow by adding workflows, tools, and policies without rewiring the kernel:
+
+* Add a new workflow by defining a `WorkflowTemplate` in `core/kernel/workflows.py`.
+* Add or consolidate tools via `core/tools/descriptors.py` and `core/tools/`.
+* Define stricter safety boundaries with `core/policy/` profiles.
+* Extend evaluation logic under `core/judge/` and `core/critic/`.
+
 # 🚧 Current Status
 
 See: `ROADMAP.md` 
