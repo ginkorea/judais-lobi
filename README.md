@@ -283,6 +283,7 @@ lobi "explain this function"
 lobi --shell "list files"
 lobi --python "plot sine wave"
 lobi --search "latest linux kernel"
+lobi --research "linux kernel LTS release timeline"
 lobi --install-project
 ```
 

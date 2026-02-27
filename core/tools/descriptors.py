@@ -63,6 +63,14 @@ WEB_SEARCH_DESCRIPTOR = ToolDescriptor(
     description="Performs a DuckDuckGo web search.",
 )
 
+WEB_RESEARCH_DESCRIPTOR = ToolDescriptor(
+    tool_name="perform_web_research",
+    required_scopes=["http.read"],
+    requires_network=True,
+    network_scopes=["http.read"],
+    description="Searches the web and fetches top pages into a research pack.",
+)
+
 FETCH_PAGE_DESCRIPTOR = ToolDescriptor(
     tool_name="fetch_page_content",
     required_scopes=["http.read"],
@@ -190,6 +198,7 @@ ALL_DESCRIPTORS = [
     PYTHON_DESCRIPTOR,
     INSTALL_DESCRIPTOR,
     WEB_SEARCH_DESCRIPTOR,
+    WEB_RESEARCH_DESCRIPTOR,
     FETCH_PAGE_DESCRIPTOR,
     RAG_CRAWLER_DESCRIPTOR,
     VOICE_DESCRIPTOR,

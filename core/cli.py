@@ -39,6 +39,11 @@ def _main(AgentClass):
     # tools
     parser.add_argument("--search", action="store_true", help="Perform web search")
     parser.add_argument("--deep", action="store_true", help="Deep search")
+    parser.add_argument("--research", action="store_true", help="Perform web research")
+    parser.add_argument("--research-results", type=int, default=5,
+                        help="Max search results for research")
+    parser.add_argument("--research-pages", type=int, default=3,
+                        help="Max pages to fetch for research")
     parser.add_argument("--shell", action="store_true", help="Generate and run shell code")
     parser.add_argument("--python", action="store_true", help="Generate and run Python code")
     parser.add_argument("--install-project", action="store_true",
@@ -130,6 +135,13 @@ def _main(AgentClass):
     if args.search:
         elf.enrich_with_search(args.message, deep=args.deep)
         console.print(f"🔍 {AgentClass.__name__} searching...", style=style)
+    if args.research:
+        elf.enrich_with_research(
+            args.message,
+            max_results=args.research_results,
+            max_pages=args.research_pages,
+        )
+        console.print(f"📚 {AgentClass.__name__} researching...", style=style)
 
     if args.recall:
         n = int(args.recall[0])

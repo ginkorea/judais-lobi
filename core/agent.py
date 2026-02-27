@@ -146,6 +146,30 @@ class Agent:
         except Exception as e:
             self.history.append({"role": "assistant", "content": f"❌ WebSearch failed: {e}"})
 
+    def enrich_with_research(
+        self,
+        user_message: str,
+        max_results: int = 5,
+        max_pages: int = 3,
+    ) -> None:
+        try:
+            results = self.tools.run(
+                "perform_web_research",
+                user_message,
+                max_results=max_results,
+                max_pages=max_pages,
+                elf=self,
+            )
+            self.history.append({
+                "role": "assistant",
+                "content": (
+                    f"🤖 (Tool used: WebResearch)\nQuery: '{user_message}'\n\n"
+                    f"Research Pack:\n{results}"
+                )
+            })
+        except Exception as e:
+            self.history.append({"role": "assistant", "content": f"❌ WebResearch failed: {e}"})
+
     # =======================
     # System prompt assembly
     # =======================

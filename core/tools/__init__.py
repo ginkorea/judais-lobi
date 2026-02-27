@@ -7,6 +7,7 @@ from .run_python import RunPythonTool
 from .install_project import InstallProjectTool
 from .fetch_page import FetchPageTool
 from .web_search import WebSearchTool
+from .web_research import WebResearchTool
 from .rag_crawler import RagCrawlerTool
 from core.memory.memory import UnifiedMemory
 from typing import Callable, List, Optional, Union
@@ -20,6 +21,7 @@ from core.tools.descriptors import (
     PYTHON_DESCRIPTOR,
     INSTALL_DESCRIPTOR,
     WEB_SEARCH_DESCRIPTOR,
+    WEB_RESEARCH_DESCRIPTOR,
     FETCH_PAGE_DESCRIPTOR,
     RAG_CRAWLER_DESCRIPTOR,
     VOICE_DESCRIPTOR,
@@ -73,12 +75,14 @@ class Tools:
         install_tool = InstallProjectTool(elfenv=elfenv)
         fetch_tool = FetchPageTool()
         search_tool = WebSearchTool()
+        research_tool = WebResearchTool()
 
         self._register(shell_tool)
         self._register(python_tool)
         self._register(install_tool)
         self._register(fetch_tool)
         self._register(search_tool)
+        self._register(research_tool)
 
         # Register with ToolBus
         self._bus.register(SHELL_DESCRIPTOR, shell_tool)
@@ -86,6 +90,7 @@ class Tools:
         self._bus.register(INSTALL_DESCRIPTOR, install_tool)
         self._bus.register(FETCH_PAGE_DESCRIPTOR, fetch_tool)
         self._bus.register(WEB_SEARCH_DESCRIPTOR, search_tool)
+        self._bus.register(WEB_RESEARCH_DESCRIPTOR, research_tool)
 
         # Phase 4a: Consolidated multi-action tools
         fs_tool = FsTool()

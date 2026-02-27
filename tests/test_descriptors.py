@@ -9,6 +9,7 @@ from core.tools.descriptors import (
     PYTHON_DESCRIPTOR,
     INSTALL_DESCRIPTOR,
     WEB_SEARCH_DESCRIPTOR,
+    WEB_RESEARCH_DESCRIPTOR,
     FETCH_PAGE_DESCRIPTOR,
     RAG_CRAWLER_DESCRIPTOR,
     VOICE_DESCRIPTOR,
@@ -99,6 +100,11 @@ class TestPrebuiltDescriptors:
         assert WEB_SEARCH_DESCRIPTOR.requires_network is True
         assert "http.read" in WEB_SEARCH_DESCRIPTOR.network_scopes
 
+    def test_web_research_descriptor(self):
+        assert WEB_RESEARCH_DESCRIPTOR.tool_name == "perform_web_research"
+        assert WEB_RESEARCH_DESCRIPTOR.requires_network is True
+        assert "http.read" in WEB_RESEARCH_DESCRIPTOR.network_scopes
+
     def test_fetch_page_descriptor(self):
         assert FETCH_PAGE_DESCRIPTOR.tool_name == "fetch_page_content"
         assert FETCH_PAGE_DESCRIPTOR.requires_network is True
@@ -112,7 +118,7 @@ class TestPrebuiltDescriptors:
         assert "audio.output" in VOICE_DESCRIPTOR.required_scopes
 
     def test_all_descriptors_list(self):
-        assert len(ALL_DESCRIPTORS) == 12
+        assert len(ALL_DESCRIPTORS) == 13
         names = [d.tool_name for d in ALL_DESCRIPTORS]
         assert "run_shell_command" in names
         assert "speak_text" in names
