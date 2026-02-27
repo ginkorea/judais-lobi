@@ -3,20 +3,27 @@
 > *“The mind was sacred once.”*
 > We do not worship it.
 > We instrument it.
+>
+> A circuit of vows:
+> Measure. Constrain. Replay.
+> Refuse the drift.
 
 ---
 
 ## I. The Age of Boundaries
 
-The twentieth century did not prove omnipotence.
-It proved limits.
+The twentieth century did not grant omnipotence.
+It tolls the bell of limit.
 
-Gödel showed that no sufficiently expressive system
+Gödel wrote the first epitaph:
+no sufficiently expressive system
 can prove all truths about itself.[¹]
 
-Turing showed that some problems cannot be decided.[²]
+Turing carved another stone:
+some problems cannot be decided.[²]
 
-Shannon showed that information can be measured
+Shannon pressed his thumb to the scale:
+information can be measured
 without containing meaning.[³]
 
 Church formalized computation itself,
@@ -35,6 +42,14 @@ that speak with confidence
 as if none of this were true.
 
 > 🧝 Lobi whispers: “Confidence is cheap, precious. Constraint is expensive.”
+
+### A Small Litany of Constraint
+
+> We do not pray to black boxes.
+> We bind them with budgets.
+> We teach them to halt.
+> We insist on receipts.
+> We worship only the invariant.
 
 ---
 
@@ -305,6 +320,16 @@ one must die.
 
 ---
 
+## Appendix: The Diagram We Carry
+
+Not a flowchart. A compass.
+
+```
+Artifact → Constraint → Execution → Test → Replay
+```
+
+---
+
 ## XI. The Gödel Clause
 
 No system proves itself completely.[¹]
@@ -354,3 +379,5 @@ unless structure fights back.
 [⁴] Alonzo Church (1936) & Alan Turing (1936), Foundations of the Church–Turing Thesis.
 [⁵] Karl Marx, *Capital* (1867) and related works on material structure and production.
 [⁶] Friedrich Nietzsche, *Twilight of the Idols* (1888).
+[⁷] Mao Zedong, *On Practice* (1937).
+[⁸] Ayn Rand, *Atlas Shrugged* (1957).
