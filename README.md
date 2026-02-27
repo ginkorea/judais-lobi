@@ -89,30 +89,17 @@ See: `ROADMAP.md`
 
 * ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
 
-### Phase 7.1-7.2 Highlights
+### Phase 7 Highlights (7.0–7.4)
 
-The kernel now has a deterministic scoring pipeline. Patches are evaluated by a multi-tier CompositeJudge, and N candidate patches can be generated and compared in isolated worktrees with automatic winner selection.
+Phase 7 turns the kernel into a workflow-driven, multi-candidate, multi-critic, campaign-capable system.
 
-* **`core/judge/models.py`** — `TierVerdict` (str,Enum: pass/fail/waived/skipped), `TierResult`, `JudgeReport` (CRITIQUE phase schema), `CandidateScore`, `CandidateReport`. All Pydantic v2 models with full serialization roundtrip.
-* **`core/judge/tiers.py`** — Three scoring tiers: `TestTier` (weight 0.6, hard pass/fail, short-circuits on failure), `LintTier` (weight 0.25, supports waive), `LLMReviewTier` (weight 0.15, stub returning 0.5). All tiers are pure logic — no subprocess, no ToolBus dependency.
-* **`core/judge/judge.py`** — `CompositeJudge` sequences tiers, computes weighted score, determines verdict (pass/fail/needs_fix). Short-circuit: test failure skips remaining tiers. Verdict: `score >= 0.6 AND test_passed → pass`, `test_failed → fail`, else `needs_fix`. Injectable tier list for custom scoring hierarchies.
-* **`core/judge/candidates.py`** — `CandidateManager` evaluates N candidate PatchSets, each in an isolated worktree via `PatchEngine`. Runs test/lint, scores via `CompositeJudge`, picks the highest-scoring non-failing candidate. Worktrees cleaned up after each evaluation. `max_candidates` cap from `BudgetConfig`.
-* **`core/judge/gpu_profile.py`** — `GPUProfile` stub (cpu_only, max_concurrent=1). Hook for future hardware-aware concurrency budgeting.
-* **`core/kernel/budgets.py`** — `BudgetConfig.max_candidates` (default 5) caps candidate count per task.
-* **`core/contracts/schemas.py`** — `PHASE_SCHEMAS["CRITIQUE"]` now maps to `JudgeReport`.
+* **Pluggable workflows** — `WorkflowTemplate` makes phases, transitions, schemas, and capability profiles data-driven. `CODING_WORKFLOW` preserves Phase 6 behavior; `GENERIC_WORKFLOW` enables custom domains.
+* **Deterministic scoring** — `CompositeJudge` sequences tests/lint/LLM review and scores candidate patches. `CandidateManager` evaluates N patch sets in isolated worktrees and picks the top non-failing result.
+* **External Critic** — Optional frontier-model auditor (OpenAI/Anthropic/Google) for independent logic audits. Keyring/env key handling, multi-round feedback loop, noise detection, and SHA256 cache.
+* **Campaign Orchestrator** — Tier‑0 mission layer with HITL approval gates, step DAG execution, artifact handoff, and resumable progress.
+* **StepPlan + EffectiveScope** — Step-level contracts and SHA256 ActionDigest; tool access enforced by `Global ∩ Workflow ∩ Step ∩ Phase`.
 
-85 new tests (1059 total). Scoring formula: `test(0.6) + lint(0.25) + llm_review(0.15)`. All-pass score: 0.925. CompositeJudge is pure logic — zero mocks needed for core scoring tests.
-
-### Phase 7.0 Highlights
-
-The kernel state machine is now parameterized by pluggable `WorkflowTemplate` objects. The coding pipeline becomes one template among many — custom workflows define their own phases, transitions, schemas, branching rules, and per-phase capability profiles without modifying any kernel code.
-
-* **`core/kernel/workflows.py`** — `WorkflowTemplate` dataclass defining phases, transitions, phase_schemas, branch_rules, terminal_phases, phase_capabilities, and required_scopes. Two built-in constants: `CODING_WORKFLOW` (identical to Phase 6 behavior) and `GENERIC_WORKFLOW` (INTAKE → PLAN → EXECUTE → EVALUATE loop → FINALIZE). `select_workflow()` resolves by CLI flag, policy, or default.
-* **`core/kernel/state.py`** — `Phase` is now `str, Enum` — members compare equal to their name strings (`Phase.INTAKE == "INTAKE"`). `SessionState.current_phase` is `str`, accepting both Phase enum members and plain strings. Custom workflows use domain-specific phase names as strings without modifying a global enum.
-* **`core/kernel/orchestrator.py`** — Accepts a `WorkflowTemplate` parameter (defaults to `CODING_WORKFLOW`). All phase logic reads from the template: `phase_order` for linear progression, `branch_rules` for conditional branching, `terminal_phases` for loop termination. Zero hardcoded phase names.
-* **`phase_capabilities`** — Per-phase capability allowlists creating temporal sandboxes. PLAN can read but not write. PATCH can write but only through the patch engine. RUN can verify but not modify. The capability engine computes `EffectiveScope` per tool call as the intersection of all applicable layers (Invariant 10).
-
-12 tool descriptors. 86 new tests (974 total). CODING_WORKFLOW produces identical behavior to Phase 6 — zero existing tests break. GENERIC_WORKFLOW proven end-to-end with evaluate-failure loop and budget halting.
+Outcome: workflows are composable, evaluation is deterministic, critics are optional, and campaigns provide a macro loop for multi-step missions.
 
 ### Phase 6 Highlights
 
