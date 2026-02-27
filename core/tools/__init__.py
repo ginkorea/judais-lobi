@@ -14,6 +14,7 @@ from typing import Callable, List, Optional, Union
 from core.tools.bus import ToolBus, ToolResult
 from core.tools.capability import CapabilityEngine
 from core.tools.sandbox import SandboxRunner, NoneSandbox
+from core.contracts.schemas import PolicyPack
 from core.tools.descriptors import (
     SHELL_DESCRIPTOR,
     PYTHON_DESCRIPTOR,
@@ -54,6 +55,11 @@ class Tools:
     ):
         self.elfenv = elfenv
         self.registry: dict[str, Union[Tool, Callable[[], Tool]]] = {}
+
+        if capability_engine is None:
+            capability_engine = CapabilityEngine(
+                PolicyPack(allowed_scopes=["*"])
+            )
 
         # Create ToolBus
         self._bus = ToolBus(
@@ -160,28 +166,48 @@ class Tools:
         return _tool.info() if _tool else {"error": f"No such tool: {name}"}
 
     def run(self, name: str, *args, **kwargs):
-        """Backward-compatible run. Delegates to tool directly.
-
-        For capability-gated dispatch, use self._bus.dispatch() instead.
-        """
+        """Backward-compatible run. Delegates through ToolBus by default."""
         _tool = self.get_tool(name)
         if not _tool:
             raise ValueError(f"No such tool: {name}")
 
-        result = _tool(*args, **kwargs)
+        elf = kwargs.pop("elf", None)
+        action = kwargs.pop("action", None)
+
+        tool_result = self._bus.dispatch(name, *args, action=action, **kwargs)
+
+        # Convert ToolResult back into legacy outputs
+        tuple_result = (tool_result.exit_code, tool_result.stdout, tool_result.stderr)
+        tuple_tools = {
+            "run_shell_command",
+            "run_python_code",
+            "install_project",
+            "git",
+            "verify",
+            "patch",
+            "repo_map",
+            "fs",
+        }
+        if name in tuple_tools:
+            result = tuple_result
+        else:
+            result = (
+                tool_result.stdout
+                if tool_result.exit_code == 0
+                else (tool_result.stderr or tool_result.stdout)
+            )
 
         # Tool awareness injection
-        elf = kwargs.get("elf")
         if elf:
             arg_summary = ", ".join(map(str, args))
-            kwarg_summary = ", ".join(f"{k}={v}" for k, v in kwargs.items() if k != "elf")
+            kwarg_summary = ", ".join(f"{k}={v}" for k, v in kwargs.items())
             arg_text = "; ".join(filter(None, [arg_summary, kwarg_summary]))
             from core.runtime.context_window import ContextConfig
             from core.tools.tool_output import build_tool_output_record
 
             ctx = ContextConfig.from_project()
             max_bytes = int(getattr(ctx, "max_tool_output_bytes_in_context", 32768))
-            record = build_tool_output_record(name, result, max_bytes=max_bytes)
+            record = build_tool_output_record(name, tuple_result, max_bytes=max_bytes)
             elf.history.append({
                 "role": "assistant",
                 "content": (

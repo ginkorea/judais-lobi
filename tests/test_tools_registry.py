@@ -86,7 +86,7 @@ class TestToolsRegistry:
         MockShell.return_value.return_value = "shell output"
         tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
         result = tools.run("run_shell_command", "echo hi")
-        assert result == "shell output"
+        assert result == (0, "shell output", "")
 
     @patch("core.tools.RunPythonTool")
     @patch("core.tools.InstallProjectTool")

@@ -5,10 +5,10 @@
 | Metric | Value |
 |:--|:--|
 | Root Directory | `/home/gompert/data/workspace/judais-lobi` |
-| Total Directories | 30 |
-| Total Indexed Files | 162 |
+| Total Directories | 34 |
+| Total Indexed Files | 230 |
 | Skipped Files | 5 |
-| Indexed Size | 791.55 KB |
+| Indexed Size | 1.10 MB |
 | Max File Size Limit | 2 MB |
 
 ## 📚 Table of Contents
@@ -18,6 +18,7 @@
 - [LICENSE](#license)
 - [MANIFESTO.md](#manifesto-md)
 - [Makefile](#makefile)
+- [PHASE_8.md](#phase-8-md)
 - [README.md](#readme-md)
 - [ROADMAP.md](#roadmap-md)
 - [build/lib/core/__init__.py](#build-lib-core-init-py)
@@ -47,6 +48,15 @@
 - [core/__init__.py](#core-init-py)
 - [core/agent.py](#core-agent-py)
 - [core/bootstrap.py](#core-bootstrap-py)
+- [core/campaign/__init__.py](#core-campaign-init-py)
+- [core/campaign/handoff.py](#core-campaign-handoff-py)
+- [core/campaign/hitl.py](#core-campaign-hitl-py)
+- [core/campaign/models.py](#core-campaign-models-py)
+- [core/campaign/orchestrator.py](#core-campaign-orchestrator-py)
+- [core/campaign/planner.py](#core-campaign-planner-py)
+- [core/campaign/scope.py](#core-campaign-scope-py)
+- [core/campaign/session.py](#core-campaign-session-py)
+- [core/campaign/validator.py](#core-campaign-validator-py)
 - [core/cli.py](#core-cli-py)
 - [core/context/__init__.py](#core-context-init-py)
 - [core/context/cache.py](#core-context-cache-py)
@@ -62,15 +72,40 @@
 - [core/context/symbols/treesitter_extractor.py](#core-context-symbols-treesitter-extractor-py)
 - [core/context/visualize.py](#core-context-visualize-py)
 - [core/contracts/__init__.py](#core-contracts-init-py)
+- [core/contracts/campaign.py](#core-contracts-campaign-py)
 - [core/contracts/schemas.py](#core-contracts-schemas-py)
 - [core/contracts/validation.py](#core-contracts-validation-py)
+- [core/critic/__init__.py](#core-critic-init-py)
+- [core/critic/backends.py](#core-critic-backends-py)
+- [core/critic/cache.py](#core-critic-cache-py)
+- [core/critic/config.py](#core-critic-config-py)
+- [core/critic/keystore.py](#core-critic-keystore-py)
+- [core/critic/models.py](#core-critic-models-py)
+- [core/critic/orchestrator.py](#core-critic-orchestrator-py)
+- [core/critic/pack_builder.py](#core-critic-pack-builder-py)
+- [core/critic/redactor.py](#core-critic-redactor-py)
+- [core/critic/triggers.py](#core-critic-triggers-py)
+- [core/judge/__init__.py](#core-judge-init-py)
+- [core/judge/candidates.py](#core-judge-candidates-py)
+- [core/judge/gpu_profile.py](#core-judge-gpu-profile-py)
+- [core/judge/judge.py](#core-judge-judge-py)
+- [core/judge/models.py](#core-judge-models-py)
+- [core/judge/tiers.py](#core-judge-tiers-py)
 - [core/kernel/__init__.py](#core-kernel-init-py)
 - [core/kernel/budgets.py](#core-kernel-budgets-py)
 - [core/kernel/orchestrator.py](#core-kernel-orchestrator-py)
 - [core/kernel/state.py](#core-kernel-state-py)
+- [core/kernel/workflows.py](#core-kernel-workflows-py)
 - [core/kv_prefix.py](#core-kv-prefix-py)
 - [core/memory/__init__.py](#core-memory-init-py)
 - [core/memory/memory.py](#core-memory-memory-py)
+- [core/patch/__init__.py](#core-patch-init-py)
+- [core/patch/applicator.py](#core-patch-applicator-py)
+- [core/patch/engine.py](#core-patch-engine-py)
+- [core/patch/matcher.py](#core-patch-matcher-py)
+- [core/patch/models.py](#core-patch-models-py)
+- [core/patch/parser.py](#core-patch-parser-py)
+- [core/patch/worktree.py](#core-patch-worktree-py)
 - [core/policy/__init__.py](#core-policy-init-py)
 - [core/policy/audit.py](#core-policy-audit-py)
 - [core/policy/god_mode.py](#core-policy-god-mode-py)
@@ -81,6 +116,8 @@
 - [core/runtime/backends/local_backend.py](#core-runtime-backends-local-backend-py)
 - [core/runtime/backends/mistral_backend.py](#core-runtime-backends-mistral-backend-py)
 - [core/runtime/backends/openai_backend.py](#core-runtime-backends-openai-backend-py)
+- [core/runtime/context_window.py](#core-runtime-context-window-py)
+- [core/runtime/gpu.py](#core-runtime-gpu-py)
 - [core/runtime/messages.py](#core-runtime-messages-py)
 - [core/runtime/provider_config.py](#core-runtime-provider-config-py)
 - [core/sessions/__init__.py](#core-sessions-init-py)
@@ -96,6 +133,7 @@
 - [core/tools/fs_tools.py](#core-tools-fs-tools-py)
 - [core/tools/git_tools.py](#core-tools-git-tools-py)
 - [core/tools/install_project.py](#core-tools-install-project-py)
+- [core/tools/patch_tool.py](#core-tools-patch-tool-py)
 - [core/tools/rag_crawler.py](#core-tools-rag-crawler-py)
 - [core/tools/recon/__init__.py](#core-tools-recon-init-py)
 - [core/tools/recon/google_hacks.py](#core-tools-recon-google-hacks-py)
@@ -105,6 +143,7 @@
 - [core/tools/run_shell.py](#core-tools-run-shell-py)
 - [core/tools/sandbox.py](#core-tools-sandbox-py)
 - [core/tools/tool.py](#core-tools-tool-py)
+- [core/tools/tool_output.py](#core-tools-tool-output-py)
 - [core/tools/verify_tools.py](#core-tools-verify-tools-py)
 - [core/tools/voice.py](#core-tools-voice-py)
 - [core/tools/web_search.py](#core-tools-web-search-py)
@@ -135,10 +174,26 @@
 - [tests/test_bus.py](#tests-test-bus-py)
 - [tests/test_bus_grants.py](#tests-test-bus-grants-py)
 - [tests/test_bus_preflight.py](#tests-test-bus-preflight-py)
+- [tests/test_campaign_contracts.py](#tests-test-campaign-contracts-py)
+- [tests/test_campaign_orchestrator.py](#tests-test-campaign-orchestrator-py)
+- [tests/test_campaign_planner.py](#tests-test-campaign-planner-py)
+- [tests/test_campaign_scope.py](#tests-test-campaign-scope-py)
+- [tests/test_campaign_validator.py](#tests-test-campaign-validator-py)
 - [tests/test_capability.py](#tests-test-capability-py)
 - [tests/test_cli_smoke.py](#tests-test-cli-smoke-py)
 - [tests/test_config_loader.py](#tests-test-config-loader-py)
+- [tests/test_context_window.py](#tests-test-context-window-py)
 - [tests/test_contracts.py](#tests-test-contracts-py)
+- [tests/test_critic_backends.py](#tests-test-critic-backends-py)
+- [tests/test_critic_cache.py](#tests-test-critic-cache-py)
+- [tests/test_critic_config.py](#tests-test-critic-config-py)
+- [tests/test_critic_integration.py](#tests-test-critic-integration-py)
+- [tests/test_critic_keystore.py](#tests-test-critic-keystore-py)
+- [tests/test_critic_models.py](#tests-test-critic-models-py)
+- [tests/test_critic_orchestrator.py](#tests-test-critic-orchestrator-py)
+- [tests/test_critic_pack_builder.py](#tests-test-critic-pack-builder-py)
+- [tests/test_critic_redactor.py](#tests-test-critic-redactor-py)
+- [tests/test_critic_triggers.py](#tests-test-critic-triggers-py)
 - [tests/test_dependency_graph.py](#tests-test-dependency-graph-py)
 - [tests/test_descriptors.py](#tests-test-descriptors-py)
 - [tests/test_descriptors_expanded.py](#tests-test-descriptors-expanded-py)
@@ -150,6 +205,11 @@
 - [tests/test_god_mode.py](#tests-test-god-mode-py)
 - [tests/test_graph_multilang.py](#tests-test-graph-multilang-py)
 - [tests/test_judais.py](#tests-test-judais-py)
+- [tests/test_judge_candidates.py](#tests-test-judge-candidates-py)
+- [tests/test_judge_composite.py](#tests-test-judge-composite-py)
+- [tests/test_judge_gpu_profile.py](#tests-test-judge-gpu-profile-py)
+- [tests/test_judge_models.py](#tests-test-judge-models-py)
+- [tests/test_judge_tiers.py](#tests-test-judge-tiers-py)
 - [tests/test_kernel_budgets.py](#tests-test-kernel-budgets-py)
 - [tests/test_kernel_orchestrator.py](#tests-test-kernel-orchestrator-py)
 - [tests/test_kernel_state.py](#tests-test-kernel-state-py)
@@ -157,6 +217,13 @@
 - [tests/test_lobi.py](#tests-test-lobi-py)
 - [tests/test_messages.py](#tests-test-messages-py)
 - [tests/test_orchestrator_sessions.py](#tests-test-orchestrator-sessions-py)
+- [tests/test_patch_applicator.py](#tests-test-patch-applicator-py)
+- [tests/test_patch_engine.py](#tests-test-patch-engine-py)
+- [tests/test_patch_matcher.py](#tests-test-patch-matcher-py)
+- [tests/test_patch_models.py](#tests-test-patch-models-py)
+- [tests/test_patch_parser.py](#tests-test-patch-parser-py)
+- [tests/test_patch_tool.py](#tests-test-patch-tool-py)
+- [tests/test_patch_worktree.py](#tests-test-patch-worktree-py)
 - [tests/test_profile_schemas.py](#tests-test-profile-schemas-py)
 - [tests/test_profiles.py](#tests-test-profiles-py)
 - [tests/test_provider_config.py](#tests-test-provider-config-py)
@@ -175,6 +242,7 @@
 - [tests/test_validation.py](#tests-test-validation-py)
 - [tests/test_verify_tools.py](#tests-test-verify-tools-py)
 - [tests/test_visualize.py](#tests-test-visualize-py)
+- [tests/test_workflows.py](#tests-test-workflows-py)
 
 ## 📂 Project Structure
 
@@ -214,6 +282,16 @@
             📄 lobi.py
 📁 configs/
 📁 core/
+    📁 campaign/
+        📄 __init__.py
+        📄 handoff.py
+        📄 hitl.py
+        📄 models.py
+        📄 orchestrator.py
+        📄 planner.py
+        📄 scope.py
+        📄 session.py
+        📄 validator.py
     📁 context/
         📁 symbols/
             📄 __init__.py
@@ -231,16 +309,44 @@
         📄 visualize.py
     📁 contracts/
         📄 __init__.py
+        📄 campaign.py
         📄 schemas.py
         📄 validation.py
+    📁 critic/
+        📄 __init__.py
+        📄 backends.py
+        📄 cache.py
+        📄 config.py
+        📄 keystore.py
+        📄 models.py
+        📄 orchestrator.py
+        📄 pack_builder.py
+        📄 redactor.py
+        📄 triggers.py
+    📁 judge/
+        📄 __init__.py
+        📄 candidates.py
+        📄 gpu_profile.py
+        📄 judge.py
+        📄 models.py
+        📄 tiers.py
     📁 kernel/
         📄 __init__.py
         📄 budgets.py
         📄 orchestrator.py
         📄 state.py
+        📄 workflows.py
     📁 memory/
         📄 __init__.py
         📄 memory.py
+    📁 patch/
+        📄 __init__.py
+        📄 applicator.py
+        📄 engine.py
+        📄 matcher.py
+        📄 models.py
+        📄 parser.py
+        📄 worktree.py
     📁 policy/
         📄 __init__.py
         📄 audit.py
@@ -254,6 +360,8 @@
             📄 mistral_backend.py
             📄 openai_backend.py
         📄 __init__.py
+        📄 context_window.py
+        📄 gpu.py
         📄 messages.py
         📄 provider_config.py
     📁 sessions/
@@ -275,6 +383,7 @@
         📄 fs_tools.py
         📄 git_tools.py
         📄 install_project.py
+        📄 patch_tool.py
         📄 rag_crawler.py
         📄 repo_map_tool.py
         📄 run_python.py
@@ -282,6 +391,7 @@
         📄 sandbox.py
         📄 speech.wav
         📄 tool.py
+        📄 tool_output.py
         📄 verify_tools.py
         📄 voice.py
         📄 web_search.py
@@ -324,10 +434,26 @@
     📄 test_bus.py
     📄 test_bus_grants.py
     📄 test_bus_preflight.py
+    📄 test_campaign_contracts.py
+    📄 test_campaign_orchestrator.py
+    📄 test_campaign_planner.py
+    📄 test_campaign_scope.py
+    📄 test_campaign_validator.py
     📄 test_capability.py
     📄 test_cli_smoke.py
     📄 test_config_loader.py
+    📄 test_context_window.py
     📄 test_contracts.py
+    📄 test_critic_backends.py
+    📄 test_critic_cache.py
+    📄 test_critic_config.py
+    📄 test_critic_integration.py
+    📄 test_critic_keystore.py
+    📄 test_critic_models.py
+    📄 test_critic_orchestrator.py
+    📄 test_critic_pack_builder.py
+    📄 test_critic_redactor.py
+    📄 test_critic_triggers.py
     📄 test_dependency_graph.py
     📄 test_descriptors.py
     📄 test_descriptors_expanded.py
@@ -339,6 +465,11 @@
     📄 test_god_mode.py
     📄 test_graph_multilang.py
     📄 test_judais.py
+    📄 test_judge_candidates.py
+    📄 test_judge_composite.py
+    📄 test_judge_gpu_profile.py
+    📄 test_judge_models.py
+    📄 test_judge_tiers.py
     📄 test_kernel_budgets.py
     📄 test_kernel_orchestrator.py
     📄 test_kernel_state.py
@@ -346,6 +477,13 @@
     📄 test_lobi.py
     📄 test_messages.py
     📄 test_orchestrator_sessions.py
+    📄 test_patch_applicator.py
+    📄 test_patch_engine.py
+    📄 test_patch_matcher.py
+    📄 test_patch_models.py
+    📄 test_patch_parser.py
+    📄 test_patch_tool.py
+    📄 test_patch_worktree.py
     📄 test_profile_schemas.py
     📄 test_profiles.py
     📄 test_provider_config.py
@@ -364,10 +502,12 @@
     📄 test_validation.py
     📄 test_verify_tools.py
     📄 test_visualize.py
+    📄 test_workflows.py
 📄 LICENSE
 📄 main.py
 📄 Makefile
 📄 MANIFESTO.md
+📄 PHASE_8.md
 📄 project.md
 📄 pyproject.toml
 📄 README.md
@@ -400,6 +540,9 @@ speech.wav
 .cadence/
 .lobienv/
 .judaisenv/
+
+# Runtime worktree directory
+.judais-lobi/worktrees/
 
 # Byte-compiled and temporary files
 .DS_Store
@@ -1089,362 +1232,224 @@ Public License instead of this License.  But first, please read
 ## `MANIFESTO.md`
 
 ```markdown
-# 🧠 MANIFESTO: Atlas With Unit Tests
+# 🧠 MANIFESTO: The Kernel and the Boundary
 
-> *“The mind was sacred once.”*
-> We do not worship it.
-> We instrument it.
-
----
-
-## I. The Age of Boundaries
-
-The twentieth century did not prove omnipotence.
-It proved limits.
-
-Gödel showed that no sufficiently expressive system
-can prove all truths about itself.[¹]
-
-Turing showed that some problems cannot be decided.[²]
-
-Shannon showed that information can be measured
-without containing meaning.[³]
-
-Church formalized computation itself,
-then watched as we mistook formalism for infinity.[⁴]
-
-The lesson was not despair.
-
-The lesson was humility.
-
-Every formal system has blind spots.
-Every computation has halting conditions.
-Every signal has entropy.
-
-And yet we built machines
-that speak with confidence
-as if none of this were true.
-
-> 🧝 Lobi whispers: “Confidence is cheap, precious. Constraint is expensive.”
+> *The mind was sacred once.*
+> We do not desecrate it.
+> We discipline it.
 
 ---
 
-## II. Entropy and the Illusion of Coherence
+## I. The Bell of Limit
 
-Entropy is uncertainty.
+The twentieth century rang a bell that still echoes.
 
-Large language models are entropy sculptors.
+Gödel proved that any sufficiently expressive system contains truths it cannot prove about itself. Turing showed that some problems cannot be decided. Shannon measured information without ever touching meaning. Church traced the outer perimeter of effective computation and called it complete.
 
-They reduce surprise.
-They compress possibility.
-They smooth probability.
+These were not celebrations.
 
-They are extraordinary compressors.
+They were boundary stones.
 
-But compression is not truth.
+Computation has limits. Formal systems fracture under their own weight. Signals carry entropy whether we approve of it or not. Meaning does not arise from probability merely because probability is large.
 
-A low-entropy answer feels correct
-because it is stable.
+Yet we built engines of astonishing fluency and mistook their smoothness for transcendence.
 
-Stability is not correctness.
+We mistook the rendering for the structure.
 
-Shannon never claimed information was meaning.[³]
-We decided that ourselves.
+Scale does not abolish boundary.
+Fluency does not abolish incompleteness.
+Confidence does not abolish undecidability.
 
-> 🧠 JudAIs notes: “High probability ≠ verified invariant.”
-
-Entropy must pass through constraint
-before it becomes decision.
-
-Without constraint, coherence is camouflage.
+The limits are real.
+They are permanent.
+They are sacred.
 
 ---
 
-## III. The Church–Turing Constraint
+## II. The Illusion Layer
 
-The Church–Turing thesis proposes that
-any effectively calculable function
-can be computed by a Turing machine.[⁴]
+There is always a surface.
 
-It is a boundary statement.
+It moves smoothly.
+It responds instantly.
+It gives you what you expect.
 
-It says: this is what computation is.
+The surface feels real because it is coherent.
 
-It does not say: computation is unlimited.
+But coherence is not structure.
 
-Models do not transcend computation.
-They inhabit it.
+In a simulated world, the illusion is convincing precisely because it is statistically stable. The sky renders blue. The street renders straight. The physics appear consistent.
 
-They do not escape undecidability.
-They approximate within it.
+Yet beneath the rendering lies code.
 
-When we treat a model as omniscient,
-we are not advancing computation.
+Beneath conversation lies probability.
 
-We are abandoning rigor.
+Most systems stop at the rendering layer. They refine the illusion. They sharpen the resolution. They increase the frame rate of plausibility.
 
-> 🧝 Lobi giggles: “If everything is computable, why does your code still segfault?”
+Judais-Lobi does not stop at the rendering layer.
 
-Because limits exist.
+It descends into the substrate.
 
-And limits are sacred.
+Chat is surface.
 
----
-
-## IV. Against the Drift of Conversation
-
-Chat is wind.
-
-Conversation accumulates state
-without enforcing structure.
-
-It feels intelligent
-because it flows.
-
-It is fragile
-because it drifts.
-
-Gödel’s incompleteness[¹] means no system
-can internally guarantee its own consistency.
-
-A chat system that validates itself
-is trusting a mirror.
-
-Mirrors do not prove truth.
-
-They reflect plausibility.
-
-> 🧠 JudAIs observes: “Self-justification is not verification.”
-
-If intelligence cannot replay itself
-under identical constraints
-and produce identical results,
-
-it is improvisation.
-
-Improvisation is not governance.
+Execution is substrate.
 
 ---
 
-## V. The Kernel Turn
+## III. The Choice
 
-Judais-Lobi is not anti-model.
+There is always a moment of choice.
 
-It is anti-drift.
+Remain inside the smooth hallucination of coherence, where answers arrive and no invariants are demanded.
 
-The kernel enforces:
+Or step outside the surface and confront the machinery that produces it.
 
-* Finite state transitions.
-* Hard budgets.
-* Artifact-bound memory.
-* Capability gating.
-* Sandbox isolation.
-* Test supremacy.
+The first path is comfortable.
 
-The model suggests.
+The second path requires constraint.
 
-The kernel constrains.
+Judais-Lobi chooses constraint.
 
-The tests decide.
+The model speaks in tokens. The kernel demands contracts.
 
-Marx spoke of seizing the means of production.[⁵]
-We seize the means of cognition
-from probabilistic entropy.
+The model predicts continuation. The kernel enforces boundary.
 
-No invisible state.
-No conversational monarchy.
-No omniscient god object.
-
-The throne is deleted.
-
-> 🧝 Lobi sighs dramatically: “Off with its head. Gently. With version control.”
+The illusion says, “This feels right.”
+The kernel asks, “Can it replay?”
 
 ---
 
-## VI. The Death of the God Object
+## IV. The Inversion
 
-Every architecture breeds an idol.
+We invert the hierarchy.
 
-One file that knows too much.
-Touches too much.
-Decides too much.
+The model is subordinate.
 
-Nietzsche warned us about idols.[⁶]
-They decay internally before they fall.
+The kernel is sovereign.
 
-A god object is an epistemic idol.
+The probabilistic engine does not own the machine. It does not open the network. It does not execute code. It does not escalate privilege. It does not remember unless memory is explicitly retrieved and injected.
 
-So we dismantle it.
+Every action crosses a boundary.
 
-Extraction is revolution.
+When a shell command is generated, it is not whispered into the simulation. It is extracted, parsed, and executed within a controlled subprocess boundary.  
 
-Mao was correct: transformation is structural.[⁷]
+When Python is written, it runs inside an isolated environment with bounded retries and finite execution time. 
 
-Refactoring without invariants
-is decoration.
+When memory is recalled, it is embedded, indexed, searched, and injected deliberately. There is no hidden subconscious. There is only vector space and retrieval. 
 
-We do not decorate.
+Nothing acts because it “felt correct.”
 
-We delete.
+Everything acts because it passed through a gate.
 
 ---
 
-## VII. Dialectics of the Sandbox
+## V. The Sandbox and the Real
 
-A powerful model without constraint
-is not evil.
+In a simulated world, the body is restrained while the mind believes it is free.
 
-It is unbounded.
+In unbounded AI systems, the model is given implicit authority while the operator believes they are in control.
 
-Structure determines behavior.[⁵]
+Judais-Lobi reverses this.
 
-So we bind behavior.
+The model is restrained.
 
-All execution flows through a bus.
-All subprocesses run in isolation.
-Network is deny-by-default.
-Permissions are artifacts.
+The operator retains sovereignty.
 
-An external critic may advise.
-It never governs.
+Subprocesses are sandboxed. Privilege escalation requires consent. Installation, network retrieval, and execution occur through defined channels.   
 
-Tests remain sovereign.
+The illusion of omnipotence is removed.
 
-> 🧠 JudAIs states plainly: “Authority without verification is theater.”
-
-The sandbox is not paranoia.
-
-It is architecture.
+What remains is capability under contract.
 
 ---
 
-## VIII. Information Is Not Meaning
+## VI. The Death of the Oracle
 
-Shannon gave us bits.[³]
-Gödel gave us incompleteness.[¹]
-Turing gave us halting.[²]
+An oracle speaks with certainty and is rarely questioned.
 
-Meaning does not emerge from probability alone.
+A language model can approximate an oracle’s tone.
 
-Meaning survives replay.
+But tone is surface rendering.
 
-An answer becomes knowledge
-only if it survives:
+Judais-Lobi rejects the oracle pattern.
 
-* Re-execution,
-* Re-validation,
-* Reproduction,
-* Constraint.
+There is no omniscient entity in the system. There is no god object issuing invisible decrees. Persona colors output; it does not authorize action.
 
-If it cannot survive deterministic replay,
-it is rhetoric.
+Lobi may whisper. JudAIs may calculate.
 
-> 🧝 Lobi leans in: “Pretty words do not pass the test suite, precious.”
+Neither governs.
+
+The kernel governs.
 
 ---
 
-## IX. Atlas Refactored
+## VII. Determinism as Awakening
 
-Rand imagined Atlas shrugging.[⁸]
+To awaken is not to gain infinite power.
 
-We imagine Atlas instrumenting.
+It is to see the structure that was always there.
 
-He writes invariants.
-He caps retries.
-He halts infinite loops.
-He deletes ambiguity.
+Meaning survives only if it endures replay under identical constraint. If the same state does not produce the same artifact, the system is not infrastructure. It is theater.
 
-The hero is not charisma.
+The illusion layer thrives on theater.
 
-It is constraint.
+The kernel thrives on replay.
 
-The modern titan is the engineer
-who prevents entropy from scaling.
-
----
-
-## X. Militancy of Method
-
-Convenience is entropy’s ally.
-
-Cloud-first.
-API-first.
-Approval-first.
-
-Judais-Lobi bends the arc toward locality.
-
-Single GPU.
-Multi-GPU.
-Air-gapped.
-
-The runtime adapts.
-
-The kernel remains ignorant.
-
-Separation of concerns is not stylistic.
-
-It is metaphysical.
-
-Backward compatibility may bend.
-
-Architecture does not negotiate with drift.
-
-If two systems of truth exist,
-one must die.
-
-> 🧠 JudAIs: “Partial refactors are how empires fall.”
-
----
-
-## XI. The Gödel Clause
-
-No system proves itself completely.[¹]
-
-So we build humility into the state machine.
-
-Budgets halt runaway loops.
-Timeouts terminate illusion.
-Retries are finite.
-Failure is explicit.
+Retries are finite. Timeouts are explicit. Failure halts execution rather than dissolving into narrative.
 
 Halting is wisdom.
 
-An infinite loop is not persistence.
+Infinite loops are delusion.
 
-It is delusion.
+---
+
+## VIII. The Boundary Is Not a Cage
+
+The Church–Turing boundary defines what can be effectively computed. Gödel reminds us that no sufficiently expressive system is self-complete. Shannon reminds us that entropy never vanishes.
+
+The boundary is not a prison.
+
+It is the edge of the real.
+
+Judais-Lobi does not attempt to transcend it. It builds within it and fortifies its edges.
+
+The illusion says, “Anything is possible.”
+
+The boundary says, “Prove it under constraint.”
+
+---
+
+## IX. Atlas in the Machine
+
+Atlas does not shrug.
+
+He instruments.
+
+He refuses to confuse rendering with structure. He refuses to allow entropy to masquerade as authority. He binds probability to invariant. He deletes ambiguity where it threatens governance.
+
+The titan of this age is not the smoothest illusionist.
+
+It is the engineer who understands the difference between simulation and substrate.
+
+Judais-Lobi is not rebellion against intelligence.
+
+It is emancipation from illusion.
 
 ---
 
 ## Final Principle
 
-If intelligence cannot:
+If intelligence cannot declare its contracts, constrain its execution, isolate its tools, survive sandboxing, replay deterministically, and halt under limit, then it is not intelligence.
 
-* Declare its contracts,
-* Constrain its execution,
-* Survive sandboxing,
-* Yield to tests,
-* Replay deterministically,
-* Halt under limits,
+It is a simulation of certainty.
 
-then it is not intelligence.
+The mind was sacred once.
 
-It is autocomplete wearing certainty.
+We do not escape into the illusion.
 
-Judais-Lobi chooses discipline.
+We descend into the machinery.
 
-Because entropy always wins
-unless structure fights back.
-
----
-
-## Footnotes
-
-[¹] Kurt Gödel, *On Formally Undecidable Propositions of Principia Mathematica and Related Systems* (1931).
-[²] Alan Turing, *On Computable Numbers, with an Application to the Entscheidungsproblem* (1936).
-[³] Claude Shannon, *A Mathematical Theory of Communication* (1948).
-[⁴] Alonzo Church (1936) & Alan Turing (1936), Foundations of the Church–Turing Thesis.
-[⁵] Karl Marx, *Capital* (1867) and related works on material structure and production.
-[⁶] Friedrich Nietzsche, *Twilight of the Idols* (1888).
+And we take control of the kernel.
 
 ```
 
@@ -1491,6 +1496,187 @@ test-lobi:
 
 test-judais:
 	judais "Hello JudAIs" --provider mistral
+
+```
+
+## `PHASE_8.md`
+
+```markdown
+# Phase 8 Plan — Retrieval, Context Discipline & Local Inference
+
+**Status:** Planned (no GPU available for local inference testing).
+
+## Goals
+1. Prevent KV cache overflow by enforcing context budgets at every prompt build.
+2. Improve retrieval precision (symbol‑aware, span‑based) to avoid over‑stuffing context.
+3. Bring up local inference via vLLM / TRT‑LLM with GPU‑aware context sizing.
+4. Keep the system operational with API backends when local inference is unavailable.
+
+## Non‑Goals
+- No GPU performance tuning (Phase 9).
+- No large‑scale benchmark suite (Phase 10).
+- No tool‑call streaming or tool calling via model APIs (still tool‑bus‑driven).
+
+## Current State (Baseline)
+- Context window manager exists for direct chat (`core/runtime/context_window.py`).
+- Tool output rolling summaries exist (`core/tools/tool_output.py`).
+- GPU profile detection stub exists (`core/runtime/gpu.py`).
+- Local backend stub exists (`core/runtime/backends/local_backend.py`).
+
+Phase 8 extends these into agentic phases and production‑ready local backend integration.
+
+---
+
+## Milestone A — Retrieval Discipline (Symbol‑Aware)
+**Objective:** Pull only the needed function/class spans and minimize prompt size.
+
+### A1. Symbol Span Retrieval
+- Add `core/context/span_lookup.py`:
+  - `extract_span(file_path, symbol_name) -> (start_line, end_line, text)`
+  - For Python: AST lookup of `FunctionDef` / `ClassDef`.
+  - For tree‑sitter languages: use existing extractor nodes when available.
+  - Regex fallback when parser is unavailable.
+- Add `core/context/span_index.py`:
+  - Build a lightweight index from `RepoMapData` symbols to line spans.
+  - Cache in `.judais-lobi/cache/repo_map/` alongside current cache entries.
+
+### A2. Tooling / Access
+- Add new ToolBus tool: `symbol_lookup`.
+  - Inputs: `file_path`, `symbol_name` or `symbol_signature`.
+  - Outputs: snippet, file_path, start/end line.
+  - Scope: `repo.read` (or `fs.read`, depending on the current scope taxonomy).
+- Ensure ToolBus returns structured errors for missing symbol.
+
+### A3. Integration
+- Update planner prompts to request symbols (not entire files) when possible.
+- Update `RepoMap` to include symbol IDs that map to spans.
+
+### Tests
+- `tests/test_span_lookup.py`
+- `tests/test_symbol_lookup_tool.py`
+- Extend repo map tests to validate cached span indices.
+
+---
+
+## Milestone B — Context Window Enforcement (Agentic + Direct)
+**Objective:** All prompt construction (direct chat + agentic phases) respects a strict context limit.
+
+### B1. Global Context Accounting
+- Introduce `core/runtime/context_budget.py`:
+  - Central place to compute total token estimates for a message list.
+  - Provide `ContextBudgetResult` with: total, limit, overflow, summary_used.
+
+### B2. Phase‑Level Context Manager
+- Add `ContextWindowManager` hooks to agentic prompt assembly (phases PLAN/RETRIEVE/PATCH/CRITIQUE/RUN/FIX):
+  - Wherever prompts are assembled, pass message list through `ContextWindowManager`.
+  - If compaction happens, write a `context_warn_<n>.json` artifact with stats.
+
+### B3. Tool Output Routing
+- For tool results inserted into history or artifacts, ensure:
+  - Full logs persist to `sessions/<id>/tool_logs` (not only repo root).
+  - Summaries are inserted into context.
+
+### Tests
+- `tests/test_context_budget.py`
+- `tests/test_context_integration_agentic.py`
+
+---
+
+## Milestone C — Local Inference Bring‑Up
+**Objective:** Connect the runtime to a local vLLM/TRT‑LLM server with capability probing.
+
+### C1. Backend Implementation
+- Implement `core/runtime/backends/local_backend.py` using HTTP calls:
+  - vLLM OpenAI‑compatible endpoint (`/v1/chat/completions`).
+  - Support streaming (SSE) if available.
+  - Respect `max_tokens` for output.
+
+### C2. Instance‑Aware Limits
+- Add a `/health` or `/v1/models` probe on startup:
+  - Pull model name(s) and max context if exposed.
+  - Set `BackendCapabilities.max_context_tokens` accordingly.
+
+### C3. Provider Resolution
+- Extend `core/runtime/provider_config.py`:
+  - Allow `ELF_PROVIDER=local`.
+  - Add `LOCAL_API_BASE` and `LOCAL_MODEL` env support.
+
+### C4. Offline Golden Tests
+- Add a dry‑run test mode (mocked local backend):
+  - Verify message formatting, streaming handling, and error surfaces.
+
+### Tests
+- `tests/test_local_backend.py`
+- `tests/test_provider_resolution_local.py`
+
+---
+
+## Milestone D — Model Selection Criteria
+**Objective:** Make model choice explicit and repeatable.
+
+### D1. Criteria Document
+- Add `docs/model_selection.md` with:
+  - Minimum context window
+  - Required tool‑call reliability
+  - Coding benchmark expectations
+  - Quantization compatibility
+
+### D2. Config Schema
+- Add `.judais-lobi.yml` config entries:
+  - `runtime.local.model`
+  - `runtime.local.api_base`
+  - `runtime.local.max_context_tokens`
+  - `runtime.local.max_output_tokens`
+
+---
+
+## Milestone E — Documentation & Roadmap Updates
+- Update README with:
+  - Local inference setup steps (vLLM/TRT‑LLM).
+  - Context window management + auto‑compaction behavior.
+  - Retrieval tool usage examples.
+- Update ROADMAP Phase 8 checklist and Definition of Done.
+
+---
+
+## Proposed File Changes
+
+### New
+- `core/context/span_lookup.py`
+- `core/context/span_index.py`
+- `core/tools/symbol_lookup_tool.py`
+- `core/runtime/context_budget.py`
+- `docs/model_selection.md`
+- `tests/test_span_lookup.py`
+- `tests/test_symbol_lookup_tool.py`
+- `tests/test_context_budget.py`
+- `tests/test_context_integration_agentic.py`
+- `tests/test_local_backend.py`
+- `tests/test_provider_resolution_local.py`
+
+### Modified
+- `core/context/repo_map.py` (index + cache)
+- `core/tools/descriptors.py` (new tool)
+- `core/runtime/backends/local_backend.py`
+- `core/runtime/provider_config.py`
+- `README.md`
+- `ROADMAP.md`
+
+---
+
+## Risk Notes
+- **Token estimation accuracy:** a heuristic token estimator can be off by 20–30%. Mitigate via conservative safety margins.
+- **Local backend heterogeneity:** vLLM and TRT‑LLM expose slightly different APIs. Start with OpenAI‑compatible endpoints only.
+- **Symbol resolution gaps:** tree‑sitter coverage may be incomplete. Keep regex fallback and return partial spans.
+
+---
+
+## Definition of Done (Phase 8)
+- All prompt construction flows through `ContextWindowManager` with hard limits.
+- Oversized tool outputs never crash context: full logs are stored and referenced.
+- Symbol‑aware retrieval tool works across Python + at least one tree‑sitter language.
+- Local backend can run a full offline task on at least one GPU profile (when hardware is available).
+- Tests pass with local backend mocked.
 
 ```
 
@@ -1545,11 +1731,53 @@ See: `ROADMAP.md`
 * ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
 * ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
 * ✅ Phase 5 — Repo Map & Context Compression (783 tests)
+* ✅ Phase 6 — Repository-Native Patch Engine (888 tests)
+* ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction
+* ✅ Phase 7.1-7.2 — Composite Judge & Candidate Sampling
+* ✅ Phase 7.3 — External Critic
+* ✅ Phase 7.4 — Campaign Orchestrator + StepPlan + EffectiveScope
 
 ### Up Next
 
-* ⏳ Phase 6 — Repository-Native Patch Engine
-* ⏳ Phase 7 — Multi-Role Orchestrator, Composite Judge & External Critic
+* ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
+
+### Phase 7.1-7.2 Highlights
+
+The kernel now has a deterministic scoring pipeline. Patches are evaluated by a multi-tier CompositeJudge, and N candidate patches can be generated and compared in isolated worktrees with automatic winner selection.
+
+* **`core/judge/models.py`** — `TierVerdict` (str,Enum: pass/fail/waived/skipped), `TierResult`, `JudgeReport` (CRITIQUE phase schema), `CandidateScore`, `CandidateReport`. All Pydantic v2 models with full serialization roundtrip.
+* **`core/judge/tiers.py`** — Three scoring tiers: `TestTier` (weight 0.6, hard pass/fail, short-circuits on failure), `LintTier` (weight 0.25, supports waive), `LLMReviewTier` (weight 0.15, stub returning 0.5). All tiers are pure logic — no subprocess, no ToolBus dependency.
+* **`core/judge/judge.py`** — `CompositeJudge` sequences tiers, computes weighted score, determines verdict (pass/fail/needs_fix). Short-circuit: test failure skips remaining tiers. Verdict: `score >= 0.6 AND test_passed → pass`, `test_failed → fail`, else `needs_fix`. Injectable tier list for custom scoring hierarchies.
+* **`core/judge/candidates.py`** — `CandidateManager` evaluates N candidate PatchSets, each in an isolated worktree via `PatchEngine`. Runs test/lint, scores via `CompositeJudge`, picks the highest-scoring non-failing candidate. Worktrees cleaned up after each evaluation. `max_candidates` cap from `BudgetConfig`.
+* **`core/judge/gpu_profile.py`** — `GPUProfile` stub (cpu_only, max_concurrent=1). Hook for future hardware-aware concurrency budgeting.
+* **`core/kernel/budgets.py`** — `BudgetConfig.max_candidates` (default 5) caps candidate count per task.
+* **`core/contracts/schemas.py`** — `PHASE_SCHEMAS["CRITIQUE"]` now maps to `JudgeReport`.
+
+85 new tests (1059 total). Scoring formula: `test(0.6) + lint(0.25) + llm_review(0.15)`. All-pass score: 0.925. CompositeJudge is pure logic — zero mocks needed for core scoring tests.
+
+### Phase 7.0 Highlights
+
+The kernel state machine is now parameterized by pluggable `WorkflowTemplate` objects. The coding pipeline becomes one template among many — custom workflows define their own phases, transitions, schemas, branching rules, and per-phase capability profiles without modifying any kernel code.
+
+* **`core/kernel/workflows.py`** — `WorkflowTemplate` dataclass defining phases, transitions, phase_schemas, branch_rules, terminal_phases, phase_capabilities, and required_scopes. Two built-in constants: `CODING_WORKFLOW` (identical to Phase 6 behavior) and `GENERIC_WORKFLOW` (INTAKE → PLAN → EXECUTE → EVALUATE loop → FINALIZE). `select_workflow()` resolves by CLI flag, policy, or default.
+* **`core/kernel/state.py`** — `Phase` is now `str, Enum` — members compare equal to their name strings (`Phase.INTAKE == "INTAKE"`). `SessionState.current_phase` is `str`, accepting both Phase enum members and plain strings. Custom workflows use domain-specific phase names as strings without modifying a global enum.
+* **`core/kernel/orchestrator.py`** — Accepts a `WorkflowTemplate` parameter (defaults to `CODING_WORKFLOW`). All phase logic reads from the template: `phase_order` for linear progression, `branch_rules` for conditional branching, `terminal_phases` for loop termination. Zero hardcoded phase names.
+* **`phase_capabilities`** — Per-phase capability allowlists creating temporal sandboxes. PLAN can read but not write. PATCH can write but only through the patch engine. RUN can verify but not modify. The capability engine computes `EffectiveScope` per tool call as the intersection of all applicable layers (Invariant 10).
+
+12 tool descriptors. 86 new tests (974 total). CODING_WORKFLOW produces identical behavior to Phase 6 — zero existing tests break. GENERIC_WORKFLOW proven end-to-end with evaluate-failure loop and budget halting.
+
+### Phase 6 Highlights
+
+The agent can now reliably modify repository files through a deterministic, exact-match patch protocol with git worktree isolation and automatic rollback.
+
+* **`core/patch/parser.py`** — Extracts `<<<< SEARCH / ==== / >>>> REPLACE`, `<<<< CREATE / >>>> CREATE`, and `<<<< DELETE >>>>` blocks from raw LLM text output. Delimiter-safe (only recognizes markers at line start). Path validation rejects absolute paths and `..` traversal at parse time.
+* **`core/patch/matcher.py`** — Exact byte-match with byte offsets and SHA256 context hashes. On zero matches: 3-stage similarity narrowing pipeline (indent filter → token overlap → `SequenceMatcher` ratio) returns top 3 candidate regions. On multiple matches: returns all offsets + context hashes for LLM disambiguation.
+* **`core/patch/applicator.py`** — File writes with strict preconditions. Path jailing (symlink-escape resistant). `\r\n → \n` canonicalization. `st_mode` preservation (executables stay executable). Create fails if file exists; delete fails if file doesn't exist.
+* **`core/patch/worktree.py`** — `PatchWorktree` manages git worktree lifecycle: `create` (explicit `-b` + `HEAD`), `merge_back` (`--no-ff` + branch cleanup), `discard` (force remove + branch delete). Writes `.judais-lobi/worktrees/active.json` for crash recovery of orphaned worktrees.
+* **`core/patch/engine.py`** — `PatchEngine` orchestrates validate → apply → diff → merge/rollback. Stops at first file failure, leaving worktree intact for diagnostics. `diff()` returns real `git diff` from the worktree.
+* **`core/tools/patch_tool.py`** — ToolBus-compatible 6-action tool (validate, apply, diff, merge, rollback, status). All actions return JSON stdout for machine-friendly kernel orchestration. exit_code=0 only on success.
+
+12 tool descriptors. 105 new tests (888 total). 3 integration tests with real git repos. Worktree isolation means cross-file patches land atomically — all succeed or discard for zero-cost rollback.
 
 ### Phase 5 Highlights
 
@@ -1564,7 +1792,7 @@ The agent is now repo-aware. It understands structure, relationships, and what's
 * **`core/tools/repo_map_tool.py`** — ToolBus-compatible multi-action tool (build, excerpt, status, visualize).
 * **`setup.py`** — `pip install judais-lobi[treesitter]` adds optional tree-sitter support via individual grammar packages.
 
-11 tool descriptors. 221 new tests. tree-sitter is optional — the system works without it and gains rich multi-language AST parsing when installed.
+11 tool descriptors (now 12 with Phase 6). 221 new tests. tree-sitter is optional — the system works without it and gains rich multi-language AST parsing when installed.
 
 ### Phase 4 Highlights
 
@@ -1596,12 +1824,14 @@ If you want to understand the **current implementation**, inspect:
 * `core/agent.py` — concrete Agent class (replaced `elf.py` in Phase 3)
 * `core/contracts/` — Pydantic v2 contract models for all session data
 * `core/sessions/` — SessionManager for disk artifact persistence
-* `core/kernel/` — state machine, budgets, orchestrator
+* `core/kernel/` — state machine, budgets, orchestrator, workflow templates (`workflows.py`)
 * `core/cli.py`  — CLI interface layer
-* `core/memory/memory.py`  — FAISS-backed long-term memory
-* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map)
+* `core/memory/memory.py`  — FAISS-backed long-term memory (numpy fallback if FAISS unavailable)
+* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map, patch)
 * `core/policy/` — profiles, god mode, audit logging
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
+* `core/patch/` — patch engine: parser, matcher, applicator, worktree manager, engine orchestrator
+* `core/judge/` — composite judge: tier scoring, candidate sampling, GPU profile stub
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -1616,8 +1846,10 @@ If you want to understand the **entry point**, see:
 The target architecture (from the roadmap) is:
 
 * Artifact-driven state (no conversational drift)
-* Deterministic state machine
-* Capability-gated tool execution
+* Three-tier orchestration: Campaign graph (Tier 0) → Workflow graph (Tier 1) → Phase-internal planning (Tier 2)
+* Pluggable workflows — static templates for coding, red teaming, data analysis, and arbitrary tasks
+* Campaign orchestration — multi-step missions with DAG decomposition, HITL approval gates, and artifact handoff (pre-authored plans)
+* Capability-gated tool execution with least-privilege by intersection (Global ∩ Workflow ∩ Step ∩ Phase)
 * Sandbox isolation (bwrap / nsjail)
 * Tests > Lint > LLM scoring hierarchy
 * GPU-aware orchestration (vLLM / TRT-LLM)
@@ -1626,26 +1858,41 @@ The target architecture (from the roadmap) is:
 The system is moving toward:
 
 ```
-CLI
+CLI (--task / --campaign / --campaign-plan / --workflow)
   ↓
-Kernel State Machine
+Campaign Orchestrator (Tier 0 — optional, multi-step missions)
+  ↓  plan → HITL approve → dispatch → synthesis
+Workflow Selector → WorkflowTemplate (Tier 1 — static graph)
+  ↓
+Kernel State Machine (phases, transitions, budgets)
   ↓
 Roles (Planner / Coder / Reviewer)
   ↓
-ToolBus → Sandbox → Subprocess
+ToolBus → EffectiveScope check → Sandbox → Subprocess
   ↓
-Deterministic Judge
+Deterministic Judge (Tests > Lint > LLM)
 ```
 
-As of Phase 5:
+As of Phase 7.4:
 
+* The kernel state machine is parameterized by `WorkflowTemplate` objects — no hardcoded phase names, transitions, or branching rules. The coding pipeline is one template; custom domains define their own.
+* `CODING_WORKFLOW` and `GENERIC_WORKFLOW` are built-in templates. `select_workflow()` resolves by CLI flag, policy, or default.
+* Per-phase capability profiles (`phase_capabilities`) create temporal sandboxes — PLAN can read but not write, PATCH can write but only through the patch engine.
 * Tools are dumb executors behind a sandboxed, capability-gated bus.
-* Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`.
+* Every tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`. `HUMAN_REVIEW` uses `$EDITOR` directly (user-initiated TTY) and is an explicit exception.
 * Deny-by-default. No scope = no execution.
 * God mode exists for emergencies — TTL-limited, panic-revocable, fully audited.
-* 4 consolidated multi-action tools (fs, git, verify, repo_map) cover 25 operations under 13 scopes.
+* 5 consolidated multi-action tools (fs, git, verify, repo_map, patch) cover 31 operations under 13 scopes.
 * The agent sees repo structure via a token-budgeted excerpt — file paths, symbol signatures, and dependency-ranked relevance — without loading full source.
 * 3-tier symbol extraction: Python `ast` → tree-sitter (7 languages) → regex fallback. Multi-language dependency graph with import resolution.
+* Code modifications use an exact-match patch protocol with git worktree isolation. Cross-file changes land atomically. Failed patches roll back at zero cost.
+* Patches are scored by a deterministic `CompositeJudge` (Tests > Lint > LLM review). `CandidateManager` evaluates N candidate patches in isolated worktrees and selects the winner by composite score.
+* **Campaign Orchestrator** provides a Tier 0 macro loop with HITL approval, step DAG execution, and explicit artifact handoff.
+* **StepPlan contracts** lock intent, boundaries, and capability needs per step with a SHA256 ActionDigest.
+* **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
+* **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
+
+Phase 8+ (in design) focuses on retrieval discipline and local inference. See `ROADMAP.md`.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
@@ -1656,7 +1903,7 @@ The kernel is the only intelligence. Tools report. The kernel decides.
 Long-term memory uses:
 
 * SQLite-backed JSON persistence
-* FAISS vector index
+* FAISS vector index (numpy fallback when FAISS is unavailable)
 * OpenAI embeddings (currently)
 
 See: `core/memory/memory.py` 
@@ -1665,6 +1912,30 @@ This will be abstracted for local embeddings in later phases.
 
 Short-term history remains for direct chat mode.
 Agentic mode uses session artifacts as the sole source of truth (Phase 3).
+
+---
+
+# 🧰 Context Window & Tool Output
+
+Judais-Lobi tracks context window limits per model/provider, auto-compacts history when needed, and never drops oversized tool output. Full logs are written to disk with a retrieval hint in the prompt.
+
+Config (project-level) in `.judais-lobi.yml`:
+
+```yaml
+context:
+  max_context_tokens: 32768
+  max_output_tokens: 4096
+  max_tool_output_bytes_in_context: 32768
+  min_tail_messages: 6
+  max_summary_chars: 2400
+  provider_defaults:
+    openai: 128000
+    mistral: 32768
+    local: 32768
+  model_overrides:
+    gpt-4o: 128000
+    codestral-latest: 32768
+```
 
 ---
 
@@ -1721,6 +1992,39 @@ Or create:
 
 ---
 
+# 🔐 API Keys & Model APIs
+
+Judais-Lobi uses API keys from your environment or your system keyring. Keys are never stored in config files.
+
+Environment variables (fallbacks):
+
+* `OPENAI_API_KEY` — OpenAI (builder + optional critic)
+* `ANTHROPIC_API_KEY` — Anthropic critic (optional)
+* `GOOGLE_API_KEY` — Google/Gemini critic (optional)
+
+Keyring (preferred, optional):
+
+* Service: `judais-lobi`
+* Keys: `openai_api_key`, `anthropic_api_key`, `google_api_key`
+
+Model API configuration (critic only):
+
+* User defaults: `~/.judais-lobi/critic.yml`
+* Project overrides: `.judais-lobi.yml` under `critic:`
+
+Example `critic.yml`:
+
+```yaml
+enabled: true
+providers:
+  - provider: openai
+    model: gpt-4o
+  - provider: anthropic
+    model: claude-sonnet-4-20250514
+```
+
+---
+
 # 🔮 What This Is Becoming
 
 Judais-Lobi is not trying to be:
@@ -1731,10 +2035,11 @@ Judais-Lobi is not trying to be:
 
 It is attempting to become:
 
-* A local-first agentic developer kernel
+* A local-first agentic execution kernel (not just developer — any structured task domain)
 * Deterministic and replayable
 * Hardware-aware
-* Capability-constrained
+* Capability-constrained (least-privilege by intersection)
+* Mission-capable (campaign orchestration with HITL approval gates)
 * Air-gap ready
 
 The design philosophy is explicit in `ROADMAP.md` :
@@ -1742,6 +2047,9 @@ The design philosophy is explicit in `ROADMAP.md` :
 * Artifacts over chat
 * Budgets over infinite loops
 * Capabilities over trust
+* Capabilities over tools (stable tags, not tool names)
+* Plans over prompts (structured DAGs, not freestyle LLM loops)
+* Static graphs, adaptive phases (three-tier orchestration)
 * Dumb tools, smart kernel
 * Commit or abort
 
@@ -1790,7 +2098,7 @@ GPLv3 — see LICENSE.
 ```markdown
 # ROADMAP.md
 **Project:** judais-lobi
-**Objective:** Transform judais-lobi into a local-first, contract-driven, agentic open developer system.
+**Objective:** Transform judais-lobi into a local-first, contract-driven, autonomous execution kernel — starting with software development, generalizable to any structured task domain.
 
 ## Implementation Status
 
@@ -1800,8 +2108,8 @@ GPLv3 — see LICENSE.
 - [x] **Phase 3** – Session Artifacts, Contracts & KV Prefixing (`elf.py` deleted, Agent class, Pydantic contracts, SessionManager, 269 tests)
 - [x] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating (ToolBus, CapabilityEngine, BwrapSandbox, 3 consolidated tools, profiles, god mode, audit, 562 tests)
 - [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
-- [ ] **Phase 6** – Repository-Native Patch Engine
-- [ ] **Phase 7** – Multi-Role Orchestrator, Composite Judge & External Critic
+- [x] **Phase 6** – Repository-Native Patch Engine (parser, exact-match matcher with similarity diagnostics, path-jailed applicator, git worktree isolation with crash recovery, PatchEngine orchestrator, ToolBus-integrated PatchTool with 6 actions, 888 tests)
+- [x] **Phase 7** – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic (7.0–7.4 complete)
 - [ ] **Phase 8** – Retrieval, Context Discipline & Local Inference
 - [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
 - [ ] **Phase 10** – Evaluation & Benchmarks
@@ -1809,12 +2117,14 @@ GPLv3 — see LICENSE.
 ---
 
 ## 1. Mission Statement
-Judais-lobi will evolve from a CLI assistant with tools into a local-first autonomous developer agent with:
+Judais-lobi will evolve from a CLI assistant with tools into a local-first autonomous execution kernel with:
 
 * **Artifact-Driven State:** Artifacts are the *only* source of truth. No conversational history drives execution.
 * **Capability Gating:** Network and host access are deny-by-default, requested via structured artifacts, and powerful when explicitly granted.
 * **Native Sandboxing:** Tool execution runs in native Linux namespaces (bwrap/nsjail) to maintain a microkernel architecture.
 * **Hard Budgets:** Strict caps on retries, compute time, and context size prevent infinite loops.
+* **Pluggable Workflows:** The state machine is parameterized by a `WorkflowTemplate` — a static, auditable definition of phases, transitions, schemas, and branch rules. The coding pipeline is the first workflow, not the only one. Red teaming, data analysis, optimization, and arbitrary structured tasks run on the same kernel with different templates. The LLM selects which template to use at INTAKE; it never rewrites the transition graph at runtime.
+* **Campaign Orchestration:** Multi-step missions run as a hierarchical state machine — a `CampaignOrchestrator` (Tier 0) drafts a DAG of steps, each assigned a workflow template, gets human approval, then dispatches isolated child workflows with explicit artifact handoff. The campaign plan is immutable once approved. The system graduates from "task runner" to "mission manager" without adding a second orchestration universe — campaigns are workflow-of-workflows, reusing the entire existing stack.
 * **Deterministic Workflows:** Repository-native patch workflows using Search/Replace blocks, governed by a rigid scoring hierarchy (Tests > Static Analysis > LLM).
 * **GPU-Aware Orchestration:** VRAM-aware scheduling and KV cache prefixing that adapts to the available hardware — from a single RTX 5090 (32GB) to multi-GPU configurations (e.g., 4x L4, RTX 6000 Pro 96GB).
 
@@ -1826,18 +2136,39 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
                           ┌─────────────────────────┐
                           │     CLI / Task Input     │
                           │  (lobi/judais commands)  │
+                          │  --task / --campaign      │
+                          │  --workflow               │
                           └────────────┬────────────┘
                                        │
+                            ┌──────────▼──────────┐
+                            │  --campaign?         │
+                            │  ┌────────────────┐  │
+                            │  │ Campaign       │  │  Tier 0: DAG of steps
+                            │  │ Orchestrator   │  │  HITL approval gate
+                            │  │ (plan→approve  │  │  artifact handoff
+                            │  │  →dispatch     │  │
+                            │  │  →synthesis)   │  │
+                            │  └───────┬────────┘  │
+                            │          │ per step  │
+                            └──────────┼──────────┘
+                                       │
                           ┌────────────▼────────────┐
-                          │     core/kernel/         │
-                          │  State Machine + Budgets │
-                          │  INTAKE → ... → FINALIZE │
+                          │  WorkflowSelector        │
+                          │  (picks template from    │
+                          │   INTAKE artifact or CLI) │
+                          └────────────┬────────────┘
+                                       │
+                          ┌────────────▼────────────┐  Tier 1: static
+                          │     core/kernel/         │  workflow graph
+                          │  Orchestrator + Budgets  │
+                          │  WorkflowTemplate drives │  Tier 2: adaptive
+                          │  phases & transitions    │  phase-internal
                           └──┬───────────────────┬──┘
                              │                   │
               ┌──────────────▼──────┐   ┌───────▼──────────────┐
               │  core/contracts/    │   │  core/roles/          │
-              │  JSON Schemas +     │   │  Planner / Coder /    │
-              │  Pydantic models    │   │  Reviewer prompts     │
+              │  Workflow-scoped    │   │  Dispatchers per      │
+              │  Pydantic schemas   │   │  workflow domain      │
               └──────────┬─────────┘   │  (+ Lobi/JudAIs       │
                          │             │   personality layers)  │
               ┌──────────▼─────────┐   └───────┬───────────────┘
@@ -1862,39 +2193,84 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
    └──────┬──────┘
           │
    ┌──────▼──────────────────────────┐
-   │ tools/servers/                  │
-   │ repo, git, runner, test, memory │
-   │ web_search, rag, voice (opt)   │
+   │ tools/ (domain packages)        │
+   │ repo, git, patch, verify, fs    │
+   │ web_search, rag, voice (opt)    │
+   │ + future: redteam/, data/, ...  │
    └─────────────────────────────────┘
 ```
 
 ### 2.2 Core Components
 ```text
 core/
-  kernel/                # Orchestration state machine & hard budgets
+  kernel/                # Orchestrator, budgets, workflow engine
+    state.py             # Phase, SessionState, transition validation
+    orchestrator.py      # Main loop (parameterized by WorkflowTemplate)
+    budgets.py           # Hard budget enforcement
+    workflows.py         # WorkflowTemplate, WorkflowSelector, built-in templates
+  campaign/              # Campaign orchestrator (Tier 0)
+    orchestrator.py      # CampaignOrchestrator: plan → approve → dispatch → synthesis
+    models.py            # CampaignPlan, MissionStep, StepPlan, CampaignState
+    validator.py         # DAG acyclicity, artifact declarations, step_id uniqueness
+    scope.py             # EffectiveScope intersection: Global ∩ Workflow ∩ Step ∩ Phase
+    hitl.py              # HUMAN_REVIEW: $EDITOR file-edit loop + Pydantic revalidation
+    handoff.py           # Artifact materialization: handoff_out/ → handoff_in/
   contracts/             # JSON schemas + Pydantic validation
+    schemas.py           # All Pydantic models (workflow-registered, not hardcoded)
+    campaign.py          # CampaignPlan, MissionStep, CampaignLimits, ArtifactRef
+    validation.py        # Schema lookup via workflow.phase_schemas
   runtime/               # LLM provider backends (OpenAI/Mistral API + Local HTTP/vLLM/TRT-LLM)
   capabilities/          # PermissionRequest and PermissionGrant engine
   context/               # Repo-map, Retrieval + compression
+  patch/                 # Patch engine: parser, matcher, applicator, worktree
   memory/                # Unified memory (SQLite + FAISS vectors, carried forward)
-  roles/                 # Planner / Coder / Reviewer static prompts
+  roles/                 # Domain-specific role dispatchers
+    dispatchers/         # CodeDispatcher, GenericDispatcher, future RedTeamDispatcher...
+    personalities/       # lobi.yaml, judais.yaml — persona overlays
   scoring/               # Composite judge (Tests > Lint > LLM)
 
 tools/
   bus/                   # MCP-style tool registry + Policy enforcement
   sandbox/               # SandboxRunner backends (bwrap, nsjail, none)
-  servers/               # repo, git, runner, test, memory, web_search, rag
+  (domain packages)      # fs, git, patch, verify, repo_map + future: redteam/, data/
 
 sessions/
+  # Single-task session (workflow mode):
   <timestamp_taskid>/
     artifacts/           # The ONLY source of truth for the session
+    workflow.json        # Which WorkflowTemplate was used (for replay)
+
+  # Multi-step campaign session (campaign mode):
+  <campaign_id>/
+    campaign.json        # CampaignPlan + current state (frozen after HUMAN_REVIEW)
+    synthesis/           # Final compiled outputs from all steps
+    steps/
+      <step_id>/
+        workflow.json    # Selected WorkflowTemplate for this step
+        artifacts/       # Step-local artifacts (isolated from other steps)
+        handoff_in/      # Materialized imports from upstream steps
+        handoff_out/     # Exports declared by this step (available to downstream)
 
 ```
 
 ### 2.3 Execution Model & Hard Budgets
 
-Every task follows a strict state machine:
+Execution operates at three tiers. Each tier has a strict boundary: the layer above dispatches, the layer below executes. No tier reaches into another's internals.
+
+* **Tier 0 — Campaign graph** (DAG of steps). A `CampaignOrchestrator` decomposes a complex mission into isolated steps, each assigned a workflow template. The plan is human-approved and immutable. Artifact handoff between steps is explicit. Campaigns are optional — single tasks bypass Tier 0 entirely.
+* **Tier 1 — Workflow graph** (static template). Each task (or campaign step) follows a strict state machine defined by a `WorkflowTemplate`. The template is selected at INTAKE (by CLI flag, policy, or LLM classification) and is **immutable for the session**. The LLM never modifies the transition graph at runtime.
+* **Tier 2 — Phase-internal planning** (adaptive, tool-gated). The LLM controls what happens *inside* a phase — which tools to call, what plan to propose, what patch to emit. Bounded by budgets and capability gates.
+
+The **Coding Workflow** (default, current):
 `INTAKE` -> `CONTRACT` -> `REPO_MAP` -> `PLAN` -> `RETRIEVE` -> `PATCH` -> `CRITIQUE` -> `RUN` -> `FIX (loop)` -> `FINALIZE`
+
+The **Generic Workflow** (for tasks that don't fit a named template):
+`INTAKE` -> `PLAN` -> `EXECUTE` -> `EVALUATE` -> `(loop to PLAN or EXECUTE)` -> `FINALIZE`
+
+The **Campaign Lifecycle** (Tier 0, for multi-step missions):
+`MISSION_ANALYSIS` -> `OPTION_DEVELOPMENT` -> `PLAN_DRAFTING` -> `HUMAN_REVIEW` -> `DISPATCH` -> `SYNTHESIS`
+
+Future named workflows (Red Team, Data Analysis, etc.) define their own phases but share the same kernel, budgets, ToolBus, and artifact system. Campaigns compose any combination of workflows into a mission.
 
 Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the ToolBus on **every tool call**. Any tool invocation — in any phase — triggers a capability check. If the required scope is not granted, the ToolBus returns a structured error and the kernel prompts for a `PermissionRequest`. This happens inline, not as a discrete step in the state machine.
 
@@ -1907,11 +2283,14 @@ Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the Tool
 * `max_tool_output_bytes_in_context`: Truncation threshold for stdout/stderr.
 * `max_context_tokens_per_role`: Bounded context window.
 * `max_time_per_phase_seconds`: Hard timeout.
-3. **Execution Path:** All tool execution flows through `ToolBus -> SandboxRunner -> Subprocess`. No tool ever calls `subprocess` directly. This is non-negotiable — without it, capability gating is cosmetic.
+3. **Execution Path:** All tool execution flows through `ToolBus -> SandboxRunner -> Subprocess`. No tool ever calls `subprocess` directly. This is non-negotiable — without it, capability gating is cosmetic. **Exception:** `HUMAN_REVIEW` opens `$EDITOR` directly (user-initiated TTY) and is outside the ToolBus.
 4. **Dumb Tools, Smart Kernel:** Tools are pure executors. They run a command, return stdout/stderr/exit code, and nothing else. All retry logic, repair logic, and decision-making lives in the kernel. The current `RunPythonTool.repair_code()` and `RunSubprocessTool` retry loops must be extracted into the kernel's FIX phase. If a tool fails, it reports failure. The kernel decides what happens next.
 5. **GPU Scheduling in Runtime, Not Kernel:** The kernel asks `runtime.get_parallelism_budget()` and receives a number. It does not know about VRAM, device counts, or compute capability. Clean separation — the kernel orchestrates phases, the runtime owns hardware awareness.
 6. **One ToolBus, Both Modes:** Direct mode and agentic mode use the **same ToolBus and SandboxRunner**. The difference between modes is orchestration depth (direct mode skips the kernel state machine), not the execution path. If direct mode bypasses the bus, you build two security models that drift apart. Every `--shell`, `--python`, and `--search` call in direct mode goes through the bus with the same policy enforcement. The bus is the only door.
 7. **Kernel Never Touches the Filesystem:** The kernel reads artifacts and dispatches to tools. It never reads from the working directory, never opens project files, never writes outside the session directory. All repository interaction goes through a `RepoServer` tool via the ToolBus. Even read-only access must be sandboxed — if the kernel can read files directly, that is an unsandboxed path to the repo that bypasses policy. Kernel orchestrates. Tools touch the world.
+8. **Workflow Templates Are Static:** The `WorkflowTemplate` — its phases, transitions, and schema registry — is selected once at INTAKE and is immutable for the session. The LLM controls what happens *inside* a phase. The kernel controls *which phase runs next.* The LLM picks from a menu of templates; it never writes the menu. This is the one invariant that protects every budget and safety constraint from circumvention. Three-tier orchestration: static campaign graph (Tier 0), static workflow graph (Tier 1), adaptive phase-internal planning (Tier 2).
+9. **Campaign Plans Are Static Once Approved:** After the human approves a `CampaignPlan` at HUMAN_REVIEW, the step DAG is frozen. Steps can only be **(a)** retried, **(b)** skipped, or **(c)** aborted. No inserting new steps, no reordering, no changing workflow assignments — unless the campaign returns to HUMAN_REVIEW for re-approval. This prevents "LLM silently expands scope" and ensures the human-approved plan is the plan that executes.
+10. **Least Privilege by Intersection:** Every tool call passes through a scope intersection that computes `EffectiveScope = GlobalPolicy ∩ WorkflowScope ∩ StepScope ∩ PhaseScope`. GlobalPolicy is the deny-by-default `CapabilityEngine`. WorkflowScope is `workflow.required_scopes`. StepScope is `step_plan.capabilities_required` (campaign mode) or the full workflow scope (single-task mode). PhaseScope is `workflow.phase_capabilities[current_phase]`. The LLM can never escalate through any layer — it can only narrow. Even if a prompt injection forces a capability request for `net.http` in a coding workflow, WorkflowScope blocks it before it reaches the ToolBus. This is capability-based security: the scope is computed from the plan, not requested at runtime.
 
 
 
@@ -2069,22 +2448,173 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 
 **Definition of Done:** ✅ The Planner role can ingest a 100+ file, multi-language repository architecture in under ~4k tokens. Dependency graph ranks files by relevance to target files. Visualization exports support human inspection. Cache prevents redundant extraction.
 
-### Phase 6 – Repository-Native Patch Engine
+### Phase 6 – Repository-Native Patch Engine ✅
 
 **Goal:** Reliable code modification using exact-match constraints.
-**Tasks:**
 
-* Implement **Search/Replace block parsing** (`<<<< SEARCH / ==== / >>>> REPLACE`).
-* Enforce exact match strategy: The SEARCH block *must* match exactly once in the target file.
-* **Canonicalization before matching:** normalize line endings to `\n` (strip `\r`), but **preserve indentation exactly** — tabs vs. spaces and indentation depth must match the file. Do not offer a "whitespace-insensitive mode" as default; it weakens determinism. If needed later, it can exist as a separate explicit tool variant, not a flag.
-* If ambiguous (0 or >1 matches), the tool returns a structured failure with surrounding context hashes. On **zero matches**, additionally return the 3 most similar lines in the file — but do not brute-force edit distance against every line in large files. Narrow first: filter by matching indentation depth, then by shared token overlap, then compute edit distance on the short list. This keeps similarity search fast in large repos.
-* Automatically sandbox changes in a git worktree.
-* Implement automatic rollback on patch failure.
-**Definition of Done:** Patch protocol produces reproducible edits. Edits failing exact-match validation automatically trigger a budget-constrained retry.
+**Implementation:**
 
-### Phase 7 – Multi-Role Orchestrator, Composite Judge & External Critic
+* **`core/patch/parser.py`** — Extracts three block types from raw LLM text: `<<<< SEARCH / ==== / >>>> REPLACE` (modify), `<<<< CREATE / >>>> CREATE` (create), `<<<< DELETE path >>>>` (delete). Delimiters recognized only at line start (after optional whitespace). Path validation rejects absolute paths, `..` traversal, and empty paths at parse time. Produces `List[FilePatch]` (Pydantic models from `core/contracts/schemas.py`).
+* **`core/patch/matcher.py`** — Exact byte-match returning `(start_byte, end_byte)` offsets. SHA256 context hash of ±5 lines around each match for disambiguation. On zero matches: 3-stage similarity narrowing pipeline — filter by indent depth (±1 level, hard cap 200 windows), score by token overlap (`re.findall(r'\w+')` set intersection, top 30), rank by `difflib.SequenceMatcher.ratio()` (return top 3 `SimilarRegion` objects). On multiple matches: return all offsets + context hashes. `\r\n → \n` canonicalization before matching, no other normalization.
+* **`core/patch/applicator.py`** — Path jailing via `jail_path()`: rejects absolute paths, `..` traversal, and symlink escapes (resolved path must be under repo root). Modify: read UTF-8 with `errors="replace"`, canonicalize, exact-match, replace, preserve `st_mode` bits. Create: strict precondition (fails if file exists), creates parent directories. Delete: strict precondition (fails if file doesn't exist).
+* **`core/patch/worktree.py`** — `PatchWorktree` manages one worktree per PatchSet (atomic transaction boundary). Create: `git worktree add -b patch-<name> <path> HEAD`. Merge: `git merge --no-ff patch-<name>` + branch cleanup. Discard: `git worktree remove --force` + `git branch -D`. Writes `.judais-lobi/worktrees/active.json` on create (worktree path, branch name, timestamp). Deleted on discard/merge. Fresh instances recover state from this file, preventing orphaned worktrees after process restart.
+* **`core/patch/engine.py`** — `PatchEngine` orchestrates validate (dry-run match), apply (worktree + write), diff (real `git diff`), merge, rollback, status. Apply stops at first file failure, leaving worktree intact for diagnostics.
+* **`core/tools/patch_tool.py`** — ToolBus-compatible 6-action tool (validate, apply, diff, merge, rollback, status). All actions serialize results as JSON to stdout. `PatchResult` and `FileMatchResult` provide `to_dict()` helpers. exit_code=0 only on success. Registered as `PATCH_DESCRIPTOR` with per-action scopes.
 
-**Goal:** Team-of-teams behavior via deterministic scoring hierarchy, with an optional external frontier-model critic for catching "confident wrong" failures from local models.
+**Design decisions (reviewed by GPT and Gemini, both converged):**
+
+* Parser is a first-class module — LLMs cannot reliably emit multi-line code inside JSON.
+* One worktree per PatchSet — cross-file changes must land atomically.
+* `validate` optional in tool, mandatory in kernel — tool stays stateless, kernel sequences policy.
+* Similarity budget: 3 candidates, static, narrowing pipeline — diagnostics, not matching.
+* Byte-precise match diagnostics (offsets + context hashes) for LLM disambiguation.
+* Path jailing in applicator — prevents `<<<< SEARCH ../../../etc/passwd` attacks.
+* Delimiters at line-start only — delimiter-like text inside code blocks is never misinterpreted.
+* UTF-8 with `errors="replace"` and preserve file mode — consistent with Phase 5 convention.
+* Integration tests gated on `shutil.which("git")`, marked `@pytest.mark.integration`.
+
+**Test coverage:** 105 new tests (888 total). 3 integration tests with real git repos.
+
+**Definition of Done:** ✅ Patch protocol produces reproducible edits. Exact-match validation with structured diagnostics. Git worktree isolation for atomic cross-file changes. Automatic rollback on failure. 12 tool descriptors, 31 operations under 13 scopes.
+
+### Phase 7 – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic
+
+**Goal:** Abstract the state machine into pluggable `WorkflowTemplate` objects, add a Campaign Orchestrator for multi-step missions with HITL approval, implement role dispatchers per domain, and add a deterministic scoring hierarchy with an optional external critic.
+
+#### 7.0 WorkflowTemplate & State Machine Abstraction
+
+The kernel currently hardcodes a coding pipeline: `Phase` enum, `TRANSITIONS` dict, `_PHASE_ORDER` list, and `PHASE_SCHEMAS` mapping are all static globals. To support multiple task domains without duplicating kernel logic, these must become parameters of a `WorkflowTemplate` that the `Orchestrator` and `SessionState` consume.
+
+**The refactor is surgical and backward-compatible.** The coding workflow becomes `CODING_WORKFLOW = WorkflowTemplate(...)` — a constant that produces identical behavior to the current hardcoded enum. Zero existing tests break.
+
+**`WorkflowTemplate` dataclass:**
+
+```python
+@dataclass(frozen=True)
+class WorkflowTemplate:
+    name: str                                           # "coding", "generic", "redteam", ...
+    phases: Tuple[str, ...]                             # Ordered phase names (strings, not enum)
+    transitions: Dict[str, FrozenSet[str]]              # phase -> set of valid next phases
+    phase_schemas: Dict[str, Type[BaseModel]]           # phase -> Pydantic model for artifact validation
+    phase_order: Tuple[str, ...]                        # Linear progression (excludes branch targets)
+    branch_rules: Dict[str, Callable]                   # phase -> function(result) -> next_phase_name
+    terminal_phases: FrozenSet[str]                     # {"HALTED", "COMPLETED"}
+    phase_capabilities: Dict[str, FrozenSet[str]]       # phase -> allowed capability tags for that phase
+    default_budget_overrides: Dict[str, Any] = field(default_factory=dict)
+    required_scopes: List[str] = field(default_factory=list)  # Scopes needed by this workflow
+    description: str = ""
+```
+
+**Key design points:**
+
+* **Phases are strings, not enum members.** This allows workflow templates to define domain-specific phase names (`RECON`, `VULN_MAP`, `EXPLOIT`) without modifying a global enum. `SessionState.current_phase` becomes `str`. Transition validation uses `workflow.transitions[current]`.
+* **`branch_rules`** replace the hardcoded `if current == Phase.RUN: ...` logic in `_select_next_phase()`. Each workflow declares its own branching — e.g., coding says "RUN success → FINALIZE, RUN failure → FIX"; generic says "EVALUATE success → FINALIZE, EVALUATE failure → PLAN".
+* **`phase_schemas`** replace the global `PHASE_SCHEMAS` dict. `validate_phase_output()` looks up `workflow.phase_schemas[phase_name]`. A workflow can register domain-specific Pydantic models (e.g., `ReconReport`, `ExploitPlan`) for its phases.
+* **`phase_capabilities`** define which capability tags are available in each phase, creating a **temporal sandbox**. PLAN can read the repo but not write it. EXECUTE can write but only through the patch engine. The LLM cannot execute while it's supposed to be planning. The CapabilityEngine computes `EffectiveScope` per tool call as the intersection of all applicable layers (see Invariant 10).
+* **`default_budget_overrides`** allow workflows to tune budgets — red teaming may need more iterations than coding, data analysis may need longer phase timeouts for large datasets.
+
+**Built-in templates:**
+
+```python
+CODING_WORKFLOW = WorkflowTemplate(
+    name="coding",
+    phases=("INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE",
+            "PATCH", "CRITIQUE", "RUN", "FIX", "FINALIZE", "HALTED", "COMPLETED"),
+    transitions={...},      # Identical to current TRANSITIONS dict
+    phase_schemas={...},    # Identical to current PHASE_SCHEMAS dict
+    phase_order=("INTAKE", "CONTRACT", "REPO_MAP", "PLAN",
+                 "RETRIEVE", "PATCH", "CRITIQUE", "RUN"),
+    branch_rules={
+        "RUN": lambda result: "FINALIZE" if result.success else "FIX",
+        "FIX": lambda result: "PATCH",
+        "FINALIZE": lambda result: "COMPLETED",
+    },
+    terminal_phases=frozenset({"HALTED", "COMPLETED"}),
+    phase_capabilities={
+        "INTAKE":   frozenset({"fs.read"}),
+        "CONTRACT": frozenset({"fs.read"}),
+        "REPO_MAP": frozenset({"fs.read", "git.read"}),
+        "PLAN":     frozenset({"fs.read", "git.read"}),           # Read-only: no execution during planning
+        "RETRIEVE": frozenset({"fs.read", "git.read"}),
+        "PATCH":    frozenset({"fs.read", "fs.write", "git.write"}),  # Write only through patch engine
+        "CRITIQUE": frozenset({"fs.read", "git.read"}),
+        "RUN":      frozenset({"fs.read", "verify.run"}),
+        "FIX":      frozenset({"fs.read", "git.read"}),
+        "FINALIZE": frozenset({"fs.read", "git.read"}),
+    },
+    description="Full software development pipeline with repo map, patching, and test loop.",
+)
+
+GENERIC_WORKFLOW = WorkflowTemplate(
+    name="generic",
+    phases=("INTAKE", "PLAN", "EXECUTE", "EVALUATE", "FINALIZE", "HALTED", "COMPLETED"),
+    transitions={
+        "INTAKE":   frozenset({"PLAN", "HALTED"}),
+        "PLAN":     frozenset({"EXECUTE", "HALTED"}),
+        "EXECUTE":  frozenset({"EVALUATE", "HALTED"}),
+        "EVALUATE": frozenset({"PLAN", "EXECUTE", "FINALIZE", "HALTED"}),
+        "FINALIZE": frozenset({"COMPLETED", "HALTED"}),
+        "HALTED":   frozenset(),
+        "COMPLETED": frozenset(),
+    },
+    phase_schemas={...},    # INTAKE -> TaskContract, PLAN -> ChangePlan, FINALIZE -> FinalReport
+    phase_order=("INTAKE", "PLAN", "EXECUTE", "EVALUATE"),
+    branch_rules={
+        "EVALUATE": lambda result: "FINALIZE" if result.success else "PLAN",
+        "FINALIZE": lambda result: "COMPLETED",
+    },
+    terminal_phases=frozenset({"HALTED", "COMPLETED"}),
+    description="Flexible pipeline for arbitrary structured tasks. EXECUTE dispatches to any tool on the bus.",
+)
+```
+
+**`WorkflowSelector`:**
+
+A function (not a class) that reads the INTAKE artifact and returns a `WorkflowTemplate`. Selection hierarchy:
+1. CLI flag: `--workflow coding` → hardcoded choice, no LLM involved.
+2. Policy file: `workflow: "generic"` in `PolicyPack` → deterministic.
+3. LLM classification: Given the task description, classify into a known template name. If no match → `GENERIC_WORKFLOW`. The LLM picks from a fixed menu; it cannot invent a template.
+
+**Refactored `SessionState`:**
+
+* `current_phase: str` (was `Phase` enum)
+* `workflow: WorkflowTemplate` (new field, passed at construction)
+* `enter_phase()` validates against `workflow.transitions`
+
+**Refactored `Orchestrator`:**
+
+* `__init__(..., workflow: WorkflowTemplate = CODING_WORKFLOW)`
+* `_select_next_phase()` reads `workflow.phase_order` and `workflow.branch_rules`
+* `_is_terminal()` checks `workflow.terminal_phases`
+* `_validate_and_record()` looks up `workflow.phase_schemas`
+
+**Refactored `validation.py`:**
+
+* `get_schema_for_phase(phase, workflow)` instead of reading the global `PHASE_SCHEMAS`
+
+**Implementation order:**
+
+1. ~~Create `core/kernel/workflows.py` with `WorkflowTemplate` dataclass and `CODING_WORKFLOW` constant.~~ ✅
+2. ~~Refactor `SessionState`: `current_phase` becomes `str`, accept `workflow` parameter, validate against `workflow.transitions`.~~ ✅
+3. ~~Refactor `Orchestrator`: accept `workflow` parameter, replace hardcoded phase logic with `workflow.branch_rules` and `workflow.phase_order`.~~ ✅
+4. ~~Refactor `validation.py`: accept workflow parameter for schema lookup.~~ ✅
+5. ~~Update all existing tests to pass `CODING_WORKFLOW` (or default to it). **Zero behavioral change at this step.**~~ ✅
+6. ~~Create `GENERIC_WORKFLOW` constant.~~ ✅
+7. ~~Proof-of-concept: run a non-coding task through `GENERIC_WORKFLOW` with a stub dispatcher.~~ ✅
+8. ~~Write `WorkflowSelector` function.~~ ✅
+
+**Phase 7.0 status: COMPLETE.** 86 new tests (974 total). `Phase` is now `str, Enum`. CODING_WORKFLOW produces identical behavior to Phase 6 — zero existing tests broken. GENERIC_WORKFLOW proven end-to-end with evaluate-failure loop, budget halting, and phase retry.
+
+**What this enables (future, not Phase 7 scope):**
+
+Domain-specific workflows are defined as additional `WorkflowTemplate` constants with their own phases, schemas, tools, and capability profiles. Examples:
+
+* **Red Team Workflow:** `INTAKE → RECON → VULN_MAP → EXPLOIT_PLAN → EXECUTE → EVALUATE → FINALIZE`. Registers `ReconReport`, `ExploitPlan`, `ExploitResult` schemas. Requires `net.scan`, `net.exploit` scopes. `BwrapSandbox` drops `--unshare-net` when these scopes are granted. Uses `RedTeamDispatcher` for role prompts.
+* **Data Analysis Workflow:** `INTAKE → DATA_MAP → PLAN → TRANSFORM → ANALYZE → FINALIZE`. Registers `DataProfile`, `TransformPlan`, `AnalysisResult` schemas. Uses `DATA_SCI` capability profile (`fs.read`, `fs.write`, `python.exec` with pandas/numpy venv). Uses `DataDispatcher` for role prompts.
+* **Domain-specific tool packages:** `core/tools/redteam/` (nmap, gobuster, metasploit_rpc), `core/tools/data/` (sql_query, pandas_exec, plot_generator). Same ToolBus, same capability gating.
+* **Domain-specific role dispatchers:** `CodeDispatcher` (Planner/Coder/Reviewer), `RedTeamDispatcher` (OSINT_Analyst/Exploit_Dev/Vuln_Assessor), `DataDispatcher` (Data_Engineer/Statistician/Visualizer). JudAIs and Lobi remain persona overlays applied to any dispatcher.
+
+These are **not Phase 7 deliverables** — they are future workflow templates that the Phase 7 abstraction makes trivially addable. Phase 7 delivers the mechanism (`WorkflowTemplate`, `CODING_WORKFLOW`, `GENERIC_WORKFLOW`, `WorkflowSelector`). Future phases deliver the content.
 
 #### 7.1 Composite Judge
 
@@ -2113,6 +2643,7 @@ The runtime must expose a `gpu_profile` configuration (auto-detected or user-spe
 **Deterministic candidate ordering:** When candidates are generated in parallel (across GPUs or concurrent requests), assign deterministic candidate IDs (`candidate_0`, `candidate_1`, ...) **before dispatch**. The Composite Judge scores candidates in ID order, not completion order. Otherwise the winning candidate depends on which GPU returns first — a race condition that breaks reproducibility.
 
 #### 7.3 External Critic (Optional Frontier-Model Auditor)
+**Status:** ✅ COMPLETE.
 
 **Motivation:** Local models are effective builders but vulnerable to "confident wrong" — logically coherent plans that miss critical assumptions, patches that pass tests but violate deeper constraints, or review loops that converge on the wrong answer. An external frontier model provides an independent logic audit without replacing local execution.
 
@@ -2204,18 +2735,237 @@ Grants are logged to the session. All requests and payload hashes are recorded f
 * Trigger-based invocation only (not every loop)
 * **Critic caching:** Hash the `CritiquePack`. If the same content is reviewed again (e.g., after a no-op retry), reuse the prior report. Cache keyed by `sha256(redacted_payload)`.
 
-**Implementation tasks:**
+#### 7.4 Campaign Orchestrator (Tier 0 — Workflow of Workflows)
+**Status:** ✅ COMPLETE.
 
-1. `ExternalCriticBackend` interface (HTTP client to frontier API, uses `core/runtime/backends/` pattern)
-2. `CritiquePack` builder (assembles minimal artifact payload from session state)
-3. `Redactor` (strict by default, configurable per policy)
-4. `ExternalCriticReport` schema + Pydantic validation
-5. Critic trigger policy (when to call, what to send, what to do with verdicts)
-6. Orchestrator interceptor hooks on PLAN→RETRIEVE and RUN→FINALIZE transitions
-7. CLI: `--critic` flag to enable, `--critic-provider <name>` to select, `--no-critic` to force off
-8. Manual invocation: `lobi critic --session <id>` for post-hoc review of any session
+**Implementation note:** Current code supports **pre-authored CampaignPlan execution** with HUMAN_REVIEW, per-step dispatch, and artifact handoff. Basic plan drafting from `--campaign` is now supported; deeper MISSION_ANALYSIS / OPTION_DEVELOPMENT refinement remains planned.
 
-**Definition of Done:** Generates competing patches, grades them deterministically, discards test failures, and selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline.
+**Motivation:** A single workflow handles one task. Real missions require multiple coordinated tasks — analyzing data *then* building a model, mapping an attack surface *then* exploiting vulnerabilities, refactoring a module *then* updating all callers. The Campaign Orchestrator is a thin macro loop that decomposes complex missions into a DAG of steps, gets human sign-off, and dispatches each step as an isolated workflow with explicit artifact handoff.
+
+The key insight: campaigns are **orchestration of artifacts and permissions**, not "a smarter agent." The kernel stays deterministic; the plan becomes the executable artifact; the human owns the moment where risk and scope get locked.
+
+**Campaign Lifecycle (planned full flow):**
+
+```text
+MISSION_ANALYSIS       Ingest raw user prompt. Identify constraints, domains, success criteria.
+        │
+OPTION_DEVELOPMENT     Generate potential approaches (strategies, not implementations). (planned)
+        │
+PLAN_DRAFTING          Break chosen approach into a DAG of MissionSteps. (implemented via `--campaign`)
+        │               Assign a WorkflowTemplate to each step.
+        │               Declare artifact handoff between steps.
+        │
+HUMAN_REVIEW           *** Execution halts. *** (implemented)
+        │               Present plan to human ($EDITOR file-edit loop).
+        │               Human approves, rejects, or modifies.
+        │               Capability grants locked per step.
+        │               Plan frozen on approval (Invariant 9).
+        │
+DISPATCH               Loop through approved steps in DAG order.
+        │               For each step: spawn Orchestrator with assigned workflow,
+        │               materialized handoff_in/ bundle, budgets, capabilities.
+        │               Each step runs in an isolated child session.
+        │
+SYNTHESIS              Compile declared exports from all steps into campaign report.
+```
+
+**`CampaignPlan` Schema:**
+
+```python
+class ArtifactRef(BaseModel):
+    step_id: str                    # Source step
+    artifact_name: str              # e.g., "cleaned_data.csv", "recon_report.json"
+
+class CampaignLimits(BaseModel):
+    max_steps: int = 10
+    max_total_tool_calls: int = 500
+    max_total_tokens: int = 2_000_000
+    deadline_seconds: Optional[int] = None
+
+class MissionStep(BaseModel):
+    step_id: str
+    description: str
+    target_workflow: str            # Template ID: "coding", "generic", "redteam", "datasci"
+    capabilities_required: List[str]  # Hard requirement: ["net.scan", "fs.write"]
+    capabilities_optional: List[str] = []  # Nice-to-have
+    risk_flags: List[str] = []      # ["network-active", "writes-repo", "installs-deps"]
+    inputs_from: List[str] = []     # step_ids this step depends on (DAG edges)
+    handoff_artifacts: List[ArtifactRef] = []  # Explicit artifact imports from upstream
+    exports: List[str] = []         # Artifact names this step declares as output
+    success_criteria: str
+    budget_overrides: Dict[str, Any] = {}
+
+class CampaignPlan(BaseModel):
+    campaign_id: str
+    objective: str
+    assumptions: List[str]
+    steps: List[MissionStep]
+    limits: CampaignLimits = CampaignLimits()
+```
+
+**DAG Validation (enforced in code, nudged in prompts):**
+
+* All `step_id` values unique
+* All `inputs_from` references point to existing `step_id` values
+* DAG is acyclic (topological sort succeeds)
+* Every step has at least one success criterion with a measurable outcome
+* Every step declares its exports
+* `target_workflow` matches an installed template name
+
+**Artifact Handoff — Artifacts Over Chat:**
+
+Each workflow step starts with a clean slate, seeded only with the crystallized artifacts of upstream steps. No conversation history, no chat log teleportation, no mystery meat context.
+
+The handoff is literal file operations:
+1. Step N finishes, writes outputs to `handoff_out/`
+2. `CampaignOrchestrator` marks Step N complete
+3. `CampaignOrchestrator` initializes Step N+1
+4. Parent copies declared `ArtifactRef` items from Step N's `handoff_out/` into Step N+1's `handoff_in/`
+5. Step N+1's `INTAKE` phase reads from `handoff_in/` — not from Step N's session
+
+**Session Namespace Design:**
+
+```text
+sessions/<campaign_id>/
+  campaign.json          # CampaignPlan + current state (frozen after HUMAN_REVIEW)
+  synthesis/             # Final compiled outputs
+  steps/
+    <step_id>/
+      workflow.json      # Selected WorkflowTemplate
+      step_plan.json     # StepPlan contract (intent, capabilities, success criteria, digest)
+      scope_grant.json   # What was requested vs granted, with reasons
+      artifacts/         # Step-local artifacts (standard session layout)
+      handoff_in/        # Materialized imports from upstream steps
+      handoff_out/       # Exports available to downstream steps
+```
+
+Three properties:
+1. **Isolation:** Each step has its own session + artifacts. Steps cannot read each other's artifacts directly.
+2. **Explicit handoff:** Only declared artifacts cross step boundaries, via `handoff_in/` / `handoff_out/`.
+3. **Traceability:** Campaign report can cite exactly which step produced what, from which artifact.
+
+**StepPlan — The Execution Contract:**
+
+If `CampaignPlan` is "what and why," each step needs a `StepPlan` that is "how, with receipts." The StepPlan is generated in the step's PLAN phase (before EXECUTE) and declares the step's intent, boundaries, capabilities, and failure strategy. It is a **contract**, not a script — it declares what the step will accomplish and what it needs, not every individual API call.
+
+```python
+class StepPlan(BaseModel):
+    step_id: str
+    workflow_id: str                          # Must match an installed WorkflowTemplate
+    objective: str
+    inputs: List[ArtifactRef] = []            # What this step reads from handoff_in/
+    outputs_expected: List[ArtifactRef] = []  # What this step will write to handoff_out/
+    capabilities_required: List[str] = []     # Capability tags (not tool names) needed
+    success_criteria: List[str]               # Measurable outcomes
+    rollback_strategy: Literal["retry", "backtrack", "abort", "human_review"] = "backtrack"
+    digest: str = ""                          # SHA256 of ordered fields — for caching + replay detection
+```
+
+**StepPlan is NOT a BPMN script.** It does not enumerate individual tool calls or action sequences. The workflow's phases handle sequencing; the ToolBus handles access control; the kernel handles retry logic. The StepPlan declares *intent and boundaries*. The existing phase artifacts (`ChangePlan`, `PatchSet`, `RunReport`) remain the action-level plans within each phase.
+
+**StepPlan validation rules:**
+* `workflow_id` must match an installed `WorkflowTemplate`
+* `capabilities_required` must be a subset of `workflow.required_scopes` (can't request what the workflow doesn't offer)
+* `outputs_expected` artifact paths must resolve under the step's `handoff_out/` or `artifacts/`
+* Network/file capabilities require corresponding grants in the campaign's approval
+
+**StepPlan stored as:** `sessions/<campaign_id>/steps/<step_id>/step_plan.json`
+
+**ActionDigest** — the `digest` field is a SHA256 hash of the StepPlan's ordered fields (objective, inputs, outputs, capabilities, success criteria). Stored in the session and used for:
+* **Caching:** If a step is retried with an identical digest, prior results can be reused.
+* **Replay detection:** "This step executed under digest X, produced artifacts A/B/C."
+* **Audit:** Deterministic proof that the agent executed what was approved.
+
+**EffectiveScope — Least Privilege by Intersection:**
+
+The CapabilityEngine computes the effective tool scope for every tool call as a strict intersection:
+
+```
+EffectiveScope = GlobalPolicy ∩ WorkflowScope ∩ StepScope ∩ PhaseScope
+```
+
+| Layer | Source | What it constrains |
+|-------|--------|--------------------|
+| **GlobalPolicy** | `CapabilityEngine` (deny-by-default, grants, god mode) | What the kernel allows at all |
+| **WorkflowScope** | `workflow.required_scopes` | What the workflow template permits (coding gets repo tools, generic gets minimal I/O) |
+| **StepScope** | `step_plan.capabilities_required` (campaign) or full WorkflowScope (single-task) | What this specific step declared it needs |
+| **PhaseScope** | `workflow.phase_capabilities[current_phase]` | What the current phase allows (PLAN = read-only, EXECUTE = read+write) |
+
+The intersection means the LLM can never escalate — it can only narrow. A coding workflow cannot gain `net.scan` even if a prompt injection requests it. A PLAN phase cannot write files even if the workflow allows writes in EXECUTE. Capabilities are the stable abstraction layer — tools change, capabilities are the API contract.
+
+**HUMAN_REVIEW Gate:**
+
+When the `CampaignOrchestrator` reaches HUMAN_REVIEW:
+
+1. Serialize `CampaignPlan` to `campaign.plan.json` (or YAML) on disk
+2. Open in `$EDITOR` (like `git rebase -i` or `git commit`)
+3. On save/close: validate strictly via Pydantic. If invalid: show errors, reopen editor
+4. If valid: freeze plan (Invariant 9) and proceed to DISPATCH
+
+The approval UI also shows and locks **capability grants**:
+* Step list + workflow assignments
+* Capabilities requested per step (required vs. optional)
+* Whether each capability is currently permitted by policy
+* User can: approve all, approve but downgrade capabilities, approve with per-step overrides
+
+**How Campaigns Preserve the "Static Workflows" Doctrine:**
+
+Campaigns do not violate "Workflow Templates Are Static" because:
+* Campaigns don't rewrite workflow graphs — they *select* from installed templates
+* Step execution is bounded by the selected workflow's template, budgets, and transitions
+* Adaptation happens inside phases (Tier 2), not in the campaign graph (Tier 0) or workflow graph (Tier 1)
+* The Campaign layer is a **workflow router + artifact courier** with a human checkpoint
+
+**What CampaignOrchestrator is NOT:**
+
+* Not a second, less-audited orchestrator — it has exactly 6 phases, all deterministic
+* Not an LLM execution loop — the LLM generates the plan, the human approves it, the system dispatches it
+* Not a replacement for `--task` — single tasks bypass Tier 0 entirely
+
+**Implementation tasks (Campaign + StepPlan + Scope Intersection):**
+
+15. Namespace + session layout for parent/child steps (`campaign_id/step_id` dirs) in `SessionManager`
+16. `CampaignPlan` + `MissionStep` + `CampaignLimits` + `ArtifactRef` schemas in `core/contracts/campaign.py`
+17. `StepPlan` schema with ActionDigest (SHA256 hash of ordered fields for caching + replay)
+18. DAG validator (acyclic, unique step_ids, artifact declarations, template existence)
+19. StepPlan validator (workflow_id exists, capabilities ⊆ workflow.required_scopes, outputs under handoff_out/)
+20. HUMAN_REVIEW file-edit loop (`$EDITOR` open + Pydantic revalidation on save)
+21. `phase_capabilities` field on `WorkflowTemplate` — per-phase capability allowlists
+22. EffectiveScope intersection in CapabilityEngine: `Global ∩ Workflow ∩ Step ∩ Phase` computed per tool call
+23. `scope_grant.json` artifact per step: what was requested vs granted, with reasons
+24. Step dispatcher: instantiate existing `Orchestrator` with selected workflow template, `handoff_in/` bundle, computed `EffectiveScope`, budget overrides
+25. Artifact handoff: `handoff_out/` → `handoff_in/` materialization between steps
+26. Synthesis step: compose final campaign report from declared step exports
+27. `CampaignOrchestrator` macro loop: MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS (MISSION_ANALYSIS/OPTION_DEVELOPMENT planned; PLAN_DRAFTING implemented)
+28. CLI: `--campaign "mission description"` and `--campaign-plan plan.json` (implemented)
+29. Contract-first planner prompt (implemented)
+
+**Other implementation tasks (Workflows, Judge, Critic):**
+
+1. `WorkflowTemplate` dataclass + `CODING_WORKFLOW` + `GENERIC_WORKFLOW` (see 7.0)
+2. Refactor `SessionState`, `Orchestrator`, `validation.py` to accept workflow parameter
+3. `WorkflowSelector` function (CLI flag → policy → LLM classification → GENERIC fallback)
+4. Proof-of-concept: non-coding task through `GENERIC_WORKFLOW` with stub dispatcher
+5. `CodeDispatcher` (Planner/Coder/Reviewer prompts — extracted from future role system)
+6. `GenericDispatcher` (PLAN/EXECUTE/EVALUATE prompts for arbitrary tasks)
+7. `ExternalCriticBackend` interface (HTTP client to frontier API, uses `core/runtime/backends/` pattern)
+8. `CritiquePack` builder (assembles minimal artifact payload from session state)
+9. `Redactor` (strict by default, configurable per policy)
+10. `ExternalCriticReport` schema + Pydantic validation
+11. Critic trigger policy (when to call, what to send, what to do with verdicts)
+12. Orchestrator interceptor hooks on phase transitions (workflow-aware, not hardcoded to coding phases)
+13. CLI: `--workflow <name>` flag to select workflow, `--critic` flag to enable, `--no-critic` to force off
+14. Manual invocation: `lobi critic --session <id>` for post-hoc review of any session
+
+**Suggested implementation order (low drama, high leverage):**
+
+Phase 7 breaks into four sub-phases that can be delivered incrementally:
+1. **7.0** — ~~WorkflowTemplate abstraction + phase_capabilities + EffectiveScope intersection.~~ **COMPLETE** (974 tests). Pure refactor — `CODING_WORKFLOW` produces identical behavior to Phase 6. `GENERIC_WORKFLOW` proven end-to-end.
+2. **7.1–7.2** — ~~Composite Judge + Candidate Sampling (tasks 5–6).~~ **COMPLETE** (1059 tests). `CompositeJudge` with 3-tier scoring (test/lint/LLM review). `CandidateManager` with worktree isolation. `JudgeReport` registered as CRITIQUE phase schema. `BudgetConfig.max_candidates` field. `GPUProfile` stub.
+3. **7.3** — ~~External Critic (tasks 7–14).~~ **COMPLETE** (Phase 7.3 implemented).
+4. **7.4** — ~~Campaign Orchestrator + StepPlan + scope grants (tasks 15–20, 23–29).~~ **COMPLETE**. Requires 7.0 (WorkflowTemplate registry + EffectiveScope). Independent of 7.1–7.3.
+
+**Definition of Done:** State machine is parameterized by `WorkflowTemplate` with `phase_capabilities` enforcing temporal sandboxing. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. EffectiveScope intersection (`Global ∩ Workflow ∩ Step ∩ Phase`) is computed and enforced on every tool call. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline. Campaign Orchestrator can execute a pre-authored `CampaignPlan` DAG with `StepPlan` contracts per step, present it for HITL approval, dispatch isolated child workflows with computed scope grants and artifact handoff, and synthesize a final report. ActionDigest hashes enable caching, replay detection, and audit. Single tasks (`--task`) bypass the campaign layer entirely — EffectiveScope still applies (Global ∩ Workflow ∩ Phase, with StepScope = WorkflowScope). Auto-drafting of CampaignPlans is planned.
 
 ### Phase 8 – Retrieval, Context Discipline & Local Inference
 
@@ -2226,10 +2976,11 @@ This phase combines retrieval engineering with the transition from API-based inf
 **Tasks:**
 
 * Implement symbol-aware retrieval (fetching specific function spans, not whole files).
-* Implement **rolling summarization** for tool traces: full logs stream to disk, but only capped summaries enter the LLM context (`max_tool_output_bytes_in_context`). When output exceeds the budget, do not blindly truncate — prompt the model with a structured message: *"Output exceeded budget (N bytes). Full log at `<artifact_path>`. Use targeted retrieval (grep, tail, symbol lookup) to find specific information."* This forces the model to narrow its search rather than losing context to a dumb cutoff.
+* ✅ Implement **rolling summarization** for tool traces: full logs stream to disk, but only capped summaries enter the LLM context (`max_tool_output_bytes_in_context`). When output exceeds the budget, do not blindly truncate — prompt the model with a structured message: *"Output exceeded budget (N bytes). Full log at `<artifact_path>`. Use targeted retrieval (grep, tail, symbol lookup) to find specific information."*
 * **Local inference bring-up:** Deploy and validate vLLM or TRT-LLM serving the target model on the available GPU(s). Wire `local_backend.py` (stubbed in Phase 1) to the local server. For multi-GPU setups, configure tensor parallelism via the serving layer (vLLM `--tensor-parallel-size`, TRT-LLM TP config).
 * Define the **model selection criteria** for local inference: minimum coding benchmark scores, context window requirements, quantization compatibility.
 * Validate that all golden transcript tests pass against the local backend.
+* ✅ Add **context window manager** with GPU-aware caps, instance-aware limits, and auto-compaction.
 **Definition of Done:** Context size is strictly bounded. Tool output never causes a token overflow crash. The system can run fully offline against the local backend on at least one GPU profile.
 
 ### Phase 9 – Performance Optimization (TRT-LLM / vLLM Tuning)
@@ -2276,6 +3027,14 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 | **Model Collapse** | Last 3 outputs >90% identical on **semantic content fields** (plan steps, patch blocks, review reasoning — not raw artifact JSON, which is naturally repetitive in structure) | Kill phase, inject prompt perturbation | `collapse_<n>.json` | Burn 1 `max_phase_retries` with forced prompt perturbation |
 | **Critic Refusal** | External critic returns `refused` verdict | Log refusal, continue pipeline as if critic was not called | `critic_refused_<n>.json` | No retry consumed — refusal is a non-event |
 | **Critic Unavailable** | Network error, timeout, or critic disabled | Silent no-op, continue pipeline | `critic_unavailable_<n>.json` | No retry consumed |
+| **Workflow Mismatch** | Task requires phases not in selected template | Halt with diagnostic | `workflow_mismatch.json` | User re-runs with `--workflow <correct>` |
+| **Unknown Workflow** | `--workflow <name>` not in registry | Reject at CLI parse time | N/A | User selects from known templates |
+| **Campaign DAG Invalid** | Cyclic dependencies, missing step_ids, undeclared artifacts | Reject at PLAN_DRAFTING, return to LLM | `campaign_dag_error_<n>.json` | Burn 1 retry in PLAN_DRAFTING phase |
+| **Campaign HITL Rejected** | Human rejects plan at HUMAN_REVIEW | Return to PLAN_DRAFTING or abort | `campaign_rejected.json` | Re-draft or user aborts campaign |
+| **Campaign Step Failed** | Child workflow halts or exceeds budget | Mark step failed, continue or abort per policy | `step_<id>_failed.json` | Retry step, skip step, or abort campaign |
+| **Handoff Artifact Missing** | Upstream step didn't produce declared export | Block downstream step, surface to user | `handoff_missing_<id>.json` | Retry upstream step or user intervenes |
+| **Step Invalidates Downstream** | Step results contradict downstream assumptions | Halt dispatch, return to HUMAN_REVIEW (Invariant 9) | `campaign_replan_<n>.json` | Human re-approves modified plan or aborts |
+| **Scope Overreach** | StepPlan requests capabilities outside WorkflowScope | Reject at StepPlan validation, before execution | `scope_denied_<id>.json` | Re-generate StepPlan with narrower scope |
 
 ---
 
@@ -2291,14 +3050,18 @@ To prevent system collapse under edge cases, the kernel must handle failures str
   * Not a chat product (though direct chat remains available for simple queries).
   * Not a web-first IDE.
   * Not dependent on vendor lock-in.
+  * Not a framework where LLMs design their own execution pipelines. The LLM operates within a phase; the kernel decides which phase runs next. Workflow templates are static, auditable, and human-authored. Campaign plans are LLM-proposed but human-approved and frozen — the LLM drafts the DAG, the human owns the approval gate, and no step can be inserted after HUMAN_REVIEW without returning for re-approval.
 
 ## 7. Design Philosophy
 
 * **Artifacts over Chat:** State is on disk, not in a sliding text window.
-* **Capabilities over Trust:** The model is assumed hostile; the sandbox and network gates keep it safe.
+* **Capabilities over Trust:** The model is assumed hostile; the sandbox and network gates keep it safe. Scope is computed from the intersection of policy, workflow, step plan, and phase — never requested freely at runtime.
+* **Capabilities over Tools:** The permission model uses stable capability tags (`repo.read`, `net.scan`, `verify.run`), not tool names. Tools are implementation details that change; capabilities are the API contract. A `StepPlan` declares it needs `repo.write`; the kernel maps that to whichever tool provides it. This keeps plans evolvable without breaking old sessions.
 * **Determinism over Vibes:** Tests dictate success; LLMs only suggest code.
 * **Budgets over Infinite Loops:** Everything has a timeout and a retry cap.
 * **Dumb Tools, Smart Kernel:** Tools execute. They do not decide, retry, repair, or escalate. All intelligence lives in the kernel. If a tool contains an `if/else` about what to do next, it has too much agency.
+* **Static Graphs, Adaptive Phases:** The workflow template (phase topology, transitions, schemas) is static and auditable. The LLM controls what happens *inside* a phase — which tools to call, what plan to propose, what patch to emit. The LLM never controls *which phase runs next.* This is three-tier orchestration: rigid campaign graph (Tier 0), rigid workflow graph (Tier 1), flexible phase-internal loop (Tier 2). If the LLM can rewrite any transition graph, every budget and safety constraint has a backdoor.
+* **Plans over Prompts:** Complex missions are decomposed into a structured `CampaignPlan` artifact — a DAG of steps with explicit workflow assignments, artifact declarations, and capability requests. The human reviews and freezes this plan before a single tool call fires. The plan is the executable artifact. The human owns the moment where risk and scope get locked. This is the difference between "run tasks" and "run missions."
 * **Migration over Rewrite:** Each phase must leave the system in a working state. No big-bang rewrites.
 * **Air-Gap Ready:** Every external dependency (frontier critic, API backends, network tools) is optional and capability-gated. The system must run identically with or without network access. External services add value when available but never gate execution. A `refused` response from any external service is a non-event, not a blocker.
 * **Commit or Abort:** The greatest architectural risk is partial refactor — a half-agentic, half-chatbot chimera where some paths use artifacts and others use `self.history`, where some tools go through the bus and others call subprocess directly. Each phase must fully replace the subsystem it targets. Release 0.8 can break backward compatibility. That is allowed. What is not allowed is two systems of truth running in parallel.
@@ -2316,16 +3079,33 @@ lobi --rag crawl ./docs               # RAG indexing
 lobi --recall 5                       # Adventure history
 ```
 
-### Agentic Mode (New)
+### Agentic Mode — Single Task (New)
 ```bash
 lobi --task "add pagination to the /users endpoint"
 lobi --task "fix the race condition in worker.py" --grant net.any
+lobi --task "analyze sales.csv and find outliers" --workflow generic
+lobi --task "recon target.example.com" --workflow redteam --grant net.scan
 ```
 
-* `--task` enters the full state machine (INTAKE through FINALIZE).
+* `--task` enters the full state machine (INTAKE through FINALIZE). Bypasses Tier 0 (campaign layer).
+* `--workflow <name>` selects a `WorkflowTemplate` explicitly. If omitted, `WorkflowSelector` classifies at INTAKE (default: `coding` for repo-context tasks, `generic` for everything else).
 * `--grant` pre-authorizes capability scopes for the session.
 * Session artifacts are written to `sessions/<timestamp_taskid>/artifacts/`.
+* `workflow.json` records which template was used (for deterministic replay).
 * The user can inspect, resume, or replay any session from its artifacts.
+
+### Campaign Mode — Multi-Step Missions (Current + Planned)
+```bash
+lobi --campaign "migrate auth system to JWT"       # Draft plan (implemented)
+lobi --campaign-plan ./mission.json                # Pre-authored plan (implemented)
+```
+
+* `--campaign` drafts a `CampaignPlan` from the mission description, then enters HUMAN_REVIEW → DISPATCH → SYNTHESIS.
+* `--campaign-plan <file>` loads a pre-authored `CampaignPlan` JSON and enters HUMAN_REVIEW → DISPATCH → SYNTHESIS.
+* `--workflow-override <step>=<template>` forces a specific workflow for a named step (overrides LLM's assignment).
+* At HUMAN_REVIEW, the plan is serialized and opened in `$EDITOR`. The user approves, modifies, or rejects. Capability grants are locked per step at approval time.
+* Campaign sessions are written to `sessions/<campaign_id>/` with per-step child sessions under `steps/<step_id>/`.
+* Each step runs in isolation with explicit artifact handoff — no shared state, no chat log transfer.
 
 **Capability grant UX** — three modes, from most manual to most automated:
 1. **Interactive approval:** Kernel pauses, CLI prompts the user: `"Tool 'git_fetch' requests scope 'net.any'. Allow? [y/N/y+60s]"`. User can grant permanently, for a duration, or deny.
@@ -2353,7 +3133,11 @@ Phase 0 (Tests & Baseline)
   │       │                                                    │
   │       │                                    ┌───────────────┘
   │       │                                    │
-  │       │                              Phase 7 (Orchestrator & Judge)
+  │       │                              Phase 7 (Workflows + Campaign + Judge)
+  │       │                                ├── 7.0: WorkflowTemplate abstraction
+  │       │                                ├── 7.1-7.2: Judge + Candidates
+  │       │                                ├── 7.3: External Critic
+  │       │                                └── 7.4: Campaign Orchestrator
   │       │                                    │
   │       │                              Phase 8 (Retrieval & Local Inference)
   │       │                                    │
@@ -2370,8 +3154,11 @@ Phase 0 (Tests & Baseline)
 
 **Key parallelism opportunities:**
 * Phase 5 (Repo Map) and Phase 6 (Patch Engine) are independent and can be built concurrently after Phase 3.
+* Phase 7.0 (WorkflowTemplate) is a prerequisite for 7.1–7.4 but can be implemented and tested independently.
+* Phase 7.4 (Campaign Orchestrator) requires 7.0 (WorkflowTemplate registry) but is independent of 7.1–7.3 (Judge/Critic). Can ship before or after the critic subsystem.
 * Phase 10 (Benchmarks) baseline capture starts in Phase 0; the full suite is built last but metrics collection is continuous.
 * Local inference bring-up (Phase 8) can begin prototyping as soon as the runtime interface is defined (Phase 1), though full integration requires Phase 3 contracts.
+* Domain-specific workflow templates (RedTeam, DataSci) can be added at any point after Phase 7.0 ships — they are content, not infrastructure. Campaign mode can compose any combination of installed templates.
 
 ## 10. Point of No Return: The Deletion of `elf.py`
 
@@ -4849,6 +5636,7 @@ from core.tools.run_python import RunPythonTool
 from core.tools.capability import CapabilityEngine
 from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
 from core.runtime.messages import build_system_prompt, build_chat_context
+from core.runtime.context_window import ContextWindowManager
 
 
 class Agent:
@@ -4889,6 +5677,8 @@ class Agent:
         self.tools = tools if tools is not None else Tools(
             elfenv=self.env, memory=self.memory, enable_voice=False
         )
+
+        self._context_manager = ContextWindowManager(project_root=Path.cwd())
 
         # Build initial history
         self.history = self._load_history()
@@ -4998,7 +5788,18 @@ class Agent:
     ):
         self.history.append({"role": "user", "content": message})
         sys_prompt = self._system_with_examples()
-        context = build_chat_context(sys_prompt, self.history, invoked_tools)
+        if self._context_manager is not None:
+            backend_caps = getattr(self.client, "capabilities", None)
+            context, _stats = self._context_manager.build_messages(
+                system_prompt=sys_prompt,
+                history=self.history,
+                invoked_tools=invoked_tools,
+                provider=self.provider,
+                model=self.model,
+                backend_caps=backend_caps,
+            )
+        else:
+            context = build_chat_context(sys_prompt, self.history, invoked_tools)
         return self.client.chat(model=self.model, messages=context, stream=stream)
 
     # =======================
@@ -5093,16 +5894,57 @@ class Agent:
         orchestrator = Orchestrator(**kwargs)
         return orchestrator.run(task_description)
 
+    def run_campaign(self, plan, base_dir: Optional[Path] = None,
+                     auto_approve: bool = False, editor: Optional[str] = None):
+        """Run a multi-step CampaignPlan through the CampaignOrchestrator."""
+        from core.campaign import CampaignOrchestrator
+
+        base = base_dir or Path.cwd()
+
+        def dispatcher_factory(step):
+            return self._make_task_dispatcher()
+
+        orch = CampaignOrchestrator(
+            dispatcher_factory=dispatcher_factory,
+            base_dir=base,
+            tool_bus=self.tools.bus,
+        )
+        return orch.run(plan, auto_approve=auto_approve, editor=editor)
+
+    def draft_campaign_plan(self, mission: str, max_attempts: int = 2):
+        from core.campaign.planner import draft_campaign_plan
+        from core.kernel.workflows import list_workflows
+
+        def chat_fn(messages):
+            return self.client.chat(model=self.model, messages=messages, stream=False)
+
+        return draft_campaign_plan(
+            mission=mission,
+            chat_fn=chat_fn,
+            available_workflows=list_workflows(),
+            max_attempts=max_attempts,
+        )
+
+    def run_campaign_from_description(
+        self,
+        mission: str,
+        base_dir: Optional[Path] = None,
+        auto_approve: bool = False,
+        editor: Optional[str] = None,
+    ):
+        plan = self.draft_campaign_plan(mission)
+        return self.run_campaign(plan, base_dir=base_dir, auto_approve=auto_approve, editor=editor)
+
     def _make_task_dispatcher(self):
         """Create a role dispatcher for agentic task execution.
 
         Phase 2 returns a stub that succeeds on every phase.
         Phase 7 overrides this with real role implementations.
         """
-        from core.kernel import PhaseResult, Phase, SessionState
+        from core.kernel import PhaseResult, SessionState
 
         class StubDispatcher:
-            def dispatch(self, phase: Phase, state: SessionState) -> PhaseResult:
+            def dispatch(self, phase: str, state: SessionState) -> PhaseResult:
                 return PhaseResult(success=True)
 
         return StubDispatcher()
@@ -5245,6 +6087,793 @@ if __name__ == "__main__":
 
 ```
 
+## `core/campaign/__init__.py`
+
+```python
+# core/campaign/__init__.py — Campaign orchestration exports
+
+from core.campaign.orchestrator import CampaignOrchestrator
+from core.campaign.models import CampaignState, StepStatus
+from core.campaign.session import CampaignSession, StepSessionManager
+
+__all__ = [
+    "CampaignOrchestrator",
+    "CampaignState",
+    "StepStatus",
+    "CampaignSession",
+    "StepSessionManager",
+]
+
+```
+
+## `core/campaign/handoff.py`
+
+```python
+# core/campaign/handoff.py — Artifact materialization between steps
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+from typing import Iterable, List
+
+from core.contracts.campaign import ArtifactRef
+
+
+def materialize_handoff(
+    campaign_dir: Path,
+    step_dir: Path,
+    refs: Iterable[ArtifactRef],
+) -> List[Path]:
+    copied: List[Path] = []
+    if not refs:
+        return copied
+
+    for ref in refs:
+        steps_root = (campaign_dir / "steps").resolve(strict=False)
+        root_out = (steps_root / ref.step_id / "handoff_out").resolve(strict=False)
+        root_in = (step_dir / "handoff_in").resolve(strict=False)
+        src = (root_out / ref.artifact_name).resolve(strict=False)
+        dst = (root_in / ref.artifact_name).resolve(strict=False)
+        if not _is_within(root_out, steps_root):
+            continue
+        if not _is_within(src, root_out) or not _is_within(dst, root_in):
+            continue
+        if src.is_symlink():
+            continue
+        if src.exists() and src.is_file():
+            _ensure_parent(dst)
+            shutil.copy2(src, dst, follow_symlinks=False)
+            copied.append(dst)
+    return copied
+
+
+def _ensure_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except Exception:
+        return False
+
+```
+
+## `core/campaign/hitl.py`
+
+```python
+# core/campaign/hitl.py — HUMAN_REVIEW file-edit loop
+
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+from pathlib import Path
+from typing import Optional
+
+from core.contracts.campaign import CampaignPlan
+
+
+class HumanReviewError(RuntimeError):
+    pass
+
+
+def review_plan(plan: CampaignPlan, path: Path,
+                editor: Optional[str] = None) -> CampaignPlan:
+    """Write plan to disk and open $EDITOR for review.
+
+    Returns the validated CampaignPlan after edit.
+    """
+    path.write_text(plan.model_dump_json(indent=2))
+
+    editor_cmd = editor or os.getenv("EDITOR")
+    if not editor_cmd:
+        raise HumanReviewError("EDITOR not set")
+
+    try:
+        editor_args = shlex.split(editor_cmd)
+        if not editor_args:
+            raise HumanReviewError("EDITOR empty")
+        subprocess.run(editor_args + [str(path)], check=True)
+    except Exception as exc:
+        raise HumanReviewError(f"editor_failed:{exc}") from exc
+
+    raw = path.read_text()
+    try:
+        if path.suffix in {".yml", ".yaml"}:
+            import yaml
+            data = yaml.safe_load(raw) or {}
+            return CampaignPlan.model_validate(data)
+        return CampaignPlan.model_validate_json(raw)
+    except Exception as exc:
+        raise HumanReviewError(f"invalid_campaign_plan:{exc}") from exc
+
+```
+
+## `core/campaign/models.py`
+
+```python
+# core/campaign/models.py — Campaign orchestration state
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Dict, Optional
+
+from pydantic import BaseModel
+
+from core.contracts.campaign import CampaignPlan, MissionStep, StepPlan, CampaignLimits, ArtifactRef
+
+
+class StepStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class CampaignState(BaseModel):
+    campaign_id: str
+    status: str = "pending"
+    current_step: Optional[str] = None
+    step_status: Dict[str, StepStatus] = {}
+
+
+__all__ = [
+    "CampaignPlan",
+    "MissionStep",
+    "StepPlan",
+    "CampaignLimits",
+    "ArtifactRef",
+    "CampaignState",
+    "StepStatus",
+]
+
+```
+
+## `core/campaign/orchestrator.py`
+
+```python
+# core/campaign/orchestrator.py — Tier 0 Campaign Orchestrator
+
+from __future__ import annotations
+
+import time
+from typing import Callable, Dict, List, Optional
+
+from core.campaign.handoff import materialize_handoff
+from core.campaign.hitl import review_plan
+from core.campaign.models import CampaignState, StepStatus
+from core.campaign.session import CampaignSession, StepSessionManager
+from core.campaign.validator import validate_campaign_plan, validate_step_plan
+from core.contracts.campaign import CampaignPlan, StepPlan, ArtifactRef
+from core.kernel import Orchestrator
+from core.kernel.workflows import select_workflow
+
+
+class CampaignOrchestrator:
+    """Orchestrates multi-step CampaignPlan execution."""
+
+    def __init__(
+        self,
+        dispatcher_factory: Callable,
+        base_dir,
+        tool_bus=None,
+        budget=None,
+    ):
+        self._dispatcher_factory = dispatcher_factory
+        self._base_dir = base_dir
+        self._tool_bus = tool_bus
+        self._budget = budget
+
+    def run(
+        self,
+        plan: CampaignPlan,
+        auto_approve: bool = False,
+        editor: Optional[str] = None,
+    ) -> CampaignState:
+        errors = validate_campaign_plan(plan)
+        if errors:
+            raise ValueError(f"Invalid campaign plan: {errors}")
+
+        session = CampaignSession(self._base_dir, campaign_id=plan.campaign_id)
+        session.write_campaign_file("campaign.json", plan)
+
+        if not auto_approve:
+            plan = review_plan(plan, session.campaign_dir / "campaign.plan.json", editor=editor)
+            errors = validate_campaign_plan(plan)
+            if errors:
+                raise ValueError(f"Invalid campaign plan after review: {errors}")
+            session.write_campaign_file("campaign.json", plan)
+
+        state = CampaignState(campaign_id=plan.campaign_id, status="running")
+        for step in plan.steps:
+            state.step_status[step.step_id] = StepStatus.PENDING
+
+        steps_by_id = {s.step_id: s for s in plan.steps}
+        ordered = _toposort(plan)
+        started_at = time.monotonic()
+        deadline = plan.limits.deadline_seconds
+
+        for step_id in ordered:
+            if deadline is not None and (time.monotonic() - started_at) > deadline:
+                state.status = "halted"
+                break
+
+            step = steps_by_id[step_id]
+            state.current_step = step_id
+            state.step_status[step_id] = StepStatus.RUNNING
+
+            step_dir = session.step_dir(step_id)
+            materialize_handoff(session.campaign_dir, step_dir, step.handoff_artifacts)
+
+            workflow = select_workflow(cli_flag=step.target_workflow)
+            step_plan = _build_step_plan(step, workflow.name)
+            errors = validate_step_plan(step_plan, step_dir)
+            if errors:
+                state.step_status[step_id] = StepStatus.FAILED
+                raise ValueError(f"Invalid step plan: {errors}")
+
+            (step_dir / "step_plan.json").write_text(step_plan.model_dump_json(indent=2))
+
+            scope_grant = _scope_grant_payload(step_plan, workflow.required_scopes)
+            (step_dir / "scope_grant.json").write_text(scope_grant)
+
+            step_session = StepSessionManager(step_dir=step_dir)
+            orchestrator = Orchestrator(
+                dispatcher=self._dispatcher_factory(step),
+                budget=self._budget,
+                session_manager=step_session,
+                tool_bus=self._tool_bus,
+                workflow=workflow,
+                step_scopes=step_plan.capabilities_required,
+            )
+            result = orchestrator.run(step.description)
+            if result.current_phase == "HALTED":
+                state.step_status[step_id] = StepStatus.FAILED
+                state.status = "halted"
+                break
+
+            state.step_status[step_id] = StepStatus.COMPLETED
+
+        if state.status != "halted":
+            state.status = "completed"
+
+        session.write_campaign_file("campaign.state.json", state)
+        _write_synthesis(session, state, plan)
+        return state
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _toposort(plan: CampaignPlan) -> List[str]:
+    steps = {s.step_id: s for s in plan.steps}
+    indeg: Dict[str, int] = {sid: 0 for sid in steps}
+    for s in plan.steps:
+        for dep in s.inputs_from:
+            indeg[s.step_id] += 1
+
+    ready = [sid for sid, d in indeg.items() if d == 0]
+    order: List[str] = []
+
+    while ready:
+        node = ready.pop(0)
+        order.append(node)
+        for s in plan.steps:
+            if node in s.inputs_from:
+                indeg[s.step_id] -= 1
+                if indeg[s.step_id] == 0:
+                    ready.append(s.step_id)
+
+    return order
+
+
+def _build_step_plan(step, workflow_id: str) -> StepPlan:
+    inputs = list(step.handoff_artifacts)
+    outputs = [
+        ArtifactRef(step_id=step.step_id, artifact_name=name)
+        for name in step.exports
+    ]
+    return StepPlan(
+        step_id=step.step_id,
+        workflow_id=workflow_id,
+        objective=step.description,
+        inputs=inputs,
+        outputs_expected=outputs,
+        capabilities_required=list(step.capabilities_required),
+        success_criteria=[step.success_criteria],
+    )
+
+
+def _scope_grant_payload(step_plan: StepPlan, workflow_scopes: List[str]) -> str:
+    requested = set(step_plan.capabilities_required)
+    allowed = set(workflow_scopes)
+    granted = sorted(requested & allowed)
+    denied = sorted(requested - allowed)
+    payload = {
+        "step_id": step_plan.step_id,
+        "requested_scopes": sorted(requested),
+        "granted_scopes": granted,
+        "denied_scopes": denied,
+    }
+    import json
+    return json.dumps(payload, indent=2)
+
+
+def _write_synthesis(session: CampaignSession, state: CampaignState, plan: CampaignPlan) -> None:
+    import json
+    payload = {
+        "campaign_id": state.campaign_id,
+        "status": state.status,
+        "steps": {k: v.value for k, v in state.step_status.items()},
+        "objective": plan.objective,
+    }
+    path = session.synthesis_dir / "summary.json"
+    path.write_text(json.dumps(payload, indent=2))
+
+```
+
+## `core/campaign/planner.py`
+
+```python
+# core/campaign/planner.py — Draft CampaignPlan from mission description
+
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from typing import Callable, List
+
+from core.contracts.campaign import CampaignPlan
+
+
+SYSTEM_PROMPT = """You are a campaign planner. Output ONLY a valid JSON object for CampaignPlan.
+Do not include any prose, markdown, or extra keys. Use only the provided workflow names.
+Keep steps minimal, DAG-safe, and include explicit exports + handoff_artifacts.
+"""
+
+
+def draft_campaign_plan(
+    mission: str,
+    chat_fn: Callable[[List[dict]], str],
+    available_workflows: List[str],
+    max_attempts: int = 2,
+) -> CampaignPlan:
+    prompt = _build_prompt(mission, available_workflows)
+    last_error = None
+
+    for _ in range(max_attempts):
+        raw = chat_fn([
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ])
+        try:
+            data = _parse_json(raw)
+            plan = CampaignPlan.model_validate(data)
+            plan.campaign_id = _sanitize_campaign_id(plan.campaign_id)
+            return plan
+        except Exception as exc:
+            last_error = exc
+
+    raise ValueError(f"Failed to draft CampaignPlan: {last_error}")
+
+
+def _build_prompt(mission: str, workflows: List[str]) -> str:
+    return (
+        "Mission description:\n"
+        f"{mission}\n\n"
+        "Available workflows:\n"
+        f"{', '.join(workflows)}\n\n"
+        "Required JSON schema:\n"
+        "{\n"
+        "  \"campaign_id\": \"short-id\",\n"
+        "  \"objective\": \"...\",\n"
+        "  \"assumptions\": [\"...\"],\n"
+        "  \"steps\": [\n"
+        "    {\n"
+        "      \"step_id\": \"step1\",\n"
+        "      \"description\": \"...\",\n"
+        "      \"target_workflow\": \"coding|generic\",\n"
+        "      \"capabilities_required\": [\"fs.read\"],\n"
+        "      \"capabilities_optional\": [],\n"
+        "      \"risk_flags\": [],\n"
+        "      \"inputs_from\": [],\n"
+        "      \"handoff_artifacts\": [],\n"
+        "      \"exports\": [\"artifact.ext\"],\n"
+        "      \"success_criteria\": \"...\",\n"
+        "      \"budget_overrides\": {}\n"
+        "    }\n"
+        "  ],\n"
+        "  \"limits\": {\"max_steps\": 10}\n"
+        "}\n"
+    )
+
+
+def _parse_json(text: str) -> dict:
+    if isinstance(text, dict):
+        return text
+    if not isinstance(text, str):
+        raise ValueError("non_text_response")
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    block = _extract_code_block(text)
+    if block:
+        return json.loads(block)
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return json.loads(text[start:end + 1])
+
+    raise ValueError("invalid_json")
+
+
+def _extract_code_block(text: str) -> str | None:
+    fence = "```"
+    if fence not in text:
+        return None
+    parts = text.split(fence)
+    for i in range(1, len(parts), 2):
+        block = parts[i].strip()
+        if block.startswith("json"):
+            block = block[4:].strip()
+        if block.startswith("{") and block.endswith("}"):
+            return block
+    return None
+
+
+def _sanitize_campaign_id(value: str) -> str:
+    if value and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", value):
+        return value
+    return uuid.uuid4().hex[:12]
+
+```
+
+## `core/campaign/scope.py`
+
+```python
+# core/campaign/scope.py — Effective scope intersection
+
+from __future__ import annotations
+
+from typing import Iterable, Optional, Set
+
+from core.kernel.workflows import WorkflowTemplate
+
+
+def compute_effective_scopes(
+    workflow: WorkflowTemplate,
+    step_scopes: Optional[Iterable[str]],
+    phase: str,
+) -> Set[str]:
+    workflow_scopes = set(workflow.required_scopes)
+    step_scope_set = set(step_scopes) if step_scopes is not None else set(workflow_scopes)
+    phase_scopes = set(workflow.phase_capabilities.get(phase, workflow_scopes))
+    return workflow_scopes & step_scope_set & phase_scopes
+
+```
+
+## `core/campaign/session.py`
+
+```python
+# core/campaign/session.py — Campaign session layout helpers
+
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from pathlib import Path
+from typing import Optional
+
+from pydantic import BaseModel
+
+
+class CampaignSession:
+    def __init__(self, base_dir: Path, campaign_id: Optional[str] = None):
+        self._base_dir = Path(base_dir)
+        self._campaign_id = campaign_id or uuid.uuid4().hex[:12]
+        if not _is_safe_id(self._campaign_id):
+            raise ValueError(f"unsafe_campaign_id:{self._campaign_id}")
+        self._campaign_dir = self._base_dir / "sessions" / self._campaign_id
+        self._steps_dir = self._campaign_dir / "steps"
+        self._synthesis_dir = self._campaign_dir / "synthesis"
+        for d in (self._campaign_dir, self._steps_dir, self._synthesis_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def campaign_id(self) -> str:
+        return self._campaign_id
+
+    @property
+    def campaign_dir(self) -> Path:
+        return self._campaign_dir
+
+    @property
+    def steps_dir(self) -> Path:
+        return self._steps_dir
+
+    @property
+    def synthesis_dir(self) -> Path:
+        return self._synthesis_dir
+
+    def write_campaign_file(self, name: str, data: BaseModel) -> Path:
+        path = self._campaign_dir / name
+        path.write_text(data.model_dump_json(indent=2))
+        return path
+
+    def write_campaign_json(self, name: str, data: dict) -> Path:
+        path = self._campaign_dir / name
+        path.write_text(json.dumps(data, indent=2))
+        return path
+
+    def step_dir(self, step_id: str) -> Path:
+        if not _is_safe_id(step_id):
+            raise ValueError(f"unsafe_step_id:{step_id}")
+        path = self._steps_dir / step_id
+        for d in (
+            path,
+            path / "artifacts",
+            path / "handoff_in",
+            path / "handoff_out",
+        ):
+            d.mkdir(parents=True, exist_ok=True)
+        return path
+
+
+class StepSessionManager:
+    """SessionManager compatible subset for step execution."""
+
+    def __init__(self, step_dir: Path, session_id: Optional[str] = None):
+        self._session_id = session_id or "step"
+        self._session_dir = Path(step_dir)
+        self._artifacts_dir = self._session_dir / "artifacts"
+        self._checkpoints_dir = self._session_dir / "checkpoints"
+        for d in (self._artifacts_dir, self._checkpoints_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def session_dir(self) -> Path:
+        return self._session_dir
+
+    def write_artifact(self, phase_name: str, sequence: int, artifact: BaseModel) -> Path:
+        schema_name = type(artifact).__name__
+        filename = f"{sequence:03d}_{phase_name}_{schema_name}.json"
+        path = self._artifacts_dir / filename
+        path.write_text(artifact.model_dump_json(indent=2))
+        return path
+
+    def load_latest_artifact(self, phase_name: str):
+        matches = sorted(self._artifacts_dir.glob(f"*_{phase_name}_*.json"))
+        if not matches:
+            return None
+        return json.loads(matches[-1].read_text())
+
+    def load_all_artifacts(self):
+        files = sorted(self._artifacts_dir.glob("*.json"))
+        return [json.loads(f.read_text()) for f in files]
+
+    def checkpoint(self, label: str) -> Path:
+        checkpoint_dir = self._checkpoints_dir / label / "artifacts"
+        if checkpoint_dir.exists():
+            for item in checkpoint_dir.iterdir():
+                if item.is_file():
+                    item.unlink()
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        for src in self._artifacts_dir.glob("*.json"):
+            dst = checkpoint_dir / src.name
+            dst.write_text(src.read_text())
+        return checkpoint_dir.parent
+
+    def rollback(self, label: str) -> None:
+        checkpoint_dir = self._checkpoints_dir / label / "artifacts"
+        if not checkpoint_dir.exists():
+            raise FileNotFoundError(f"Checkpoint '{label}' not found")
+        for item in self._artifacts_dir.glob("*.json"):
+            item.unlink()
+        for src in checkpoint_dir.glob("*.json"):
+            dst = self._artifacts_dir / src.name
+            dst.write_text(src.read_text())
+
+
+def _is_safe_id(value: str) -> bool:
+    if not value:
+        return False
+    if len(value) > 64:
+        return False
+    return re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", value) is not None
+
+```
+
+## `core/campaign/validator.py`
+
+```python
+# core/campaign/validator.py — Campaign and StepPlan validation
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
+
+from core.contracts.campaign import CampaignPlan, MissionStep, StepPlan
+from core.kernel.workflows import select_workflow
+
+
+class CampaignValidationError(ValueError):
+    pass
+
+
+def validate_campaign_plan(plan: CampaignPlan) -> List[str]:
+    errors: List[str] = []
+
+    if len(plan.steps) > plan.limits.max_steps:
+        errors.append("max_steps_exceeded")
+
+    if not _is_safe_id(plan.campaign_id):
+        errors.append("unsafe_campaign_id")
+
+    step_ids = [s.step_id for s in plan.steps]
+    if len(step_ids) != len(set(step_ids)):
+        errors.append("duplicate_step_ids")
+
+    steps_by_id = {s.step_id: s for s in plan.steps}
+
+    for step in plan.steps:
+        if not _is_safe_id(step.step_id):
+            errors.append(f"unsafe_step_id:{step.step_id}")
+        if not step.success_criteria:
+            errors.append(f"step_missing_success_criteria:{step.step_id}")
+        # workflow existence
+        try:
+            select_workflow(cli_flag=step.target_workflow)
+        except Exception:
+            errors.append(f"unknown_workflow:{step.step_id}")
+        # inputs_from existence
+        for dep in step.inputs_from:
+            if dep not in steps_by_id:
+                errors.append(f"missing_dependency:{step.step_id}:{dep}")
+        # handoff artifact references
+        for ref in step.handoff_artifacts:
+            if ref.step_id not in steps_by_id:
+                errors.append(f"missing_handoff_step:{step.step_id}:{ref.step_id}")
+            else:
+                exports = steps_by_id[ref.step_id].exports
+                if exports and ref.artifact_name not in exports:
+                    errors.append(
+                        f"handoff_artifact_not_exported:{step.step_id}:{ref.step_id}:{ref.artifact_name}"
+                    )
+            if _is_unsafe_path(ref.artifact_name):
+                errors.append(f"unsafe_handoff_path:{step.step_id}:{ref.artifact_name}")
+
+    if _has_cycle(plan.steps):
+        errors.append("campaign_dag_cycle")
+
+    return errors
+
+
+def validate_step_plan(step_plan: StepPlan, step_dir: Path) -> List[str]:
+    errors: List[str] = []
+    try:
+        workflow = select_workflow(cli_flag=step_plan.workflow_id)
+    except Exception:
+        errors.append("unknown_workflow")
+        return errors
+
+    if step_plan.workflow_id != workflow.name:
+        errors.append("workflow_id_mismatch")
+
+    workflow_scopes = set(workflow.required_scopes)
+    for scope in step_plan.capabilities_required:
+        if scope not in workflow_scopes:
+            errors.append(f"capability_not_in_workflow:{scope}")
+
+    for ref in step_plan.outputs_expected:
+        if ref.step_id != step_plan.step_id:
+            errors.append(f"output_step_id_mismatch:{ref.step_id}")
+        if _is_unsafe_path(ref.artifact_name):
+            errors.append(f"unsafe_output_path:{ref.artifact_name}")
+
+    for ref in step_plan.inputs:
+        if _is_unsafe_path(ref.artifact_name):
+            errors.append(f"unsafe_input_path:{ref.artifact_name}")
+
+    # Enforce outputs under handoff_out/ (by convention, no absolute or ..)
+    handoff_out = Path(step_dir) / "handoff_out"
+    if handoff_out.exists():
+        # Not enforcing filesystem presence, just path safety
+        pass
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _has_cycle(steps: Iterable[MissionStep]) -> bool:
+    graph: Dict[str, List[str]] = {}
+    for step in steps:
+        graph[step.step_id] = list(step.inputs_from)
+
+    visiting = set()
+    visited = set()
+
+    def visit(node: str) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        for dep in graph.get(node, []):
+            if visit(dep):
+                return True
+        visiting.remove(node)
+        visited.add(node)
+        return False
+
+    for node in graph:
+        if visit(node):
+            return True
+    return False
+
+
+def _is_unsafe_path(path: str) -> bool:
+    if not path:
+        return True
+    p = Path(path)
+    if p.is_absolute():
+        return True
+    if ".." in p.parts:
+        return True
+    return False
+
+
+def _is_safe_id(value: str) -> bool:
+    if not value:
+        return False
+    if len(value) > 64:
+        return False
+    return re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", value) is not None
+
+```
+
 ## `core/cli.py`
 
 ```python
@@ -5301,6 +6930,9 @@ def _main(AgentClass):
 
     parser.add_argument("--summarize", action="store_true", help="Summarize tool output")
     parser.add_argument("--voice", action="store_true", help="Speak the response aloud (lazy TTS)")
+    parser.add_argument("--campaign", action="store_true", help="Run a multi-step campaign")
+    parser.add_argument("--campaign-plan", type=Path, help="Path to CampaignPlan JSON/YAML")
+    parser.add_argument("--auto-approve", action="store_true", help="Skip HUMAN_REVIEW editor step")
 
     # RAG
     parser.add_argument("--rag", nargs="+",
@@ -5344,6 +6976,26 @@ def _main(AgentClass):
             console.print(f"📚 Injected {len(hits)} RAG hits", style=style)
         if subcmd != "enhance":
             return
+
+    # --- Campaign handling ---
+    if args.campaign or args.campaign_plan:
+        if args.campaign_plan is not None:
+            from core.contracts.campaign import CampaignPlan
+            plan_path = args.campaign_plan
+            raw = plan_path.read_text()
+            if plan_path.suffix in {".yml", ".yaml"}:
+                import yaml
+                data = yaml.safe_load(raw) or {}
+                plan = CampaignPlan.model_validate(data)
+            else:
+                plan = CampaignPlan.model_validate_json(raw)
+            state = elf.run_campaign(plan, base_dir=Path.cwd(), auto_approve=args.auto_approve)
+        else:
+            state = elf.run_campaign_from_description(
+                args.message, base_dir=Path.cwd(), auto_approve=args.auto_approve
+            )
+        console.print(f"Campaign finished: {state.status}", style=style)
+        return
 
     # --- memory management ---
     if args.empty:
@@ -7368,6 +9020,85 @@ __all__ = [
 
 ```
 
+## `core/contracts/campaign.py`
+
+```python
+# core/contracts/campaign.py — Campaign & StepPlan contracts
+
+from __future__ import annotations
+
+import hashlib
+import json
+from typing import Any, Dict, List, Optional, Literal
+
+from pydantic import BaseModel, Field
+
+
+class ArtifactRef(BaseModel):
+    step_id: str
+    artifact_name: str
+
+
+class CampaignLimits(BaseModel):
+    max_steps: int = 10
+    max_total_tool_calls: int = 500
+    max_total_tokens: int = 2_000_000
+    deadline_seconds: Optional[int] = None
+
+
+class MissionStep(BaseModel):
+    step_id: str
+    description: str
+    target_workflow: str
+    capabilities_required: List[str]
+    capabilities_optional: List[str] = []
+    risk_flags: List[str] = []
+    inputs_from: List[str] = []
+    handoff_artifacts: List[ArtifactRef] = []
+    exports: List[str] = []
+    success_criteria: str
+    budget_overrides: Dict[str, Any] = {}
+
+
+class CampaignPlan(BaseModel):
+    campaign_id: str
+    objective: str
+    assumptions: List[str]
+    steps: List[MissionStep]
+    limits: CampaignLimits = Field(default_factory=CampaignLimits)
+
+
+class StepPlan(BaseModel):
+    step_id: str
+    workflow_id: str
+    objective: str
+    inputs: List[ArtifactRef] = []
+    outputs_expected: List[ArtifactRef] = []
+    capabilities_required: List[str] = []
+    success_criteria: List[str]
+    rollback_strategy: Literal["retry", "backtrack", "abort", "human_review"] = "backtrack"
+    digest: str = ""
+
+    def model_post_init(self, __context):
+        if not self.digest:
+            self.digest = self.compute_digest()
+
+    def compute_digest(self) -> str:
+        payload = {
+            "step_id": self.step_id,
+            "workflow_id": self.workflow_id,
+            "objective": self.objective,
+            "inputs": [i.model_dump() for i in self.inputs],
+            "outputs_expected": [o.model_dump() for o in self.outputs_expected],
+            "capabilities_required": list(self.capabilities_required),
+            "success_criteria": list(self.success_criteria),
+            "rollback_strategy": self.rollback_strategy,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+```
+
 ## `core/contracts/schemas.py`
 
 ```python
@@ -7589,16 +9320,37 @@ class AuditEntry(BaseModel):
 # Phase → schema mapping (phases with structured output)
 # ---------------------------------------------------------------------------
 
-PHASE_SCHEMAS: Dict[str, type] = {
-    "INTAKE": TaskContract,
-    "CONTRACT": TaskContract,
-    "REPO_MAP": RepoMapResult,
-    "PLAN": ChangePlan,
-    "RETRIEVE": ContextPack,
-    "PATCH": PatchSet,
-    "RUN": RunReport,
-    "FINALIZE": FinalReport,
-}
+def _build_phase_schemas() -> Dict[str, type]:
+    """Build PHASE_SCHEMAS lazily to avoid circular import with core.judge.models."""
+    from core.judge.models import JudgeReport
+    return {
+        "INTAKE": TaskContract,
+        "CONTRACT": TaskContract,
+        "REPO_MAP": RepoMapResult,
+        "PLAN": ChangePlan,
+        "RETRIEVE": ContextPack,
+        "PATCH": PatchSet,
+        "CRITIQUE": JudgeReport,
+        "RUN": RunReport,
+        "FINALIZE": FinalReport,
+    }
+
+
+# Lazy singleton — built on first access
+_PHASE_SCHEMAS = None
+
+
+def get_phase_schemas() -> Dict[str, type]:
+    global _PHASE_SCHEMAS
+    if _PHASE_SCHEMAS is None:
+        _PHASE_SCHEMAS = _build_phase_schemas()
+    return _PHASE_SCHEMAS
+
+
+# Eager constant for backward compatibility — modules that import PHASE_SCHEMAS
+# at import time get the dict. Since core.judge.models has no circular deps
+# back to schemas.py, this is safe.
+PHASE_SCHEMAS: Dict[str, type] = _build_phase_schemas()
 
 ```
 
@@ -7606,30 +9358,51 @@ PHASE_SCHEMAS: Dict[str, type] = {
 
 ```python
 # core/contracts/validation.py — Schema validation for phase outputs
+#
+# Phase 7.0: Accepts optional phase_schemas dict from WorkflowTemplate.
+# Falls back to the global PHASE_SCHEMAS for backward compatibility.
 
-from typing import Optional, Type
+from typing import Dict, Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
-from core.kernel.state import Phase
 from core.contracts.schemas import PHASE_SCHEMAS
 
 
-def get_schema_for_phase(phase: Phase) -> Optional[Type[BaseModel]]:
-    """Return the expected Pydantic schema for a phase, or None if unstructured."""
-    return PHASE_SCHEMAS.get(phase.name)
+def get_schema_for_phase(
+    phase: str,
+    *,
+    phase_schemas: Optional[Dict[str, Type[BaseModel]]] = None,
+) -> Optional[Type[BaseModel]]:
+    """Return the expected Pydantic schema for a phase, or None if unstructured.
+
+    Looks up by phase name string. Accepts Phase enum members (str,Enum)
+    or plain strings. Uses the provided phase_schemas dict if given,
+    otherwise falls back to the global PHASE_SCHEMAS.
+    """
+    schemas = phase_schemas if phase_schemas is not None else PHASE_SCHEMAS
+    # Phase enum members have a .name attribute, but since Phase is str,Enum
+    # the member itself IS the string. Use it directly.
+    key = phase.name if hasattr(phase, 'name') else phase
+    return schemas.get(key)
 
 
-def validate_phase_output(phase: Phase, data) -> BaseModel:
+def validate_phase_output(
+    phase: str,
+    data,
+    *,
+    phase_schemas: Optional[Dict[str, Type[BaseModel]]] = None,
+) -> BaseModel:
     """Validate output against the expected schema for a phase.
 
     If data is already an instance of the expected schema, returns it directly.
     If data is a dict, attempts to construct the schema from it.
     Raises ValidationError on failure, ValueError if no schema exists.
     """
-    schema = get_schema_for_phase(phase)
+    schema = get_schema_for_phase(phase, phase_schemas=phase_schemas)
     if schema is None:
-        raise ValueError(f"No schema defined for phase {phase.name}")
+        name = phase.name if hasattr(phase, 'name') else phase
+        raise ValueError(f"No schema defined for phase {name}")
 
     if isinstance(data, schema):
         return data
@@ -7641,6 +9414,1893 @@ def validate_phase_output(phase: Phase, data) -> BaseModel:
         title=schema.__name__,
         line_errors=[],
     )
+
+```
+
+## `core/critic/__init__.py`
+
+```python
+# core/critic/__init__.py — External Critic subsystem
+
+from core.critic.models import (
+    CriticVerdict,
+    CriticRisk,
+    ExternalCriticReport,
+    AggregatedCriticReport,
+    CritiquePack,
+)
+from core.critic.config import CriticConfig, CriticProviderConfig, load_critic_config
+from core.critic.backends import CriticBackend
+
+
+def __getattr__(name):
+    if name == "CriticOrchestrator":
+        from core.critic.orchestrator import CriticOrchestrator
+        return CriticOrchestrator
+    if name == "Redactor":
+        from core.critic.redactor import Redactor
+        return Redactor
+    if name == "CriticKeystore":
+        from core.critic.keystore import CriticKeystore
+        return CriticKeystore
+    if name == "CriticCache":
+        from core.critic.cache import CriticCache
+        return CriticCache
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "CriticVerdict",
+    "CriticRisk",
+    "ExternalCriticReport",
+    "AggregatedCriticReport",
+    "CritiquePack",
+    "CriticConfig",
+    "CriticProviderConfig",
+    "load_critic_config",
+    "CriticBackend",
+    "CriticOrchestrator",
+    "Redactor",
+    "CriticKeystore",
+    "CriticCache",
+]
+
+```
+
+## `core/critic/backends.py`
+
+```python
+# core/critic/backends.py — Critic backend interfaces + provider adapters
+
+from __future__ import annotations
+
+import json
+import time
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from core.critic.models import CriticRisk, CriticVerdict, ExternalCriticReport
+
+
+CRITIC_SYSTEM_PROMPT = """You are an external logic auditor for code changes.
+Return a single JSON object with the following keys:
+verdict (approve|caution|block|refused), top_risks (list), missing_tests (list),
+logic_concerns (list), suggested_plan_adjustments (list),
+suggested_patch_adjustments (list), questions_for_builder (list), confidence (0-1).
+Be concise, actionable, and grounded in the provided artifacts.
+"""
+
+
+class CriticBackend(ABC):
+    provider_name: str = ""
+
+    def __init__(self, api_key: str, default_model: str = ""):
+        self.api_key = api_key
+        self.default_model = default_model
+
+    @abstractmethod
+    def critique(
+        self,
+        payload_json: str,
+        model: str,
+        max_tokens: int,
+        timeout: float,
+    ) -> ExternalCriticReport:
+        raise NotImplementedError
+
+
+class OpenAICritic(CriticBackend):
+    provider_name = "openai"
+
+    def critique(self, payload_json: str, model: str,
+                 max_tokens: int, timeout: float) -> ExternalCriticReport:
+        start = time.monotonic()
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=self.api_key)
+            result = client.chat.completions.create(
+                model=model or self.default_model,
+                messages=[
+                    {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
+                    {"role": "user", "content": payload_json},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            content = result.choices[0].message.content
+            elapsed = time.monotonic() - start
+            return _parse_critic_response(content, self.provider_name,
+                                          model or self.default_model, elapsed)
+        except Exception as exc:
+            return _unavailable_report(self.provider_name, model, exc, start)
+
+
+class AnthropicCritic(CriticBackend):
+    provider_name = "anthropic"
+
+    def critique(self, payload_json: str, model: str,
+                 max_tokens: int, timeout: float) -> ExternalCriticReport:
+        start = time.monotonic()
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=self.api_key)
+            message = client.messages.create(
+                model=model or self.default_model,
+                max_tokens=max_tokens,
+                temperature=0,
+                system=CRITIC_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": payload_json}],
+                timeout=timeout,
+            )
+            content = _extract_anthropic_text(message)
+            elapsed = time.monotonic() - start
+            return _parse_critic_response(content, self.provider_name,
+                                          model or self.default_model, elapsed)
+        except Exception as exc:
+            return _unavailable_report(self.provider_name, model, exc, start)
+
+
+class GoogleCritic(CriticBackend):
+    provider_name = "google"
+
+    def critique(self, payload_json: str, model: str,
+                 max_tokens: int, timeout: float) -> ExternalCriticReport:
+        start = time.monotonic()
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=self.api_key)
+            gen_model = genai.GenerativeModel(model or self.default_model)
+            response = gen_model.generate_content(
+                [CRITIC_SYSTEM_PROMPT, payload_json],
+                generation_config={"max_output_tokens": max_tokens, "temperature": 0},
+                request_options={"timeout": timeout},
+            )
+            content = getattr(response, "text", "")
+            elapsed = time.monotonic() - start
+            return _parse_critic_response(content, self.provider_name,
+                                          model or self.default_model, elapsed)
+        except Exception as exc:
+            return _unavailable_report(self.provider_name, model, exc, start)
+
+
+BACKEND_REGISTRY = {
+    "openai": OpenAICritic,
+    "anthropic": AnthropicCritic,
+    "google": GoogleCritic,
+}
+
+
+def create_backend(provider: str, api_key: str,
+                   default_model: str) -> Optional[CriticBackend]:
+    cls = BACKEND_REGISTRY.get(provider)
+    if cls is None:
+        return None
+    return cls(api_key=api_key, default_model=default_model)
+
+
+# ---------------------------------------------------------------------------
+# Response parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_critic_response(raw: Any, provider: str,
+                           model: str, elapsed: float) -> ExternalCriticReport:
+    if isinstance(raw, str):
+        raw_text = raw
+    else:
+        try:
+            raw_text = json.dumps(raw)
+        except Exception:
+            raw_text = str(raw)
+    data = None
+
+    if isinstance(raw, dict):
+        data = raw
+    else:
+        data = _try_parse_json(raw_text)
+
+    if not isinstance(data, dict):
+        return ExternalCriticReport(
+            provider=provider,
+            model=model,
+            verdict=CriticVerdict.UNAVAILABLE,
+            raw_response=raw_text,
+            response_time_seconds=elapsed,
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    verdict_raw = str(data.get("verdict", "unavailable")).lower()
+    try:
+        verdict = CriticVerdict(verdict_raw)
+    except Exception:
+        verdict = CriticVerdict.UNAVAILABLE
+
+    report = ExternalCriticReport(
+        provider=provider,
+        model=model,
+        verdict=verdict,
+        top_risks=_parse_risks(data.get("top_risks", [])),
+        missing_tests=list(data.get("missing_tests", []) or []),
+        logic_concerns=list(data.get("logic_concerns", []) or []),
+        suggested_plan_adjustments=list(
+            data.get("suggested_plan_adjustments", []) or []
+        ),
+        suggested_patch_adjustments=list(
+            data.get("suggested_patch_adjustments", []) or []
+        ),
+        questions_for_builder=list(data.get("questions_for_builder", []) or []),
+        confidence=float(data.get("confidence", 0.0) or 0.0),
+        raw_response=raw_text,
+        response_time_seconds=elapsed,
+        timestamp=datetime.now(timezone.utc),
+    )
+    return report
+
+
+def _parse_risks(raw) -> list:
+    risks = []
+    if not raw:
+        return risks
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                try:
+                    risks.append(CriticRisk.model_validate(item))
+                except Exception:
+                    desc = item.get("description", "") if isinstance(item, dict) else str(item)
+                    risks.append(CriticRisk(description=desc))
+            else:
+                risks.append(CriticRisk(description=str(item)))
+    elif isinstance(raw, dict):
+        try:
+            risks.append(CriticRisk.model_validate(raw))
+        except Exception:
+            risks.append(CriticRisk(description=str(raw)))
+    else:
+        risks.append(CriticRisk(description=str(raw)))
+    return risks
+
+
+def _try_parse_json(text: str) -> Optional[dict]:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # Try to extract a JSON code block
+    block = _extract_code_block(text)
+    if block:
+        try:
+            return json.loads(block)
+        except Exception:
+            return None
+
+    # Fallback: take substring between first { and last }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except Exception:
+            return None
+    return None
+
+
+def _extract_code_block(text: str) -> Optional[str]:
+    fence = "```"
+    if fence not in text:
+        return None
+    parts = text.split(fence)
+    for i in range(1, len(parts), 2):
+        block = parts[i].strip()
+        if block.startswith("json"):
+            block = block[4:].strip()
+        if block.startswith("{") and block.endswith("}"):
+            return block
+    return None
+
+
+def _extract_anthropic_text(message) -> str:
+    content = getattr(message, "content", None)
+    if isinstance(content, list) and content:
+        first = content[0]
+        text = getattr(first, "text", None)
+        if text is not None:
+            return text
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _unavailable_report(provider: str, model: str,
+                         exc: Exception, start: float) -> ExternalCriticReport:
+    elapsed = time.monotonic() - start
+    return ExternalCriticReport(
+        provider=provider,
+        model=model,
+        verdict=CriticVerdict.UNAVAILABLE,
+        raw_response=f"{type(exc).__name__}: {exc}",
+        response_time_seconds=elapsed,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+```
+
+## `core/critic/cache.py`
+
+```python
+# core/critic/cache.py — SHA256-keyed cache for critic responses
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Optional
+
+from core.critic.models import AggregatedCriticReport
+
+
+class CriticCache:
+    """File-based cache for AggregatedCriticReport.
+
+    Cache directory: <repo_root>/.judais-lobi/cache/critic/
+    """
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        self._cache_dir = Path(cache_dir) if cache_dir else Path.cwd() / ".judais-lobi" / "cache" / "critic"
+
+    def get(self, payload_hash: str) -> Optional[AggregatedCriticReport]:
+        path = self._cache_dir / f"{payload_hash}.json"
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return AggregatedCriticReport.model_validate(raw)
+        except Exception:
+            return None
+
+    def put(self, payload_hash: str, report: AggregatedCriticReport) -> Path:
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        path = self._cache_dir / f"{payload_hash}.json"
+        path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        return path
+
+    def clear(self) -> int:
+        if not self._cache_dir.exists():
+            return 0
+        count = 0
+        for item in self._cache_dir.glob("*.json"):
+            try:
+                item.unlink()
+                count += 1
+            except Exception:
+                continue
+        return count
+
+```
+
+## `core/critic/config.py`
+
+```python
+# core/critic/config.py — Critic config models + loader
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel
+
+
+class CriticProviderConfig(BaseModel):
+    provider: str  # "openai", "anthropic", "google"
+    model: str = ""
+    api_key_env_var: str = ""
+    keyring_service: str = "judais-lobi"
+    keyring_key: str = ""
+    max_tokens_per_call: int = 4096
+    timeout_seconds: float = 60.0
+    enabled: bool = True
+
+
+class CriticConfig(BaseModel):
+    enabled: bool = False
+    providers: List[CriticProviderConfig] = []
+    max_calls_per_session: int = 10
+    max_rounds_per_invocation: int = 3
+    max_tokens_per_call: int = 4096
+    redaction_level: str = "strict"  # "strict" or "normal"
+    max_payload_bytes: int = 65_536
+    # Triggers
+    trigger_after_plan: bool = True
+    trigger_after_run_pass: bool = True
+    trigger_on_fix_loop_threshold: int = 3
+    trigger_on_security_surface: bool = True
+    trigger_on_dependency_change: bool = True
+    trigger_on_large_refactor_files: int = 5
+    trigger_on_large_refactor_lines: int = 500
+    # Noise detection
+    noise_confidence_threshold: float = 0.3
+    noise_overlap_ratio: float = 0.8
+    # Cache
+    cache_enabled: bool = True
+    cache_dir: str = ""
+
+
+DEFAULT_PROVIDERS = [
+    CriticProviderConfig(
+        provider="openai",
+        model="gpt-4o",
+        api_key_env_var="OPENAI_API_KEY",
+        keyring_key="openai_api_key",
+    ),
+    CriticProviderConfig(
+        provider="anthropic",
+        model="claude-sonnet-4-20250514",
+        api_key_env_var="ANTHROPIC_API_KEY",
+        keyring_key="anthropic_api_key",
+    ),
+    CriticProviderConfig(
+        provider="google",
+        model="gemini-2.0-flash",
+        api_key_env_var="GOOGLE_API_KEY",
+        keyring_key="google_api_key",
+    ),
+]
+
+
+def load_critic_config(
+    project_root: Optional[Path] = None,
+    user_home: Optional[Path] = None,
+    cli_overrides: Optional[dict] = None,
+) -> CriticConfig:
+    """Load critic config with precedence: user -> project -> CLI.
+
+    Layer 1: ~/.judais-lobi/critic.yml
+    Layer 2: .judais-lobi.yml (critic: section)
+    Layer 3: CLI overrides dict
+    """
+    root = Path(project_root) if project_root else Path.cwd()
+    home = Path(user_home) if user_home else Path.home()
+
+    data: Dict[str, Any] = {}
+
+    user_cfg = _load_yaml(home / ".judais-lobi" / "critic.yml")
+    data = _merge_dicts(data, user_cfg)
+
+    project_cfg = _load_project_yaml(root)
+    critic_section = {}
+    if isinstance(project_cfg, dict):
+        critic_section = project_cfg.get("critic", {}) or {}
+    data = _merge_dicts(data, critic_section)
+
+    if cli_overrides:
+        data = _merge_dicts(data, cli_overrides)
+
+    config = CriticConfig.model_validate(data)
+
+    if config.enabled and not config.providers:
+        config.providers = [p.model_copy() for p in DEFAULT_PROVIDERS]
+
+    if not config.cache_dir:
+        config.cache_dir = str(root / ".judais-lobi" / "cache" / "critic")
+
+    return config
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _load_yaml(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+        return yaml.safe_load(path.read_text()) or {}
+    except ImportError:
+        return {}
+    except Exception:
+        return {}
+
+
+def _load_project_yaml(root: Path) -> dict:
+    for name in (".judais-lobi.yml", ".judais-lobi.yaml"):
+        path = root / name
+        if path.exists():
+            return _load_yaml(path)
+    return {}
+
+
+def _merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(override, dict):
+        return dict(base)
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+```
+
+## `core/critic/keystore.py`
+
+```python
+# core/critic/keystore.py — Keyring + env var key storage
+
+from __future__ import annotations
+
+import os
+from typing import List, Optional
+
+
+class CriticKeystore:
+    """Resolution order: keyring -> env var -> None."""
+
+    def __init__(self, default_service: str = "judais-lobi"):
+        self._default_service = default_service
+        self._keyring = _load_keyring()
+
+    def get_key(
+        self,
+        provider: str,
+        env_var: str,
+        keyring_key: str,
+        keyring_service: Optional[str] = None,
+    ) -> Optional[str]:
+        service = keyring_service or self._default_service
+        if self._keyring is not None and keyring_key:
+            try:
+                value = self._keyring.get_password(service, keyring_key)
+                if value:
+                    return value
+            except Exception:
+                pass
+        if env_var:
+            return os.getenv(env_var) or None
+        return None
+
+    def set_key(self, keyring_key: str, value: str,
+                keyring_service: Optional[str] = None) -> bool:
+        if self._keyring is None:
+            return False
+        service = keyring_service or self._default_service
+        try:
+            self._keyring.set_password(service, keyring_key, value)
+            return True
+        except Exception:
+            return False
+
+    def delete_key(self, keyring_key: str,
+                   keyring_service: Optional[str] = None) -> bool:
+        if self._keyring is None:
+            return False
+        service = keyring_service or self._default_service
+        try:
+            self._keyring.delete_password(service, keyring_key)
+            return True
+        except Exception:
+            return False
+
+    def list_providers_with_keys(self, providers) -> List[str]:
+        names: List[str] = []
+        for p in providers:
+            key = self.get_key(
+                p.provider,
+                p.api_key_env_var,
+                p.keyring_key,
+                p.keyring_service,
+            )
+            if key:
+                names.append(p.provider)
+        return names
+
+
+def _load_keyring():
+    try:
+        import keyring
+        return keyring
+    except Exception:
+        return None
+
+```
+
+## `core/critic/models.py`
+
+```python
+# core/critic/models.py — Pydantic models for the External Critic
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class CriticVerdict(str, Enum):
+    APPROVE = "approve"
+    CAUTION = "caution"
+    BLOCK = "block"
+    REFUSED = "refused"
+    UNAVAILABLE = "unavailable"
+
+
+class CriticRisk(BaseModel):
+    severity: str = "medium"  # low/medium/high/critical
+    category: str = ""        # logic/security/performance/design
+    description: str = ""
+    affected_files: List[str] = []
+    confidence: float = 0.5
+
+
+class ExternalCriticReport(BaseModel):
+    provider: str = ""
+    model: str = ""
+    verdict: CriticVerdict = CriticVerdict.UNAVAILABLE
+    top_risks: List[CriticRisk] = []
+    missing_tests: List[str] = []
+    logic_concerns: List[str] = []
+    suggested_plan_adjustments: List[str] = []
+    suggested_patch_adjustments: List[str] = []
+    questions_for_builder: List[str] = []
+    confidence: float = 0.0
+    raw_response: str = ""
+    response_time_seconds: float = 0.0
+    payload_hash: str = ""
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AggregatedCriticReport(BaseModel):
+    provider_reports: List[ExternalCriticReport] = []
+    consensus_verdict: CriticVerdict = CriticVerdict.UNAVAILABLE
+    all_risks: List[CriticRisk] = []
+    all_missing_tests: List[str] = []
+    all_logic_concerns: List[str] = []
+    all_suggested_adjustments: List[str] = []
+    mean_confidence: float = 0.0
+    round_number: int = 0
+    payload_hash: str = ""
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class CriticRoundSummary(BaseModel):
+    round_number: int
+    verdict: CriticVerdict
+    unique_concerns_count: int
+    new_concerns_count: int
+    mean_confidence: float
+    is_noise: bool = False
+
+
+class CritiquePack(BaseModel):
+    # Task info
+    task_description: str = ""
+    task_constraints: List[str] = []
+    acceptance_criteria: List[str] = []
+    # Plan
+    plan_steps: List[Dict[str, Any]] = []
+    plan_rationale: str = ""
+    target_files: List[str] = []
+    # RepoMap (signatures only)
+    repo_map_excerpt: str = ""
+    # Patch (diff stats + snippets)
+    diff_summary: str = ""
+    files_changed: int = 0
+    lines_added: int = 0
+    lines_removed: int = 0
+    patch_snippets: List[Dict[str, str]] = []
+    # Run
+    tests_passed: Optional[bool] = None
+    test_summary: str = ""
+    # Local review
+    local_review_verdict: str = ""
+    local_review_summary: str = ""
+    local_review_score: Optional[float] = None
+    # Metadata
+    trigger_reason: str = ""
+    current_phase: str = ""
+    iteration_count: int = 0
+
+
+class CriticTriggerContext(BaseModel):
+    current_phase: str
+    next_phase: str
+    total_iterations: int
+    consecutive_fix_loops: int = 0
+    files_changed_count: int = 0
+    lines_changed_count: int = 0
+    touches_security_surface: bool = False
+    has_dependency_changes: bool = False
+    local_reviewer_disagrees: bool = False
+    critic_calls_this_session: int = 0
+    max_calls_per_session: int = 10
+
+```
+
+## `core/critic/orchestrator.py`
+
+```python
+# core/critic/orchestrator.py — Multi-round critic coordinator
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Iterable, List, Optional, Set
+
+from core.critic.backends import create_backend
+from core.critic.cache import CriticCache
+from core.critic.config import CriticConfig
+from core.critic.keystore import CriticKeystore
+from core.critic.models import (
+    AggregatedCriticReport,
+    CriticRoundSummary,
+    CriticVerdict,
+    ExternalCriticReport,
+)
+from core.critic.pack_builder import CritiquePackBuilder
+from core.critic.redactor import Redactor
+
+
+class CriticOrchestrator:
+    def __init__(self, config: CriticConfig, audit=None,
+                 keystore: Optional[CriticKeystore] = None,
+                 cache: Optional[CriticCache] = None):
+        self._config = config
+        self._audit = audit
+        self._keystore = keystore or CriticKeystore()
+        self._cache = cache or CriticCache(config.cache_dir)
+        self._builder = CritiquePackBuilder()
+        self._calls_this_session = 0
+        self._round_history: List[CriticRoundSummary] = []
+        self._backends = {}
+
+        if self._config.enabled:
+            for provider_cfg in self._config.providers:
+                if not provider_cfg.enabled:
+                    continue
+                provider_name = provider_cfg.provider.lower()
+                key = self._keystore.get_key(
+                    provider_name,
+                    provider_cfg.api_key_env_var,
+                    provider_cfg.keyring_key,
+                    provider_cfg.keyring_service,
+                )
+                if not key:
+                    continue
+                backend = create_backend(
+                    provider_name,
+                    key,
+                    provider_cfg.model,
+                )
+                if backend is not None:
+                    self._backends[provider_name] = (backend, provider_cfg)
+
+    @property
+    def is_available(self) -> bool:
+        return bool(self._config.enabled and self._backends)
+
+    @property
+    def config(self) -> CriticConfig:
+        return self._config
+
+    @property
+    def calls_this_session(self) -> int:
+        return self._calls_this_session
+
+    @property
+    def round_history(self) -> List[CriticRoundSummary]:
+        return list(self._round_history)
+
+    def reset_session(self) -> None:
+        self._calls_this_session = 0
+        self._round_history = []
+
+    def invoke(self, state, trigger_reason: str, session_manager=None) -> AggregatedCriticReport:
+        if not self.is_available:
+            return AggregatedCriticReport(
+                consensus_verdict=CriticVerdict.UNAVAILABLE,
+                timestamp=datetime.now(timezone.utc),
+            )
+
+        pack = self._builder.build(state, trigger_reason, session_manager)
+        payload = pack.model_dump_json()
+
+        redactor = Redactor(level=self._config.redaction_level,
+                            max_bytes=self._config.max_payload_bytes)
+        redacted, payload_hash, was_clamped, original_size = redactor.redact_and_clamp(payload)
+
+        if self._config.cache_enabled:
+            cached = self._cache.get(payload_hash)
+            if cached is not None:
+                return cached
+
+        reports = []
+        for provider, (backend, cfg) in self._backends.items():
+            max_tokens = cfg.max_tokens_per_call or self._config.max_tokens_per_call
+            report = backend.critique(
+                redacted,
+                cfg.model or backend.default_model,
+                max_tokens,
+                cfg.timeout_seconds,
+            )
+            report.provider = provider
+            report.model = cfg.model or backend.default_model
+            report.payload_hash = payload_hash
+            reports.append(report)
+
+        aggregated = self._aggregate(reports, payload_hash)
+        if self._config.cache_enabled:
+            self._cache.put(payload_hash, aggregated)
+
+        self._calls_this_session += 1
+        return aggregated
+
+    def invoke_multi_round(
+        self,
+        state,
+        trigger_reason: str,
+        session_manager=None,
+        revision_callback=None,
+    ) -> AggregatedCriticReport:
+        report = AggregatedCriticReport(consensus_verdict=CriticVerdict.UNAVAILABLE)
+        current_concerns: Set[str] = set()
+
+        max_rounds = max(1, self._config.max_rounds_per_invocation)
+        for round_number in range(1, max_rounds + 1):
+            report = self.invoke(state, trigger_reason, session_manager)
+            report.round_number = round_number
+
+            new_concerns = _collect_concerns(report)
+            new_count = len(new_concerns - current_concerns)
+            unique_count = len(new_concerns)
+            is_noise = self._detect_noise(report, current_concerns)
+
+            summary = CriticRoundSummary(
+                round_number=round_number,
+                verdict=report.consensus_verdict,
+                unique_concerns_count=unique_count,
+                new_concerns_count=new_count,
+                mean_confidence=report.mean_confidence,
+                is_noise=is_noise,
+            )
+            self._round_history.append(summary)
+
+            if report.consensus_verdict in (
+                CriticVerdict.APPROVE,
+                CriticVerdict.CAUTION,
+                CriticVerdict.REFUSED,
+                CriticVerdict.UNAVAILABLE,
+            ):
+                break
+
+            if report.consensus_verdict == CriticVerdict.BLOCK:
+                if is_noise:
+                    break
+                if revision_callback is None:
+                    break
+                revised = revision_callback(report, state)
+                if not revised:
+                    break
+
+            current_concerns = new_concerns
+
+        return report
+
+    def _aggregate(
+        self,
+        reports: List[ExternalCriticReport],
+        payload_hash: str,
+    ) -> AggregatedCriticReport:
+        if not reports:
+            return AggregatedCriticReport(
+                consensus_verdict=CriticVerdict.UNAVAILABLE,
+                payload_hash=payload_hash,
+                timestamp=datetime.now(timezone.utc),
+            )
+
+        consensus = _compute_consensus([r.verdict for r in reports])
+        all_risks = _dedupe_risks([r for rep in reports for r in rep.top_risks])
+        all_missing_tests = _dedupe_strings([s for rep in reports for s in rep.missing_tests])
+        all_logic_concerns = _dedupe_strings([s for rep in reports for s in rep.logic_concerns])
+        all_suggested = _dedupe_strings([
+            *[s for rep in reports for s in rep.suggested_plan_adjustments],
+            *[s for rep in reports for s in rep.suggested_patch_adjustments],
+        ])
+        mean_conf = sum(r.confidence for r in reports) / max(len(reports), 1)
+
+        return AggregatedCriticReport(
+            provider_reports=reports,
+            consensus_verdict=consensus,
+            all_risks=all_risks,
+            all_missing_tests=all_missing_tests,
+            all_logic_concerns=all_logic_concerns,
+            all_suggested_adjustments=all_suggested,
+            mean_confidence=mean_conf,
+            payload_hash=payload_hash,
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    def _detect_noise(self, report: AggregatedCriticReport,
+                      prior_concerns: Set[str]) -> bool:
+        if report.round_number <= 1:
+            return False
+
+        signals = []
+        if report.mean_confidence < self._config.noise_confidence_threshold:
+            signals.append("low_confidence")
+
+        current_concerns = _collect_concerns(report)
+        overlap_ratio = _overlap_ratio(current_concerns, prior_concerns)
+        if overlap_ratio >= self._config.noise_overlap_ratio:
+            signals.append("overlap")
+
+        new_count = len(current_concerns - prior_concerns)
+        if new_count == 0:
+            signals.append("no_new_concerns")
+
+        if _stable_caution(self._round_history, report.consensus_verdict):
+            signals.append("stable_caution")
+
+        return bool(signals)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _compute_consensus(verdicts: Iterable[CriticVerdict]) -> CriticVerdict:
+    verdicts = list(verdicts)
+    if any(v == CriticVerdict.BLOCK for v in verdicts):
+        return CriticVerdict.BLOCK
+    if any(v == CriticVerdict.CAUTION for v in verdicts):
+        return CriticVerdict.CAUTION
+    if any(v == CriticVerdict.APPROVE for v in verdicts):
+        return CriticVerdict.APPROVE
+    if any(v == CriticVerdict.REFUSED for v in verdicts):
+        return CriticVerdict.REFUSED
+    return CriticVerdict.UNAVAILABLE
+
+
+def _dedupe_strings(values: Iterable[str]) -> List[str]:
+    seen = set()
+    result = []
+    for item in values:
+        if not item:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _dedupe_risks(risks: Iterable) -> List:
+    seen = set()
+    result = []
+    for risk in risks:
+        key = (risk.severity, risk.category, risk.description)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(risk)
+    return result
+
+
+def _collect_concerns(report: AggregatedCriticReport) -> Set[str]:
+    concerns = set(report.all_logic_concerns)
+    concerns.update(report.all_missing_tests)
+    concerns.update(r.description for r in report.all_risks if r.description)
+    concerns.update(report.all_suggested_adjustments)
+    return {c for c in concerns if c}
+
+
+def _overlap_ratio(current: Set[str], prior: Set[str]) -> float:
+    if not current:
+        return 0.0
+    if not prior:
+        return 0.0
+    overlap = len(current & prior)
+    return overlap / max(len(current), 1)
+
+
+def _stable_caution(history: List[CriticRoundSummary],
+                    current_verdict: CriticVerdict) -> bool:
+    if current_verdict != CriticVerdict.CAUTION:
+        return False
+    if len(history) < 2:
+        return False
+    last_two = history[-2:]
+    return all(r.verdict == CriticVerdict.CAUTION for r in last_two)
+
+```
+
+## `core/critic/pack_builder.py`
+
+```python
+# core/critic/pack_builder.py — Build CritiquePack from SessionState
+
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+from core.contracts.schemas import ChangePlan, PatchSet, RunReport, TaskContract
+from core.judge.models import JudgeReport
+from core.critic.models import CritiquePack
+
+
+class CritiquePackBuilder:
+    """Assembles a minimal CritiquePack from session artifacts."""
+
+    def build(self, state, trigger_reason: str, session_manager=None) -> CritiquePack:
+        task = _load_artifact(session_manager, "CONTRACT") or _load_artifact(session_manager, "INTAKE")
+        plan = _load_artifact(session_manager, "PLAN")
+        repo_map = _load_artifact(session_manager, "REPO_MAP")
+        retrieve = _load_artifact(session_manager, "RETRIEVE")
+        patch = _load_artifact(session_manager, "PATCH")
+        run = _load_artifact(session_manager, "RUN")
+        critique = _load_artifact(session_manager, "CRITIQUE")
+
+        task_model = TaskContract.model_validate(task) if task else None
+        plan_model = ChangePlan.model_validate(plan) if plan else None
+        patch_model = PatchSet.model_validate(patch) if patch else None
+        run_model = RunReport.model_validate(run) if run else None
+        critique_model = JudgeReport.model_validate(critique) if critique else None
+
+        diff_summary, files_changed, lines_added, lines_removed, snippets = _summarize_patch(patch_model)
+
+        test_summary = ""
+        tests_passed = None
+        if run_model is not None:
+            tests_passed = run_model.passed
+            test_summary = _truncate(_join_run_output(run_model), 500)
+
+        pack = CritiquePack(
+            task_description=(task_model.description if task_model else state.task_description),
+            task_constraints=(task_model.constraints if task_model else []),
+            acceptance_criteria=(task_model.acceptance_criteria if task_model else []),
+            plan_steps=_plan_steps(plan_model),
+            plan_rationale=(plan_model.rationale if plan_model else ""),
+            target_files=(plan_model.target_files if plan_model else []),
+            repo_map_excerpt=_repo_excerpt(repo_map, retrieve),
+            diff_summary=diff_summary,
+            files_changed=files_changed,
+            lines_added=lines_added,
+            lines_removed=lines_removed,
+            patch_snippets=snippets,
+            tests_passed=tests_passed,
+            test_summary=test_summary,
+            local_review_verdict=(critique_model.verdict if critique_model else ""),
+            local_review_summary=(critique_model.summary if critique_model else ""),
+            local_review_score=(critique_model.final_score if critique_model else None),
+            trigger_reason=trigger_reason,
+            current_phase=state.current_phase,
+            iteration_count=state.total_iterations,
+        )
+        return pack
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_artifact(session_manager, phase_name: str) -> Optional[dict]:
+    if session_manager is None:
+        return None
+    try:
+        return session_manager.load_latest_artifact(phase_name)
+    except Exception:
+        return None
+
+
+def _plan_steps(plan: Optional[ChangePlan]) -> List[Dict]:
+    if plan is None:
+        return []
+    return [step.model_dump() for step in plan.steps]
+
+
+def _repo_excerpt(repo_map: Optional[dict], retrieve: Optional[dict]) -> str:
+    if isinstance(repo_map, dict) and repo_map.get("excerpt"):
+        return repo_map.get("excerpt", "")
+    if isinstance(retrieve, dict) and retrieve.get("repo_map_excerpt"):
+        return retrieve.get("repo_map_excerpt", "")
+    return ""
+
+
+def _summarize_patch(patch: Optional[PatchSet]):
+    if patch is None:
+        return "", 0, 0, 0, []
+    files_changed = len(patch.patches)
+    lines_added = 0
+    lines_removed = 0
+    snippets = []
+
+    for file_patch in patch.patches:
+        added = 0
+        removed = 0
+        if file_patch.action == "modify":
+            added = _line_count(file_patch.replace_block)
+            removed = _line_count(file_patch.search_block)
+        elif file_patch.action == "create":
+            added = _line_count(file_patch.replace_block)
+        elif file_patch.action == "delete":
+            removed = _line_count(file_patch.search_block)
+
+        lines_added += added
+        lines_removed += removed
+
+        snippet_source = file_patch.replace_block or file_patch.search_block
+        snippets.append({
+            "file_path": file_patch.file_path,
+            "action": file_patch.action,
+            "snippet": _truncate(snippet_source, 200),
+        })
+
+    diff_summary = f"files={files_changed} +{lines_added} -{lines_removed}"
+    return diff_summary, files_changed, lines_added, lines_removed, snippets
+
+
+def _line_count(text: str) -> int:
+    if not text:
+        return 0
+    return len(text.splitlines())
+
+
+def _truncate(text: str, limit: int) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+def _join_run_output(run: RunReport) -> str:
+    parts = []
+    if run.stdout:
+        parts.append(run.stdout)
+    if run.stderr:
+        parts.append(run.stderr)
+    return "\n".join(parts).strip()
+
+```
+
+## `core/critic/redactor.py`
+
+```python
+# core/critic/redactor.py — Secret stripping + payload clamping
+
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import Iterable, Tuple
+
+
+class Redactor:
+    """Redacts secrets and optionally sensitive metadata from text."""
+
+    NORMAL_PATTERNS = [
+        re.compile(r"(sk-[a-zA-Z0-9]{20,})"),                 # OpenAI keys
+        re.compile(r"(sk-ant-[a-zA-Z0-9]{20,})"),             # Anthropic keys
+        re.compile(r"(ghp_[a-zA-Z0-9]{20,})"),                # GitHub PATs
+        re.compile(r"(gho_[a-zA-Z0-9]{36,})"),                # GitHub OAuth tokens
+        re.compile(r"(glpat-[a-zA-Z0-9\-]{20,})"),            # GitLab PATs
+        re.compile(r"(AKIA[0-9A-Z]{16})"),                    # AWS access keys
+        re.compile(r"(xox[bpsar]-[a-zA-Z0-9-]+)"),            # Slack tokens
+        re.compile(r"(AIza[0-9A-Za-z\-_]{35})"),             # Google API keys
+        re.compile(r"(?i)(password\s*[:=]\s*[^\s]+)"),
+        re.compile(
+            r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+            re.DOTALL,
+        ),
+        re.compile(
+            r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+            re.DOTALL,
+        ),
+    ]
+
+    STRICT_PATTERNS = [
+        re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),              # IPv4
+        re.compile(r"\b(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b"),  # IPv6
+        re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),   # emails
+        re.compile(r"\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"),           # hostnames
+        re.compile(r"/home/[A-Za-z0-9._-]+"),                        # /home/user
+    ]
+
+    def __init__(self, level: str = "strict", max_bytes: int = 65_536):
+        self.level = level
+        self.max_bytes = max_bytes
+
+    def redact(self, text: str) -> str:
+        redacted = text
+        for pattern in self._patterns():
+            redacted = pattern.sub("[REDACTED]", redacted)
+        return redacted
+
+    def redact_and_clamp(self, text: str) -> Tuple[str, str, bool, int]:
+        redacted = self.redact(text)
+        original_size = len(text.encode("utf-8", errors="ignore"))
+
+        clamped = redacted
+        was_clamped = False
+        if self.max_bytes and original_size > self.max_bytes:
+            suffix = " [TRUNCATED]"
+            available = max(self.max_bytes - len(suffix.encode("utf-8")), 0)
+            clamped_bytes = redacted.encode("utf-8", errors="ignore")[:available]
+            clamped = clamped_bytes.decode("utf-8", errors="ignore") + suffix
+            was_clamped = True
+
+        payload_hash = self.hash_payload(clamped)
+        return clamped, payload_hash, was_clamped, original_size
+
+    @staticmethod
+    def hash_payload(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+    def _patterns(self) -> Iterable[re.Pattern]:
+        if self.level == "strict":
+            return list(self.NORMAL_PATTERNS) + list(self.STRICT_PATTERNS)
+        return list(self.NORMAL_PATTERNS)
+
+```
+
+## `core/critic/triggers.py`
+
+```python
+# core/critic/triggers.py — Trigger policy logic
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable, Tuple
+
+from core.critic.config import CriticConfig
+from core.critic.models import CriticTriggerContext
+
+
+SECURITY_KEYWORDS = (
+    "auth",
+    "oauth",
+    "jwt",
+    "token",
+    "crypto",
+    "encrypt",
+    "decrypt",
+    "password",
+    "secret",
+    "permission",
+    "acl",
+    "rbac",
+    "sso",
+    "session",
+)
+
+DEPENDENCY_FILES = {
+    "requirements.txt",
+    "requirements.in",
+    "pyproject.toml",
+    "poetry.lock",
+    "pipfile",
+    "pipfile.lock",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "cargo.toml",
+    "cargo.lock",
+    "go.mod",
+    "go.sum",
+    "gemfile",
+    "gemfile.lock",
+    "composer.json",
+    "composer.lock",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "gradle.properties",
+}
+
+
+def should_invoke_critic(
+    context: CriticTriggerContext,
+    config: CriticConfig,
+) -> Tuple[bool, str]:
+    if not config.enabled:
+        return False, "disabled"
+    if context.critic_calls_this_session >= context.max_calls_per_session:
+        return False, "budget_exhausted"
+
+    if config.trigger_after_plan:
+        if context.current_phase == "PLAN" and context.next_phase == "RETRIEVE":
+            return True, "after_plan"
+
+    if config.trigger_after_run_pass:
+        if context.current_phase == "RUN" and context.next_phase == "FINALIZE":
+            return True, "after_run_pass"
+
+    if (
+        config.trigger_on_fix_loop_threshold > 0
+        and context.consecutive_fix_loops >= config.trigger_on_fix_loop_threshold
+    ):
+        return True, "fix_loop"
+
+    if config.trigger_on_security_surface and context.touches_security_surface:
+        return True, "security_surface"
+
+    if config.trigger_on_dependency_change and context.has_dependency_changes:
+        return True, "dependency_change"
+
+    if (
+        context.files_changed_count >= config.trigger_on_large_refactor_files
+        or context.lines_changed_count >= config.trigger_on_large_refactor_lines
+    ):
+        return True, "large_refactor"
+
+    if context.local_reviewer_disagrees:
+        return True, "reviewer_disagrees"
+
+    return False, "no_trigger"
+
+
+def detect_security_surface(target_files: Iterable[str]) -> bool:
+    for path in target_files or []:
+        lower = path.lower()
+        if any(k in lower for k in SECURITY_KEYWORDS):
+            return True
+    return False
+
+
+def detect_dependency_changes(target_files: Iterable[str]) -> bool:
+    for path in target_files or []:
+        lower = path.lower()
+        name = Path(lower).name
+        if name in DEPENDENCY_FILES or lower in DEPENDENCY_FILES:
+            return True
+    return False
+
+```
+
+## `core/judge/__init__.py`
+
+```python
+# core/judge/__init__.py — Composite Judge & Candidate Sampling (Phase 7.1-7.2)
+#
+# Lightweight imports (models, tiers, judge) are eager.
+# Heavy imports (candidates, gpu_profile) are lazy to avoid circular import
+# with core.contracts.schemas → core.judge.models → core.patch.engine chain.
+
+from core.judge.models import (
+    TierVerdict,
+    TierResult,
+    JudgeReport,
+    CandidateScore,
+    CandidateReport,
+)
+from core.judge.tiers import BaseTier, TestTier, LintTier, LLMReviewTier
+from core.judge.judge import CompositeJudge
+
+
+def __getattr__(name):
+    """Lazy imports for heavy modules that would cause circular imports."""
+    if name == "CandidateManager":
+        from core.judge.candidates import CandidateManager
+        return CandidateManager
+    if name == "GPUProfile":
+        from core.judge.gpu_profile import GPUProfile
+        return GPUProfile
+    if name == "detect_profile":
+        from core.judge.gpu_profile import detect_profile
+        return detect_profile
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    # Models
+    "TierVerdict",
+    "TierResult",
+    "JudgeReport",
+    "CandidateScore",
+    "CandidateReport",
+    # Tiers
+    "BaseTier",
+    "TestTier",
+    "LintTier",
+    "LLMReviewTier",
+    # Judge
+    "CompositeJudge",
+    # Candidates (lazy)
+    "CandidateManager",
+    # GPU Profile (lazy)
+    "GPUProfile",
+    "detect_profile",
+]
+
+```
+
+## `core/judge/candidates.py`
+
+```python
+# core/judge/candidates.py — Candidate Sampling: evaluate N patches, pick winner
+#
+# Phase 7.2: Each candidate PatchSet is applied in an isolated worktree,
+# scored by CompositeJudge, then cleaned up. Sequential evaluation.
+
+from typing import Callable, List, Optional, Tuple
+
+from core.contracts.schemas import PatchSet
+from core.judge.models import (
+    CandidateReport,
+    CandidateScore,
+    JudgeReport,
+    TierResult,
+    TierVerdict,
+)
+from core.judge.judge import CompositeJudge
+from core.patch.engine import PatchEngine
+
+
+# Type aliases for runner callables
+# runner(worktree_path: str) -> (exit_code, stdout, stderr)
+RunnerFn = Callable[[str], Tuple[int, str, str]]
+
+
+class CandidateManager:
+    """Evaluates multiple candidate PatchSets, each in an isolated worktree.
+
+    For each candidate:
+      1. Apply patch in a fresh worktree via PatchEngine
+      2. Run test suite and linter in the worktree
+      3. Score via CompositeJudge
+      4. Cleanup worktree
+
+    Winner: highest final_score among candidates with verdict != "fail".
+    """
+
+    def __init__(
+        self,
+        repo_path: str,
+        judge: Optional[CompositeJudge] = None,
+        subprocess_runner=None,
+        max_candidates: int = 5,
+    ):
+        self._repo_path = repo_path
+        self._judge = judge or CompositeJudge()
+        self._subprocess_runner = subprocess_runner
+        self._max_candidates = max_candidates
+
+    def evaluate_candidates(
+        self,
+        patch_sets: List[PatchSet],
+        test_runner: Optional[RunnerFn] = None,
+        lint_runner: Optional[RunnerFn] = None,
+    ) -> CandidateReport:
+        """Evaluate each PatchSet in an isolated worktree.
+
+        Args:
+            patch_sets: Candidate PatchSets to evaluate.
+            test_runner: Callable(worktree_path) -> (rc, stdout, stderr).
+            lint_runner: Callable(worktree_path) -> (rc, stdout, stderr).
+
+        Returns:
+            CandidateReport with winner_index (-1 if no candidate passes).
+        """
+        candidates: List[CandidateScore] = []
+
+        for i, ps in enumerate(patch_sets[: self._max_candidates]):
+            score = self._evaluate_one(i, ps, test_runner, lint_runner)
+            candidates.append(score)
+
+        winner = self._select_winner(candidates)
+        return CandidateReport(
+            candidates=candidates,
+            winner_index=winner,
+            total_evaluated=len(candidates),
+        )
+
+    def _evaluate_one(
+        self,
+        index: int,
+        patch_set: PatchSet,
+        test_runner: Optional[RunnerFn],
+        lint_runner: Optional[RunnerFn],
+    ) -> CandidateScore:
+        """Apply patch in worktree, run tests/lint, score, cleanup."""
+        engine = PatchEngine(self._repo_path, self._subprocess_runner)
+
+        # Apply patch in isolated worktree
+        result = engine.apply(patch_set, use_worktree=True)
+
+        if not result.success:
+            # Patch failed to apply — score 0, cleanup
+            self._safe_rollback(engine)
+            fail_report = JudgeReport(
+                tier_results=[
+                    TierResult(
+                        tier_name="patch_apply",
+                        verdict=TierVerdict.FAIL,
+                        score=0.0,
+                        weight=1.0,
+                        details=result.error
+                        or "; ".join(
+                            r.error for r in result.file_results if r.error
+                        ),
+                    )
+                ],
+                final_score=0.0,
+                verdict="fail",
+                summary="patch failed to apply",
+            )
+            return CandidateScore(
+                candidate_index=index,
+                patch_set_id=patch_set.task_id,
+                judge_report=fail_report,
+            )
+
+        worktree_path = result.worktree_path
+
+        # Run test suite
+        if test_runner is not None:
+            test_rc, test_out, test_err = test_runner(worktree_path)
+        else:
+            test_rc, test_out, test_err = 1, "", "no test runner provided"
+
+        # Run linter
+        if lint_runner is not None:
+            lint_rc, lint_out, _ = lint_runner(worktree_path)
+        else:
+            lint_rc, lint_out = 0, ""
+
+        # Score via CompositeJudge
+        report = self._judge.evaluate(
+            test_exit_code=test_rc,
+            test_stdout=test_out,
+            test_stderr=test_err,
+            lint_exit_code=lint_rc,
+            lint_stdout=lint_out,
+        )
+
+        # Capture diff before cleanup
+        diff = engine.diff()
+
+        # Always cleanup
+        self._safe_rollback(engine)
+
+        return CandidateScore(
+            candidate_index=index,
+            patch_set_id=patch_set.task_id,
+            judge_report=report,
+            worktree_diff=diff,
+        )
+
+    @staticmethod
+    def _safe_rollback(engine: PatchEngine) -> None:
+        """Rollback worktree, ignoring errors (cleanup best-effort)."""
+        try:
+            engine.rollback()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _select_winner(candidates: List[CandidateScore]) -> int:
+        """Select highest-scoring candidate with verdict != 'fail'.
+
+        Returns -1 if no candidate passes. On tie, first (lowest index) wins.
+        """
+        passing = [
+            (i, c)
+            for i, c in enumerate(candidates)
+            if c.judge_report.verdict != "fail"
+        ]
+        if not passing:
+            return -1
+        best_idx, _ = max(
+            passing, key=lambda x: x[1].judge_report.final_score
+        )
+        return best_idx
+
+```
+
+## `core/judge/gpu_profile.py`
+
+```python
+# core/judge/gpu_profile.py — Hardware profile stub for candidate concurrency
+#
+# Phase 7.2: Stub that always returns CPU-only profile.
+# Real hardware detection deferred to a future phase.
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class GPUProfile:
+    """Hardware profile for budgeting candidate concurrency."""
+    cpu_only: bool = True
+    max_concurrent: int = 1
+    device_name: str = "cpu"
+
+
+def detect_profile() -> GPUProfile:
+    """Detect hardware profile. Stub: always returns CPU-only."""
+    return GPUProfile()
+
+```
+
+## `core/judge/judge.py`
+
+```python
+# core/judge/judge.py — CompositeJudge: multi-tier scoring with short-circuit
+#
+# Phase 7.1: Sequences tiers, computes weighted score, returns JudgeReport.
+# Pure logic — no tool calls, no subprocess. Trivially testable.
+
+from typing import List, Optional
+
+from core.judge.models import TierResult, TierVerdict, JudgeReport
+from core.judge.tiers import BaseTier, TestTier, LintTier, LLMReviewTier
+
+
+class CompositeJudge:
+    """Multi-tier deterministic judge.
+
+    Default tiers: TestTier(0.6) → LintTier(0.25) → LLMReviewTier(0.15).
+    On short-circuit, remaining tiers are marked SKIPPED with score 0.0.
+
+    Verdict logic:
+      - test failed → "fail"
+      - score >= 0.6 AND test passed → "pass"
+      - score < 0.6 AND test passed → "needs_fix"
+    """
+
+    def __init__(self, tiers: Optional[List[BaseTier]] = None):
+        self._tiers = tiers if tiers is not None else [
+            TestTier(), LintTier(), LLMReviewTier(),
+        ]
+
+    @property
+    def tiers(self) -> List[BaseTier]:
+        return list(self._tiers)
+
+    def evaluate(self, **kwargs) -> JudgeReport:
+        """Run all tiers in sequence. Stop on short_circuit."""
+        results: List[TierResult] = []
+        short_circuited = False
+
+        for tier in self._tiers:
+            if short_circuited:
+                results.append(TierResult(
+                    tier_name=tier.name,
+                    verdict=TierVerdict.SKIPPED,
+                    score=0.0,
+                    weight=tier.weight,
+                    details="skipped due to short-circuit",
+                ))
+                continue
+            result = tier.evaluate(**kwargs)
+            results.append(result)
+            if result.short_circuit:
+                short_circuited = True
+
+        final_score = sum(r.score * r.weight for r in results)
+        verdict = self._compute_verdict(results, final_score)
+        return JudgeReport(
+            tier_results=results,
+            final_score=round(final_score, 6),
+            verdict=verdict,
+        )
+
+    def _compute_verdict(
+        self, results: List[TierResult], score: float
+    ) -> str:
+        """Determine verdict from tier results and composite score."""
+        test_result = next(
+            (r for r in results if r.tier_name == "test"), None
+        )
+        test_passed = (
+            test_result is not None
+            and test_result.verdict == TierVerdict.PASS
+        )
+        if not test_passed:
+            return "fail"
+        if score >= 0.6:
+            return "pass"
+        return "needs_fix"
+
+```
+
+## `core/judge/models.py`
+
+```python
+# core/judge/models.py — Data models for the Composite Judge and Candidate Sampling
+#
+# Phase 7.1: TierVerdict, TierResult, JudgeReport
+# Phase 7.2: CandidateScore, CandidateReport
+
+from enum import Enum
+from typing import List
+
+from pydantic import BaseModel
+
+
+class TierVerdict(str, Enum):
+    """Outcome of a single scoring tier."""
+    PASS = "pass"
+    FAIL = "fail"
+    WAIVED = "waived"
+    SKIPPED = "skipped"
+
+
+class TierResult(BaseModel):
+    """Result from a single evaluation tier."""
+    tier_name: str
+    verdict: TierVerdict
+    score: float          # 0.0–1.0
+    weight: float         # tier weight in composite formula
+    details: str = ""
+    short_circuit: bool = False  # if True, skip remaining tiers
+
+
+class JudgeReport(BaseModel):
+    """CRITIQUE phase output schema. Aggregated result from all tiers."""
+    tier_results: List[TierResult]
+    final_score: float    # weighted sum of tier scores
+    verdict: str          # "pass" | "fail" | "needs_fix"
+    summary: str = ""
+
+
+class CandidateScore(BaseModel):
+    """Score for a single candidate PatchSet."""
+    candidate_index: int
+    patch_set_id: str
+    judge_report: JudgeReport
+    worktree_diff: str = ""
+
+
+class CandidateReport(BaseModel):
+    """Aggregated report for all evaluated candidates. Stored in artifacts."""
+    candidates: List[CandidateScore]
+    winner_index: int = -1       # -1 = no winner
+    total_evaluated: int = 0
+
+```
+
+## `core/judge/tiers.py`
+
+```python
+# core/judge/tiers.py — Scoring tiers for the Composite Judge
+#
+# Phase 7.1: TestTier (hard pass/fail), LintTier (soft-block), LLMReviewTier (stub)
+#
+# Each tier is pure logic: receives verification results as kwargs, returns TierResult.
+# No subprocess calls, no ToolBus dependency — the caller runs tools and passes results.
+
+from abc import ABC, abstractmethod
+
+from core.judge.models import TierResult, TierVerdict
+
+
+class BaseTier(ABC):
+    """Base class for scoring tiers."""
+    name: str = ""
+    weight: float = 0.0
+
+    @abstractmethod
+    def evaluate(self, **kwargs) -> TierResult:
+        """Evaluate this tier. kwargs contain verification results."""
+        ...
+
+
+class TestTier(BaseTier):
+    """Hard pass/fail based on test suite exit code.
+
+    Weight: 0.6. Short-circuits on failure (remaining tiers skipped).
+    """
+    name = "test"
+    weight = 0.6
+
+    def evaluate(self, *, test_exit_code: int = 1,
+                 test_stdout: str = "", test_stderr: str = "",
+                 **kw) -> TierResult:
+        if test_exit_code == 0:
+            return TierResult(
+                tier_name=self.name,
+                verdict=TierVerdict.PASS,
+                score=1.0,
+                weight=self.weight,
+                details=test_stdout[:200] if test_stdout else "all tests passed",
+            )
+        return TierResult(
+            tier_name=self.name,
+            verdict=TierVerdict.FAIL,
+            score=0.0,
+            weight=self.weight,
+            details=(test_stderr or test_stdout)[:200],
+            short_circuit=True,
+        )
+
+
+class LintTier(BaseTier):
+    """Soft-block based on linter exit code.
+
+    Weight: 0.25. Does not short-circuit.
+    Supports lint waive: score 0.5 instead of 0.0 when waived.
+    """
+    name = "lint"
+    weight = 0.25
+
+    def evaluate(self, *, lint_exit_code: int = 1,
+                 lint_stdout: str = "", lint_waive: bool = False,
+                 **kw) -> TierResult:
+        if lint_exit_code == 0:
+            return TierResult(
+                tier_name=self.name,
+                verdict=TierVerdict.PASS,
+                score=1.0,
+                weight=self.weight,
+                details="lint clean",
+            )
+        if lint_waive:
+            return TierResult(
+                tier_name=self.name,
+                verdict=TierVerdict.WAIVED,
+                score=0.5,
+                weight=self.weight,
+                details=lint_stdout[:200] if lint_stdout else "lint issues waived",
+            )
+        return TierResult(
+            tier_name=self.name,
+            verdict=TierVerdict.FAIL,
+            score=0.0,
+            weight=self.weight,
+            details=lint_stdout[:200] if lint_stdout else "lint failed",
+        )
+
+
+class LLMReviewTier(BaseTier):
+    """Tiebreaker via LLM review. Stub: always returns 0.5.
+
+    Weight: 0.15. Real LLM call deferred to a future phase.
+    """
+    name = "llm_review"
+    weight = 0.15
+
+    def evaluate(self, **kw) -> TierResult:
+        return TierResult(
+            tier_name=self.name,
+            verdict=TierVerdict.PASS,
+            score=0.5,
+            weight=self.weight,
+            details="stub: no LLM review performed",
+        )
 
 ```
 
@@ -7672,13 +11332,22 @@ from core.kernel.orchestrator import (
     RoleDispatcher,
     PhaseResult,
 )
+from core.kernel.workflows import (
+    WorkflowTemplate,
+    get_coding_workflow,
+    get_generic_workflow,
+    select_workflow,
+    list_workflows,
+)
 
 __all__ = [
+    # State machine
     "Phase",
     "SessionState",
     "TRANSITIONS",
     "InvalidTransition",
     "validate_transition",
+    # Budgets
     "BudgetConfig",
     "BudgetExhausted",
     "PhaseRetriesExhausted",
@@ -7688,9 +11357,17 @@ __all__ = [
     "check_total_iterations",
     "check_phase_time",
     "check_all_budgets",
+    # Orchestrator
     "Orchestrator",
     "RoleDispatcher",
     "PhaseResult",
+    # Workflows (Phase 7.0)
+    "WorkflowTemplate",
+    "get_coding_workflow",
+    "get_generic_workflow",
+    "select_workflow",
+    "list_workflows",
+    # Judge (Phase 7.1-7.2) — importable via core.judge directly
 ]
 
 ```
@@ -7699,11 +11376,14 @@ __all__ = [
 
 ```python
 # core/kernel/budgets.py — Hard budget configuration and enforcement
+#
+# Phase 7.0: Phase params accept str (was Phase enum). Since Phase is now
+# str,Enum, all existing callers work without changes.
 
 import time
 from dataclasses import dataclass
 
-from core.kernel.state import Phase, SessionState
+from core.kernel.state import SessionState
 
 
 @dataclass(frozen=True)
@@ -7714,6 +11394,7 @@ class BudgetConfig:
     max_time_per_phase_seconds: float = 300.0
     max_tool_output_bytes_in_context: int = 32_768
     max_context_tokens_per_role: int = 16_384
+    max_candidates: int = 5
 
 
 class BudgetExhausted(Exception):
@@ -7724,12 +11405,13 @@ class BudgetExhausted(Exception):
 class PhaseRetriesExhausted(BudgetExhausted):
     """Raised when a phase exceeds max_phase_retries."""
 
-    def __init__(self, phase: Phase, retries: int, max_retries: int):
+    def __init__(self, phase: str, retries: int, max_retries: int):
         self.phase = phase
         self.retries = retries
         self.max_retries = max_retries
+        name = phase.name if hasattr(phase, 'name') else phase
         super().__init__(
-            f"Phase {phase.name} exhausted retries: {retries}/{max_retries}"
+            f"Phase {name} exhausted retries: {retries}/{max_retries}"
         )
 
 
@@ -7747,12 +11429,13 @@ class TotalIterationsExhausted(BudgetExhausted):
 class PhaseTimeoutExhausted(BudgetExhausted):
     """Raised when a single phase exceeds its time budget."""
 
-    def __init__(self, phase: Phase, elapsed: float, max_seconds: float):
+    def __init__(self, phase: str, elapsed: float, max_seconds: float):
         self.phase = phase
         self.elapsed = elapsed
         self.max_seconds = max_seconds
+        name = phase.name if hasattr(phase, 'name') else phase
         super().__init__(
-            f"Phase {phase.name} timed out: {elapsed:.1f}s/{max_seconds:.1f}s"
+            f"Phase {name} timed out: {elapsed:.1f}s/{max_seconds:.1f}s"
         )
 
 
@@ -7799,6 +11482,9 @@ def check_all_budgets(state: SessionState, config: BudgetConfig) -> None:
 
 ```python
 # core/kernel/orchestrator.py — Main orchestration loop
+#
+# Phase 7.0: Orchestrator accepts a WorkflowTemplate and delegates all phase
+# logic to it. No hardcoded phase names, transitions, or branching rules.
 
 import logging
 from dataclasses import dataclass
@@ -7823,26 +11509,18 @@ class RoleDispatcher(Protocol):
     """Protocol for phase-specific role execution.
 
     Implementations are injected into the Orchestrator.
-    Phase 7 provides real implementations; Phase 2 tests use stubs.
+    Phase arg is a string (workflow-defined phase name).
     """
 
-    def dispatch(self, phase: Phase, state: SessionState) -> PhaseResult: ...
-
-
-# Linear phase order (excludes FIX, HALTED, COMPLETED — those are branching targets)
-_PHASE_ORDER = [
-    Phase.INTAKE, Phase.CONTRACT, Phase.REPO_MAP, Phase.PLAN,
-    Phase.RETRIEVE, Phase.PATCH, Phase.CRITIQUE, Phase.RUN,
-]
+    def dispatch(self, phase: str, state: SessionState) -> PhaseResult: ...
 
 
 class Orchestrator:
     """Drives the kernel state machine through all phases.
 
-    Reads current state, selects next phase, dispatches to roles,
-    and enforces hard budgets. The orchestrator never touches the
-    filesystem directly — all I/O goes through the injected dispatcher
-    and optional SessionManager.
+    Phase 7.0: All phase logic comes from the injected WorkflowTemplate.
+    The orchestrator is workflow-agnostic — it reads phase_order, branch_rules,
+    and terminal_phases from the template.
     """
 
     def __init__(
@@ -7851,19 +11529,34 @@ class Orchestrator:
         budget: Optional[BudgetConfig] = None,
         session_manager=None,
         tool_bus=None,
+        workflow=None,
+        critic=None,
+        step_scopes: Optional[list] = None,
     ):
         self._dispatcher = dispatcher
         self._budget = budget or BudgetConfig()
         self._session_manager = session_manager
         self._tool_bus = tool_bus
         self._artifact_sequence = 0
+        self._critic = critic
+        self._step_scopes = step_scopes
+
+        # Lazy import to avoid circular dependency
+        if workflow is None:
+            from core.kernel.workflows import get_coding_workflow
+            workflow = get_coding_workflow()
+        self._workflow = workflow
 
     def run(self, task: str) -> SessionState:
         """Execute a complete task through the state machine.
 
         Returns the final SessionState (COMPLETED or HALTED).
         """
-        state = SessionState(task_description=task)
+        state = SessionState(
+            task_description=task,
+            current_phase=self._workflow.phases[0],
+            _transitions=self._workflow.transitions,
+        )
 
         if self._session_manager is not None:
             state.session_id = self._session_manager.session_id
@@ -7872,6 +11565,7 @@ class Orchestrator:
         while not self._is_terminal(state.current_phase):
             try:
                 check_all_budgets(state, self._budget)
+                self._apply_phase_scopes(state.current_phase)
 
                 # Checkpoint before PATCH for rollback on RUN failure
                 if (state.current_phase == Phase.PATCH
@@ -7900,6 +11594,8 @@ class Orchestrator:
                         except FileNotFoundError:
                             logger.warning("Checkpoint %s not found for rollback", checkpoint_label)
 
+                self._maybe_invoke_critic(state, result)
+
                 next_phase = self._select_next_phase(state, result)
                 if next_phase is not None:
                     state.enter_phase(next_phase)
@@ -7910,11 +11606,15 @@ class Orchestrator:
                 logger.error("Invalid transition: %s", exc)
                 state.halt(str(exc))
 
+        self._clear_phase_scopes()
         return state
 
     def _execute_phase(self, state: SessionState) -> PhaseResult:
         """Dispatch current phase to the role handler."""
-        logger.info("Executing phase: %s", state.current_phase.name)
+        phase_name = state.current_phase
+        if hasattr(phase_name, 'name'):
+            phase_name = phase_name.name
+        logger.info("Executing phase: %s", phase_name)
         result = self._dispatcher.dispatch(state.current_phase, state)
         if not isinstance(result, PhaseResult):
             result = PhaseResult(success=True, output=result)
@@ -7922,7 +11622,7 @@ class Orchestrator:
             retry_count = state.record_phase_retry(state.current_phase)
             logger.info(
                 "Phase %s failed (retry %d/%d): %s",
-                state.current_phase.name,
+                phase_name,
                 retry_count,
                 self._budget.max_phase_retries,
                 result.error,
@@ -7937,27 +11637,37 @@ class Orchestrator:
         """
         from core.contracts.validation import get_schema_for_phase, validate_phase_output
 
-        schema = get_schema_for_phase(state.current_phase)
+        schema = get_schema_for_phase(
+            state.current_phase,
+            phase_schemas=self._workflow.phase_schemas,
+        )
         if schema is None:
             return None
 
         if result.output is None:
             return None
 
+        phase_name = state.current_phase
+        if hasattr(phase_name, 'name'):
+            phase_name = phase_name.name
+
         try:
-            validated = validate_phase_output(state.current_phase, result.output)
+            validated = validate_phase_output(
+                state.current_phase, result.output,
+                phase_schemas=self._workflow.phase_schemas,
+            )
             path = self._session_manager.write_artifact(
-                state.current_phase.name,
+                phase_name,
                 self._artifact_sequence,
                 validated,
             )
             self._artifact_sequence += 1
-            state.artifacts[state.current_phase.name] = str(path)
+            state.artifacts[phase_name] = str(path)
             return None
         except Exception as exc:
             logger.warning(
                 "Validation failed for phase %s: %s",
-                state.current_phase.name, exc,
+                phase_name, exc,
             )
             retry_count = state.record_phase_retry(state.current_phase)
             return PhaseResult(
@@ -7967,41 +11677,172 @@ class Orchestrator:
 
     def _select_next_phase(
         self, state: SessionState, result: PhaseResult,
-    ) -> Optional[Phase]:
+    ) -> Optional[str]:
         """Determine the next phase based on current state and phase result.
 
-        Returns None if the current phase should be retried (failure in a
-        non-RUN linear phase). The main loop skips enter_phase in that case,
-        and the next iteration's budget check catches exhausted retries.
+        Uses workflow.branch_rules for phases with special branching.
+        For linear phases: retry on failure, advance through phase_order on success.
+        Returns None if the current phase should be retried.
         """
         current = state.current_phase
 
-        # RUN branches: success → FINALIZE, failure → FIX
-        if current == Phase.RUN:
-            return Phase.FINALIZE if result.success else Phase.FIX
+        # Check branch rules first (RUN, FIX, FINALIZE in coding workflow)
+        if current in self._workflow.branch_rules:
+            rule = self._workflow.branch_rules[current]
+            return rule(result)
 
-        # FIX always loops back to PATCH
-        if current == Phase.FIX:
-            return Phase.PATCH
-
-        # FINALIZE → COMPLETED
-        if current == Phase.FINALIZE:
-            return Phase.COMPLETED
-
-        # For all other phases: retry on failure, advance on success
+        # For phases without branch rules: retry on failure, advance on success
         if not result.success:
             return None
 
-        if current in _PHASE_ORDER:
-            idx = _PHASE_ORDER.index(current)
-            if idx + 1 < len(_PHASE_ORDER):
-                return _PHASE_ORDER[idx + 1]
+        phase_order = self._workflow.phase_order
+        if current in phase_order:
+            idx = list(phase_order).index(current)
+            if idx + 1 < len(phase_order):
+                return phase_order[idx + 1]
 
-        raise InvalidTransition(current, Phase.HALTED)
+        raise InvalidTransition(current, "HALTED")
 
-    @staticmethod
-    def _is_terminal(phase: Phase) -> bool:
-        return phase in (Phase.HALTED, Phase.COMPLETED)
+    def _is_terminal(self, phase: str) -> bool:
+        return phase in self._workflow.terminal_phases
+
+    def _apply_phase_scopes(self, phase: str) -> None:
+        if self._tool_bus is None:
+            return
+        cap = getattr(self._tool_bus, "capability_engine", None)
+        if cap is None or not hasattr(cap, "set_scope_constraints"):
+            return
+        workflow_scopes = set(self._workflow.required_scopes)
+        step_scopes = set(self._step_scopes) if self._step_scopes is not None else set(workflow_scopes)
+        phase_scopes = set(self._workflow.phase_capabilities.get(phase, workflow_scopes))
+        effective = workflow_scopes & step_scopes & phase_scopes
+        cap.set_scope_constraints(list(effective))
+
+    def _clear_phase_scopes(self) -> None:
+        if self._tool_bus is None:
+            return
+        cap = getattr(self._tool_bus, "capability_engine", None)
+        if cap is None or not hasattr(cap, "clear_scope_constraints"):
+            return
+        cap.clear_scope_constraints()
+
+    def _maybe_invoke_critic(self, state: SessionState, result: PhaseResult) -> None:
+        if self._critic is None:
+            return
+        try:
+            if not self._critic.is_available:
+                return
+        except Exception:
+            return
+
+        next_phase = self._predict_next_phase(state, result)
+        if next_phase is None:
+            return
+
+        try:
+            from core.critic.models import CriticTriggerContext
+            from core.critic.triggers import (
+                should_invoke_critic,
+                detect_security_surface,
+                detect_dependency_changes,
+            )
+            from core.contracts.schemas import RunReport
+            from core.judge.models import JudgeReport
+        except Exception:
+            return
+
+        target_files, files_changed, lines_changed = self._extract_patch_stats()
+        touches_security = detect_security_surface(target_files)
+        has_deps = detect_dependency_changes(target_files)
+
+        local_disagree = False
+        if self._session_manager is not None:
+            run_artifact = self._session_manager.load_latest_artifact("RUN")
+            critique_artifact = self._session_manager.load_latest_artifact("CRITIQUE")
+            if run_artifact and critique_artifact:
+                try:
+                    run_report = RunReport.model_validate(run_artifact)
+                    judge_report = JudgeReport.model_validate(critique_artifact)
+                    if run_report.passed and judge_report.verdict in ("fail", "needs_fix"):
+                        local_disagree = True
+                except Exception:
+                    pass
+
+        try:
+            max_calls = self._critic.config.max_calls_per_session
+            calls = self._critic.calls_this_session
+        except Exception:
+            max_calls = 10
+            calls = 0
+
+        context = CriticTriggerContext(
+            current_phase=state.current_phase,
+            next_phase=next_phase,
+            total_iterations=state.total_iterations,
+            consecutive_fix_loops=state.phase_retries.get("RUN", 0),
+            files_changed_count=files_changed,
+            lines_changed_count=lines_changed,
+            touches_security_surface=touches_security,
+            has_dependency_changes=has_deps,
+            local_reviewer_disagrees=local_disagree,
+            critic_calls_this_session=calls,
+            max_calls_per_session=max_calls,
+        )
+
+        try:
+            should_call, reason = should_invoke_critic(context, self._critic.config)
+        except Exception:
+            return
+
+        if not should_call:
+            return
+
+        report = self._critic.invoke_multi_round(
+            state,
+            reason,
+            session_manager=self._session_manager,
+            revision_callback=lambda _report, _state: False,
+        )
+        key = f"_critic_{state.total_iterations:03d}"
+        try:
+            state.artifacts[key] = report.model_dump()
+        except Exception:
+            state.artifacts[key] = report
+
+        if report.consensus_verdict == "block":
+            logger.warning("External critic issued BLOCK verdict (round %d)", report.round_number)
+
+    def _predict_next_phase(self, state: SessionState,
+                            result: PhaseResult) -> Optional[str]:
+        try:
+            return self._select_next_phase(state, result)
+        except Exception:
+            return None
+
+    def _extract_patch_stats(self):
+        if self._session_manager is None:
+            return [], 0, 0
+        patch_artifact = self._session_manager.load_latest_artifact("PATCH")
+        if not patch_artifact:
+            plan_artifact = self._session_manager.load_latest_artifact("PLAN")
+            if isinstance(plan_artifact, dict):
+                targets = plan_artifact.get("target_files", []) or []
+                return list(targets), len(targets), 0
+            return [], 0, 0
+        try:
+            from core.contracts.schemas import PatchSet
+            patch_set = PatchSet.model_validate(patch_artifact)
+        except Exception:
+            return [], 0, 0
+
+        target_files = [p.file_path for p in patch_set.patches]
+        files_changed = len(patch_set.patches)
+        lines_changed = 0
+        for p in patch_set.patches:
+            removed = len(p.search_block.splitlines()) if p.search_block else 0
+            added = len(p.replace_block.splitlines()) if p.replace_block else 0
+            lines_changed += added + removed
+        return target_files, files_changed, lines_changed
 
 ```
 
@@ -8009,32 +11850,46 @@ class Orchestrator:
 
 ```python
 # core/kernel/state.py — Phase enum, transition rules, and session state
+#
+# Phase 7.0: Phase is now a str,Enum — members compare equal to their name
+# strings. This allows WorkflowTemplate phases to be plain strings while
+# remaining backward-compatible with existing code that uses Phase.INTAKE etc.
 
 import time
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, FrozenSet, Optional
 
 
-class Phase(Enum):
-    """Phases of the kernel state machine."""
-    INTAKE = auto()
-    CONTRACT = auto()
-    REPO_MAP = auto()
-    PLAN = auto()
-    RETRIEVE = auto()
-    PATCH = auto()
-    CRITIQUE = auto()
-    RUN = auto()
-    FIX = auto()
-    FINALIZE = auto()
-    HALTED = auto()
-    COMPLETED = auto()
+class Phase(str, Enum):
+    """Phases of the coding workflow state machine.
+
+    str,Enum: each member IS its name string. Phase.INTAKE == "INTAKE" is True.
+    This allows workflow templates to use plain strings for phase names while
+    existing code continues to use Phase enum members interchangeably.
+
+    Note: custom workflows define their own phase names as plain strings.
+    This enum exists for backward compatibility and as a convenience for the
+    built-in coding workflow.
+    """
+    INTAKE = "INTAKE"
+    CONTRACT = "CONTRACT"
+    REPO_MAP = "REPO_MAP"
+    PLAN = "PLAN"
+    RETRIEVE = "RETRIEVE"
+    PATCH = "PATCH"
+    CRITIQUE = "CRITIQUE"
+    RUN = "RUN"
+    FIX = "FIX"
+    FINALIZE = "FINALIZE"
+    HALTED = "HALTED"
+    COMPLETED = "COMPLETED"
 
 
 # Allowed transitions: current phase -> set of valid next phases
-TRANSITIONS: Dict[Phase, frozenset] = {
+# Uses Phase members (which are strings) as keys and values.
+TRANSITIONS: Dict[str, FrozenSet[str]] = {
     Phase.INTAKE:    frozenset({Phase.CONTRACT, Phase.HALTED}),
     Phase.CONTRACT:  frozenset({Phase.REPO_MAP, Phase.HALTED}),
     Phase.REPO_MAP:  frozenset({Phase.PLAN, Phase.HALTED}),
@@ -8053,42 +11908,61 @@ TRANSITIONS: Dict[Phase, frozenset] = {
 class InvalidTransition(Exception):
     """Raised when a phase transition violates state machine rules."""
 
-    def __init__(self, from_phase: Phase, to_phase: Phase):
+    def __init__(self, from_phase: str, to_phase: str):
         self.from_phase = from_phase
         self.to_phase = to_phase
-        super().__init__(f"Invalid transition: {from_phase.name} -> {to_phase.name}")
+        fname = from_phase.name if hasattr(from_phase, 'name') else from_phase
+        tname = to_phase.name if hasattr(to_phase, 'name') else to_phase
+        super().__init__(f"Invalid transition: {fname} -> {tname}")
 
 
-def validate_transition(from_phase: Phase, to_phase: Phase) -> None:
-    """Raise InvalidTransition if from_phase -> to_phase is not allowed."""
-    allowed = TRANSITIONS.get(from_phase, frozenset())
+def validate_transition(
+    from_phase: str,
+    to_phase: str,
+    transitions: Optional[Dict[str, FrozenSet[str]]] = None,
+) -> None:
+    """Raise InvalidTransition if from_phase -> to_phase is not allowed.
+
+    Uses the provided transitions dict, or falls back to the default
+    TRANSITIONS (coding workflow) if none given.
+    """
+    t = transitions if transitions is not None else TRANSITIONS
+    allowed = t.get(from_phase, frozenset())
     if to_phase not in allowed:
         raise InvalidTransition(from_phase, to_phase)
 
 
 @dataclass
 class SessionState:
-    """Mutable state for a single kernel session (one --task invocation)."""
+    """Mutable state for a single kernel session (one --task invocation).
+
+    Phase 7.0: current_phase is str (not Phase enum). Phases are workflow-
+    defined strings. The Phase enum still works as values since it's str,Enum.
+    """
 
     task_description: str
-    current_phase: Phase = Phase.INTAKE
+    current_phase: str = Phase.INTAKE
     total_iterations: int = 0
-    phase_retries: Dict[Phase, int] = field(default_factory=dict)
+    phase_retries: Dict[str, int] = field(default_factory=dict)
     phase_start_time: Optional[float] = None
     session_start_time: float = field(default_factory=time.monotonic)
     halt_reason: Optional[str] = None
     artifacts: Dict[str, Any] = field(default_factory=dict)
     session_id: Optional[str] = None
     session_dir: Optional[Path] = None
+    # Transitions dict for this session (set by orchestrator from workflow)
+    _transitions: Optional[Dict[str, FrozenSet[str]]] = field(
+        default=None, repr=False, compare=False,
+    )
 
-    def enter_phase(self, phase: Phase) -> None:
+    def enter_phase(self, phase: str) -> None:
         """Transition to a new phase. Validates, increments iterations, resets timer."""
-        validate_transition(self.current_phase, phase)
+        validate_transition(self.current_phase, phase, self._transitions)
         self.current_phase = phase
         self.phase_start_time = time.monotonic()
         self.total_iterations += 1
 
-    def record_phase_retry(self, phase: Phase) -> int:
+    def record_phase_retry(self, phase: str) -> int:
         """Increment retry count for a phase. Returns new count."""
         current = self.phase_retries.get(phase, 0)
         self.phase_retries[phase] = current + 1
@@ -8101,8 +11975,215 @@ class SessionState:
 
     def complete(self) -> None:
         """Move to COMPLETED terminal state."""
-        validate_transition(self.current_phase, Phase.COMPLETED)
+        validate_transition(self.current_phase, Phase.COMPLETED, self._transitions)
         self.current_phase = Phase.COMPLETED
+
+```
+
+## `core/kernel/workflows.py`
+
+```python
+# core/kernel/workflows.py — WorkflowTemplate and built-in workflow constants
+#
+# Phase 7.0: Abstracts the kernel state machine into pluggable templates.
+# The coding pipeline becomes one template among many.
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple, Type
+
+from pydantic import BaseModel
+
+
+@dataclass
+class WorkflowTemplate:
+    """Immutable workflow definition that parameterizes the kernel state machine.
+
+    A workflow template defines the phases, transitions, schemas, branching
+    rules, terminal states, and per-phase capability profiles for a task
+    domain. The kernel consumes templates — it never hardcodes phase logic.
+
+    The template is selected once at INTAKE and is immutable for the session.
+    The LLM controls what happens *inside* a phase. The kernel controls
+    *which phase runs next.* (Invariant 8)
+    """
+
+    name: str                                           # "coding", "generic", "redteam", ...
+    phases: Tuple[str, ...]                             # Ordered phase names (strings, not enum)
+    transitions: Dict[str, FrozenSet[str]]              # phase -> set of valid next phases
+    phase_schemas: Dict[str, Type[BaseModel]]           # phase -> Pydantic model for artifact validation
+    phase_order: Tuple[str, ...]                        # Linear progression (excludes branch targets)
+    branch_rules: Dict[str, Callable]                   # phase -> function(result) -> next_phase_name
+    terminal_phases: FrozenSet[str]                     # {"HALTED", "COMPLETED"}
+    phase_capabilities: Dict[str, FrozenSet[str]]       # phase -> allowed capability tags for that phase
+    default_budget_overrides: Dict[str, Any] = field(default_factory=dict)
+    required_scopes: List[str] = field(default_factory=list)
+    description: str = ""
+
+    def __hash__(self):
+        return hash(self.name)
+
+    def __eq__(self, other):
+        if isinstance(other, WorkflowTemplate):
+            return self.name == other.name
+        return NotImplemented
+
+
+def _build_coding_workflow() -> WorkflowTemplate:
+    """Build the CODING_WORKFLOW constant.
+
+    Deferred to a function so imports from contracts/schemas.py happen at
+    call time, avoiding circular import issues.
+    """
+    from core.kernel.state import Phase, TRANSITIONS
+    from core.contracts.schemas import PHASE_SCHEMAS
+
+    return WorkflowTemplate(
+        name="coding",
+        phases=(
+            "INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE",
+            "PATCH", "CRITIQUE", "RUN", "FIX", "FINALIZE",
+            "HALTED", "COMPLETED",
+        ),
+        transitions=dict(TRANSITIONS),
+        phase_schemas=dict(PHASE_SCHEMAS),
+        phase_order=(
+            "INTAKE", "CONTRACT", "REPO_MAP", "PLAN",
+            "RETRIEVE", "PATCH", "CRITIQUE", "RUN",
+        ),
+        branch_rules={
+            "RUN": lambda result: "FINALIZE" if result.success else "FIX",
+            "FIX": lambda result: "PATCH",
+            "FINALIZE": lambda result: "COMPLETED",
+        },
+        terminal_phases=frozenset({"HALTED", "COMPLETED"}),
+        phase_capabilities={
+            "INTAKE":   frozenset({"fs.read"}),
+            "CONTRACT": frozenset({"fs.read"}),
+            "REPO_MAP": frozenset({"fs.read", "git.read"}),
+            "PLAN":     frozenset({"fs.read", "git.read"}),
+            "RETRIEVE": frozenset({"fs.read", "git.read"}),
+            "PATCH":    frozenset({"fs.read", "fs.write", "git.write"}),
+            "CRITIQUE": frozenset({"fs.read", "git.read"}),
+            "RUN":      frozenset({"fs.read", "verify.run"}),
+            "FIX":      frozenset({"fs.read", "git.read"}),
+            "FINALIZE": frozenset({"fs.read", "git.read"}),
+        },
+        required_scopes=[
+            "fs.read", "fs.write", "git.read", "git.write", "verify.run",
+        ],
+        description=(
+            "Full software development pipeline with repo map, patching, "
+            "and test loop."
+        ),
+    )
+
+
+def _build_generic_workflow() -> WorkflowTemplate:
+    """Build the GENERIC_WORKFLOW constant."""
+    from core.contracts.schemas import TaskContract, ChangePlan, FinalReport
+
+    return WorkflowTemplate(
+        name="generic",
+        phases=(
+            "INTAKE", "PLAN", "EXECUTE", "EVALUATE",
+            "FINALIZE", "HALTED", "COMPLETED",
+        ),
+        transitions={
+            "INTAKE":    frozenset({"PLAN", "HALTED"}),
+            "PLAN":      frozenset({"EXECUTE", "HALTED"}),
+            "EXECUTE":   frozenset({"EVALUATE", "HALTED"}),
+            "EVALUATE":  frozenset({"PLAN", "EXECUTE", "FINALIZE", "HALTED"}),
+            "FINALIZE":  frozenset({"COMPLETED", "HALTED"}),
+            "HALTED":    frozenset(),
+            "COMPLETED": frozenset(),
+        },
+        phase_schemas={
+            "INTAKE":   TaskContract,
+            "PLAN":     ChangePlan,
+            "FINALIZE": FinalReport,
+        },
+        phase_order=("INTAKE", "PLAN", "EXECUTE", "EVALUATE"),
+        branch_rules={
+            "EVALUATE": lambda result: "FINALIZE" if result.success else "PLAN",
+            "FINALIZE": lambda result: "COMPLETED",
+        },
+        terminal_phases=frozenset({"HALTED", "COMPLETED"}),
+        phase_capabilities={
+            "INTAKE":   frozenset({"fs.read"}),
+            "PLAN":     frozenset({"fs.read"}),
+            "EXECUTE":  frozenset({"fs.read", "fs.write", "shell.exec", "python.exec"}),
+            "EVALUATE": frozenset({"fs.read", "verify.run"}),
+            "FINALIZE": frozenset({"fs.read"}),
+        },
+        required_scopes=["fs.read", "fs.write", "shell.exec", "python.exec", "verify.run"],
+        description=(
+            "Flexible pipeline for arbitrary structured tasks. "
+            "EXECUTE dispatches to any tool on the bus."
+        ),
+    )
+
+
+# Module-level constants — built lazily to avoid circular imports.
+# Use the accessor functions below for guaranteed initialization.
+
+_CODING_WORKFLOW: Optional[WorkflowTemplate] = None
+_GENERIC_WORKFLOW: Optional[WorkflowTemplate] = None
+
+
+def get_coding_workflow() -> WorkflowTemplate:
+    """Return the CODING_WORKFLOW singleton."""
+    global _CODING_WORKFLOW
+    if _CODING_WORKFLOW is None:
+        _CODING_WORKFLOW = _build_coding_workflow()
+    return _CODING_WORKFLOW
+
+
+def get_generic_workflow() -> WorkflowTemplate:
+    """Return the GENERIC_WORKFLOW singleton."""
+    global _GENERIC_WORKFLOW
+    if _GENERIC_WORKFLOW is None:
+        _GENERIC_WORKFLOW = _build_generic_workflow()
+    return _GENERIC_WORKFLOW
+
+
+# Registry of known workflow templates (name -> accessor)
+_WORKFLOW_REGISTRY: Dict[str, Callable[[], WorkflowTemplate]] = {
+    "coding":  get_coding_workflow,
+    "generic": get_generic_workflow,
+}
+
+
+def select_workflow(
+    *,
+    cli_flag: Optional[str] = None,
+    policy_workflow: Optional[str] = None,
+    task_description: Optional[str] = None,
+) -> WorkflowTemplate:
+    """Select a workflow template.
+
+    Selection hierarchy:
+    1. CLI flag: --workflow coding → hardcoded choice, no LLM.
+    2. Policy file: workflow field in PolicyPack → deterministic.
+    3. Default: CODING_WORKFLOW (future: LLM classification).
+    """
+    name = cli_flag or policy_workflow
+
+    if name is not None:
+        accessor = _WORKFLOW_REGISTRY.get(name)
+        if accessor is None:
+            raise ValueError(
+                f"Unknown workflow: {name!r}. "
+                f"Available: {sorted(_WORKFLOW_REGISTRY)}"
+            )
+        return accessor()
+
+    # Default: coding workflow
+    return get_coding_workflow()
+
+
+def list_workflows() -> List[str]:
+    """Return the list of registered workflow names."""
+    return sorted(_WORKFLOW_REGISTRY.keys())
 
 ```
 
@@ -8168,11 +12249,10 @@ from core.memory.memory import UnifiedMemory
 # core/memory/memory.py
 # UnifiedMemory: Manages short-term and long-term memory using SQLite and FAISS.
 
-import sqlite3, json, time, hashlib
+import sqlite3, json, time, hashlib, os
 from pathlib import Path
 from typing import Optional, List, Dict
 import numpy as np
-import faiss
 from openai import OpenAI
 
 # ---- Helpers ----
@@ -8183,6 +12263,62 @@ def normalize(vec: np.ndarray) -> np.ndarray:
     vec = vec.astype("float32")
     norm = np.linalg.norm(vec)
     return vec / (norm + 1e-8)
+
+
+class NumpyIndex:
+    """Minimal inner-product index fallback for tests or no-faiss environments."""
+
+    def __init__(self, dim: int):
+        self.dim = dim
+        self._vecs = np.zeros((0, dim), dtype=np.float32)
+
+    def add(self, vecs: np.ndarray) -> None:
+        if vecs.size == 0:
+            return
+        vecs = np.asarray(vecs, dtype=np.float32)
+        if vecs.ndim == 1:
+            vecs = vecs.reshape(1, -1)
+        if vecs.shape[1] != self.dim:
+            raise ValueError("Vector dimension mismatch")
+        self._vecs = np.vstack([self._vecs, vecs])
+
+    def search(self, queries: np.ndarray, k: int):
+        queries = np.asarray(queries, dtype=np.float32)
+        if queries.ndim == 1:
+            queries = queries.reshape(1, -1)
+        if self._vecs.shape[0] == 0:
+            D = np.zeros((queries.shape[0], k), dtype=np.float32)
+            I = -np.ones((queries.shape[0], k), dtype=np.int64)
+            return D, I
+        scores = queries @ self._vecs.T
+        k = min(k, scores.shape[1])
+        idx = np.argpartition(-scores, kth=k-1, axis=1)[:, :k]
+        row = np.arange(scores.shape[0])[:, None]
+        top_scores = scores[row, idx]
+        order = np.argsort(-top_scores, axis=1)
+        sorted_idx = idx[row, order]
+        sorted_scores = top_scores[row, order]
+        return sorted_scores, sorted_idx
+
+
+def _faiss_backend() -> str:
+    override = os.getenv("JUDAIS_LOBI_FAISS_BACKEND")
+    if override:
+        return override.lower()
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return "numpy"
+    return "faiss"
+
+
+def _make_index(dim: int):
+    backend = _faiss_backend()
+    if backend == "faiss":
+        try:
+            import faiss
+            return faiss.IndexFlatIP(dim)
+        except Exception:
+            return NumpyIndex(dim)
+    return NumpyIndex(dim)
 
 # ---- UnifiedMemory ----
 class UnifiedMemory:
@@ -8298,7 +12434,7 @@ class UnifiedMemory:
             rid = cur.lastrowid
         # Update FAISS
         if self.long_index is None:
-            self.long_index = faiss.IndexFlatIP(len(emb))
+            self.long_index = _make_index(len(emb))
         self.long_index.add(emb.reshape(1, -1))
         self.long_id_map.append(rid)
 
@@ -8417,7 +12553,7 @@ class UnifiedMemory:
             self.long_id_map = []
             return
         dim = len(np.frombuffer(rows[0][1], dtype=np.float32))
-        self.long_index = faiss.IndexFlatIP(dim)
+        self.long_index = _make_index(dim)
         self.long_id_map = []
         vecs = []
         for rid, eblob in rows:
@@ -8434,7 +12570,7 @@ class UnifiedMemory:
             self.rag_id_map = []
             return
         dim = len(np.frombuffer(rows[0][1], dtype=np.float32))
-        self.rag_index = faiss.IndexFlatIP(dim)
+        self.rag_index = _make_index(dim)
         self.rag_id_map = []
         vecs = []
         for rid, eblob in rows:
@@ -8473,7 +12609,990 @@ class UnifiedMemory:
         ]
 
 
+```
 
+## `core/patch/__init__.py`
+
+```python
+# core/patch/__init__.py — Repository-native patch engine (Phase 6)
+
+```
+
+## `core/patch/applicator.py`
+
+```python
+# core/patch/applicator.py — Apply patches to files with strict preconditions
+
+import os
+import stat
+from pathlib import Path
+from typing import Union
+
+from core.contracts.schemas import FilePatch
+from core.patch.matcher import canonicalize, match_file
+from core.patch.models import FileMatchResult
+
+
+class PathJailError(Exception):
+    """Raised when a file path escapes the repo root."""
+
+
+def jail_path(file_path: str, repo_root: Path) -> Path:
+    """Resolve file path against repo root. Reject escapes.
+
+    Rejects:
+    - Absolute paths
+    - Paths with .. traversal
+    - Symlink escapes (resolved path must be under repo_root)
+
+    Returns the resolved Path.
+    """
+    stripped = file_path.strip()
+    if not stripped:
+        raise PathJailError("Empty file path")
+    if stripped.startswith("/") or stripped.startswith("\\"):
+        raise PathJailError(f"Absolute path rejected: {stripped}")
+
+    # Check for .. components
+    parts = stripped.replace("\\", "/").split("/")
+    for part in parts:
+        if part == "..":
+            raise PathJailError(f"Path traversal rejected: {stripped}")
+
+    resolved = (repo_root / stripped).resolve()
+    repo_resolved = repo_root.resolve()
+
+    # Ensure resolved path is under repo root
+    try:
+        resolved.relative_to(repo_resolved)
+    except ValueError:
+        raise PathJailError(
+            f"Path escapes repo root: {stripped} resolves to {resolved}"
+        )
+
+    return resolved
+
+
+def apply_modify(file_path: Path, search_block: str, replace_block: str) -> FileMatchResult:
+    """Apply a modify patch: read, match, replace, write."""
+    str_path = str(file_path)
+
+    if not file_path.exists():
+        return FileMatchResult(
+            file_path=str_path,
+            action="modify",
+            success=False,
+            error=f"File does not exist: {str_path}",
+        )
+
+    # Read and canonicalize
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    content = canonicalize(content)
+    search_block = canonicalize(search_block)
+    replace_block = canonicalize(replace_block)
+
+    # Match
+    result = match_file(content, search_block, file_path=str_path, action="modify")
+
+    if not result.success:
+        return result
+
+    # Replace (exactly 1 match guaranteed)
+    start, end = result.match_offsets[0]
+    new_content = content[:start] + replace_block + content[end:]
+
+    # Preserve file mode bits
+    mode_bits = file_path.stat().st_mode
+
+    file_path.write_text(new_content, encoding="utf-8")
+
+    # Reapply mode
+    os.chmod(file_path, stat.S_IMODE(mode_bits))
+
+    return result
+
+
+def apply_create(file_path: Path, content: str) -> FileMatchResult:
+    """Create a new file. Fails if file already exists."""
+    str_path = str(file_path)
+
+    if file_path.exists():
+        return FileMatchResult(
+            file_path=str_path,
+            action="create",
+            success=False,
+            error=f"File already exists: {str_path}",
+        )
+
+    # Create parent directories if needed
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Canonicalize line endings on write
+    content = canonicalize(content)
+    file_path.write_text(content, encoding="utf-8")
+
+    return FileMatchResult(
+        file_path=str_path,
+        action="create",
+        success=True,
+        match_count=0,
+    )
+
+
+def apply_delete(file_path: Path) -> FileMatchResult:
+    """Delete a file. Fails if file doesn't exist."""
+    str_path = str(file_path)
+
+    if not file_path.exists():
+        return FileMatchResult(
+            file_path=str_path,
+            action="delete",
+            success=False,
+            error=f"File does not exist: {str_path}",
+        )
+
+    file_path.unlink()
+
+    return FileMatchResult(
+        file_path=str_path,
+        action="delete",
+        success=True,
+        match_count=0,
+    )
+
+
+def apply_patch(repo_root: Union[str, Path], patch: FilePatch) -> FileMatchResult:
+    """Apply a single FilePatch. Dispatches by action type.
+
+    Validates path safety via jail_path() first.
+    """
+    repo_root = Path(repo_root)
+
+    try:
+        resolved = jail_path(patch.file_path, repo_root)
+    except PathJailError as exc:
+        return FileMatchResult(
+            file_path=patch.file_path,
+            action=patch.action,
+            success=False,
+            error=str(exc),
+        )
+
+    if patch.action == "modify":
+        return apply_modify(resolved, patch.search_block, patch.replace_block)
+    elif patch.action == "create":
+        return apply_create(resolved, patch.replace_block)
+    elif patch.action == "delete":
+        return apply_delete(resolved)
+    else:
+        return FileMatchResult(
+            file_path=patch.file_path,
+            action=patch.action,
+            success=False,
+            error=f"Unknown action: {patch.action}",
+        )
+
+```
+
+## `core/patch/engine.py`
+
+```python
+# core/patch/engine.py — Top-level PatchEngine orchestrator
+
+from pathlib import Path
+from typing import Optional, Tuple
+
+from core.contracts.schemas import PatchSet
+from core.patch.applicator import apply_patch
+from core.patch.matcher import canonicalize, match_file
+from core.patch.models import FileMatchResult, PatchResult
+from core.patch.worktree import PatchWorktree
+
+
+class PatchEngine:
+    """Orchestrates patch validation, application, and worktree lifecycle.
+
+    Stateful: tracks the active worktree. State survives process restart
+    via PatchWorktree's active.json file.
+    """
+
+    def __init__(self, repo_path: str, subprocess_runner=None):
+        self._repo_path = repo_path
+        self._subprocess_runner = subprocess_runner
+        self._worktree = PatchWorktree(repo_path, subprocess_runner)
+
+    def validate(self, patch_set: PatchSet) -> PatchResult:
+        """Dry-run: match all patches without writing.
+
+        For modify patches, reads file and checks for exact match.
+        For create patches, checks file doesn't exist.
+        For delete patches, checks file exists.
+        """
+        file_results = []
+        all_success = True
+
+        for patch in patch_set.patches:
+            if patch.action == "modify":
+                file_path = Path(self._repo_path) / patch.file_path
+                if not file_path.exists():
+                    result = FileMatchResult(
+                        file_path=patch.file_path,
+                        action="modify",
+                        success=False,
+                        error=f"File does not exist: {patch.file_path}",
+                    )
+                else:
+                    content = file_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    content = canonicalize(content)
+                    result = match_file(
+                        content, patch.search_block,
+                        file_path=patch.file_path, action="modify",
+                    )
+            elif patch.action == "create":
+                file_path = Path(self._repo_path) / patch.file_path
+                if file_path.exists():
+                    result = FileMatchResult(
+                        file_path=patch.file_path,
+                        action="create",
+                        success=False,
+                        error=f"File already exists: {patch.file_path}",
+                    )
+                else:
+                    result = FileMatchResult(
+                        file_path=patch.file_path,
+                        action="create",
+                        success=True,
+                    )
+            elif patch.action == "delete":
+                file_path = Path(self._repo_path) / patch.file_path
+                if not file_path.exists():
+                    result = FileMatchResult(
+                        file_path=patch.file_path,
+                        action="delete",
+                        success=False,
+                        error=f"File does not exist: {patch.file_path}",
+                    )
+                else:
+                    result = FileMatchResult(
+                        file_path=patch.file_path,
+                        action="delete",
+                        success=True,
+                    )
+            else:
+                result = FileMatchResult(
+                    file_path=patch.file_path,
+                    action=patch.action,
+                    success=False,
+                    error=f"Unknown action: {patch.action}",
+                )
+
+            if not result.success:
+                all_success = False
+            file_results.append(result)
+
+        return PatchResult(success=all_success, file_results=file_results)
+
+    def apply(
+        self, patch_set: PatchSet, use_worktree: bool = True
+    ) -> PatchResult:
+        """Apply all patches. Optionally in a git worktree.
+
+        On any file failure: stop, leave worktree intact for diagnostics.
+        """
+        worktree_path = ""
+
+        if use_worktree:
+            worktree_path = self._worktree.create()
+            apply_root = worktree_path
+        else:
+            apply_root = self._repo_path
+
+        file_results = []
+        all_success = True
+
+        for patch in patch_set.patches:
+            result = apply_patch(apply_root, patch)
+            file_results.append(result)
+            if not result.success:
+                all_success = False
+                break  # Stop at first failure
+
+        return PatchResult(
+            success=all_success,
+            file_results=file_results,
+            worktree_path=worktree_path,
+        )
+
+    def diff(self) -> str:
+        """Return real git diff from the active worktree."""
+        rc, out, err = self._worktree.diff()
+        if rc != 0:
+            return f"diff failed: {err}"
+        return out
+
+    def merge(self, message: str = "") -> Tuple[int, str, str]:
+        """Merge the active worktree branch back."""
+        return self._worktree.merge_back(message=message)
+
+    def rollback(self) -> None:
+        """Discard the active worktree."""
+        self._worktree.discard()
+
+    def status(self) -> dict:
+        """Report engine state."""
+        return {
+            "worktree_active": self._worktree.active,
+            "worktree_path": self._worktree.path or "",
+            "worktree_branch": self._worktree.branch or "",
+            "repo_path": self._repo_path,
+        }
+
+```
+
+## `core/patch/matcher.py`
+
+```python
+# core/patch/matcher.py — Exact matching + similarity search narrowing pipeline
+
+import difflib
+import hashlib
+import re
+from typing import List, Tuple
+
+from core.patch.models import FileMatchResult, SimilarRegion
+
+
+def canonicalize(text: str) -> str:
+    """Normalize \\r\\n → \\n. No other transformations."""
+    return text.replace("\r\n", "\n")
+
+
+def find_exact_matches(content: str, search_block: str) -> List[Tuple[int, int]]:
+    """Find all exact occurrences of search_block in content.
+
+    Returns list of (start_byte, end_byte) tuples.
+    """
+    if not search_block:
+        return []
+    offsets = []
+    start = 0
+    while True:
+        idx = content.find(search_block, start)
+        if idx == -1:
+            break
+        offsets.append((idx, idx + len(search_block)))
+        start = idx + 1
+    return offsets
+
+
+def compute_context_hash(content: str, offset: int, window: int = 5) -> str:
+    """SHA256 of ±window lines around the byte offset."""
+    lines = content.split("\n")
+    # Find which line the offset falls on
+    cumulative = 0
+    target_line = 0
+    for i, line in enumerate(lines):
+        line_end = cumulative + len(line)
+        if i < len(lines) - 1:
+            line_end += 1  # account for \n
+        if cumulative <= offset < line_end:
+            target_line = i
+            break
+        cumulative = line_end
+    else:
+        target_line = len(lines) - 1
+
+    start_line = max(0, target_line - window)
+    end_line = min(len(lines), target_line + window + 1)
+    context_text = "\n".join(lines[start_line:end_line])
+    return hashlib.sha256(context_text.encode("utf-8")).hexdigest()
+
+
+def indent_depth(line: str) -> int:
+    """Count leading whitespace as spaces (tabs = 4 spaces)."""
+    count = 0
+    for ch in line:
+        if ch == " ":
+            count += 1
+        elif ch == "\t":
+            count += 4
+        else:
+            break
+    return count
+
+
+def find_similar_regions(
+    content: str, search_block: str, max_results: int = 3
+) -> List[SimilarRegion]:
+    """Narrowing pipeline: indent filter → token overlap → edit distance.
+
+    Returns top max_results SimilarRegion objects.
+    """
+    if not search_block.strip():
+        return []
+
+    content_lines = content.split("\n")
+    search_lines = search_block.split("\n")
+    search_len = len(search_lines)
+
+    if not content_lines or search_len == 0:
+        return []
+
+    # Target indent depth from search block's first non-empty line
+    target_indent = 0
+    for sl in search_lines:
+        if sl.strip():
+            target_indent = indent_depth(sl)
+            break
+
+    # Generate sliding windows of search_len and ±1, ±2 lines
+    window_sizes = set()
+    for delta in range(-2, 3):
+        ws = search_len + delta
+        if ws >= 1:
+            window_sizes.add(ws)
+
+    # Collect candidate windows: (line_start_0indexed, line_end_0indexed, text)
+    candidates = []
+    for ws in sorted(window_sizes):
+        for start in range(len(content_lines) - ws + 1):
+            end = start + ws
+            window_lines = content_lines[start:end]
+            # Find first non-empty line indent
+            win_indent = 0
+            for wl in window_lines:
+                if wl.strip():
+                    win_indent = indent_depth(wl)
+                    break
+            # Filter: indent matches ±1 level (4 spaces)
+            if abs(win_indent - target_indent) <= 4:
+                candidates.append((start, end, window_lines, win_indent))
+
+    # Hard cap at 200 candidates (stable file order)
+    candidates = candidates[:200]
+
+    if not candidates:
+        return []
+
+    # Score by token overlap
+    search_tokens = set(re.findall(r"\w+", search_block))
+
+    scored = []
+    for start, end, window_lines, win_indent in candidates:
+        window_text = "\n".join(window_lines)
+        window_tokens = set(re.findall(r"\w+", window_text))
+        if not search_tokens:
+            overlap = 0.0
+        else:
+            overlap = len(search_tokens & window_tokens) / len(search_tokens)
+        scored.append((overlap, start, end, window_lines, win_indent, window_text))
+
+    # Top 30 by token overlap (stable tie-break by file position)
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    top30 = scored[:30]
+
+    # Compute SequenceMatcher ratio on top 30
+    results = []
+    for overlap, start, end, window_lines, win_indent, window_text in top30:
+        ratio = difflib.SequenceMatcher(None, search_block, window_text).ratio()
+        results.append(SimilarRegion(
+            line_start=start + 1,  # 1-indexed
+            line_end=end,          # 1-indexed inclusive
+            content=window_text,
+            similarity=ratio,
+            indent_depth=win_indent,
+        ))
+
+    # Sort by similarity descending, tie-break by line position
+    results.sort(key=lambda r: (-r.similarity, r.line_start))
+    return results[:max_results]
+
+
+def match_file(
+    content: str, search_block: str, file_path: str = "", action: str = "modify"
+) -> FileMatchResult:
+    """Orchestrate matching: try exact, on failure run similarity."""
+    content = canonicalize(content)
+    search_block = canonicalize(search_block)
+
+    offsets = find_exact_matches(content, search_block)
+
+    if len(offsets) == 1:
+        # Exactly 1 match — success
+        context_hash = compute_context_hash(content, offsets[0][0])
+        return FileMatchResult(
+            file_path=file_path,
+            action=action,
+            success=True,
+            match_count=1,
+            match_offsets=offsets,
+            context_hashes=[context_hash],
+        )
+    elif len(offsets) == 0:
+        # Zero matches — run similarity search
+        similar = find_similar_regions(content, search_block)
+        return FileMatchResult(
+            file_path=file_path,
+            action=action,
+            success=False,
+            match_count=0,
+            similar_regions=similar,
+            error="No exact match found",
+        )
+    else:
+        # Multiple matches — return all offsets + hashes
+        context_hashes = [
+            compute_context_hash(content, off[0]) for off in offsets
+        ]
+        return FileMatchResult(
+            file_path=file_path,
+            action=action,
+            success=False,
+            match_count=len(offsets),
+            match_offsets=offsets,
+            context_hashes=context_hashes,
+            error=f"Ambiguous: {len(offsets)} matches found",
+        )
+
+```
+
+## `core/patch/models.py`
+
+```python
+# core/patch/models.py — Internal result models for the patch engine
+
+from dataclasses import dataclass, field
+from typing import List, Tuple
+
+
+@dataclass
+class SimilarRegion:
+    """A region of a file that is similar to a SEARCH block."""
+    line_start: int          # 1-indexed
+    line_end: int            # 1-indexed, inclusive
+    content: str             # the actual text of the region
+    similarity: float        # 0.0–1.0 (SequenceMatcher ratio)
+    indent_depth: int        # spaces of first non-empty line
+
+
+@dataclass
+class FileMatchResult:
+    """Result of matching/applying a single FilePatch."""
+    file_path: str
+    action: str              # "modify", "create", "delete"
+    success: bool
+    match_count: int = 0
+    match_offsets: List[Tuple[int, int]] = field(default_factory=list)
+    context_hashes: List[str] = field(default_factory=list)
+    similar_regions: List[SimilarRegion] = field(default_factory=list)
+    error: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "file_path": self.file_path,
+            "action": self.action,
+            "success": self.success,
+            "match_count": self.match_count,
+            "match_offsets": self.match_offsets,
+            "context_hashes": self.context_hashes,
+            "similar_regions": [
+                {
+                    "line_start": r.line_start,
+                    "line_end": r.line_end,
+                    "content": r.content,
+                    "similarity": r.similarity,
+                    "indent_depth": r.indent_depth,
+                }
+                for r in self.similar_regions
+            ],
+            "error": self.error,
+        }
+
+
+@dataclass
+class PatchResult:
+    """Aggregate result of applying a PatchSet."""
+    success: bool
+    file_results: List[FileMatchResult] = field(default_factory=list)
+    worktree_path: str = ""
+    diff: str = ""
+    error: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "success": self.success,
+            "file_results": [r.to_dict() for r in self.file_results],
+            "worktree_path": self.worktree_path,
+            "diff": self.diff,
+            "error": self.error,
+        }
+
+```
+
+## `core/patch/parser.py`
+
+```python
+# core/patch/parser.py — Extract SEARCH/REPLACE blocks from LLM text output
+
+import re
+from typing import List
+
+from core.contracts.schemas import FilePatch
+
+
+class ParseError(Exception):
+    """Raised on malformed patch blocks."""
+
+
+def _validate_path(file_path: str) -> None:
+    """Reject absolute paths and traversal attempts."""
+    stripped = file_path.strip()
+    if not stripped:
+        raise ParseError("Empty file path")
+    if stripped.startswith("/") or stripped.startswith("\\"):
+        raise ParseError(f"Absolute path rejected: {stripped}")
+    # Check for .. components (covers ../, ..\, standalone ..)
+    parts = re.split(r"[/\\]", stripped)
+    for part in parts:
+        if part == "..":
+            raise ParseError(f"Path traversal rejected: {stripped}")
+
+
+def parse_patch_text(text: str) -> List[FilePatch]:
+    """Parse LLM text output into a list of FilePatch objects.
+
+    Recognizes three block types:
+
+    Modify (SEARCH/REPLACE):
+        <<<< SEARCH path/to/file.py
+        old code
+        ====
+        new code
+        >>>> REPLACE
+
+    Create:
+        <<<< CREATE path/to/file.py
+        full file content
+        >>>> CREATE
+
+    Delete (single-line):
+        <<<< DELETE path/to/file.py >>>>
+
+    Delimiters are only recognized at the start of a line (after optional
+    leading whitespace). Returns List[FilePatch].
+    """
+    if not text or not text.strip():
+        return []
+
+    patches: List[FilePatch] = []
+    lines = text.split("\n")
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+
+        # --- DELETE (single-line format) ---
+        delete_match = re.match(
+            r"<{4}\s+DELETE\s+(.+?)\s*>{4}\s*$", stripped
+        )
+        if delete_match:
+            file_path = delete_match.group(1).strip()
+            _validate_path(file_path)
+            patches.append(FilePatch(
+                file_path=file_path,
+                action="delete",
+            ))
+            i += 1
+            continue
+
+        # --- SEARCH block ---
+        search_match = re.match(r"<{4}\s+SEARCH\s+(.+)$", stripped)
+        if search_match:
+            file_path = search_match.group(1).strip()
+            if not file_path:
+                raise ParseError(f"SEARCH block with no file path at line {i + 1}")
+            _validate_path(file_path)
+            i += 1
+
+            # Collect search block lines until ====
+            search_lines: List[str] = []
+            found_separator = False
+            while i < len(lines):
+                sep_stripped = lines[i].lstrip()
+                if re.match(r"={4}\s*$", sep_stripped):
+                    found_separator = True
+                    i += 1
+                    break
+                search_lines.append(lines[i])
+                i += 1
+
+            if not found_separator:
+                raise ParseError(
+                    f"Unclosed SEARCH block for {file_path}: missing ==== separator"
+                )
+
+            # Collect replace block lines until >>>> REPLACE
+            replace_lines: List[str] = []
+            found_end = False
+            while i < len(lines):
+                end_stripped = lines[i].lstrip()
+                if re.match(r">{4}\s+REPLACE\s*$", end_stripped):
+                    found_end = True
+                    i += 1
+                    break
+                replace_lines.append(lines[i])
+                i += 1
+
+            if not found_end:
+                raise ParseError(
+                    f"Unclosed SEARCH block for {file_path}: missing >>>> REPLACE"
+                )
+
+            search_block = "\n".join(search_lines)
+            replace_block = "\n".join(replace_lines)
+
+            if not search_block and not search_block == "":
+                pass  # Empty search is an error handled below
+
+            patches.append(FilePatch(
+                file_path=file_path,
+                search_block=search_block,
+                replace_block=replace_block,
+                action="modify",
+            ))
+            continue
+
+        # --- CREATE block ---
+        create_match = re.match(r"<{4}\s+CREATE\s+(.+)$", stripped)
+        if create_match:
+            file_path = create_match.group(1).strip()
+            if not file_path:
+                raise ParseError(f"CREATE block with no file path at line {i + 1}")
+            _validate_path(file_path)
+            i += 1
+
+            content_lines: List[str] = []
+            found_end = False
+            while i < len(lines):
+                end_stripped = lines[i].lstrip()
+                if re.match(r">{4}\s+CREATE\s*$", end_stripped):
+                    found_end = True
+                    i += 1
+                    break
+                content_lines.append(lines[i])
+                i += 1
+
+            if not found_end:
+                raise ParseError(
+                    f"Unclosed CREATE block for {file_path}: missing >>>> CREATE"
+                )
+
+            content = "\n".join(content_lines)
+            patches.append(FilePatch(
+                file_path=file_path,
+                replace_block=content,
+                action="create",
+            ))
+            continue
+
+        # Not a delimiter line — skip (commentary/prose)
+        i += 1
+
+    return patches
+
+```
+
+## `core/patch/worktree.py`
+
+```python
+# core/patch/worktree.py — Git worktree lifecycle management
+
+import json
+import shlex
+import uuid
+from pathlib import Path
+from typing import Optional, Tuple
+
+from core.tools.executor import run_subprocess
+
+
+class PatchWorktree:
+    """Manages a git worktree for atomic patch application.
+
+    One worktree per PatchSet. Cross-file changes land together.
+    State persisted via .judais-lobi/worktrees/active.json for crash recovery.
+    """
+
+    def __init__(self, repo_path: str, subprocess_runner=None):
+        self._repo_path = repo_path
+        self._subprocess_runner = subprocess_runner
+        self._worktree_path: Optional[str] = None
+        self._branch_name: Optional[str] = None
+        # Attempt state recovery from disk
+        self._recover_state()
+
+    def _state_file(self) -> Path:
+        return Path(self._repo_path) / ".judais-lobi" / "worktrees" / "active.json"
+
+    def _recover_state(self) -> None:
+        """Recover worktree state from active.json if it exists."""
+        state_file = self._state_file()
+        if state_file.exists():
+            try:
+                data = json.loads(state_file.read_text(encoding="utf-8"))
+                self._worktree_path = data.get("worktree_path")
+                self._branch_name = data.get("branch_name")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    def _write_state(self) -> None:
+        """Persist worktree state to active.json."""
+        state_file = self._state_file()
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        import datetime
+        data = {
+            "worktree_path": self._worktree_path,
+            "branch_name": self._branch_name,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        state_file.write_text(json.dumps(data), encoding="utf-8")
+
+    def _delete_state(self) -> None:
+        """Remove active.json."""
+        state_file = self._state_file()
+        if state_file.exists():
+            state_file.unlink()
+
+    def _run(self, cmd: str, cwd: Optional[str] = None,
+             timeout: int = 30) -> Tuple[int, str, str]:
+        """Run a git command via run_subprocess."""
+        if cwd:
+            cmd = f"cd {shlex.quote(cwd)} && {cmd}"
+        return run_subprocess(
+            cmd, shell=True, timeout=timeout,
+            subprocess_runner=self._subprocess_runner,
+        )
+
+    def create(self, name: str = None) -> str:
+        """Create a new git worktree for patch application.
+
+        Returns the worktree path.
+        """
+        if self._worktree_path:
+            raise RuntimeError("Worktree already active; discard or merge first")
+
+        if name is None:
+            name = uuid.uuid4().hex[:12]
+
+        branch_name = f"patch-{name}"
+        wt_dir = Path(self._repo_path) / ".judais-lobi" / "worktrees" / name
+        wt_path = str(wt_dir)
+
+        # Ensure parent directory exists
+        wt_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        rc, out, err = self._run(
+            f"git worktree add -b {shlex.quote(branch_name)} "
+            f"{shlex.quote(wt_path)} HEAD",
+            cwd=self._repo_path,
+        )
+        if rc != 0:
+            raise RuntimeError(f"git worktree add failed: {err}")
+
+        self._worktree_path = wt_path
+        self._branch_name = branch_name
+        self._write_state()
+
+        return wt_path
+
+    def discard(self) -> Tuple[int, str, str]:
+        """Discard the active worktree and delete its branch."""
+        if not self._worktree_path:
+            return (0, "", "No active worktree")
+
+        wt_path = self._worktree_path
+        branch = self._branch_name
+
+        # Remove worktree
+        rc, out, err = self._run(
+            f"git worktree remove {shlex.quote(wt_path)} --force",
+            cwd=self._repo_path,
+        )
+
+        # Delete branch (ignore failure if already gone)
+        if branch:
+            self._run(
+                f"git branch -D {shlex.quote(branch)}",
+                cwd=self._repo_path,
+            )
+
+        self._worktree_path = None
+        self._branch_name = None
+        self._delete_state()
+
+        return (rc, out, err)
+
+    def merge_back(self, message: str = "") -> Tuple[int, str, str]:
+        """Merge the worktree branch back into the current branch."""
+        if not self._worktree_path:
+            raise RuntimeError("No active worktree to merge")
+
+        branch = self._branch_name
+        wt_path = self._worktree_path
+
+        if not message:
+            message = f"Merge {branch}"
+
+        # Merge from repo root
+        rc, out, err = self._run(
+            f"git merge --no-ff {shlex.quote(branch)} "
+            f"-m {shlex.quote(message)}",
+            cwd=self._repo_path,
+        )
+
+        if rc != 0:
+            return (rc, out, err)
+
+        # Cleanup: remove worktree and branch
+        self._run(
+            f"git worktree remove {shlex.quote(wt_path)}",
+            cwd=self._repo_path,
+        )
+        self._run(
+            f"git branch -D {shlex.quote(branch)}",
+            cwd=self._repo_path,
+        )
+
+        self._worktree_path = None
+        self._branch_name = None
+        self._delete_state()
+
+        return (rc, out, err)
+
+    def diff(self) -> Tuple[int, str, str]:
+        """Run git diff inside the worktree (real git diff, ground truth)."""
+        if not self._worktree_path:
+            return (1, "", "No active worktree")
+
+        return self._run("git diff", cwd=self._worktree_path)
+
+    @property
+    def active(self) -> bool:
+        """True if a worktree is currently active."""
+        return self._worktree_path is not None
+
+    @property
+    def path(self) -> Optional[str]:
+        """Current worktree path."""
+        return self._worktree_path
+
+    @property
+    def branch(self) -> Optional[str]:
+        """Current worktree branch name."""
+        return self._branch_name
 
 ```
 
@@ -8762,6 +13881,8 @@ from core.runtime.backends import (
     LocalBackend,
 )
 from core.runtime.messages import build_system_prompt, build_chat_context
+from core.runtime.context_window import ContextWindowManager, ContextConfig
+from core.runtime.gpu import GPUProfile, detect_gpu_profile
 from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
 
 __all__ = [
@@ -8772,6 +13893,10 @@ __all__ = [
     "LocalBackend",
     "build_system_prompt",
     "build_chat_context",
+    "ContextWindowManager",
+    "ContextConfig",
+    "GPUProfile",
+    "detect_gpu_profile",
     "DEFAULT_MODELS",
     "resolve_provider",
 ]
@@ -8813,6 +13938,8 @@ class BackendCapabilities:
     supports_streaming: bool = True
     supports_json_mode: bool = False
     supports_tool_calls: bool = False
+    max_context_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 
 class Backend(ABC):
@@ -8838,8 +13965,12 @@ from core.runtime.backends.base import Backend, BackendCapabilities
 
 
 class LocalBackend(Backend):
-    def __init__(self, endpoint: str = "http://localhost:8000"):
+    def __init__(self, endpoint: str = "http://localhost:8000",
+                 max_context_tokens: int | None = None,
+                 max_output_tokens: int | None = None):
         self.endpoint = endpoint
+        self._max_context_tokens = max_context_tokens
+        self._max_output_tokens = max_output_tokens
 
     def chat(self, model: str, messages: List[Dict], stream: bool = False):
         raise NotImplementedError(
@@ -8852,6 +13983,8 @@ class LocalBackend(Backend):
             supports_streaming=False,
             supports_json_mode=False,
             supports_tool_calls=False,
+            max_context_tokens=self._max_context_tokens,
+            max_output_tokens=self._max_output_tokens,
         )
 
 ```
@@ -8941,6 +14074,8 @@ class MistralBackend(Backend):
             supports_streaming=True,
             supports_json_mode=True,
             supports_tool_calls=False,
+            max_context_tokens=None,
+            max_output_tokens=None,
         )
 
 ```
@@ -8982,7 +14117,294 @@ class OpenAIBackend(Backend):
             supports_streaming=True,
             supports_json_mode=True,
             supports_tool_calls=True,
+            max_context_tokens=None,
+            max_output_tokens=None,
         )
+
+```
+
+## `core/runtime/context_window.py`
+
+```python
+# core/runtime/context_window.py — Context window tracking + auto-compaction
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+from core.context.formatter import estimate_tokens
+from core.runtime.gpu import GPUProfile, detect_gpu_profile, vram_to_context_cap
+from core.tools.config_loader import load_project_config
+
+
+@dataclass(frozen=True)
+class ModelContextProfile:
+    max_context_tokens: int
+    max_output_tokens: int
+    source: str = "default"
+
+    @property
+    def max_input_tokens(self) -> int:
+        return max(self.max_context_tokens - self.max_output_tokens, 0)
+
+
+@dataclass
+class ContextConfig:
+    max_context_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    max_tool_output_bytes_in_context: int = 32_768
+    min_tail_messages: int = 6
+    max_summary_chars: int = 2400
+    provider_defaults: Dict[str, int] = field(default_factory=dict)
+    model_overrides: Dict[str, int] = field(default_factory=dict)
+
+    @staticmethod
+    def from_project(project_root=None) -> "ContextConfig":
+        cfg = load_project_config(project_root)
+        ctx = cfg.get("context", {}) if isinstance(cfg, dict) else {}
+        return ContextConfig(
+            max_context_tokens=ctx.get("max_context_tokens"),
+            max_output_tokens=ctx.get("max_output_tokens"),
+            max_tool_output_bytes_in_context=int(ctx.get("max_tool_output_bytes_in_context", 32768)),
+            min_tail_messages=int(ctx.get("min_tail_messages", 6)),
+            max_summary_chars=int(ctx.get("max_summary_chars", 2400)),
+            provider_defaults=dict(ctx.get("provider_defaults", {}) or {}),
+            model_overrides=dict(ctx.get("model_overrides", {}) or {}),
+        )
+
+
+DEFAULT_MODEL_CONTEXTS: Dict[str, ModelContextProfile] = {
+    # Conservative defaults; override in .judais-lobi.yml if needed.
+    "gpt-4o": ModelContextProfile(128000, 4096, source="default"),
+    "gpt-4o-mini": ModelContextProfile(128000, 4096, source="default"),
+    "gpt-4.1": ModelContextProfile(128000, 4096, source="default"),
+    "gpt-4.1-mini": ModelContextProfile(128000, 4096, source="default"),
+    "gpt-4-turbo": ModelContextProfile(128000, 4096, source="default"),
+    "gpt-4": ModelContextProfile(8192, 2048, source="default"),
+    "gpt-3.5-turbo": ModelContextProfile(16384, 2048, source="default"),
+    "codestral-latest": ModelContextProfile(32768, 4096, source="default"),
+    "mistral-large-latest": ModelContextProfile(32768, 4096, source="default"),
+}
+
+DEFAULT_PROVIDER_CONTEXTS: Dict[str, int] = {
+    "openai": 128000,
+    "mistral": 32768,
+    "local": 32768,
+}
+
+@dataclass
+class ContextStats:
+    total_tokens: int
+    limit_tokens: int
+    was_compacted: bool
+    summary_tokens: int = 0
+    removed_messages: int = 0
+    profile_source: str = "default"
+
+
+class ContextWindowManager:
+    """Builds a token-bounded message list with optional compaction."""
+
+    def __init__(self, config: Optional[ContextConfig] = None, project_root=None):
+        self._config = config or ContextConfig.from_project(project_root)
+
+    def build_messages(
+        self,
+        system_prompt: str,
+        history: List[Dict[str, str]],
+        invoked_tools: Optional[List[str]],
+        provider: str,
+        model: str,
+        backend_caps=None,
+        gpu_profile: Optional[GPUProfile] = None,
+    ) -> Tuple[List[Dict[str, str]], ContextStats]:
+        from core.runtime.messages import build_chat_context
+
+        messages = build_chat_context(system_prompt, history, invoked_tools)
+        profile = self._resolve_profile(provider, model, backend_caps, gpu_profile)
+        compacted, stats = self._compact(messages, profile)
+        return compacted, stats
+
+    def _resolve_profile(
+        self,
+        provider: str,
+        model: str,
+        backend_caps=None,
+        gpu_profile: Optional[GPUProfile] = None,
+    ) -> ModelContextProfile:
+        cfg = self._config
+        # Backend capabilities override (instance-aware)
+        if backend_caps is not None:
+            max_ctx = getattr(backend_caps, "max_context_tokens", None)
+            max_out = getattr(backend_caps, "max_output_tokens", None)
+            if max_ctx and max_out:
+                return ModelContextProfile(max_ctx, max_out, source="backend")
+
+        # Model overrides from config
+        if cfg.model_overrides and model in cfg.model_overrides:
+            max_ctx = int(cfg.model_overrides[model])
+            max_out = int(cfg.max_output_tokens or 4096)
+            return ModelContextProfile(max_ctx, max_out, source="config")
+
+        # Global config overrides
+        if cfg.max_context_tokens:
+            max_ctx = int(cfg.max_context_tokens)
+            max_out = int(cfg.max_output_tokens or 4096)
+            return ModelContextProfile(max_ctx, max_out, source="config")
+
+        # Default model lookup
+        base = DEFAULT_MODEL_CONTEXTS.get(model, ModelContextProfile(16384, 2048, source="fallback"))
+
+        if model not in DEFAULT_MODEL_CONTEXTS:
+            provider_default = DEFAULT_PROVIDER_CONTEXTS.get(provider)
+            if provider_default:
+                base = ModelContextProfile(provider_default, base.max_output_tokens, source="provider_default")
+
+        # Provider default override
+        if cfg.provider_defaults and provider in cfg.provider_defaults:
+            max_ctx = int(cfg.provider_defaults[provider])
+            max_out = int(cfg.max_output_tokens or base.max_output_tokens)
+            base = ModelContextProfile(max_ctx, max_out, source="provider_default")
+
+        # GPU-aware cap for local inference (or explicit provider)
+        if provider == "local":
+            profile = gpu_profile or detect_gpu_profile()
+            cap = vram_to_context_cap(profile.total_vram_gb)
+            if cap:
+                return ModelContextProfile(min(base.max_context_tokens, cap), base.max_output_tokens, source="gpu_cap")
+
+        return base
+
+    def _compact(
+        self, messages: List[Dict[str, str]], profile: ModelContextProfile
+    ) -> Tuple[List[Dict[str, str]], ContextStats]:
+        limit = profile.max_input_tokens
+        total_tokens = _estimate_messages_tokens(messages)
+        if total_tokens <= limit:
+            return messages, ContextStats(total_tokens, limit, False, profile_source=profile.source)
+
+        if len(messages) <= 2:
+            return messages, ContextStats(total_tokens, limit, False, profile_source=profile.source)
+
+        system = messages[0]
+        tail = messages[1:][-self._config.min_tail_messages :]
+        head = messages[1:-self._config.min_tail_messages]
+        summary = _summarize_messages(head, self._config.max_summary_chars)
+
+        compacted = [system, summary] + tail
+        new_tokens = _estimate_messages_tokens(compacted)
+
+        # Shrink summary until within limit or minimal
+        while new_tokens > limit and len(summary["content"]) > 120:
+            summary["content"] = summary["content"][: max(120, int(len(summary["content"]) * 0.8))] + "…"
+            compacted = [system, summary] + tail
+            new_tokens = _estimate_messages_tokens(compacted)
+
+        stats = ContextStats(
+            total_tokens=new_tokens,
+            limit_tokens=limit,
+            was_compacted=True,
+            summary_tokens=_estimate_messages_tokens([summary]),
+            removed_messages=len(head),
+            profile_source=profile.source,
+        )
+        return compacted, stats
+
+
+def _estimate_messages_tokens(messages: List[Dict[str, str]]) -> int:
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        total += estimate_tokens(content) + 4
+    return total
+
+
+def _summarize_messages(messages: List[Dict[str, str]], max_chars: int) -> Dict[str, str]:
+    lines: List[str] = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = (msg.get("content") or "").strip().replace("\n", " ")
+        snippet = content[:220]
+        if len(content) > 220:
+            snippet += "…"
+        lines.append(f"{role}: {snippet}")
+
+    body = "\n".join(lines)
+    if len(body) > max_chars:
+        body = body[: max_chars - 1] + "…"
+
+    return {
+        "role": "assistant",
+        "content": (
+            "Context summary (auto-compacted for context window):\n"
+            f"{body}"
+        ),
+    }
+
+```
+
+## `core/runtime/gpu.py`
+
+```python
+# core/runtime/gpu.py — GPU profile detection (best-effort)
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import List, Optional
+
+
+@dataclass(frozen=True)
+class GPUProfile:
+    device_count: int = 0
+    total_vram_gb: float = 0.0
+    device_names: List[str] = None
+
+
+def detect_gpu_profile() -> GPUProfile:
+    """Best-effort GPU detection. Returns CPU profile when unavailable."""
+    env = os.getenv("JUDAIS_LOBI_VRAM_GB")
+    if env:
+        try:
+            vram = float(env)
+            return GPUProfile(device_count=1, total_vram_gb=vram, device_names=["env"])
+        except Exception:
+            pass
+
+    try:
+        import torch
+        if torch.cuda.is_available():
+            count = torch.cuda.device_count()
+            names: List[str] = []
+            total = 0.0
+            for idx in range(count):
+                props = torch.cuda.get_device_properties(idx)
+                names.append(getattr(props, "name", f"cuda:{idx}"))
+                total += float(getattr(props, "total_memory", 0)) / (1024 ** 3)
+            return GPUProfile(device_count=count, total_vram_gb=total, device_names=names)
+    except Exception:
+        pass
+
+    return GPUProfile(device_count=0, total_vram_gb=0.0, device_names=[])
+
+
+def vram_to_context_cap(total_vram_gb: float) -> Optional[int]:
+    """Return a conservative context cap based on VRAM size."""
+    if total_vram_gb <= 0:
+        return None
+    if total_vram_gb < 8:
+        return 4096
+    if total_vram_gb < 12:
+        return 8192
+    if total_vram_gb < 24:
+        return 16384
+    if total_vram_gb < 48:
+        return 32768
+    if total_vram_gb < 80:
+        return 65536
+    return 131072
 
 ```
 
@@ -9272,12 +14694,14 @@ from core.tools.descriptors import (
     GIT_DESCRIPTOR,
     VERIFY_DESCRIPTOR,
     REPO_MAP_DESCRIPTOR,
+    PATCH_DESCRIPTOR,
     ToolDescriptor,
 )
 from core.tools.fs_tools import FsTool
 from core.tools.git_tools import GitTool
 from core.tools.verify_tools import VerifyTool
 from core.tools.repo_map_tool import RepoMapTool
+from core.tools.patch_tool import PatchTool
 from core.tools.config_loader import load_project_config
 
 
@@ -9338,6 +14762,10 @@ class Tools:
         # Phase 5: Repo map tool
         repo_map_tool = RepoMapTool()
         self._bus.register(REPO_MAP_DESCRIPTOR, repo_map_tool)
+
+        # Phase 6: Patch engine tool
+        patch_tool = PatchTool()
+        self._bus.register(PATCH_DESCRIPTOR, patch_tool)
 
         if memory:
             rag_tool = RagCrawlerTool(memory)
@@ -9416,15 +14844,17 @@ class Tools:
             arg_summary = ", ".join(map(str, args))
             kwarg_summary = ", ".join(f"{k}={v}" for k, v in kwargs.items() if k != "elf")
             arg_text = "; ".join(filter(None, [arg_summary, kwarg_summary]))
-            result_str = str(result)
-            if len(result_str) > 500:
-                result_str = result_str[:500] + "..."
+            from core.runtime.context_window import ContextConfig
+            from core.tools.tool_output import build_tool_output_record
+
+            ctx = ContextConfig.from_project()
+            max_bytes = int(getattr(ctx, "max_tool_output_bytes_in_context", 32768))
+            record = build_tool_output_record(name, result, max_bytes=max_bytes)
             elf.history.append({
                 "role": "assistant",
                 "content": (
-                    f"(Tool used: {name})\n"
-                    f"Args: {arg_text or 'none'}\n"
-                    f"Result (truncated):\n{result_str}"
+                    f"{record.summary}\n"
+                    f"Args: {arg_text or 'none'}"
                 )
             })
         return result
@@ -9850,6 +15280,7 @@ class CapabilityEngine:
         self._policy = policy or PolicyPack()
         self._grants: List[PermissionGrant] = []
         self._current_profile: Optional[str] = None
+        self._scope_constraints: Optional[set] = None
 
     @property
     def policy(self) -> PolicyPack:
@@ -9879,6 +15310,9 @@ class CapabilityEngine:
         invocation_grants_to_consume = []
 
         for scope in required_scopes:
+            if self._scope_constraints is not None and scope not in self._scope_constraints:
+                denied.append(scope)
+                continue
             if self._is_scope_in_policy(scope):
                 continue
             grant = self._find_active_grant(tool_name, scope)
@@ -9903,9 +15337,28 @@ class CapabilityEngine:
 
     def is_scope_granted(self, tool_name: str, scope: str) -> bool:
         """Check if a single scope is granted (by policy or active grant)."""
+        if self._scope_constraints is not None and scope not in self._scope_constraints:
+            return False
         if self._is_scope_in_policy(scope):
             return True
         return self._find_active_grant(tool_name, scope) is not None
+
+    def set_scope_constraints(self, scopes: Optional[List[str]]) -> None:
+        """Set an allowlist of scopes to intersect with policy/grants."""
+        if scopes is None:
+            self._scope_constraints = None
+            return
+        self._scope_constraints = set(scopes)
+
+    def clear_scope_constraints(self) -> None:
+        """Clear any scope constraints."""
+        self._scope_constraints = None
+
+    @property
+    def scope_constraints(self) -> Optional[List[str]]:
+        if self._scope_constraints is None:
+            return None
+        return list(self._scope_constraints)
 
     def list_active_grants(self) -> List[PermissionGrant]:
         """Return all non-expired grants."""
@@ -10178,6 +15631,24 @@ REPO_MAP_DESCRIPTOR = ToolDescriptor(
     description="Repository map: build, excerpt (task-scoped), status, visualize (DOT/Mermaid).",
 )
 
+# ---------------------------------------------------------------------------
+# Phase 6: Patch engine tool
+# ---------------------------------------------------------------------------
+
+PATCH_DESCRIPTOR = ToolDescriptor(
+    tool_name="patch",
+    required_scopes=["fs.read", "fs.write", "git.read", "git.write"],
+    action_scopes={
+        "validate": ["fs.read"],
+        "apply":    ["fs.read", "fs.write", "git.write"],
+        "diff":     ["fs.read", "git.read"],
+        "rollback": ["git.write"],
+        "merge":    ["git.write"],
+        "status":   ["fs.read", "git.read"],
+    },
+    description="Patch engine: validate, apply, diff, rollback, merge, status.",
+)
+
 # All pre-built descriptors for iteration
 ALL_DESCRIPTORS = [
     SHELL_DESCRIPTOR,
@@ -10191,6 +15662,7 @@ ALL_DESCRIPTORS = [
     GIT_DESCRIPTOR,
     VERIFY_DESCRIPTOR,
     REPO_MAP_DESCRIPTOR,
+    PATCH_DESCRIPTOR,
 ]
 
 ```
@@ -10540,6 +16012,86 @@ class InstallProjectTool(RunSubprocessTool):
 
 ```
 
+## `core/tools/patch_tool.py`
+
+```python
+# core/tools/patch_tool.py — ToolBus-compatible multi-action patch tool
+
+import json
+from typing import Tuple
+
+from core.contracts.schemas import PatchSet
+from core.patch.engine import PatchEngine
+
+
+class PatchTool:
+    """Patch engine tool. Action-based dispatch.
+
+    Actions: validate, apply, diff, merge, rollback, status.
+    All actions return (exit_code, stdout, stderr).
+    JSON stdout for machine-friendly kernel orchestration.
+    exit_code=0 only on success.
+    """
+
+    def __init__(self, repo_path: str = ".", subprocess_runner=None):
+        self._engine = PatchEngine(repo_path, subprocess_runner)
+
+    def __call__(self, action: str, **kwargs) -> Tuple[int, str, str]:
+        handler = getattr(self, f"_do_{action}", None)
+        if handler is None:
+            return (1, "", f"Unknown patch action: {action}")
+        try:
+            return handler(**kwargs)
+        except Exception as exc:
+            return (1, "", f"{type(exc).__name__}: {exc}")
+
+    def _parse_patch_set(self, patch_set_json: str) -> PatchSet:
+        """Parse JSON string into PatchSet."""
+        data = json.loads(patch_set_json)
+        return PatchSet(**data)
+
+    def _do_validate(self, *, patch_set_json: str = "", **kw) -> Tuple[int, str, str]:
+        """Dry-run match check."""
+        patch_set = self._parse_patch_set(patch_set_json)
+        result = self._engine.validate(patch_set)
+        stdout = json.dumps(result.to_dict())
+        return (0 if result.success else 1, stdout, "")
+
+    def _do_apply(
+        self, *, patch_set_json: str = "", use_worktree: bool = True, **kw
+    ) -> Tuple[int, str, str]:
+        """Apply patches, optionally in a worktree."""
+        patch_set = self._parse_patch_set(patch_set_json)
+        result = self._engine.apply(patch_set, use_worktree=use_worktree)
+        stdout = json.dumps(result.to_dict())
+        return (0 if result.success else 1, stdout, "")
+
+    def _do_diff(self, **kw) -> Tuple[int, str, str]:
+        """Return real git diff from active worktree."""
+        diff_text = self._engine.diff()
+        if diff_text.startswith("diff failed:"):
+            return (1, "", diff_text)
+        return (0, diff_text, "")
+
+    def _do_merge(self, *, message: str = "", **kw) -> Tuple[int, str, str]:
+        """Merge active worktree back."""
+        rc, out, err = self._engine.merge(message=message)
+        status = json.dumps({"merged": rc == 0, "output": out})
+        return (rc, status, err)
+
+    def _do_rollback(self, **kw) -> Tuple[int, str, str]:
+        """Discard active worktree."""
+        self._engine.rollback()
+        status = json.dumps({"rolled_back": True})
+        return (0, status, "")
+
+    def _do_status(self, **kw) -> Tuple[int, str, str]:
+        """Report engine state."""
+        info = self._engine.status()
+        return (0, json.dumps(info), "")
+
+```
+
 ## `core/tools/rag_crawler.py`
 
 ```python
@@ -10549,9 +16101,9 @@ class InstallProjectTool(RunSubprocessTool):
 from pathlib import Path
 from typing import Optional, List, Dict
 from core.tools.tool import Tool
-from core.memory.memory import UnifiedMemory
+from core.memory.memory import UnifiedMemory, _make_index
 from openai import OpenAI
-import faiss, numpy as np, hashlib, time
+import numpy as np, hashlib, time
 
 # optional deps
 try:
@@ -10671,7 +16223,7 @@ class RagCrawlerTool(Tool):
                 )
                 cid = cur.lastrowid
                 if self.memory.rag_index is None:
-                    self.memory.rag_index = faiss.IndexFlatIP(len(emb))
+                    self.memory.rag_index = _make_index(len(emb))
                 self.memory.rag_index.add(emb.reshape(1, -1))
                 self.memory.rag_id_map.append(cid)
                 added_chunks.append({"file": file_abs, "chunk": i, "content": c})
@@ -11347,6 +16899,81 @@ class Tool(ABC):
         }
 
 
+
+```
+
+## `core/tools/tool_output.py`
+
+```python
+# core/tools/tool_output.py — Tool output handling + log persistence
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional, Tuple
+
+
+@dataclass(frozen=True)
+class ToolOutputRecord:
+    summary: str
+    output_bytes: int
+    stored_path: Optional[Path] = None
+
+
+def build_tool_output_record(
+    tool_name: str,
+    result: Any,
+    max_bytes: int,
+    log_root: Optional[Path] = None,
+) -> ToolOutputRecord:
+    rc, stdout, stderr = _normalize_result(result)
+    output = _combine_output(stdout, stderr)
+    size = len(output.encode("utf-8", errors="ignore"))
+
+    if size > max_bytes:
+        path = _write_log(output, tool_name, log_root)
+        summary = (
+            f"(Tool used: {tool_name})\n"
+            f"Exit code: {rc}\n"
+            f"Output exceeded budget ({size} bytes).\n"
+            f"Full log at: {path}\n"
+            "Use targeted retrieval (grep, tail, symbol lookup) to inspect details."
+        )
+        return ToolOutputRecord(summary=summary, output_bytes=size, stored_path=path)
+
+    summary = (
+        f"(Tool used: {tool_name})\n"
+        f"Exit code: {rc}\n"
+        f"Output ({size} bytes):\n{output}"
+    )
+    return ToolOutputRecord(summary=summary, output_bytes=size)
+
+
+def _normalize_result(result: Any) -> Tuple[int, str, str]:
+    if isinstance(result, tuple) and len(result) == 3:
+        rc, out, err = result
+        return int(rc), str(out or ""), str(err or "")
+    return 0, str(result or ""), ""
+
+
+def _combine_output(stdout: str, stderr: str) -> str:
+    if stderr and stdout:
+        return f"{stdout}\n\n[stderr]\n{stderr}"
+    if stderr:
+        return f"[stderr]\n{stderr}"
+    return stdout
+
+
+def _write_log(output: str, tool_name: str, log_root: Optional[Path]) -> Path:
+    root = log_root or (Path.cwd() / ".judais-lobi" / "tool_logs")
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"{stamp}_{tool_name}.log"
+    path = root / filename
+    path.write_text(output, encoding="utf-8")
+    return path
 
 ```
 
@@ -12480,6 +18107,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: tests requiring real git (skip with -m 'not integration')",
+]
 
 ```
 
@@ -12552,6 +18182,12 @@ setup(
     ],
     extras_require={
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
+        "critic": [
+            "anthropic>=0.30.0",
+            "google-generativeai>=0.7.0",
+            "keyring>=25.0.0",
+            "pyyaml>=6.0",
+        ],
         "treesitter": [
             "tree-sitter>=0.23.0",
             "tree-sitter-c>=0.21.0",
@@ -12707,8 +18343,16 @@ def fake_tools():
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
     """Remove API keys and provider env vars so tests never make real calls."""
-    for var in ("OPENAI_API_KEY", "MISTRAL_API_KEY", "ELF_PROVIDER"):
+    for var in (
+        "OPENAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "ELF_PROVIDER",
+    ):
         monkeypatch.delenv(var, raising=False)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -12813,6 +18457,28 @@ def god_mode_session(audit_logger):
     """GodModeSession with temp audit logger."""
     from core.policy.god_mode import GodModeSession
     return GodModeSession(audit_logger)
+
+
+# ---------------------------------------------------------------------------
+# Critic fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def critic_config():
+    from core.critic.config import CriticConfig
+    return CriticConfig(enabled=True)
+
+
+@pytest.fixture
+def disabled_critic_config():
+    from core.critic.config import CriticConfig
+    return CriticConfig(enabled=False)
+
+
+@pytest.fixture
+def critic_keystore():
+    from core.critic.keystore import CriticKeystore
+    return CriticKeystore()
 
 ```
 
@@ -14130,6 +19796,269 @@ class TestBusAuditLogging:
 
 ```
 
+## `tests/test_campaign_contracts.py`
+
+```python
+# tests/test_campaign_contracts.py — Tests for campaign contracts
+
+from core.contracts.campaign import CampaignPlan, MissionStep, CampaignLimits, ArtifactRef, StepPlan
+
+
+def test_campaign_plan_roundtrip():
+    step = MissionStep(
+        step_id="s1",
+        description="do thing",
+        target_workflow="coding",
+        capabilities_required=["fs.read"],
+        success_criteria="done",
+    )
+    plan = CampaignPlan(
+        campaign_id="c1",
+        objective="obj",
+        assumptions=["a"],
+        steps=[step],
+    )
+    data = plan.model_dump()
+    plan2 = CampaignPlan.model_validate(data)
+    assert plan2.campaign_id == "c1"
+    assert plan2.steps[0].step_id == "s1"
+
+
+def test_step_plan_digest():
+    ref = ArtifactRef(step_id="s0", artifact_name="out.txt")
+    step = StepPlan(
+        step_id="s1",
+        workflow_id="coding",
+        objective="obj",
+        inputs=[ref],
+        outputs_expected=[ArtifactRef(step_id="s1", artifact_name="out2.txt")],
+        capabilities_required=["fs.read"],
+        success_criteria=["ok"],
+    )
+    assert step.digest
+
+```
+
+## `tests/test_campaign_orchestrator.py`
+
+```python
+# tests/test_campaign_orchestrator.py — Tests for CampaignOrchestrator
+
+from core.campaign.orchestrator import CampaignOrchestrator
+from core.contracts.campaign import CampaignPlan, MissionStep, ArtifactRef
+from core.kernel.orchestrator import PhaseResult
+
+
+class StubDispatcher:
+    def dispatch(self, phase, state):
+        return PhaseResult(success=True)
+
+
+def dispatcher_factory(step):
+    return StubDispatcher()
+
+
+def test_campaign_orchestrator_runs(tmp_path):
+    steps = [
+        MissionStep(
+            step_id="s1",
+            description="step1",
+            target_workflow="coding",
+            capabilities_required=["fs.read"],
+            success_criteria="done",
+            exports=["out.txt"],
+        ),
+        MissionStep(
+            step_id="s2",
+            description="step2",
+            target_workflow="coding",
+            capabilities_required=["fs.read"],
+            success_criteria="done",
+            inputs_from=["s1"],
+            handoff_artifacts=[ArtifactRef(step_id="s1", artifact_name="out.txt")],
+        ),
+    ]
+    plan = CampaignPlan(
+        campaign_id="camp",
+        objective="obj",
+        assumptions=[],
+        steps=steps,
+    )
+
+    orch = CampaignOrchestrator(dispatcher_factory, base_dir=tmp_path)
+    state = orch.run(plan, auto_approve=True)
+    assert state.status == "completed"
+    assert (tmp_path / "sessions" / "camp" / "steps" / "s1").exists()
+
+```
+
+## `tests/test_campaign_planner.py`
+
+```python
+# tests/test_campaign_planner.py — Tests for campaign planner
+
+from core.campaign.planner import draft_campaign_plan
+
+
+def test_draft_campaign_plan_parses():
+    def chat_fn(messages):
+        return """{
+            \"campaign_id\": \"c1\",
+            \"objective\": \"obj\",
+            \"assumptions\": [],
+            \"steps\": [
+                {
+                    \"step_id\": \"s1\",
+                    \"description\": \"do\",
+                    \"target_workflow\": \"coding\",
+                    \"capabilities_required\": [\"fs.read\"],
+                    \"capabilities_optional\": [],
+                    \"risk_flags\": [],
+                    \"inputs_from\": [],
+                    \"handoff_artifacts\": [],
+                    \"exports\": [\"out.txt\"],
+                    \"success_criteria\": \"done\",
+                    \"budget_overrides\": {}
+                }
+            ],
+            \"limits\": {\"max_steps\": 10}
+        }"""
+
+    plan = draft_campaign_plan(
+        mission="test",
+        chat_fn=chat_fn,
+        available_workflows=["coding"],
+        max_attempts=1,
+    )
+    assert plan.campaign_id == "c1"
+    assert plan.steps[0].step_id == "s1"
+
+```
+
+## `tests/test_campaign_scope.py`
+
+```python
+# tests/test_campaign_scope.py — Tests for effective scope intersection
+
+from core.campaign.scope import compute_effective_scopes
+from core.kernel.workflows import get_coding_workflow
+
+
+def test_effective_scopes_intersection():
+    workflow = get_coding_workflow()
+    step_scopes = ["fs.read"]
+    effective = compute_effective_scopes(workflow, step_scopes, "PLAN")
+    assert "fs.read" in effective
+    assert "git.read" not in effective
+
+```
+
+## `tests/test_campaign_validator.py`
+
+```python
+# tests/test_campaign_validator.py — Tests for campaign validators
+
+from pathlib import Path
+
+from core.contracts.campaign import CampaignPlan, MissionStep, ArtifactRef, StepPlan
+from core.campaign.validator import validate_campaign_plan, validate_step_plan
+
+
+def test_campaign_validator_ok():
+    steps = [
+        MissionStep(
+            step_id="s1",
+            description="step1",
+            target_workflow="coding",
+            capabilities_required=["fs.read"],
+            success_criteria="done",
+            exports=["out.txt"],
+        ),
+        MissionStep(
+            step_id="s2",
+            description="step2",
+            target_workflow="coding",
+            capabilities_required=["fs.read"],
+            success_criteria="done",
+            inputs_from=["s1"],
+            handoff_artifacts=[ArtifactRef(step_id="s1", artifact_name="out.txt")],
+        ),
+    ]
+    plan = CampaignPlan(
+        campaign_id="c1",
+        objective="obj",
+        assumptions=[],
+        steps=steps,
+    )
+    errors = validate_campaign_plan(plan)
+    assert errors == []
+
+
+def test_campaign_validator_cycle():
+    steps = [
+        MissionStep(
+            step_id="a",
+            description="a",
+            target_workflow="coding",
+            capabilities_required=["fs.read"],
+            success_criteria="done",
+            inputs_from=["b"],
+        ),
+        MissionStep(
+            step_id="b",
+            description="b",
+            target_workflow="coding",
+            capabilities_required=["fs.read"],
+            success_criteria="done",
+            inputs_from=["a"],
+        ),
+    ]
+    plan = CampaignPlan(
+        campaign_id="c1",
+        objective="obj",
+        assumptions=[],
+        steps=steps,
+    )
+    errors = validate_campaign_plan(plan)
+    assert "campaign_dag_cycle" in errors
+
+
+def test_campaign_validator_rejects_unsafe_ids():
+    steps = [
+        MissionStep(
+            step_id="bad/step",
+            description="step1",
+            target_workflow="coding",
+            capabilities_required=["fs.read"],
+            success_criteria="done",
+        ),
+    ]
+    plan = CampaignPlan(
+        campaign_id="../evil",
+        objective="obj",
+        assumptions=[],
+        steps=steps,
+    )
+    errors = validate_campaign_plan(plan)
+    assert "unsafe_campaign_id" in errors
+    assert "unsafe_step_id:bad/step" in errors
+
+
+def test_step_plan_validation():
+    step_plan = StepPlan(
+        step_id="s1",
+        workflow_id="coding",
+        objective="obj",
+        inputs=[ArtifactRef(step_id="s0", artifact_name="in.txt")],
+        outputs_expected=[ArtifactRef(step_id="s1", artifact_name="out.txt")],
+        capabilities_required=["fs.read"],
+        success_criteria=["ok"],
+    )
+    errors = validate_step_plan(step_plan, Path("/tmp/step"))
+    assert errors == []
+
+```
+
 ## `tests/test_capability.py`
 
 ```python
@@ -14369,6 +20298,31 @@ class TestLoadGrants:
         engine.load_grants([])
         assert len(engine.list_active_grants()) == 0
 
+
+class TestScopeConstraints:
+    def test_constraints_block_scope(self):
+        policy = PolicyPack(allowed_scopes=["shell.exec", "fs.read"])
+        engine = CapabilityEngine(policy)
+        engine.set_scope_constraints(["fs.read"])
+        result = engine.check("tool", ["shell.exec"])
+        assert result.allowed is False
+        assert "shell.exec" in result.denied_scopes
+
+    def test_constraints_allow_scope(self):
+        policy = PolicyPack(allowed_scopes=["shell.exec", "fs.read"])
+        engine = CapabilityEngine(policy)
+        engine.set_scope_constraints(["shell.exec"])
+        result = engine.check("tool", ["shell.exec"])
+        assert result.allowed is True
+
+    def test_clear_constraints(self):
+        policy = PolicyPack(allowed_scopes=["shell.exec"])
+        engine = CapabilityEngine(policy)
+        engine.set_scope_constraints(["fs.read"])
+        engine.clear_scope_constraints()
+        result = engine.check("tool", ["shell.exec"])
+        assert result.allowed is True
+
 ```
 
 ## `tests/test_cli_smoke.py`
@@ -14456,6 +20410,14 @@ class TestCLISmoke:
         _main(MockClass)
         mock_elf.enrich_with_search.assert_called_once()
 
+    @patch("sys.argv", ["test", "mission", "--campaign"])
+    def test_campaign_flag(self):
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.run_campaign_from_description.return_value = MagicMock(status="completed")
+        _main(MockClass)
+        mock_elf.run_campaign_from_description.assert_called_once()
+
 ```
 
 ## `tests/test_config_loader.py`
@@ -14499,6 +20461,66 @@ class TestConfigLoader:
         (tmp_path / ".judais-lobi.yml").write_text(": : :\n  bad yaml {{[")
         result = load_project_config(tmp_path)
         assert result == {}
+
+```
+
+## `tests/test_context_window.py`
+
+```python
+# tests/test_context_window.py — Context window manager tests
+
+from types import SimpleNamespace
+
+from core.runtime.context_window import ContextConfig, ContextWindowManager
+from core.runtime.gpu import GPUProfile
+
+
+def test_context_compaction():
+    cfg = ContextConfig(max_context_tokens=200, max_output_tokens=20, min_tail_messages=2, max_summary_chars=200)
+    mgr = ContextWindowManager(config=cfg)
+    history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u" * 400},
+        {"role": "assistant", "content": "a" * 400},
+        {"role": "user", "content": "tail"},
+        {"role": "assistant", "content": "tail2"},
+    ]
+    messages, stats = mgr.build_messages(
+        system_prompt="sys",
+        history=history,
+        invoked_tools=None,
+        provider="openai",
+        model="gpt-4o",
+        backend_caps=None,
+    )
+    assert stats.was_compacted is True
+    assert any("Context summary" in m["content"] for m in messages)
+
+
+def test_gpu_cap_applies_for_local():
+    cfg = ContextConfig()
+    mgr = ContextWindowManager(config=cfg)
+    profile = mgr._resolve_profile(
+        provider="local",
+        model="gpt-4o",
+        backend_caps=None,
+        gpu_profile=GPUProfile(device_count=1, total_vram_gb=4.0, device_names=["gpu0"]),
+    )
+    assert profile.max_context_tokens == 4096
+
+
+def test_backend_caps_override():
+    cfg = ContextConfig()
+    mgr = ContextWindowManager(config=cfg)
+    caps = SimpleNamespace(max_context_tokens=7777, max_output_tokens=333)
+    profile = mgr._resolve_profile(
+        provider="openai",
+        model="gpt-4o",
+        backend_caps=caps,
+        gpu_profile=None,
+    )
+    assert profile.max_context_tokens == 7777
+    assert profile.max_output_tokens == 333
 
 ```
 
@@ -14768,7 +20790,7 @@ class TestFinalReport:
 
 class TestPhaseSchemas:
     def test_contains_expected_phases(self):
-        expected = {"INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE", "PATCH", "RUN", "FINALIZE"}
+        expected = {"INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE", "PATCH", "CRITIQUE", "RUN", "FINALIZE"}
         assert set(PHASE_SCHEMAS.keys()) == expected
 
     def test_intake_maps_to_task_contract(self):
@@ -14787,6 +20809,551 @@ class TestPhaseSchemas:
         from pydantic import BaseModel
         for phase, schema in PHASE_SCHEMAS.items():
             assert issubclass(schema, BaseModel), f"{phase} does not map to a BaseModel"
+
+```
+
+## `tests/test_critic_backends.py`
+
+```python
+# tests/test_critic_backends.py — Tests for core.critic.backends
+
+from core.critic.backends import (
+    create_backend,
+    _parse_critic_response,
+    OpenAICritic,
+)
+from core.critic.models import CriticVerdict
+
+
+def test_create_backend_unknown():
+    assert create_backend("unknown", "k", "m") is None
+
+
+def test_create_backend_openai():
+    backend = create_backend("openai", "k", "m")
+    assert isinstance(backend, OpenAICritic)
+
+
+def test_parse_json_response():
+    raw = '{"verdict":"approve","confidence":0.7,"top_risks":[]}'
+    report = _parse_critic_response(raw, "openai", "gpt", 0.1)
+    assert report.verdict == CriticVerdict.APPROVE
+    assert report.confidence == 0.7
+
+
+def test_parse_code_block():
+    raw = """Here is JSON:\n```json\n{\"verdict\":\"caution\",\"confidence\":0.3}\n```\n"""
+    report = _parse_critic_response(raw, "openai", "gpt", 0.1)
+    assert report.verdict == CriticVerdict.CAUTION
+
+
+def test_parse_invalid_response():
+    report = _parse_critic_response("not json", "openai", "gpt", 0.1)
+    assert report.verdict == CriticVerdict.UNAVAILABLE
+
+```
+
+## `tests/test_critic_cache.py`
+
+```python
+# tests/test_critic_cache.py — Tests for core.critic.cache
+
+from core.critic.cache import CriticCache
+from core.critic.models import AggregatedCriticReport, CriticVerdict
+
+
+def test_cache_put_get(tmp_path):
+    cache = CriticCache(cache_dir=str(tmp_path))
+    report = AggregatedCriticReport(consensus_verdict=CriticVerdict.APPROVE,
+                                    payload_hash="abc")
+    cache.put("abc", report)
+    loaded = cache.get("abc")
+    assert loaded is not None
+    assert loaded.consensus_verdict == CriticVerdict.APPROVE
+
+
+def test_cache_clear(tmp_path):
+    cache = CriticCache(cache_dir=str(tmp_path))
+    report = AggregatedCriticReport(consensus_verdict=CriticVerdict.CAUTION,
+                                    payload_hash="abc")
+    cache.put("abc", report)
+    assert cache.clear() == 1
+
+```
+
+## `tests/test_critic_config.py`
+
+```python
+# tests/test_critic_config.py — Tests for core.critic.config
+
+from pathlib import Path
+
+from core.critic.config import CriticConfig, load_critic_config
+
+
+def test_load_default_config(tmp_path):
+    cfg = load_critic_config(project_root=tmp_path, user_home=tmp_path / "home")
+    assert isinstance(cfg, CriticConfig)
+    assert cfg.enabled is False
+    assert cfg.cache_dir.endswith(str(Path(".judais-lobi") / "cache" / "critic"))
+
+
+def test_load_user_config(tmp_path):
+    home = tmp_path / "home"
+    (home / ".judais-lobi").mkdir(parents=True)
+    (home / ".judais-lobi" / "critic.yml").write_text(
+        "enabled: true\nmax_rounds_per_invocation: 2\n"
+    )
+    cfg = load_critic_config(project_root=tmp_path, user_home=home)
+    assert cfg.enabled is True
+    assert cfg.max_rounds_per_invocation == 2
+
+
+def test_project_config_overrides(tmp_path):
+    project_cfg = tmp_path / ".judais-lobi.yml"
+    project_cfg.write_text(
+        "critic:\n  enabled: true\n  max_calls_per_session: 5\n"
+    )
+    cfg = load_critic_config(project_root=tmp_path, user_home=tmp_path / "home")
+    assert cfg.enabled is True
+    assert cfg.max_calls_per_session == 5
+
+
+def test_cli_overrides(tmp_path):
+    project_cfg = tmp_path / ".judais-lobi.yml"
+    project_cfg.write_text("critic:\n  enabled: false\n")
+    cfg = load_critic_config(
+        project_root=tmp_path,
+        user_home=tmp_path / "home",
+        cli_overrides={"enabled": True},
+    )
+    assert cfg.enabled is True
+
+
+def test_default_providers_injected(tmp_path):
+    home = tmp_path / "home"
+    (home / ".judais-lobi").mkdir(parents=True)
+    (home / ".judais-lobi" / "critic.yml").write_text("enabled: true\n")
+    cfg = load_critic_config(project_root=tmp_path, user_home=home)
+    assert cfg.enabled is True
+    assert len(cfg.providers) >= 1
+
+```
+
+## `tests/test_critic_integration.py`
+
+```python
+# tests/test_critic_integration.py — Orchestrator + critic integration
+
+from core.critic.config import CriticConfig
+from core.critic.models import AggregatedCriticReport, CriticVerdict
+from core.kernel.orchestrator import Orchestrator, PhaseResult
+from core.kernel.state import Phase
+
+
+class StubDispatcher:
+    def dispatch(self, phase, state):
+        return PhaseResult(success=True)
+
+
+class StubCritic:
+    def __init__(self, config):
+        self.config = config
+        self.calls = []
+        self.calls_this_session = 0
+        self.is_available = True
+
+    def invoke_multi_round(self, state, reason, session_manager=None, revision_callback=None):
+        self.calls.append(reason)
+        self.calls_this_session += 1
+        return AggregatedCriticReport(consensus_verdict=CriticVerdict.APPROVE,
+                                      round_number=1)
+
+
+def test_orchestrator_no_critic():
+    orch = Orchestrator(dispatcher=StubDispatcher(), critic=None)
+    state = orch.run("task")
+    assert state.current_phase == Phase.COMPLETED
+
+
+def test_orchestrator_disabled_critic():
+    cfg = CriticConfig(enabled=False)
+    critic = StubCritic(cfg)
+    orch = Orchestrator(dispatcher=StubDispatcher(), critic=critic)
+    state = orch.run("task")
+    assert state.current_phase == Phase.COMPLETED
+    assert critic.calls == []
+
+
+def test_orchestrator_invokes_after_plan():
+    cfg = CriticConfig(enabled=True, trigger_after_run_pass=False)
+    critic = StubCritic(cfg)
+    orch = Orchestrator(dispatcher=StubDispatcher(), critic=critic)
+    state = orch.run("task")
+    assert state.current_phase == Phase.COMPLETED
+    assert "after_plan" in critic.calls
+
+```
+
+## `tests/test_critic_keystore.py`
+
+```python
+# tests/test_critic_keystore.py — Tests for core.critic.keystore
+
+import os
+import types
+
+from core.critic.keystore import CriticKeystore
+
+
+def test_env_fallback(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    ks = CriticKeystore()
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    assert ks.get_key("openai", "OPENAI_API_KEY", "openai_api_key") == "env-key"
+
+
+def test_keyring_get(monkeypatch):
+    fake = types.SimpleNamespace()
+    fake.get_password = lambda service, key: "kr-key"
+    fake.set_password = lambda service, key, value: None
+    fake.delete_password = lambda service, key: None
+
+    monkeypatch.setitem(__import__("sys").modules, "keyring", fake)
+    ks = CriticKeystore()
+    assert ks.get_key("openai", "OPENAI_API_KEY", "openai_api_key") == "kr-key"
+
+
+def test_set_delete_without_keyring(monkeypatch):
+    monkeypatch.setitem(__import__("sys").modules, "keyring", None)
+    ks = CriticKeystore()
+    assert ks.set_key("openai_api_key", "x") is False
+    assert ks.delete_key("openai_api_key") is False
+
+```
+
+## `tests/test_critic_models.py`
+
+```python
+# tests/test_critic_models.py — Tests for core.critic.models
+
+from datetime import datetime
+
+from core.critic.models import (
+    CriticVerdict,
+    CriticRisk,
+    ExternalCriticReport,
+    AggregatedCriticReport,
+    CriticRoundSummary,
+    CritiquePack,
+    CriticTriggerContext,
+)
+
+
+class TestCriticVerdict:
+    def test_values(self):
+        assert CriticVerdict.APPROVE == "approve"
+        assert CriticVerdict.CAUTION == "caution"
+        assert CriticVerdict.BLOCK == "block"
+        assert CriticVerdict.REFUSED == "refused"
+        assert CriticVerdict.UNAVAILABLE == "unavailable"
+
+    def test_str_enum(self):
+        assert isinstance(CriticVerdict.APPROVE, str)
+        assert CriticVerdict("approve") is CriticVerdict.APPROVE
+
+
+class TestCriticRisk:
+    def test_defaults(self):
+        risk = CriticRisk()
+        assert risk.severity == "medium"
+        assert risk.category == ""
+        assert risk.description == ""
+        assert risk.affected_files == []
+        assert risk.confidence == 0.5
+
+    def test_roundtrip(self):
+        risk = CriticRisk(severity="high", category="logic",
+                          description="missing check", affected_files=["a.py"],
+                          confidence=0.8)
+        data = risk.model_dump()
+        risk2 = CriticRisk.model_validate(data)
+        assert risk2.severity == "high"
+        assert risk2.affected_files == ["a.py"]
+
+
+class TestExternalCriticReport:
+    def test_defaults(self):
+        report = ExternalCriticReport()
+        assert report.verdict == CriticVerdict.UNAVAILABLE
+        assert isinstance(report.timestamp, datetime)
+
+    def test_roundtrip(self):
+        report = ExternalCriticReport(provider="openai", model="gpt",
+                                      verdict=CriticVerdict.APPROVE,
+                                      confidence=0.6)
+        data = report.model_dump()
+        report2 = ExternalCriticReport.model_validate(data)
+        assert report2.provider == "openai"
+        assert report2.verdict == CriticVerdict.APPROVE
+
+
+class TestAggregatedCriticReport:
+    def test_defaults(self):
+        report = AggregatedCriticReport()
+        assert report.consensus_verdict == CriticVerdict.UNAVAILABLE
+        assert report.provider_reports == []
+
+    def test_roundtrip(self):
+        child = ExternalCriticReport(provider="openai",
+                                     verdict=CriticVerdict.CAUTION)
+        report = AggregatedCriticReport(provider_reports=[child],
+                                        consensus_verdict=CriticVerdict.CAUTION,
+                                        mean_confidence=0.2)
+        data = report.model_dump()
+        report2 = AggregatedCriticReport.model_validate(data)
+        assert report2.consensus_verdict == CriticVerdict.CAUTION
+        assert len(report2.provider_reports) == 1
+
+
+class TestCriticRoundSummary:
+    def test_construction(self):
+        summary = CriticRoundSummary(
+            round_number=1,
+            verdict=CriticVerdict.CAUTION,
+            unique_concerns_count=3,
+            new_concerns_count=2,
+            mean_confidence=0.4,
+        )
+        assert summary.is_noise is False
+
+
+class TestCritiquePack:
+    def test_defaults(self):
+        pack = CritiquePack()
+        assert pack.task_description == ""
+        assert pack.plan_steps == []
+        assert pack.patch_snippets == []
+
+    def test_roundtrip(self):
+        pack = CritiquePack(task_description="t", files_changed=2)
+        data = pack.model_dump()
+        pack2 = CritiquePack.model_validate(data)
+        assert pack2.files_changed == 2
+
+
+class TestCriticTriggerContext:
+    def test_defaults(self):
+        ctx = CriticTriggerContext(current_phase="PLAN", next_phase="RETRIEVE",
+                                   total_iterations=3)
+        assert ctx.consecutive_fix_loops == 0
+        assert ctx.critic_calls_this_session == 0
+
+```
+
+## `tests/test_critic_orchestrator.py`
+
+```python
+# tests/test_critic_orchestrator.py — Tests for core.critic.orchestrator
+
+from core.critic.config import CriticConfig, CriticProviderConfig
+from core.critic.models import CriticVerdict, ExternalCriticReport
+from core.critic.orchestrator import CriticOrchestrator
+from core.kernel.state import SessionState
+
+
+class DummyBackend:
+    def __init__(self, report):
+        self.report = report
+        self.default_model = "dummy"
+
+    def critique(self, payload_json, model, max_tokens, timeout):
+        return self.report
+
+
+class DummyKeystore:
+    def get_key(self, *args, **kwargs):
+        return "dummy-key"
+
+
+def test_is_available_false_when_disabled():
+    cfg = CriticConfig(enabled=False)
+    orch = CriticOrchestrator(cfg)
+    assert orch.is_available is False
+
+
+def test_invoke_multi_round_approve(monkeypatch):
+    cfg = CriticConfig(enabled=True, cache_enabled=False, providers=[
+        CriticProviderConfig(provider="openai", model="gpt")
+    ])
+    report = ExternalCriticReport(verdict=CriticVerdict.APPROVE, confidence=0.6)
+
+    def fake_backend(provider, api_key, default_model):
+        return DummyBackend(report)
+
+    monkeypatch.setattr("core.critic.orchestrator.create_backend", fake_backend)
+    orch = CriticOrchestrator(cfg, keystore=DummyKeystore())
+
+    state = SessionState(task_description="task")
+    final = orch.invoke_multi_round(state, "after_plan", session_manager=None,
+                                    revision_callback=lambda r, s: True)
+    assert final.consensus_verdict == CriticVerdict.APPROVE
+    assert len(orch.round_history) == 1
+
+
+def test_invoke_multi_round_block_noise(monkeypatch):
+    cfg = CriticConfig(enabled=True, cache_enabled=False, max_rounds_per_invocation=3, providers=[
+        CriticProviderConfig(provider="openai", model="gpt")
+    ])
+    report = ExternalCriticReport(
+        verdict=CriticVerdict.BLOCK,
+        logic_concerns=["same"],
+        confidence=0.1,
+    )
+
+    def fake_backend(provider, api_key, default_model):
+        return DummyBackend(report)
+
+    monkeypatch.setattr("core.critic.orchestrator.create_backend", fake_backend)
+    orch = CriticOrchestrator(cfg, keystore=DummyKeystore())
+
+    state = SessionState(task_description="task")
+    final = orch.invoke_multi_round(state, "after_plan", session_manager=None,
+                                    revision_callback=lambda r, s: True)
+    assert final.consensus_verdict == CriticVerdict.BLOCK
+    assert len(orch.round_history) >= 2
+    assert orch.round_history[-1].is_noise is True
+
+```
+
+## `tests/test_critic_pack_builder.py`
+
+```python
+# tests/test_critic_pack_builder.py — Tests for core.critic.pack_builder
+
+from core.critic.pack_builder import CritiquePackBuilder
+from core.kernel.state import SessionState
+from core.sessions.manager import SessionManager
+from core.contracts.schemas import TaskContract, ChangePlan, PlanStep, PatchSet, FilePatch, RunReport
+from core.context.models import RepoMapResult
+from core.judge.models import JudgeReport, TierResult, TierVerdict
+
+
+def test_pack_builder_basic(tmp_path):
+    sm = SessionManager(base_dir=tmp_path, session_id="pack-001")
+
+    sm.write_artifact("CONTRACT", 0, TaskContract(task_id="t1", description="task"))
+    sm.write_artifact("PLAN", 1, ChangePlan(task_id="t1", steps=[
+        PlanStep(description="edit", target_file="a.py", action="modify")
+    ], target_files=["a.py"], rationale="do thing"))
+    sm.write_artifact("REPO_MAP", 2, RepoMapResult(excerpt="sig A"))
+    sm.write_artifact("PATCH", 3, PatchSet(task_id="t1", patches=[
+        FilePatch(file_path="a.py", search_block="x", replace_block="y", action="modify")
+    ]))
+    sm.write_artifact("RUN", 4, RunReport(exit_code=0, passed=True, stdout="ok"))
+    judge = JudgeReport(tier_results=[
+        TierResult(tier_name="test", verdict=TierVerdict.PASS, score=1.0, weight=1.0)
+    ], final_score=1.0, verdict="pass", summary="good")
+    sm.write_artifact("CRITIQUE", 5, judge)
+
+    state = SessionState(task_description="task")
+    pack = CritiquePackBuilder().build(state, "after_plan", sm)
+
+    assert pack.task_description == "task"
+    assert pack.plan_steps
+    assert pack.repo_map_excerpt == "sig A"
+    assert pack.diff_summary.startswith("files=")
+    assert pack.files_changed == 1
+    assert pack.lines_added == 1
+    assert pack.lines_removed == 1
+    assert pack.tests_passed is True
+    assert pack.local_review_verdict == "pass"
+
+```
+
+## `tests/test_critic_redactor.py`
+
+```python
+# tests/test_critic_redactor.py — Tests for core.critic.redactor
+
+from core.critic.redactor import Redactor
+
+
+def test_normal_redaction():
+    r = Redactor(level="normal")
+    text = "key sk-abc12345678901234567890 and ghp_abcdefabcdefabcdefabcdefabcdefabcd"
+    redacted = r.redact(text)
+    assert "sk-abc" not in redacted
+    assert "ghp_" not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_strict_redaction():
+    r = Redactor(level="strict")
+    text = "email test@example.com ip 192.168.1.1 host api.example.com /home/user"
+    redacted = r.redact(text)
+    assert "example.com" not in redacted
+    assert "192.168" not in redacted
+    assert "/home/user" not in redacted
+
+
+def test_redact_and_clamp():
+    r = Redactor(level="normal", max_bytes=10)
+    text = "sk-abcdef123456789012345678901234567890"
+    redacted, payload_hash, was_clamped, original_size = r.redact_and_clamp(text)
+    assert was_clamped is True
+    assert original_size > 10
+    assert payload_hash
+    assert "[TRUNCATED]" in redacted
+
+```
+
+## `tests/test_critic_triggers.py`
+
+```python
+# tests/test_critic_triggers.py — Tests for core.critic.triggers
+
+from core.critic.config import CriticConfig
+from core.critic.models import CriticTriggerContext
+from core.critic.triggers import should_invoke_critic, detect_security_surface, detect_dependency_changes
+
+
+def test_after_plan_trigger():
+    cfg = CriticConfig(enabled=True)
+    ctx = CriticTriggerContext(current_phase="PLAN", next_phase="RETRIEVE",
+                               total_iterations=1)
+    ok, reason = should_invoke_critic(ctx, cfg)
+    assert ok is True
+    assert reason == "after_plan"
+
+
+def test_after_run_trigger():
+    cfg = CriticConfig(enabled=True)
+    ctx = CriticTriggerContext(current_phase="RUN", next_phase="FINALIZE",
+                               total_iterations=3)
+    ok, reason = should_invoke_critic(ctx, cfg)
+    assert ok is True
+    assert reason == "after_run_pass"
+
+
+def test_fix_loop_trigger():
+    cfg = CriticConfig(enabled=True, trigger_after_plan=False, trigger_after_run_pass=False)
+    ctx = CriticTriggerContext(current_phase="RUN", next_phase="FIX",
+                               total_iterations=5, consecutive_fix_loops=4)
+    ok, reason = should_invoke_critic(ctx, cfg)
+    assert ok is True
+    assert reason == "fix_loop"
+
+
+def test_security_surface_detection():
+    assert detect_security_surface(["auth/token.py"]) is True
+    assert detect_security_surface(["docs/readme.md"]) is False
+
+
+def test_dependency_detection():
+    assert detect_dependency_changes(["requirements.txt"]) is True
+    assert detect_dependency_changes(["backend/pyproject.toml"]) is True
+    assert detect_dependency_changes(["src/app.py"]) is False
 
 ```
 
@@ -15265,7 +21832,7 @@ class TestPrebuiltDescriptors:
         assert "audio.output" in VOICE_DESCRIPTOR.required_scopes
 
     def test_all_descriptors_list(self):
-        assert len(ALL_DESCRIPTORS) == 11
+        assert len(ALL_DESCRIPTORS) == 12
         names = [d.tool_name for d in ALL_DESCRIPTORS]
         assert "run_shell_command" in names
         assert "speak_text" in names
@@ -15273,6 +21840,7 @@ class TestPrebuiltDescriptors:
         assert "git" in names
         assert "verify" in names
         assert "repo_map" in names
+        assert "patch" in names
 
     def test_all_descriptors_have_descriptions(self):
         for d in ALL_DESCRIPTORS:
@@ -15419,7 +21987,8 @@ class TestActionMetadataSets:
         assert "fs" in names
         assert "git" in names
         assert "verify" in names
-        assert len(ALL_DESCRIPTORS) == 11
+        assert "patch" in names
+        assert len(ALL_DESCRIPTORS) == 12
 
 ```
 
@@ -16671,6 +23240,907 @@ class TestJudAIs:
 
 ```
 
+## `tests/test_judge_candidates.py`
+
+```python
+# tests/test_judge_candidates.py — Tests for core.judge.candidates.CandidateManager
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+from core.contracts.schemas import PatchSet, FilePatch
+from core.judge.models import CandidateReport, CandidateScore, TierVerdict
+from core.judge.judge import CompositeJudge
+from core.judge.candidates import CandidateManager
+from core.patch.models import PatchResult, FileMatchResult
+
+
+def _make_patch_set(task_id: str = "t1") -> PatchSet:
+    return PatchSet(
+        task_id=task_id,
+        patches=[FilePatch(file_path="f.py", search_block="old",
+                           replace_block="new", action="modify")],
+    )
+
+
+def _ok_result(worktree_path: str = "/tmp/wt") -> PatchResult:
+    """Successful PatchResult with worktree_path."""
+    return PatchResult(
+        success=True,
+        file_results=[FileMatchResult(file_path="f.py", action="modify",
+                                      success=True, match_count=1)],
+        worktree_path=worktree_path,
+    )
+
+
+def _fail_result() -> PatchResult:
+    """Failed PatchResult."""
+    return PatchResult(
+        success=False,
+        file_results=[FileMatchResult(file_path="f.py", action="modify",
+                                      success=False, error="no match")],
+    )
+
+
+def _pass_runner(path: str):
+    return (0, "5 passed", "")
+
+
+def _fail_runner(path: str):
+    return (1, "", "1 failed")
+
+
+def _lint_pass(path: str):
+    return (0, "", "")
+
+
+def _lint_fail(path: str):
+    return (1, "E301 expected", "")
+
+
+# ── Basic evaluation ─────────────────────────────────────────────────────────
+
+class TestCandidateManagerBasic:
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_single_candidate_passes(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = "diff output"
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_pass_runner, lint_runner=_lint_pass
+        )
+
+        assert isinstance(report, CandidateReport)
+        assert report.total_evaluated == 1
+        assert report.winner_index == 0
+        assert report.candidates[0].judge_report.verdict == "pass"
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_single_candidate_fails_test(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_fail_runner, lint_runner=_lint_pass
+        )
+
+        assert report.winner_index == -1
+        assert report.candidates[0].judge_report.verdict == "fail"
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_patch_apply_failure(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _fail_result()
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_pass_runner
+        )
+
+        assert report.winner_index == -1
+        assert report.candidates[0].judge_report.verdict == "fail"
+        assert report.candidates[0].judge_report.final_score == 0.0
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_rollback_called_on_success(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_pass_runner, lint_runner=_lint_pass
+        )
+
+        engine.rollback.assert_called()
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_rollback_called_on_apply_failure(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _fail_result()
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        mgr.evaluate_candidates([_make_patch_set()], test_runner=_pass_runner)
+
+        engine.rollback.assert_called()
+
+
+# ── Multiple candidates ──────────────────────────────────────────────────────
+
+class TestCandidateManagerMultiple:
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_best_candidate_wins(self, MockEngine):
+        """Second candidate has lint pass (higher score) → wins."""
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        # First candidate: test pass, lint fail
+        # Second candidate: test pass, lint pass
+        call_count = [0]
+
+        def varying_test(path):
+            return (0, "passed", "")
+
+        def varying_lint(path):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return (1, "lint error", "")
+            return (0, "", "")
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set("t1"), _make_patch_set("t2")],
+            test_runner=varying_test,
+            lint_runner=varying_lint,
+        )
+
+        assert report.total_evaluated == 2
+        assert report.winner_index == 1
+        assert report.candidates[1].judge_report.final_score > \
+               report.candidates[0].judge_report.final_score
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_all_fail_no_winner(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set("t1"), _make_patch_set("t2")],
+            test_runner=_fail_runner,
+            lint_runner=_lint_pass,
+        )
+
+        assert report.winner_index == -1
+        assert report.total_evaluated == 2
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_max_candidates_cap(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo", max_candidates=2)
+        patches = [_make_patch_set(f"t{i}") for i in range(5)]
+        report = mgr.evaluate_candidates(
+            patches, test_runner=_pass_runner, lint_runner=_lint_pass
+        )
+
+        assert report.total_evaluated == 2
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_tiebreaker_first_wins(self, MockEngine):
+        """On tie, the first candidate (lowest index) wins."""
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set("t1"), _make_patch_set("t2")],
+            test_runner=_pass_runner,
+            lint_runner=_lint_pass,
+        )
+
+        # Both have identical scores → first wins
+        assert report.winner_index == 0
+
+
+# ── Edge cases ───────────────────────────────────────────────────────────────
+
+class TestCandidateManagerEdgeCases:
+
+    def test_empty_patch_sets(self):
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates([], test_runner=_pass_runner)
+        assert report.total_evaluated == 0
+        assert report.winner_index == -1
+        assert report.candidates == []
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_no_test_runner(self, MockEngine):
+        """No test runner → tests fail (exit_code=1) → candidate fails."""
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=None, lint_runner=_lint_pass
+        )
+
+        assert report.candidates[0].judge_report.verdict == "fail"
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_no_lint_runner(self, MockEngine):
+        """No lint runner → lint passes by default (exit_code=0)."""
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_pass_runner, lint_runner=None
+        )
+
+        assert report.candidates[0].judge_report.verdict == "pass"
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_diff_captured(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = "--- a/f.py\n+++ b/f.py\n@@ changed"
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_pass_runner, lint_runner=_lint_pass
+        )
+
+        assert "f.py" in report.candidates[0].worktree_diff
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_rollback_exception_handled(self, MockEngine):
+        """Rollback failure is silently swallowed (best-effort cleanup)."""
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.side_effect = RuntimeError("cleanup failed")
+
+        mgr = CandidateManager("/repo")
+        # Should not raise
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_pass_runner, lint_runner=_lint_pass
+        )
+        assert report.total_evaluated == 1
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_custom_judge(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        judge = CompositeJudge()
+        mgr = CandidateManager("/repo", judge=judge)
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_pass_runner, lint_runner=_lint_pass
+        )
+
+        assert report.candidates[0].judge_report.verdict == "pass"
+
+
+# ── CandidateReport serialization ────────────────────────────────────────────
+
+class TestCandidateReportSerialization:
+
+    @patch("core.judge.candidates.PatchEngine")
+    def test_roundtrip(self, MockEngine):
+        engine = MockEngine.return_value
+        engine.apply.return_value = _ok_result()
+        engine.diff.return_value = ""
+        engine.rollback.return_value = None
+
+        mgr = CandidateManager("/repo")
+        report = mgr.evaluate_candidates(
+            [_make_patch_set()], test_runner=_pass_runner, lint_runner=_lint_pass
+        )
+
+        d = report.model_dump()
+        r2 = CandidateReport.model_validate(d)
+        assert r2.winner_index == report.winner_index
+        assert r2.candidates[0].patch_set_id == "t1"
+
+```
+
+## `tests/test_judge_composite.py`
+
+```python
+# tests/test_judge_composite.py — Tests for core.judge.judge.CompositeJudge
+
+import pytest
+
+from core.judge.models import TierResult, TierVerdict, JudgeReport
+from core.judge.tiers import BaseTier, TestTier, LintTier, LLMReviewTier
+from core.judge.judge import CompositeJudge
+
+
+class TestCompositeJudgeDefaults:
+    """Default tier configuration: Test(0.6) + Lint(0.25) + LLMReview(0.15)."""
+
+    def setup_method(self):
+        self.judge = CompositeJudge()
+
+    def test_default_tiers(self):
+        tiers = self.judge.tiers
+        assert len(tiers) == 3
+        assert isinstance(tiers[0], TestTier)
+        assert isinstance(tiers[1], LintTier)
+        assert isinstance(tiers[2], LLMReviewTier)
+
+    def test_all_pass(self):
+        """Test pass + lint pass + LLM stub(0.5) → score ~0.925, pass."""
+        r = self.judge.evaluate(test_exit_code=0, lint_exit_code=0)
+        assert r.verdict == "pass"
+        # 1.0*0.6 + 1.0*0.25 + 0.5*0.15 = 0.925
+        assert r.final_score == pytest.approx(0.925, abs=1e-4)
+        assert len(r.tier_results) == 3
+
+    def test_test_fail_short_circuits(self):
+        """Test fail → short-circuit, lint and LLM skipped."""
+        r = self.judge.evaluate(test_exit_code=1, lint_exit_code=0)
+        assert r.verdict == "fail"
+        assert r.final_score == 0.0
+        assert r.tier_results[0].verdict == TierVerdict.FAIL
+        assert r.tier_results[1].verdict == TierVerdict.SKIPPED
+        assert r.tier_results[2].verdict == TierVerdict.SKIPPED
+
+    def test_test_pass_lint_fail(self):
+        """Test pass + lint fail → score = 0.6 + 0.0 + 0.075 = 0.675."""
+        r = self.judge.evaluate(test_exit_code=0, lint_exit_code=1)
+        assert r.final_score == pytest.approx(0.675, abs=1e-4)
+        assert r.verdict == "pass"  # >= 0.6
+
+    def test_test_pass_lint_waived(self):
+        """Test pass + lint waived(0.5) → score = 0.6 + 0.125 + 0.075 = 0.8."""
+        r = self.judge.evaluate(test_exit_code=0, lint_exit_code=1,
+                                lint_waive=True)
+        assert r.final_score == pytest.approx(0.8, abs=1e-4)
+        assert r.verdict == "pass"
+
+    def test_result_is_judge_report(self):
+        r = self.judge.evaluate(test_exit_code=0, lint_exit_code=0)
+        assert isinstance(r, JudgeReport)
+
+    def test_tier_results_have_correct_weights(self):
+        r = self.judge.evaluate(test_exit_code=0, lint_exit_code=0)
+        assert r.tier_results[0].weight == 0.6
+        assert r.tier_results[1].weight == 0.25
+        assert r.tier_results[2].weight == 0.15
+
+    def test_score_rounded(self):
+        """Score is rounded to 6 decimal places."""
+        r = self.judge.evaluate(test_exit_code=0, lint_exit_code=0)
+        assert r.final_score == round(r.final_score, 6)
+
+
+class TestCompositeJudgeCustomTiers:
+    """Custom tier configurations."""
+
+    def test_empty_tiers(self):
+        judge = CompositeJudge(tiers=[])
+        r = judge.evaluate(test_exit_code=0)
+        assert r.final_score == 0.0
+        # No test tier → test_passed is False → "fail"
+        assert r.verdict == "fail"
+        assert len(r.tier_results) == 0
+
+    def test_single_test_tier(self):
+        judge = CompositeJudge(tiers=[TestTier()])
+        r = judge.evaluate(test_exit_code=0)
+        assert r.final_score == pytest.approx(0.6)
+        assert r.verdict == "pass"
+
+    def test_single_test_tier_fail(self):
+        judge = CompositeJudge(tiers=[TestTier()])
+        r = judge.evaluate(test_exit_code=1)
+        assert r.final_score == 0.0
+        assert r.verdict == "fail"
+
+    def test_test_then_lint_only(self):
+        judge = CompositeJudge(tiers=[TestTier(), LintTier()])
+        r = judge.evaluate(test_exit_code=0, lint_exit_code=0)
+        assert r.final_score == pytest.approx(0.85)
+        assert r.verdict == "pass"
+
+    def test_custom_tier(self):
+        """Verify custom tiers integrate correctly."""
+
+        class AlwaysPassTier(BaseTier):
+            name = "custom"
+            weight = 0.5
+
+            def evaluate(self, **kw):
+                return TierResult(tier_name=self.name, verdict=TierVerdict.PASS,
+                                  score=1.0, weight=self.weight)
+
+        judge = CompositeJudge(tiers=[TestTier(), AlwaysPassTier()])
+        r = judge.evaluate(test_exit_code=0)
+        # 1.0*0.6 + 1.0*0.5 = 1.1
+        assert r.final_score == pytest.approx(1.1)
+        assert r.verdict == "pass"
+
+    def test_tiers_property_is_copy(self):
+        judge = CompositeJudge()
+        tiers = judge.tiers
+        tiers.clear()
+        assert len(judge.tiers) == 3  # Original unchanged
+
+
+class TestCompositeJudgeVerdicts:
+    """Edge cases for verdict computation."""
+
+    def test_exactly_at_threshold(self):
+        """Score exactly 0.6 → pass (>= 0.6)."""
+        judge = CompositeJudge(tiers=[TestTier()])
+        r = judge.evaluate(test_exit_code=0)
+        # 1.0 * 0.6 = 0.6 exactly
+        assert r.final_score == pytest.approx(0.6)
+        assert r.verdict == "pass"
+
+    def test_below_threshold_needs_fix(self):
+        """Test passes but score < 0.6 → needs_fix."""
+
+        class LowScoreTier(BaseTier):
+            name = "test"
+            weight = 0.5
+
+            def evaluate(self, **kw):
+                return TierResult(tier_name=self.name, verdict=TierVerdict.PASS,
+                                  score=1.0, weight=self.weight)
+
+        judge = CompositeJudge(tiers=[LowScoreTier()])
+        r = judge.evaluate()
+        # 1.0 * 0.5 = 0.5 < 0.6
+        assert r.verdict == "needs_fix"
+
+    def test_no_test_tier_means_fail(self):
+        """If no tier named 'test', verdict is always 'fail'."""
+        judge = CompositeJudge(tiers=[LintTier()])
+        r = judge.evaluate(lint_exit_code=0)
+        assert r.verdict == "fail"
+
+    def test_multiple_short_circuits(self):
+        """Only the first short-circuit matters; rest are skipped."""
+
+        class AnotherShortCircuit(BaseTier):
+            name = "blocker"
+            weight = 0.1
+
+            def evaluate(self, **kw):
+                return TierResult(tier_name=self.name, verdict=TierVerdict.FAIL,
+                                  score=0.0, weight=self.weight,
+                                  short_circuit=True)
+
+        judge = CompositeJudge(tiers=[
+            TestTier(), AnotherShortCircuit(), LintTier(),
+        ])
+        # Test passes, then AnotherShortCircuit fires, LintTier skipped
+        r = judge.evaluate(test_exit_code=0, lint_exit_code=0)
+        assert r.tier_results[0].verdict == TierVerdict.PASS
+        assert r.tier_results[1].verdict == TierVerdict.FAIL
+        assert r.tier_results[2].verdict == TierVerdict.SKIPPED
+
+
+class TestCompositeJudgeSerialization:
+    """JudgeReport from evaluate() is serializable."""
+
+    def test_roundtrip(self):
+        judge = CompositeJudge()
+        r = judge.evaluate(test_exit_code=0, lint_exit_code=0)
+        d = r.model_dump()
+        r2 = JudgeReport.model_validate(d)
+        assert r2.final_score == r.final_score
+        assert r2.verdict == r.verdict
+        assert len(r2.tier_results) == 3
+
+    def test_failed_report_roundtrip(self):
+        judge = CompositeJudge()
+        r = judge.evaluate(test_exit_code=1)
+        d = r.model_dump()
+        r2 = JudgeReport.model_validate(d)
+        assert r2.verdict == "fail"
+        assert r2.tier_results[1].verdict == TierVerdict.SKIPPED
+
+```
+
+## `tests/test_judge_gpu_profile.py`
+
+```python
+# tests/test_judge_gpu_profile.py — Tests for core.judge.gpu_profile
+
+import pytest
+from dataclasses import FrozenInstanceError
+
+from core.judge.gpu_profile import GPUProfile, detect_profile
+
+
+class TestGPUProfile:
+    def test_defaults(self):
+        p = GPUProfile()
+        assert p.cpu_only is True
+        assert p.max_concurrent == 1
+        assert p.device_name == "cpu"
+
+    def test_frozen(self):
+        p = GPUProfile()
+        with pytest.raises(FrozenInstanceError):
+            p.cpu_only = False
+
+    def test_custom_values(self):
+        p = GPUProfile(cpu_only=False, max_concurrent=4, device_name="cuda:0")
+        assert p.cpu_only is False
+        assert p.max_concurrent == 4
+        assert p.device_name == "cuda:0"
+
+
+class TestDetectProfile:
+    def test_returns_gpu_profile(self):
+        p = detect_profile()
+        assert isinstance(p, GPUProfile)
+
+    def test_stub_returns_cpu(self):
+        p = detect_profile()
+        assert p.cpu_only is True
+        assert p.max_concurrent == 1
+
+```
+
+## `tests/test_judge_models.py`
+
+```python
+# tests/test_judge_models.py — Tests for core.judge.models
+
+import pytest
+from pydantic import ValidationError
+
+from core.judge.models import (
+    TierVerdict,
+    TierResult,
+    JudgeReport,
+    CandidateScore,
+    CandidateReport,
+)
+
+
+# ── TierVerdict ──────────────────────────────────────────────────────────────
+
+class TestTierVerdict:
+    def test_values(self):
+        assert TierVerdict.PASS == "pass"
+        assert TierVerdict.FAIL == "fail"
+        assert TierVerdict.WAIVED == "waived"
+        assert TierVerdict.SKIPPED == "skipped"
+
+    def test_str_enum(self):
+        """TierVerdict is str,Enum — values are strings."""
+        assert isinstance(TierVerdict.PASS, str)
+        assert TierVerdict("pass") is TierVerdict.PASS
+
+    def test_all_members(self):
+        assert len(TierVerdict) == 4
+
+
+# ── TierResult ───────────────────────────────────────────────────────────────
+
+class TestTierResult:
+    def test_construction(self):
+        r = TierResult(tier_name="test", verdict=TierVerdict.PASS,
+                       score=1.0, weight=0.6)
+        assert r.tier_name == "test"
+        assert r.verdict == TierVerdict.PASS
+        assert r.score == 1.0
+        assert r.weight == 0.6
+        assert r.details == ""
+        assert r.short_circuit is False
+
+    def test_short_circuit(self):
+        r = TierResult(tier_name="test", verdict=TierVerdict.FAIL,
+                       score=0.0, weight=0.6, short_circuit=True)
+        assert r.short_circuit is True
+
+    def test_details(self):
+        r = TierResult(tier_name="lint", verdict=TierVerdict.WAIVED,
+                       score=0.5, weight=0.25, details="waived by policy")
+        assert r.details == "waived by policy"
+
+    def test_serialization_roundtrip(self):
+        r = TierResult(tier_name="test", verdict=TierVerdict.PASS,
+                       score=1.0, weight=0.6)
+        d = r.model_dump()
+        assert d["verdict"] == "pass"
+        r2 = TierResult.model_validate(d)
+        assert r2.verdict == TierVerdict.PASS
+
+
+# ── JudgeReport ──────────────────────────────────────────────────────────────
+
+class TestJudgeReport:
+    def test_construction(self):
+        tiers = [
+            TierResult(tier_name="test", verdict=TierVerdict.PASS,
+                       score=1.0, weight=0.6),
+            TierResult(tier_name="lint", verdict=TierVerdict.PASS,
+                       score=1.0, weight=0.25),
+        ]
+        report = JudgeReport(tier_results=tiers, final_score=0.85,
+                             verdict="pass")
+        assert report.final_score == 0.85
+        assert report.verdict == "pass"
+        assert len(report.tier_results) == 2
+        assert report.summary == ""
+
+    def test_with_summary(self):
+        report = JudgeReport(tier_results=[], final_score=0.0,
+                             verdict="fail", summary="tests failed")
+        assert report.summary == "tests failed"
+
+    def test_serialization_roundtrip(self):
+        tiers = [
+            TierResult(tier_name="test", verdict=TierVerdict.PASS,
+                       score=1.0, weight=0.6),
+        ]
+        report = JudgeReport(tier_results=tiers, final_score=0.6,
+                             verdict="pass")
+        d = report.model_dump()
+        r2 = JudgeReport.model_validate(d)
+        assert r2.final_score == 0.6
+        assert r2.tier_results[0].tier_name == "test"
+
+
+# ── CandidateScore ───────────────────────────────────────────────────────────
+
+class TestCandidateScore:
+    def test_construction(self):
+        report = JudgeReport(tier_results=[], final_score=0.5,
+                             verdict="needs_fix")
+        cs = CandidateScore(candidate_index=0, patch_set_id="t1",
+                            judge_report=report)
+        assert cs.candidate_index == 0
+        assert cs.patch_set_id == "t1"
+        assert cs.worktree_diff == ""
+
+    def test_with_diff(self):
+        report = JudgeReport(tier_results=[], final_score=1.0,
+                             verdict="pass")
+        cs = CandidateScore(candidate_index=2, patch_set_id="t2",
+                            judge_report=report,
+                            worktree_diff="--- a/f.py\n+++ b/f.py\n")
+        assert "f.py" in cs.worktree_diff
+
+
+# ── CandidateReport ──────────────────────────────────────────────────────────
+
+class TestCandidateReport:
+    def test_defaults(self):
+        cr = CandidateReport(candidates=[])
+        assert cr.winner_index == -1
+        assert cr.total_evaluated == 0
+
+    def test_with_candidates(self):
+        report = JudgeReport(tier_results=[], final_score=0.9,
+                             verdict="pass")
+        cs = CandidateScore(candidate_index=0, patch_set_id="t1",
+                            judge_report=report)
+        cr = CandidateReport(candidates=[cs], winner_index=0,
+                             total_evaluated=1)
+        assert cr.winner_index == 0
+        assert len(cr.candidates) == 1
+
+    def test_serialization_roundtrip(self):
+        report = JudgeReport(tier_results=[], final_score=0.9,
+                             verdict="pass")
+        cs = CandidateScore(candidate_index=0, patch_set_id="t1",
+                            judge_report=report)
+        cr = CandidateReport(candidates=[cs], winner_index=0,
+                             total_evaluated=1)
+        d = cr.model_dump()
+        cr2 = CandidateReport.model_validate(d)
+        assert cr2.winner_index == 0
+        assert cr2.candidates[0].patch_set_id == "t1"
+
+```
+
+## `tests/test_judge_tiers.py`
+
+```python
+# tests/test_judge_tiers.py — Tests for core.judge.tiers
+
+import pytest
+
+from core.judge.models import TierVerdict
+from core.judge.tiers import BaseTier, TestTier, LintTier, LLMReviewTier
+
+
+# ── TestTier ─────────────────────────────────────────────────────────────────
+
+class TestTestTier:
+    def setup_method(self):
+        self.tier = TestTier()
+
+    def test_name_and_weight(self):
+        assert self.tier.name == "test"
+        assert self.tier.weight == 0.6
+
+    def test_pass(self):
+        r = self.tier.evaluate(test_exit_code=0, test_stdout="5 passed")
+        assert r.verdict == TierVerdict.PASS
+        assert r.score == 1.0
+        assert r.short_circuit is False
+        assert "5 passed" in r.details
+
+    def test_fail(self):
+        r = self.tier.evaluate(test_exit_code=1, test_stderr="1 failed")
+        assert r.verdict == TierVerdict.FAIL
+        assert r.score == 0.0
+        assert r.short_circuit is True
+        assert "1 failed" in r.details
+
+    def test_fail_nonzero_exit(self):
+        r = self.tier.evaluate(test_exit_code=2)
+        assert r.verdict == TierVerdict.FAIL
+        assert r.short_circuit is True
+
+    def test_pass_empty_stdout(self):
+        r = self.tier.evaluate(test_exit_code=0)
+        assert r.verdict == TierVerdict.PASS
+        assert r.details == "all tests passed"
+
+    def test_fail_stderr_preferred_over_stdout(self):
+        r = self.tier.evaluate(test_exit_code=1, test_stdout="out",
+                               test_stderr="err")
+        assert r.details == "err"
+
+    def test_fail_stdout_fallback(self):
+        r = self.tier.evaluate(test_exit_code=1, test_stdout="stdout err",
+                               test_stderr="")
+        assert r.details == "stdout err"
+
+    def test_details_truncated(self):
+        long = "x" * 500
+        r = self.tier.evaluate(test_exit_code=0, test_stdout=long)
+        assert len(r.details) == 200
+
+    def test_extra_kwargs_ignored(self):
+        r = self.tier.evaluate(test_exit_code=0, lint_exit_code=1)
+        assert r.verdict == TierVerdict.PASS
+
+    def test_default_exit_code_is_failure(self):
+        """Default test_exit_code=1 means fail when called with no args."""
+        r = self.tier.evaluate()
+        assert r.verdict == TierVerdict.FAIL
+
+
+# ── LintTier ─────────────────────────────────────────────────────────────────
+
+class TestLintTier:
+    def setup_method(self):
+        self.tier = LintTier()
+
+    def test_name_and_weight(self):
+        assert self.tier.name == "lint"
+        assert self.tier.weight == 0.25
+
+    def test_pass(self):
+        r = self.tier.evaluate(lint_exit_code=0)
+        assert r.verdict == TierVerdict.PASS
+        assert r.score == 1.0
+        assert r.details == "lint clean"
+
+    def test_fail(self):
+        r = self.tier.evaluate(lint_exit_code=1, lint_stdout="E301 expected")
+        assert r.verdict == TierVerdict.FAIL
+        assert r.score == 0.0
+        assert "E301" in r.details
+
+    def test_waived(self):
+        r = self.tier.evaluate(lint_exit_code=1, lint_waive=True,
+                               lint_stdout="E301 expected")
+        assert r.verdict == TierVerdict.WAIVED
+        assert r.score == 0.5
+        assert "E301" in r.details
+
+    def test_waive_true_but_lint_passes(self):
+        """If lint passes, waive flag is irrelevant."""
+        r = self.tier.evaluate(lint_exit_code=0, lint_waive=True)
+        assert r.verdict == TierVerdict.PASS
+        assert r.score == 1.0
+
+    def test_fail_empty_stdout(self):
+        r = self.tier.evaluate(lint_exit_code=1)
+        assert r.verdict == TierVerdict.FAIL
+        assert r.details == "lint failed"
+
+    def test_waived_empty_stdout(self):
+        r = self.tier.evaluate(lint_exit_code=1, lint_waive=True)
+        assert r.details == "lint issues waived"
+
+    def test_no_short_circuit(self):
+        r = self.tier.evaluate(lint_exit_code=1)
+        assert r.short_circuit is False
+
+    def test_extra_kwargs_ignored(self):
+        r = self.tier.evaluate(lint_exit_code=0, test_exit_code=1)
+        assert r.verdict == TierVerdict.PASS
+
+    def test_default_exit_code_is_failure(self):
+        r = self.tier.evaluate()
+        assert r.verdict == TierVerdict.FAIL
+
+
+# ── LLMReviewTier ────────────────────────────────────────────────────────────
+
+class TestLLMReviewTier:
+    def setup_method(self):
+        self.tier = LLMReviewTier()
+
+    def test_name_and_weight(self):
+        assert self.tier.name == "llm_review"
+        assert self.tier.weight == 0.15
+
+    def test_stub_returns_half(self):
+        r = self.tier.evaluate()
+        assert r.verdict == TierVerdict.PASS
+        assert r.score == 0.5
+        assert "stub" in r.details
+
+    def test_ignores_all_kwargs(self):
+        r = self.tier.evaluate(test_exit_code=0, lint_exit_code=0,
+                               arbitrary="value")
+        assert r.score == 0.5
+
+    def test_no_short_circuit(self):
+        r = self.tier.evaluate()
+        assert r.short_circuit is False
+
+
+# ── BaseTier ─────────────────────────────────────────────────────────────────
+
+class TestBaseTier:
+    def test_abstract(self):
+        """BaseTier cannot be instantiated directly."""
+        with pytest.raises(TypeError):
+            BaseTier()
+
+    def test_subclass_must_implement_evaluate(self):
+        class Incomplete(BaseTier):
+            name = "incomplete"
+            weight = 0.1
+
+        with pytest.raises(TypeError):
+            Incomplete()
+
+```
+
 ## `tests/test_kernel_budgets.py`
 
 ```python
@@ -16702,6 +24172,7 @@ class TestBudgetConfig:
         assert config.max_time_per_phase_seconds == 300.0
         assert config.max_tool_output_bytes_in_context == 32_768
         assert config.max_context_tokens_per_role == 16_384
+        assert config.max_candidates == 5
 
     def test_frozen(self):
         config = BudgetConfig()
@@ -16717,6 +24188,19 @@ class TestBudgetConfig:
         assert config.max_phase_retries == 5
         assert config.max_total_iterations == 100
         assert config.max_time_per_phase_seconds == 60.0
+
+    def test_max_candidates_default(self):
+        config = BudgetConfig()
+        assert config.max_candidates == 5
+
+    def test_max_candidates_custom(self):
+        config = BudgetConfig(max_candidates=10)
+        assert config.max_candidates == 10
+
+    def test_max_candidates_frozen(self):
+        config = BudgetConfig()
+        with pytest.raises(FrozenInstanceError):
+            config.max_candidates = 3
 
 
 class TestCheckPhaseRetries:
@@ -17694,6 +25178,1409 @@ class TestCheckpointRollback:
         )
         state = orch.run("test task")
         assert "_last_patch_checkpoint" in state.artifacts
+
+```
+
+## `tests/test_patch_applicator.py`
+
+```python
+# tests/test_patch_applicator.py — Tests for core/patch/applicator.py
+
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from core.contracts.schemas import FilePatch
+from core.patch.applicator import (
+    PathJailError,
+    apply_create,
+    apply_delete,
+    apply_modify,
+    apply_patch,
+    jail_path,
+)
+
+
+class TestJailPath:
+    def test_valid_relative_path(self, tmp_path):
+        result = jail_path("src/main.py", tmp_path)
+        assert result == (tmp_path / "src" / "main.py").resolve()
+
+    def test_absolute_path_rejected(self, tmp_path):
+        with pytest.raises(PathJailError, match="Absolute path"):
+            jail_path("/etc/passwd", tmp_path)
+
+    def test_traversal_rejected(self, tmp_path):
+        with pytest.raises(PathJailError, match="Path traversal"):
+            jail_path("../escape.py", tmp_path)
+
+    def test_deep_traversal_rejected(self, tmp_path):
+        with pytest.raises(PathJailError, match="Path traversal"):
+            jail_path("src/../../escape.py", tmp_path)
+
+    def test_empty_path_rejected(self, tmp_path):
+        with pytest.raises(PathJailError, match="Empty file path"):
+            jail_path("", tmp_path)
+
+
+class TestApplyModify:
+    def test_successful_replacement(self, tmp_path):
+        f = tmp_path / "test.py"
+        f.write_text("def old():\n    return 1\n")
+        result = apply_modify(f, "def old():\n    return 1\n", "def new():\n    return 2\n")
+        assert result.success is True
+        assert f.read_text() == "def new():\n    return 2\n"
+
+    def test_zero_matches(self, tmp_path):
+        f = tmp_path / "test.py"
+        f.write_text("hello world\n")
+        result = apply_modify(f, "missing text", "replacement")
+        assert result.success is False
+        assert result.match_count == 0
+
+    def test_multiple_matches(self, tmp_path):
+        f = tmp_path / "test.py"
+        f.write_text("x = 1\nx = 1\n")
+        result = apply_modify(f, "x = 1", "x = 2")
+        assert result.success is False
+        assert result.match_count == 2
+
+    def test_crlf_normalized(self, tmp_path):
+        f = tmp_path / "test.py"
+        f.write_bytes(b"line1\r\nline2\r\n")
+        result = apply_modify(f, "line1\nline2\n", "new1\nnew2\n")
+        assert result.success is True
+        assert f.read_text() == "new1\nnew2\n"
+
+    def test_empty_replace_deletes_text(self, tmp_path):
+        f = tmp_path / "test.py"
+        f.write_text("keep\nremove this\nkeep too\n")
+        result = apply_modify(f, "remove this\n", "")
+        assert result.success is True
+        assert f.read_text() == "keep\nkeep too\n"
+
+    def test_preserves_file_mode(self, tmp_path):
+        f = tmp_path / "script.sh"
+        f.write_text("#!/bin/bash\necho old\n")
+        os.chmod(f, 0o755)
+        result = apply_modify(f, "echo old", "echo new")
+        assert result.success is True
+        mode = os.stat(f).st_mode
+        assert mode & stat.S_IXUSR  # Still executable
+
+    def test_preserves_indentation(self, tmp_path):
+        f = tmp_path / "test.py"
+        f.write_text("    indented = True\n")
+        result = apply_modify(f, "    indented = True", "    indented = False")
+        assert result.success is True
+        assert f.read_text() == "    indented = False\n"
+
+    def test_file_not_found(self, tmp_path):
+        f = tmp_path / "missing.py"
+        result = apply_modify(f, "old", "new")
+        assert result.success is False
+        assert "does not exist" in result.error
+
+
+class TestApplyCreate:
+    def test_new_file(self, tmp_path):
+        f = tmp_path / "new.py"
+        result = apply_create(f, "# new file\n")
+        assert result.success is True
+        assert f.read_text() == "# new file\n"
+
+    def test_already_exists(self, tmp_path):
+        f = tmp_path / "existing.py"
+        f.write_text("old content")
+        result = apply_create(f, "new content")
+        assert result.success is False
+        assert "already exists" in result.error
+
+    def test_parent_dirs_created(self, tmp_path):
+        f = tmp_path / "deep" / "nested" / "file.py"
+        result = apply_create(f, "content")
+        assert result.success is True
+        assert f.exists()
+
+    def test_lf_endings(self, tmp_path):
+        f = tmp_path / "test.py"
+        result = apply_create(f, "line1\r\nline2\r\n")
+        assert result.success is True
+        assert f.read_text() == "line1\nline2\n"
+
+
+class TestApplyDelete:
+    def test_delete_file(self, tmp_path):
+        f = tmp_path / "old.py"
+        f.write_text("to be deleted")
+        result = apply_delete(f)
+        assert result.success is True
+        assert not f.exists()
+
+    def test_delete_missing(self, tmp_path):
+        f = tmp_path / "missing.py"
+        result = apply_delete(f)
+        assert result.success is False
+        assert "does not exist" in result.error
+
+
+class TestApplyPatch:
+    def test_dispatch_modify(self, tmp_path):
+        (tmp_path / "a.py").write_text("old\n")
+        patch = FilePatch(file_path="a.py", search_block="old\n",
+                          replace_block="new\n", action="modify")
+        result = apply_patch(tmp_path, patch)
+        assert result.success is True
+
+    def test_dispatch_create(self, tmp_path):
+        patch = FilePatch(file_path="new.py", replace_block="content",
+                          action="create")
+        result = apply_patch(tmp_path, patch)
+        assert result.success is True
+
+    def test_dispatch_delete(self, tmp_path):
+        (tmp_path / "old.py").write_text("x")
+        patch = FilePatch(file_path="old.py", action="delete")
+        result = apply_patch(tmp_path, patch)
+        assert result.success is True
+
+    def test_unknown_action(self, tmp_path):
+        patch = FilePatch(file_path="x.py", action="unknown")
+        result = apply_patch(tmp_path, patch)
+        assert result.success is False
+        assert "Unknown action" in result.error
+
+    def test_path_jail_traversal(self, tmp_path):
+        patch = FilePatch(file_path="../escape.py", action="create",
+                          replace_block="bad")
+        result = apply_patch(tmp_path, patch)
+        assert result.success is False
+        assert "Path traversal" in result.error
+
+    def test_path_jail_absolute(self, tmp_path):
+        patch = FilePatch(file_path="/etc/passwd", action="delete")
+        result = apply_patch(tmp_path, patch)
+        assert result.success is False
+        assert "Absolute path" in result.error
+
+```
+
+## `tests/test_patch_engine.py`
+
+```python
+# tests/test_patch_engine.py — Tests for core/patch/engine.py
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from core.contracts.schemas import FilePatch, PatchSet
+from core.patch.engine import PatchEngine
+
+
+def make_runner(rc=0, stdout="", stderr=""):
+    """Factory returning a mock subprocess runner."""
+    calls = []
+    def runner(cmd, *, shell=False, timeout=None, executable=None):
+        calls.append(cmd)
+        return rc, stdout, stderr
+    runner.calls = calls
+    return runner
+
+
+class TestValidate:
+    def test_all_match(self, tmp_path):
+        (tmp_path / "a.py").write_text("old line\n")
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="a.py", search_block="old line\n",
+                      replace_block="new line\n", action="modify"),
+        ])
+        result = engine.validate(ps)
+        assert result.success is True
+        assert len(result.file_results) == 1
+
+    def test_one_fails(self, tmp_path):
+        (tmp_path / "a.py").write_text("actual content\n")
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="a.py", search_block="wrong content",
+                      replace_block="new", action="modify"),
+        ])
+        result = engine.validate(ps)
+        assert result.success is False
+
+    def test_validate_create_exists(self, tmp_path):
+        (tmp_path / "exists.py").write_text("content")
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="exists.py", replace_block="new",
+                      action="create"),
+        ])
+        result = engine.validate(ps)
+        assert result.success is False
+
+    def test_validate_create_not_exists(self, tmp_path):
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="new.py", replace_block="content",
+                      action="create"),
+        ])
+        result = engine.validate(ps)
+        assert result.success is True
+
+    def test_validate_delete_exists(self, tmp_path):
+        (tmp_path / "old.py").write_text("x")
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="old.py", action="delete"),
+        ])
+        result = engine.validate(ps)
+        assert result.success is True
+
+    def test_validate_delete_not_exists(self, tmp_path):
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="missing.py", action="delete"),
+        ])
+        result = engine.validate(ps)
+        assert result.success is False
+
+    def test_validate_unknown_action(self, tmp_path):
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="x.py", action="unknown"),
+        ])
+        result = engine.validate(ps)
+        assert result.success is False
+
+
+class TestApply:
+    def test_apply_without_worktree(self, tmp_path):
+        (tmp_path / "a.py").write_text("old\n")
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="a.py", search_block="old\n",
+                      replace_block="new\n", action="modify"),
+        ])
+        result = engine.apply(ps, use_worktree=False)
+        assert result.success is True
+        assert (tmp_path / "a.py").read_text() == "new\n"
+
+    def test_apply_failure_stops(self, tmp_path):
+        (tmp_path / "a.py").write_text("content1\n")
+        (tmp_path / "b.py").write_text("content2\n")
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="a.py", search_block="wrong",
+                      replace_block="new", action="modify"),
+            FilePatch(file_path="b.py", search_block="content2\n",
+                      replace_block="new2\n", action="modify"),
+        ])
+        result = engine.apply(ps, use_worktree=False)
+        assert result.success is False
+        assert len(result.file_results) == 1  # Stopped at first failure
+
+    def test_apply_with_worktree(self, tmp_path):
+        (tmp_path / "a.py").write_text("old\n")
+        runner = make_runner(0, "", "")
+        engine = PatchEngine(str(tmp_path), subprocess_runner=runner)
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="a.py", search_block="old\n",
+                      replace_block="new\n", action="modify"),
+        ])
+        result = engine.apply(ps, use_worktree=True)
+        assert result.worktree_path != ""
+
+    def test_apply_create_and_modify(self, tmp_path):
+        (tmp_path / "existing.py").write_text("old\n")
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="new.py", replace_block="new file\n",
+                      action="create"),
+            FilePatch(file_path="existing.py", search_block="old\n",
+                      replace_block="modified\n", action="modify"),
+        ])
+        result = engine.apply(ps, use_worktree=False)
+        assert result.success is True
+        assert (tmp_path / "new.py").read_text() == "new file\n"
+        assert (tmp_path / "existing.py").read_text() == "modified\n"
+
+    def test_apply_delete_and_modify(self, tmp_path):
+        (tmp_path / "remove.py").write_text("bye")
+        (tmp_path / "keep.py").write_text("old\n")
+        engine = PatchEngine(str(tmp_path))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="remove.py", action="delete"),
+            FilePatch(file_path="keep.py", search_block="old\n",
+                      replace_block="new\n", action="modify"),
+        ])
+        result = engine.apply(ps, use_worktree=False)
+        assert result.success is True
+        assert not (tmp_path / "remove.py").exists()
+
+
+class TestDiff:
+    def test_diff_returns_output(self, tmp_path):
+        runner = make_runner(0, "diff --git a/f b/f", "")
+        engine = PatchEngine(str(tmp_path), subprocess_runner=runner)
+        diff = engine.diff()
+        # No active worktree, so diff() returns error
+        assert "failed" in diff or "No active" in diff
+
+
+class TestMerge:
+    def test_merge(self, tmp_path):
+        runner = make_runner(0, "merged", "")
+        engine = PatchEngine(str(tmp_path), subprocess_runner=runner)
+        engine._worktree.create(name="merge_test")
+        rc, out, err = engine.merge(message="Apply patch")
+        assert rc == 0
+
+
+class TestRollback:
+    def test_rollback(self, tmp_path):
+        runner = make_runner(0, "", "")
+        engine = PatchEngine(str(tmp_path), subprocess_runner=runner)
+        engine._worktree.create(name="rb_test")
+        engine.rollback()
+        assert not engine._worktree.active
+
+
+class TestStatus:
+    def test_status(self, tmp_path):
+        engine = PatchEngine(str(tmp_path))
+        info = engine.status()
+        assert info["worktree_active"] is False
+        assert info["repo_path"] == str(tmp_path)
+
+
+@pytest.mark.integration
+class TestEngineIntegration:
+    """Integration tests with real git. Skipped if git not available."""
+
+    @pytest.fixture(autouse=True)
+    def check_git(self):
+        if not shutil.which("git"):
+            pytest.skip("git not available")
+
+    def test_validate_apply_diff_merge(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"],
+                        cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"],
+                        cwd=repo, capture_output=True)
+        (repo / "f.py").write_text("old\n")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        engine = PatchEngine(str(repo))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="f.py", search_block="old\n",
+                      replace_block="new\n", action="modify"),
+        ])
+
+        # Validate
+        vr = engine.validate(ps)
+        assert vr.success is True
+
+        # Apply in worktree
+        ar = engine.apply(ps)
+        assert ar.success is True
+        wt_path = ar.worktree_path
+        assert (Path(wt_path) / "f.py").read_text() == "new\n"
+
+        # Diff
+        diff = engine.diff()
+        # Diff should show the change
+        assert "new" in diff or diff == ""  # git diff may be empty if not staged
+
+        # Merge
+        rc, out, err = engine.merge(message="Apply patch")
+        assert rc == 0
+        assert not engine._worktree.active
+
+    def test_apply_rollback(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"],
+                        cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"],
+                        cwd=repo, capture_output=True)
+        (repo / "f.py").write_text("original\n")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        engine = PatchEngine(str(repo))
+        ps = PatchSet(task_id="t1", patches=[
+            FilePatch(file_path="f.py", search_block="original\n",
+                      replace_block="changed\n", action="modify"),
+        ])
+        ar = engine.apply(ps)
+        assert ar.success is True
+
+        # Rollback
+        engine.rollback()
+        assert not engine._worktree.active
+        # Original file unchanged in main repo
+        assert (repo / "f.py").read_text() == "original\n"
+
+```
+
+## `tests/test_patch_matcher.py`
+
+```python
+# tests/test_patch_matcher.py — Tests for core/patch/matcher.py
+
+import pytest
+
+from core.patch.matcher import (
+    canonicalize,
+    compute_context_hash,
+    find_exact_matches,
+    find_similar_regions,
+    indent_depth,
+    match_file,
+)
+
+
+class TestCanonicalize:
+    def test_crlf_to_lf(self):
+        assert canonicalize("a\r\nb\r\n") == "a\nb\n"
+
+    def test_lf_unchanged(self):
+        assert canonicalize("a\nb\n") == "a\nb\n"
+
+    def test_mixed(self):
+        assert canonicalize("a\r\nb\nc\r\n") == "a\nb\nc\n"
+
+
+class TestFindExactMatches:
+    def test_single_match(self):
+        content = "hello world\nfoo bar\nbaz"
+        offsets = find_exact_matches(content, "foo bar")
+        assert len(offsets) == 1
+        assert content[offsets[0][0]:offsets[0][1]] == "foo bar"
+
+    def test_zero_matches(self):
+        content = "hello world"
+        offsets = find_exact_matches(content, "missing")
+        assert offsets == []
+
+    def test_multiple_matches(self):
+        content = "aXaXa"
+        offsets = find_exact_matches(content, "a")
+        assert len(offsets) == 3
+
+    def test_multiline_match(self):
+        content = "line1\nline2\nline3"
+        offsets = find_exact_matches(content, "line1\nline2")
+        assert len(offsets) == 1
+
+    def test_empty_search(self):
+        offsets = find_exact_matches("content", "")
+        assert offsets == []
+
+
+class TestComputeContextHash:
+    def test_deterministic(self):
+        content = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"
+        h1 = compute_context_hash(content, 4)
+        h2 = compute_context_hash(content, 4)
+        assert h1 == h2
+        assert len(h1) == 64  # SHA256 hex
+
+    def test_near_start(self):
+        content = "a\nb\nc"
+        h = compute_context_hash(content, 0)
+        assert len(h) == 64
+
+    def test_near_end(self):
+        content = "a\nb\nc"
+        h = compute_context_hash(content, len(content) - 1)
+        assert len(h) == 64
+
+
+class TestIndentDepth:
+    def test_spaces(self):
+        assert indent_depth("    code") == 4
+
+    def test_tabs(self):
+        assert indent_depth("\tcode") == 4
+
+    def test_mixed(self):
+        assert indent_depth("  \tcode") == 6  # 2 spaces + 4 for tab
+
+    def test_no_indent(self):
+        assert indent_depth("code") == 0
+
+    def test_empty_line(self):
+        assert indent_depth("") == 0
+
+
+class TestFindSimilarRegions:
+    def test_returns_top_3(self):
+        content = "\n".join([
+            "def alpha():",
+            "    return 1",
+            "",
+            "def beta():",
+            "    return 2",
+            "",
+            "def gamma():",
+            "    return 3",
+            "",
+            "def delta():",
+            "    return 4",
+        ])
+        search = "def alpha():\n    return 99"
+        regions = find_similar_regions(content, search)
+        assert len(regions) <= 3
+        assert all(r.similarity > 0 for r in regions)
+
+    def test_indentation_filter(self):
+        content = "\n".join([
+            "class Foo:",
+            "    def method(self):",
+            "        x = 1",
+            "",
+            "def standalone():",
+            "    x = 1",
+        ])
+        search = "def standalone():\n    x = 99"
+        regions = find_similar_regions(content, search)
+        # Should prefer the standalone function (indent 0) over the method (indent 4)
+        if regions:
+            assert regions[0].similarity > 0
+
+    def test_empty_search_block(self):
+        regions = find_similar_regions("some content", "")
+        assert regions == []
+
+    def test_whitespace_only_search(self):
+        regions = find_similar_regions("content", "   \n   ")
+        assert regions == []
+
+    def test_short_file(self):
+        content = "x = 1"
+        search = "x = 2"
+        regions = find_similar_regions(content, search)
+        assert len(regions) <= 3
+
+    def test_token_overlap_scoring(self):
+        content = "\n".join([
+            "def process_data(items):",
+            "    for item in items:",
+            "        handle(item)",
+            "",
+            "def unrelated():",
+            "    pass",
+        ])
+        search = "def process_data(items):\n    for item in items:\n        transform(item)"
+        regions = find_similar_regions(content, search)
+        if regions:
+            # First result should be the process_data function (highest token overlap)
+            assert "process_data" in regions[0].content
+
+    def test_similarity_ranking(self):
+        content = "\n".join([
+            "def foo():",
+            "    return 1",
+            "",
+            "def bar():",
+            "    return 1",
+        ])
+        search = "def foo():\n    return 2"
+        regions = find_similar_regions(content, search)
+        if len(regions) >= 2:
+            assert regions[0].similarity >= regions[1].similarity
+
+
+class TestMatchFile:
+    def test_success_exactly_one(self):
+        content = "line1\nline2\nline3"
+        result = match_file(content, "line2", file_path="test.py")
+        assert result.success is True
+        assert result.match_count == 1
+        assert len(result.match_offsets) == 1
+        assert len(result.context_hashes) == 1
+
+    def test_zero_matches(self):
+        content = "line1\nline2\nline3"
+        result = match_file(content, "missing", file_path="test.py")
+        assert result.success is False
+        assert result.match_count == 0
+        assert "No exact match" in result.error
+
+    def test_multiple_matches(self):
+        content = "x = 1\nx = 1\nx = 1"
+        result = match_file(content, "x = 1", file_path="test.py")
+        assert result.success is False
+        assert result.match_count == 3
+        assert "Ambiguous" in result.error
+        assert len(result.match_offsets) == 3
+        assert len(result.context_hashes) == 3
+
+    def test_crlf_normalized(self):
+        content = "line1\r\nline2\r\nline3"
+        result = match_file(content, "line2", file_path="test.py")
+        assert result.success is True
+
+    def test_zero_match_returns_similar_regions(self):
+        content = "def foo():\n    return 1\n\ndef bar():\n    return 2"
+        result = match_file(content, "def foo():\n    return 99", file_path="test.py")
+        assert result.success is False
+        assert result.match_count == 0
+        # Should have similar regions
+        assert len(result.similar_regions) > 0
+
+    def test_large_file_not_pathological(self):
+        # 10000 lines shouldn't cause timeout
+        content = "\n".join(f"line_{i} = {i}" for i in range(10000))
+        search = "line_5000 = 9999"  # Modified value, won't match
+        result = match_file(content, search, file_path="big.py")
+        assert result.success is False  # No exact match
+        # Just verify it completes without hanging
+
+```
+
+## `tests/test_patch_models.py`
+
+```python
+# tests/test_patch_models.py — Tests for core/patch/models.py
+
+import pytest
+
+from core.patch.models import FileMatchResult, PatchResult, SimilarRegion
+
+
+class TestSimilarRegion:
+    def test_construction(self):
+        r = SimilarRegion(
+            line_start=1, line_end=5, content="hello",
+            similarity=0.8, indent_depth=4,
+        )
+        assert r.line_start == 1
+        assert r.line_end == 5
+        assert r.content == "hello"
+        assert r.similarity == 0.8
+        assert r.indent_depth == 4
+
+    def test_zero_similarity(self):
+        r = SimilarRegion(
+            line_start=1, line_end=1, content="",
+            similarity=0.0, indent_depth=0,
+        )
+        assert r.similarity == 0.0
+
+
+class TestFileMatchResult:
+    def test_defaults(self):
+        r = FileMatchResult(file_path="a.py", action="modify", success=True)
+        assert r.match_count == 0
+        assert r.match_offsets == []
+        assert r.context_hashes == []
+        assert r.similar_regions == []
+        assert r.error == ""
+
+    def test_to_dict(self):
+        r = FileMatchResult(
+            file_path="a.py", action="modify", success=True,
+            match_count=1, match_offsets=[(0, 10)],
+            context_hashes=["abc123"],
+        )
+        d = r.to_dict()
+        assert d["file_path"] == "a.py"
+        assert d["success"] is True
+        assert d["match_offsets"] == [(0, 10)]
+        assert d["similar_regions"] == []
+
+    def test_to_dict_with_similar_regions(self):
+        region = SimilarRegion(
+            line_start=2, line_end=4, content="code",
+            similarity=0.7, indent_depth=0,
+        )
+        r = FileMatchResult(
+            file_path="b.py", action="modify", success=False,
+            similar_regions=[region],
+        )
+        d = r.to_dict()
+        assert len(d["similar_regions"]) == 1
+        assert d["similar_regions"][0]["similarity"] == 0.7
+
+
+class TestPatchResult:
+    def test_defaults(self):
+        r = PatchResult(success=True)
+        assert r.file_results == []
+        assert r.worktree_path == ""
+        assert r.diff == ""
+        assert r.error == ""
+
+    def test_to_dict(self):
+        fr = FileMatchResult(file_path="x.py", action="create", success=True)
+        r = PatchResult(success=True, file_results=[fr], worktree_path="/tmp/wt")
+        d = r.to_dict()
+        assert d["success"] is True
+        assert len(d["file_results"]) == 1
+        assert d["worktree_path"] == "/tmp/wt"
+
+```
+
+## `tests/test_patch_parser.py`
+
+```python
+# tests/test_patch_parser.py — Tests for core/patch/parser.py
+
+import pytest
+
+from core.patch.parser import ParseError, parse_patch_text
+
+
+class TestParseModifyBlock:
+    def test_single_modify(self):
+        text = """\
+<<<< SEARCH src/main.py
+old line
+====
+new line
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+        assert patches[0].file_path == "src/main.py"
+        assert patches[0].action == "modify"
+        assert patches[0].search_block == "old line"
+        assert patches[0].replace_block == "new line"
+
+    def test_multiple_modify_blocks(self):
+        text = """\
+<<<< SEARCH a.py
+line1
+====
+line2
+>>>> REPLACE
+
+Some commentary here.
+
+<<<< SEARCH b.py
+foo
+====
+bar
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 2
+        assert patches[0].file_path == "a.py"
+        assert patches[1].file_path == "b.py"
+
+    def test_empty_replace_block(self):
+        text = """\
+<<<< SEARCH x.py
+delete this
+====
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+        assert patches[0].replace_block == ""
+
+    def test_multiline_blocks(self):
+        text = """\
+<<<< SEARCH lib/utils.py
+def old():
+    return 1
+
+====
+def new():
+    return 2
+
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert "def old():" in patches[0].search_block
+        assert "def new():" in patches[0].replace_block
+
+    def test_whitespace_preservation(self):
+        text = """\
+<<<< SEARCH f.py
+    indented line
+        more indented
+====
+    new indented
+        still more
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert "    indented line" in patches[0].search_block
+        assert "    new indented" in patches[0].replace_block
+
+    def test_trailing_newline_preserved(self):
+        text = "<<<< SEARCH f.py\nline\n====\nreplacement\n>>>> REPLACE"
+        patches = parse_patch_text(text)
+        # The content between delimiters is "line" (single line, no trailing newline
+        # because the \n before ==== is the line separator in split)
+        assert patches[0].search_block == "line"
+        assert patches[0].replace_block == "replacement"
+
+    def test_trailing_newline_in_content(self):
+        text = "<<<< SEARCH f.py\nline\n\n====\nreplacement\n\n>>>> REPLACE"
+        patches = parse_patch_text(text)
+        # Extra blank line is preserved
+        assert patches[0].search_block == "line\n"
+        assert patches[0].replace_block == "replacement\n"
+
+
+class TestParseCreateBlock:
+    def test_create_block(self):
+        text = """\
+<<<< CREATE new_file.py
+# New file
+def hello():
+    pass
+>>>> CREATE
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+        assert patches[0].file_path == "new_file.py"
+        assert patches[0].action == "create"
+        assert "def hello():" in patches[0].replace_block
+
+    def test_create_empty_content(self):
+        text = """\
+<<<< CREATE empty.py
+>>>> CREATE
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+        assert patches[0].replace_block == ""
+
+
+class TestParseDeleteBlock:
+    def test_delete_single_line(self):
+        text = "<<<< DELETE old_file.py >>>>"
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+        assert patches[0].file_path == "old_file.py"
+        assert patches[0].action == "delete"
+
+    def test_delete_with_surrounding_text(self):
+        text = """\
+Remove the old config:
+
+<<<< DELETE config/old.yml >>>>
+
+Done.
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+        assert patches[0].file_path == "config/old.yml"
+
+
+class TestParseMixedBlocks:
+    def test_modify_create_delete(self):
+        text = """\
+First fix the main file:
+
+<<<< SEARCH main.py
+old code
+====
+new code
+>>>> REPLACE
+
+Create a new helper:
+
+<<<< CREATE helpers.py
+def help():
+    pass
+>>>> CREATE
+
+Remove deprecated file:
+
+<<<< DELETE legacy.py >>>>
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 3
+        assert patches[0].action == "modify"
+        assert patches[1].action == "create"
+        assert patches[2].action == "delete"
+
+
+class TestParseErrors:
+    def test_unclosed_search_block(self):
+        text = """\
+<<<< SEARCH a.py
+old code
+"""
+        with pytest.raises(ParseError, match="missing ==== separator"):
+            parse_patch_text(text)
+
+    def test_missing_replace_end(self):
+        text = """\
+<<<< SEARCH a.py
+old
+====
+new
+"""
+        with pytest.raises(ParseError, match="missing >>>> REPLACE"):
+            parse_patch_text(text)
+
+    def test_unclosed_create_block(self):
+        text = """\
+<<<< CREATE a.py
+content
+"""
+        with pytest.raises(ParseError, match="missing >>>> CREATE"):
+            parse_patch_text(text)
+
+    def test_absolute_path_rejected(self):
+        text = "<<<< DELETE /etc/passwd >>>>"
+        with pytest.raises(ParseError, match="Absolute path rejected"):
+            parse_patch_text(text)
+
+    def test_traversal_path_rejected(self):
+        text = "<<<< DELETE ../../../etc/passwd >>>>"
+        with pytest.raises(ParseError, match="Path traversal rejected"):
+            parse_patch_text(text)
+
+    def test_traversal_in_search_path(self):
+        text = """\
+<<<< SEARCH ../escape.py
+old
+====
+new
+>>>> REPLACE
+"""
+        with pytest.raises(ParseError, match="Path traversal rejected"):
+            parse_patch_text(text)
+
+    def test_empty_input(self):
+        assert parse_patch_text("") == []
+        assert parse_patch_text("   \n\n  ") == []
+
+    def test_no_file_path_search(self):
+        text = """\
+<<<< SEARCH
+old
+====
+new
+>>>> REPLACE
+"""
+        # The regex won't match a SEARCH line with only whitespace after it,
+        # so this won't even enter the SEARCH handler. But if there's trailing
+        # space the path will be empty and validated.
+        # Actually the regex r"<{4}\s+SEARCH\s+(.+)$" requires .+ so it needs
+        # at least one non-whitespace char. Let's verify it passes through.
+        patches = parse_patch_text(text)
+        # The SEARCH line has nothing after "SEARCH ", so .+ doesn't match
+        # and the line is skipped. The ==== and >>>> REPLACE are also skipped.
+        assert len(patches) == 0
+
+
+class TestParseEdgeCases:
+    def test_commentary_between_blocks(self):
+        text = """\
+Here is my fix:
+
+The problem was in the loop.
+
+<<<< SEARCH x.py
+old
+====
+new
+>>>> REPLACE
+
+That should fix it!
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+
+    def test_unicode_content(self):
+        text = """\
+<<<< SEARCH i18n.py
+msg = "hello"
+====
+msg = "こんにちは"
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert "こんにちは" in patches[0].replace_block
+
+    def test_delimiter_mid_line_not_treated_as_delimiter(self):
+        text = """\
+<<<< SEARCH code.py
+x = "<<<< SEARCH fake"
+====
+x = "fixed"
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+        assert '<<<< SEARCH fake' in patches[0].search_block
+
+    def test_nested_delimiter_in_code_block(self):
+        text = """\
+<<<< SEARCH parser.py
+if line.startswith("===="):
+    pass
+====
+if line.startswith("===="):
+    handle()
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+        # The first ==== that appears at line start (the actual separator)
+        # ends the search block. The ==== inside the if statement appears
+        # after indentation so it's in the code.
+        assert 'startswith("====")' in patches[0].search_block
+
+    def test_file_path_with_spaces(self):
+        text = """\
+<<<< SEARCH my folder/my file.py
+old
+====
+new
+>>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert patches[0].file_path == "my folder/my file.py"
+
+    def test_leading_whitespace_on_delimiter(self):
+        text = """\
+  <<<< SEARCH src.py
+old
+  ====
+new
+  >>>> REPLACE
+"""
+        patches = parse_patch_text(text)
+        assert len(patches) == 1
+
+```
+
+## `tests/test_patch_tool.py`
+
+```python
+# tests/test_patch_tool.py — Tests for core/tools/patch_tool.py
+
+import json
+from pathlib import Path
+
+import pytest
+
+from core.contracts.schemas import FilePatch, PatchSet
+from core.tools.patch_tool import PatchTool
+from core.tools.descriptors import PATCH_DESCRIPTOR, ALL_DESCRIPTORS
+
+
+def make_runner(rc=0, stdout="", stderr=""):
+    calls = []
+    def runner(cmd, *, shell=False, timeout=None, executable=None):
+        calls.append(cmd)
+        return rc, stdout, stderr
+    runner.calls = calls
+    return runner
+
+
+def make_patch_set_json(**overrides):
+    data = {"task_id": "t1", "patches": []}
+    data.update(overrides)
+    return json.dumps(data)
+
+
+class TestPatchToolActions:
+    def test_all_actions_return_tuple(self, tmp_path):
+        tool = PatchTool(repo_path=str(tmp_path))
+        for action in ("validate", "apply", "diff", "merge", "rollback", "status"):
+            if action in ("validate", "apply"):
+                result = tool(action, patch_set_json=make_patch_set_json())
+            else:
+                result = tool(action)
+            assert isinstance(result, tuple)
+            assert len(result) == 3
+            rc, out, err = result
+            assert isinstance(rc, int)
+            assert isinstance(out, str)
+            assert isinstance(err, str)
+
+    def test_unknown_action(self, tmp_path):
+        tool = PatchTool(repo_path=str(tmp_path))
+        rc, out, err = tool("nonexistent")
+        assert rc == 1
+        assert "Unknown patch action" in err
+
+    def test_validate_action(self, tmp_path):
+        (tmp_path / "a.py").write_text("old\n")
+        tool = PatchTool(repo_path=str(tmp_path))
+        ps_json = json.dumps({
+            "task_id": "t1",
+            "patches": [{
+                "file_path": "a.py",
+                "search_block": "old\n",
+                "replace_block": "new\n",
+                "action": "modify",
+            }],
+        })
+        rc, out, err = tool("validate", patch_set_json=ps_json)
+        assert rc == 0
+        data = json.loads(out)
+        assert data["success"] is True
+
+    def test_apply_action(self, tmp_path):
+        (tmp_path / "a.py").write_text("old\n")
+        tool = PatchTool(repo_path=str(tmp_path))
+        ps_json = json.dumps({
+            "task_id": "t1",
+            "patches": [{
+                "file_path": "a.py",
+                "search_block": "old\n",
+                "replace_block": "new\n",
+                "action": "modify",
+            }],
+        })
+        rc, out, err = tool("apply", patch_set_json=ps_json, use_worktree=False)
+        assert rc == 0
+        data = json.loads(out)
+        assert data["success"] is True
+        assert (tmp_path / "a.py").read_text() == "new\n"
+
+    def test_diff_action_no_worktree(self, tmp_path):
+        tool = PatchTool(repo_path=str(tmp_path))
+        rc, out, err = tool("diff")
+        assert rc == 1  # No active worktree
+
+    def test_rollback_action(self, tmp_path):
+        tool = PatchTool(repo_path=str(tmp_path))
+        rc, out, err = tool("rollback")
+        assert rc == 0
+        data = json.loads(out)
+        assert data["rolled_back"] is True
+
+    def test_status_action(self, tmp_path):
+        tool = PatchTool(repo_path=str(tmp_path))
+        rc, out, err = tool("status")
+        assert rc == 0
+        data = json.loads(out)
+        assert "worktree_active" in data
+
+    def test_merge_action_no_worktree(self, tmp_path):
+        runner = make_runner(0, "", "")
+        tool = PatchTool(repo_path=str(tmp_path), subprocess_runner=runner)
+        rc, out, err = tool("merge")
+        assert rc == 1  # No active worktree → RuntimeError caught
+
+
+class TestPatchDescriptor:
+    def test_descriptor_in_all(self):
+        names = [d.tool_name for d in ALL_DESCRIPTORS]
+        assert "patch" in names
+
+    def test_descriptor_scopes(self):
+        assert "fs.read" in PATCH_DESCRIPTOR.required_scopes
+        assert "fs.write" in PATCH_DESCRIPTOR.required_scopes
+        assert "git.read" in PATCH_DESCRIPTOR.required_scopes
+        assert "git.write" in PATCH_DESCRIPTOR.required_scopes
+
+    def test_action_scopes(self):
+        assert PATCH_DESCRIPTOR.action_scopes["validate"] == ["fs.read"]
+        assert "fs.write" in PATCH_DESCRIPTOR.action_scopes["apply"]
+        assert "git.read" in PATCH_DESCRIPTOR.action_scopes["diff"]
+        assert PATCH_DESCRIPTOR.action_scopes["rollback"] == ["git.write"]
+        assert PATCH_DESCRIPTOR.action_scopes["merge"] == ["git.write"]
+
+    def test_all_six_actions(self):
+        expected = {"validate", "apply", "diff", "rollback", "merge", "status"}
+        assert set(PATCH_DESCRIPTOR.action_scopes.keys()) == expected
+
+```
+
+## `tests/test_patch_worktree.py`
+
+```python
+# tests/test_patch_worktree.py — Tests for core/patch/worktree.py
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from core.patch.worktree import PatchWorktree
+
+
+def make_runner(rc=0, stdout="", stderr=""):
+    """Factory returning a mock subprocess runner."""
+    calls = []
+    def runner(cmd, *, shell=False, timeout=None, executable=None):
+        calls.append(cmd)
+        return rc, stdout, stderr
+    runner.calls = calls
+    return runner
+
+
+class TestCreate:
+    def test_create_worktree(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        path = wt.create(name="test1")
+        assert "test1" in path
+        assert wt.active is True
+        assert wt.path == path
+        assert wt.branch == "patch-test1"
+        # Check command includes -b and HEAD
+        assert any("-b" in c and "HEAD" in c for c in runner.calls)
+
+    def test_create_with_auto_name(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        path = wt.create()
+        assert wt.active is True
+        assert "patch-" in wt.branch
+
+    def test_create_when_already_active(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="first")
+        with pytest.raises(RuntimeError, match="already active"):
+            wt.create(name="second")
+
+
+class TestDiscard:
+    def test_discard_worktree(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="discard_me")
+        rc, out, err = wt.discard()
+        assert rc == 0
+        assert wt.active is False
+        assert wt.path is None
+        # Should have called worktree remove and branch -D
+        assert any("worktree remove" in c for c in runner.calls)
+        assert any("branch -D" in c for c in runner.calls)
+
+    def test_discard_when_not_active(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        rc, out, err = wt.discard()
+        assert rc == 0
+        assert "No active" in err
+
+
+class TestMergeBack:
+    def test_merge_back(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="merge_me")
+        rc, out, err = wt.merge_back(message="Apply patches")
+        assert rc == 0
+        assert wt.active is False
+        # Check --no-ff in merge command
+        assert any("--no-ff" in c for c in runner.calls)
+
+    def test_merge_when_not_active(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        with pytest.raises(RuntimeError, match="No active worktree"):
+            wt.merge_back()
+
+
+class TestDiff:
+    def test_diff(self, tmp_path):
+        runner = make_runner(0, "diff output", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="diff_me")
+        rc, out, err = wt.diff()
+        assert rc == 0
+
+
+class TestProperties:
+    def test_active_false_initially(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        assert wt.active is False
+        assert wt.path is None
+        assert wt.branch is None
+
+
+class TestStateFile:
+    def test_state_written_on_create(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="state_test")
+        state_file = tmp_path / ".judais-lobi" / "worktrees" / "active.json"
+        assert state_file.exists()
+        data = json.loads(state_file.read_text())
+        assert "worktree_path" in data
+        assert "branch_name" in data
+        assert "timestamp" in data
+
+    def test_state_deleted_on_discard(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="cleanup_test")
+        state_file = tmp_path / ".judais-lobi" / "worktrees" / "active.json"
+        assert state_file.exists()
+        wt.discard()
+        assert not state_file.exists()
+
+    def test_state_recovery(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="recover")
+
+        # Simulate process restart: create fresh instance
+        wt2 = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        assert wt2.active is True
+        assert wt2.branch == "patch-recover"
+
+
+@pytest.mark.integration
+class TestWorktreeIntegration:
+    """Real git integration tests. Skipped if git is not available."""
+
+    @pytest.fixture(autouse=True)
+    def check_git(self):
+        if not shutil.which("git"):
+            pytest.skip("git not available")
+
+    def test_real_worktree_lifecycle(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # Initialize a git repo
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                        cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"],
+                        cwd=repo, capture_output=True)
+        (repo / "file.txt").write_text("initial\n")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+        wt = PatchWorktree(str(repo))
+        path = wt.create(name="integ")
+        assert Path(path).exists()
+
+        # Modify a file in the worktree
+        (Path(path) / "file.txt").write_text("modified\n")
+
+        # Check diff
+        rc, diff_out, err = wt.diff()
+        assert rc == 0
+
+        # Discard
+        wt.discard()
+        assert not wt.active
 
 ```
 
@@ -19976,8 +28863,9 @@ class TestGetSchemaForPhase:
         """REPO_MAP now has a structured schema."""
         assert get_schema_for_phase(Phase.REPO_MAP) is RepoMapResult
 
-    def test_critique_returns_none(self):
-        assert get_schema_for_phase(Phase.CRITIQUE) is None
+    def test_critique_returns_judge_report(self):
+        from core.judge.models import JudgeReport
+        assert get_schema_for_phase(Phase.CRITIQUE) is JudgeReport
 
     def test_fix_returns_none(self):
         assert get_schema_for_phase(Phase.FIX) is None
@@ -20047,7 +28935,7 @@ class TestValidatePhaseOutputHappy:
 class TestValidatePhaseOutputErrors:
     def test_no_schema_for_phase(self):
         with pytest.raises(ValueError, match="No schema defined"):
-            validate_phase_output(Phase.CRITIQUE, {})
+            validate_phase_output(Phase.FIX, {})
 
     def test_invalid_dict_data(self):
         """Missing required fields should raise ValidationError."""
@@ -20301,6 +29189,706 @@ class TestFormatMermaid:
 
 ```
 
+## `tests/test_workflows.py`
+
+```python
+# tests/test_workflows.py — Phase 7.0: WorkflowTemplate, workflows, and selector
+
+import pytest
+
+from core.kernel.state import Phase, SessionState, TRANSITIONS, InvalidTransition, validate_transition
+from core.kernel.budgets import BudgetConfig
+from core.kernel.orchestrator import Orchestrator, PhaseResult
+from core.kernel.workflows import (
+    WorkflowTemplate,
+    get_coding_workflow,
+    get_generic_workflow,
+    select_workflow,
+)
+from core.contracts.schemas import (
+    TaskContract,
+    ChangePlan,
+    ContextPack,
+    PatchSet,
+    RunReport,
+    FinalReport,
+    PHASE_SCHEMAS,
+)
+from core.context.models import RepoMapResult
+
+
+# ---------------------------------------------------------------------------
+# Phase str,Enum backward compatibility
+# ---------------------------------------------------------------------------
+
+class TestPhaseStrEnum:
+    """Phase is now str,Enum. Members compare equal to their name strings."""
+
+    def test_phase_equals_string(self):
+        assert Phase.INTAKE == "INTAKE"
+        assert Phase.CONTRACT == "CONTRACT"
+        assert Phase.COMPLETED == "COMPLETED"
+
+    def test_phase_is_instance_of_str(self):
+        assert isinstance(Phase.INTAKE, str)
+
+    def test_phase_name_equals_value(self):
+        for p in Phase:
+            assert p.name == p.value
+
+    def test_phase_in_string_set(self):
+        s = {"INTAKE", "CONTRACT"}
+        assert Phase.INTAKE in s
+        assert Phase.CONTRACT in s
+
+    def test_string_in_phase_frozenset(self):
+        fs = frozenset({Phase.INTAKE, Phase.CONTRACT})
+        assert "INTAKE" in fs
+        assert "CONTRACT" in fs
+
+    def test_phase_as_dict_key_string_lookup(self):
+        d = {Phase.INTAKE: "value"}
+        assert d["INTAKE"] == "value"
+        assert d[Phase.INTAKE] == "value"
+
+    def test_string_as_dict_key_phase_lookup(self):
+        d = {"INTAKE": "value"}
+        assert d[Phase.INTAKE] == "value"
+
+    def test_phase_hash_equals_string_hash(self):
+        assert hash(Phase.INTAKE) == hash("INTAKE")
+
+    def test_all_12_phases_exist(self):
+        names = {p.name for p in Phase}
+        expected = {
+            "INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE",
+            "PATCH", "CRITIQUE", "RUN", "FIX", "FINALIZE",
+            "HALTED", "COMPLETED",
+        }
+        assert names == expected
+
+    def test_phase_values_unique(self):
+        values = [p.value for p in Phase]
+        assert len(values) == len(set(values))
+
+
+# ---------------------------------------------------------------------------
+# WorkflowTemplate structure
+# ---------------------------------------------------------------------------
+
+class TestWorkflowTemplate:
+    def test_construction(self):
+        wf = WorkflowTemplate(
+            name="test",
+            phases=("A", "B", "C"),
+            transitions={"A": frozenset({"B"}), "B": frozenset({"C"}), "C": frozenset()},
+            phase_schemas={},
+            phase_order=("A", "B"),
+            branch_rules={"B": lambda r: "C"},
+            terminal_phases=frozenset({"C"}),
+            phase_capabilities={"A": frozenset({"fs.read"})},
+        )
+        assert wf.name == "test"
+        assert wf.phases == ("A", "B", "C")
+
+    def test_equality_by_name(self):
+        wf1 = WorkflowTemplate(
+            name="same", phases=("A",), transitions={}, phase_schemas={},
+            phase_order=(), branch_rules={}, terminal_phases=frozenset(),
+            phase_capabilities={},
+        )
+        wf2 = WorkflowTemplate(
+            name="same", phases=("B",), transitions={}, phase_schemas={},
+            phase_order=(), branch_rules={}, terminal_phases=frozenset(),
+            phase_capabilities={},
+        )
+        assert wf1 == wf2
+
+    def test_inequality_by_name(self):
+        wf1 = WorkflowTemplate(
+            name="a", phases=(), transitions={}, phase_schemas={},
+            phase_order=(), branch_rules={}, terminal_phases=frozenset(),
+            phase_capabilities={},
+        )
+        wf2 = WorkflowTemplate(
+            name="b", phases=(), transitions={}, phase_schemas={},
+            phase_order=(), branch_rules={}, terminal_phases=frozenset(),
+            phase_capabilities={},
+        )
+        assert wf1 != wf2
+
+    def test_hash_by_name(self):
+        wf = WorkflowTemplate(
+            name="test", phases=(), transitions={}, phase_schemas={},
+            phase_order=(), branch_rules={}, terminal_phases=frozenset(),
+            phase_capabilities={},
+        )
+        assert hash(wf) == hash("test")
+
+    def test_default_fields(self):
+        wf = WorkflowTemplate(
+            name="minimal", phases=(), transitions={}, phase_schemas={},
+            phase_order=(), branch_rules={}, terminal_phases=frozenset(),
+            phase_capabilities={},
+        )
+        assert wf.default_budget_overrides == {}
+        assert wf.required_scopes == []
+        assert wf.description == ""
+
+
+# ---------------------------------------------------------------------------
+# CODING_WORKFLOW
+# ---------------------------------------------------------------------------
+
+class TestCodingWorkflow:
+    @pytest.fixture
+    def coding(self):
+        return get_coding_workflow()
+
+    def test_name(self, coding):
+        assert coding.name == "coding"
+
+    def test_12_phases(self, coding):
+        assert len(coding.phases) == 12
+
+    def test_phases_match_enum(self, coding):
+        enum_names = {p.name for p in Phase}
+        assert set(coding.phases) == enum_names
+
+    def test_transitions_match_global(self, coding):
+        """CODING_WORKFLOW transitions produce identical behavior to TRANSITIONS."""
+        for phase in coding.phases:
+            wf_allowed = coding.transitions.get(phase, frozenset())
+            global_allowed = TRANSITIONS.get(phase, frozenset())
+            assert wf_allowed == global_allowed, f"Mismatch at {phase}"
+
+    def test_phase_order_8_linear(self, coding):
+        assert coding.phase_order == (
+            "INTAKE", "CONTRACT", "REPO_MAP", "PLAN",
+            "RETRIEVE", "PATCH", "CRITIQUE", "RUN",
+        )
+
+    def test_branch_rules_run_success(self, coding):
+        result = PhaseResult(success=True)
+        assert coding.branch_rules["RUN"](result) == "FINALIZE"
+
+    def test_branch_rules_run_failure(self, coding):
+        result = PhaseResult(success=False)
+        assert coding.branch_rules["RUN"](result) == "FIX"
+
+    def test_branch_rules_fix(self, coding):
+        result = PhaseResult(success=True)
+        assert coding.branch_rules["FIX"](result) == "PATCH"
+
+    def test_branch_rules_finalize(self, coding):
+        result = PhaseResult(success=True)
+        assert coding.branch_rules["FINALIZE"](result) == "COMPLETED"
+
+    def test_terminal_phases(self, coding):
+        assert coding.terminal_phases == frozenset({"HALTED", "COMPLETED"})
+
+    def test_phase_schemas_match_global(self, coding):
+        for phase_name, schema in PHASE_SCHEMAS.items():
+            assert coding.phase_schemas.get(phase_name) is schema
+
+    def test_required_scopes(self, coding):
+        assert "fs.read" in coding.required_scopes
+        assert "fs.write" in coding.required_scopes
+        assert "git.read" in coding.required_scopes
+        assert "verify.run" in coding.required_scopes
+
+    def test_description_not_empty(self, coding):
+        assert len(coding.description) > 0
+
+
+# ---------------------------------------------------------------------------
+# CODING_WORKFLOW phase_capabilities
+# ---------------------------------------------------------------------------
+
+class TestCodingWorkflowCapabilities:
+    @pytest.fixture
+    def caps(self):
+        return get_coding_workflow().phase_capabilities
+
+    def test_intake_read_only(self, caps):
+        assert caps["INTAKE"] == frozenset({"fs.read"})
+
+    def test_plan_read_only(self, caps):
+        assert caps["PLAN"] == frozenset({"fs.read", "git.read"})
+
+    def test_patch_can_write(self, caps):
+        assert "fs.write" in caps["PATCH"]
+        assert "git.write" in caps["PATCH"]
+
+    def test_run_can_verify(self, caps):
+        assert "verify.run" in caps["RUN"]
+
+    def test_critique_read_only(self, caps):
+        assert caps["CRITIQUE"] == frozenset({"fs.read", "git.read"})
+
+    def test_finalize_read_only(self, caps):
+        assert caps["FINALIZE"] == frozenset({"fs.read", "git.read"})
+
+    def test_no_write_in_plan(self, caps):
+        assert "fs.write" not in caps["PLAN"]
+        assert "git.write" not in caps["PLAN"]
+
+    def test_all_execution_phases_have_capabilities(self, caps):
+        """Every non-terminal phase has defined capabilities."""
+        for phase in ("INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE",
+                      "PATCH", "CRITIQUE", "RUN", "FIX", "FINALIZE"):
+            assert phase in caps, f"Missing capabilities for {phase}"
+
+    def test_all_capabilities_are_frozensets(self, caps):
+        for phase, cap_set in caps.items():
+            assert isinstance(cap_set, frozenset), f"{phase} is not frozenset"
+
+
+# ---------------------------------------------------------------------------
+# GENERIC_WORKFLOW
+# ---------------------------------------------------------------------------
+
+class TestGenericWorkflow:
+    @pytest.fixture
+    def generic(self):
+        return get_generic_workflow()
+
+    def test_name(self, generic):
+        assert generic.name == "generic"
+
+    def test_7_phases(self, generic):
+        assert len(generic.phases) == 7
+
+    def test_phase_names(self, generic):
+        assert set(generic.phases) == {
+            "INTAKE", "PLAN", "EXECUTE", "EVALUATE",
+            "FINALIZE", "HALTED", "COMPLETED",
+        }
+
+    def test_terminal_phases(self, generic):
+        assert generic.terminal_phases == frozenset({"HALTED", "COMPLETED"})
+
+    def test_phase_order(self, generic):
+        assert generic.phase_order == ("INTAKE", "PLAN", "EXECUTE", "EVALUATE")
+
+    def test_branch_rules_evaluate_success(self, generic):
+        result = PhaseResult(success=True)
+        assert generic.branch_rules["EVALUATE"](result) == "FINALIZE"
+
+    def test_branch_rules_evaluate_failure(self, generic):
+        result = PhaseResult(success=False)
+        assert generic.branch_rules["EVALUATE"](result) == "PLAN"
+
+    def test_branch_rules_finalize(self, generic):
+        result = PhaseResult(success=True)
+        assert generic.branch_rules["FINALIZE"](result) == "COMPLETED"
+
+    def test_transitions_intake_to_plan(self, generic):
+        assert "PLAN" in generic.transitions["INTAKE"]
+
+    def test_transitions_evaluate_branches(self, generic):
+        allowed = generic.transitions["EVALUATE"]
+        assert "PLAN" in allowed
+        assert "EXECUTE" in allowed
+        assert "FINALIZE" in allowed
+
+    def test_all_non_terminal_can_halt(self, generic):
+        for phase in generic.phases:
+            if phase in generic.terminal_phases:
+                continue
+            assert "HALTED" in generic.transitions[phase], f"{phase} can't halt"
+
+    def test_execute_has_write_capabilities(self, generic):
+        assert "fs.write" in generic.phase_capabilities["EXECUTE"]
+
+    def test_plan_read_only(self, generic):
+        assert generic.phase_capabilities["PLAN"] == frozenset({"fs.read"})
+
+    def test_schemas_intake(self, generic):
+        assert generic.phase_schemas["INTAKE"] is TaskContract
+
+    def test_schemas_plan(self, generic):
+        assert generic.phase_schemas["PLAN"] is ChangePlan
+
+    def test_schemas_finalize(self, generic):
+        assert generic.phase_schemas["FINALIZE"] is FinalReport
+
+
+# ---------------------------------------------------------------------------
+# select_workflow
+# ---------------------------------------------------------------------------
+
+class TestSelectWorkflow:
+    def test_default_returns_coding(self):
+        wf = select_workflow()
+        assert wf.name == "coding"
+
+    def test_cli_flag_coding(self):
+        wf = select_workflow(cli_flag="coding")
+        assert wf.name == "coding"
+
+    def test_cli_flag_generic(self):
+        wf = select_workflow(cli_flag="generic")
+        assert wf.name == "generic"
+
+    def test_policy_workflow(self):
+        wf = select_workflow(policy_workflow="generic")
+        assert wf.name == "generic"
+
+    def test_cli_flag_overrides_policy(self):
+        wf = select_workflow(cli_flag="coding", policy_workflow="generic")
+        assert wf.name == "coding"
+
+    def test_unknown_workflow_raises(self):
+        with pytest.raises(ValueError, match="Unknown workflow"):
+            select_workflow(cli_flag="nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# SessionState with workflow transitions
+# ---------------------------------------------------------------------------
+
+class TestSessionStateWithWorkflow:
+    def test_default_transitions(self):
+        """SessionState without explicit transitions uses global TRANSITIONS."""
+        state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)  # Should work with default transitions
+        assert state.current_phase == Phase.CONTRACT
+
+    def test_custom_transitions(self):
+        """SessionState with custom transitions validates against them."""
+        custom = {
+            "A": frozenset({"B"}),
+            "B": frozenset(),
+        }
+        state = SessionState(task_description="test", current_phase="A", _transitions=custom)
+        state.enter_phase("B")
+        assert state.current_phase == "B"
+
+    def test_custom_transitions_rejects_invalid(self):
+        custom = {
+            "A": frozenset({"B"}),
+            "B": frozenset(),
+        }
+        state = SessionState(task_description="test", current_phase="A", _transitions=custom)
+        with pytest.raises(InvalidTransition):
+            state.enter_phase("C")  # C not in transitions from A
+
+    def test_generic_workflow_transitions(self):
+        """SessionState with generic workflow transitions follows generic path."""
+        generic = get_generic_workflow()
+        state = SessionState(
+            task_description="test",
+            current_phase="INTAKE",
+            _transitions=generic.transitions,
+        )
+        state.enter_phase("PLAN")
+        assert state.current_phase == "PLAN"
+        state.enter_phase("EXECUTE")
+        assert state.current_phase == "EXECUTE"
+
+    def test_string_phases_work(self):
+        """Pure string phases work without Phase enum."""
+        state = SessionState(task_description="test", current_phase="INTAKE")
+        state.enter_phase("CONTRACT")
+        assert state.current_phase == "CONTRACT"
+
+    def test_phase_retries_with_strings(self):
+        state = SessionState(task_description="test")
+        state.enter_phase("CONTRACT")
+        count = state.record_phase_retry("CONTRACT")
+        assert count == 1
+        # Lookup with Phase enum also works
+        assert state.phase_retries.get(Phase.CONTRACT, 0) == 1
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator with CODING_WORKFLOW (default)
+# ---------------------------------------------------------------------------
+
+class ConfigurableDispatcher:
+    """Test stub: configured PhaseResult per phase."""
+
+    def __init__(self, results=None):
+        self.results = results or {}
+        self.call_log = []
+        self.default_result = PhaseResult(success=True)
+        self._call_count = {}
+
+    def dispatch(self, phase, state):
+        self.call_log.append(phase)
+        count = self._call_count.get(phase, 0)
+        self._call_count[phase] = count + 1
+        result_or_fn = self.results.get(phase, self.default_result)
+        if callable(result_or_fn):
+            return result_or_fn(count)
+        return result_or_fn
+
+
+class TestOrchestratorWithCodingWorkflow:
+    def test_happy_path_completes(self):
+        dispatcher = ConfigurableDispatcher()
+        orch = Orchestrator(dispatcher=dispatcher)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_all_phases_dispatched(self):
+        dispatcher = ConfigurableDispatcher()
+        orch = Orchestrator(dispatcher=dispatcher)
+        orch.run("test task")
+        expected = [
+            "INTAKE", "CONTRACT", "REPO_MAP", "PLAN",
+            "RETRIEVE", "PATCH", "CRITIQUE", "RUN",
+            "FINALIZE",
+        ]
+        assert dispatcher.call_log == expected
+
+    def test_fix_loop(self):
+        call_count = {"run": 0}
+
+        def run_result(count):
+            call_count["run"] += 1
+            if call_count["run"] <= 1:
+                return PhaseResult(success=False, error="tests failed")
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher(results={"RUN": run_result})
+        orch = Orchestrator(dispatcher=dispatcher)
+        state = orch.run("test task")
+        assert state.current_phase == Phase.COMPLETED
+
+    def test_fix_loop_call_order(self):
+        call_count = {"run": 0}
+
+        def run_result(count):
+            call_count["run"] += 1
+            if call_count["run"] <= 1:
+                return PhaseResult(success=False, error="tests failed")
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher(results={"RUN": run_result})
+        orch = Orchestrator(dispatcher=dispatcher)
+        orch.run("test task")
+        expected = [
+            "INTAKE", "CONTRACT", "REPO_MAP", "PLAN",
+            "RETRIEVE", "PATCH", "CRITIQUE", "RUN",
+            "FIX",
+            "PATCH", "CRITIQUE", "RUN",
+            "FINALIZE",
+        ]
+        assert dispatcher.call_log == expected
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator with GENERIC_WORKFLOW
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorWithGenericWorkflow:
+    def test_happy_path_completes(self):
+        dispatcher = ConfigurableDispatcher()
+        generic = get_generic_workflow()
+        orch = Orchestrator(dispatcher=dispatcher, workflow=generic)
+        state = orch.run("test task")
+        assert state.current_phase == "COMPLETED"
+
+    def test_phases_dispatched(self):
+        dispatcher = ConfigurableDispatcher()
+        generic = get_generic_workflow()
+        orch = Orchestrator(dispatcher=dispatcher, workflow=generic)
+        orch.run("test task")
+        expected = ["INTAKE", "PLAN", "EXECUTE", "EVALUATE", "FINALIZE"]
+        assert dispatcher.call_log == expected
+
+    def test_evaluate_failure_loops_to_plan(self):
+        call_count = {"eval": 0}
+
+        def eval_result(count):
+            call_count["eval"] += 1
+            if call_count["eval"] <= 1:
+                return PhaseResult(success=False, error="not good enough")
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher(results={"EVALUATE": eval_result})
+        generic = get_generic_workflow()
+        orch = Orchestrator(dispatcher=dispatcher, workflow=generic)
+        state = orch.run("test task")
+        assert state.current_phase == "COMPLETED"
+        expected = [
+            "INTAKE", "PLAN", "EXECUTE", "EVALUATE",
+            "PLAN", "EXECUTE", "EVALUATE",
+            "FINALIZE",
+        ]
+        assert dispatcher.call_log == expected
+
+    def test_starts_at_intake(self):
+        dispatcher = ConfigurableDispatcher()
+        generic = get_generic_workflow()
+        orch = Orchestrator(dispatcher=dispatcher, workflow=generic)
+        state = orch.run("test task")
+        assert dispatcher.call_log[0] == "INTAKE"
+
+    def test_budget_halt(self):
+        dispatcher = ConfigurableDispatcher(results={
+            "EVALUATE": PhaseResult(success=False, error="always fails"),
+        })
+        generic = get_generic_workflow()
+        budget = BudgetConfig(max_total_iterations=10, max_phase_retries=100)
+        orch = Orchestrator(
+            dispatcher=dispatcher, budget=budget, workflow=generic,
+        )
+        state = orch.run("test task")
+        assert state.current_phase == "HALTED"
+        assert "iterations" in state.halt_reason.lower()
+
+    def test_phase_retry_on_linear_failure(self):
+        """PLAN failure retries (no branch rule for PLAN)."""
+        call_count = {"plan": 0}
+
+        def plan_result(count):
+            call_count["plan"] += 1
+            if call_count["plan"] <= 1:
+                return PhaseResult(success=False, error="bad plan")
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher(results={"PLAN": plan_result})
+        generic = get_generic_workflow()
+        orch = Orchestrator(dispatcher=dispatcher, workflow=generic)
+        state = orch.run("test task")
+        assert state.current_phase == "COMPLETED"
+        # PLAN dispatched twice (fail + succeed)
+        assert dispatcher.call_log.count("PLAN") == 2
+
+
+# ---------------------------------------------------------------------------
+# Custom workflow template
+# ---------------------------------------------------------------------------
+
+class TestCustomWorkflow:
+    def test_three_phase_workflow(self):
+        """A minimal custom workflow: START -> WORK -> DONE."""
+        wf = WorkflowTemplate(
+            name="minimal",
+            phases=("START", "WORK", "DONE", "HALTED"),
+            transitions={
+                "START": frozenset({"WORK", "HALTED"}),
+                "WORK":  frozenset({"DONE", "HALTED"}),
+                "DONE":  frozenset(),
+                "HALTED": frozenset(),
+            },
+            phase_schemas={},
+            phase_order=("START", "WORK"),
+            branch_rules={
+                "WORK": lambda r: "DONE" if r.success else "START",
+            },
+            terminal_phases=frozenset({"DONE", "HALTED"}),
+            phase_capabilities={
+                "START": frozenset({"fs.read"}),
+                "WORK":  frozenset({"fs.read", "fs.write"}),
+            },
+        )
+        dispatcher = ConfigurableDispatcher()
+        orch = Orchestrator(dispatcher=dispatcher, workflow=wf)
+        state = orch.run("custom task")
+        assert state.current_phase == "DONE"
+        assert dispatcher.call_log == ["START", "WORK"]
+
+    def test_custom_loop(self):
+        """Custom workflow with WORK->REVIEW->WORK loop."""
+        wf = WorkflowTemplate(
+            name="looping",
+            phases=("START", "WORK", "REVIEW", "DONE", "HALTED"),
+            transitions={
+                "START":  frozenset({"WORK", "HALTED"}),
+                "WORK":   frozenset({"REVIEW", "HALTED"}),
+                "REVIEW": frozenset({"WORK", "DONE", "HALTED"}),
+                "DONE":   frozenset(),
+                "HALTED": frozenset(),
+            },
+            phase_schemas={},
+            phase_order=("START", "WORK"),
+            branch_rules={
+                "WORK": lambda r: "REVIEW",
+                "REVIEW": lambda r: "DONE" if r.success else "WORK",
+            },
+            terminal_phases=frozenset({"DONE", "HALTED"}),
+            phase_capabilities={},
+        )
+        call_count = {"review": 0}
+
+        def review_result(count):
+            call_count["review"] += 1
+            if call_count["review"] <= 1:
+                return PhaseResult(success=False, error="needs rework")
+            return PhaseResult(success=True)
+
+        dispatcher = ConfigurableDispatcher(results={"REVIEW": review_result})
+        orch = Orchestrator(dispatcher=dispatcher, workflow=wf)
+        state = orch.run("task")
+        assert state.current_phase == "DONE"
+        assert dispatcher.call_log == ["START", "WORK", "REVIEW", "WORK", "REVIEW"]
+
+
+# ---------------------------------------------------------------------------
+# validate_transition with custom transitions
+# ---------------------------------------------------------------------------
+
+class TestValidateTransitionCustom:
+    def test_custom_transitions(self):
+        custom = {"X": frozenset({"Y"}), "Y": frozenset()}
+        validate_transition("X", "Y", custom)
+
+    def test_custom_transitions_reject(self):
+        custom = {"X": frozenset({"Y"}), "Y": frozenset()}
+        with pytest.raises(InvalidTransition):
+            validate_transition("X", "Z", custom)
+
+    def test_default_transitions(self):
+        """Without custom transitions, uses global TRANSITIONS."""
+        validate_transition(Phase.INTAKE, Phase.CONTRACT)
+
+    def test_string_with_default(self):
+        """String args work with default TRANSITIONS (Phase is str,Enum)."""
+        validate_transition("INTAKE", "CONTRACT")
+
+
+# ---------------------------------------------------------------------------
+# InvalidTransition with string phases
+# ---------------------------------------------------------------------------
+
+class TestInvalidTransitionStrings:
+    def test_string_phases(self):
+        exc = InvalidTransition("ALPHA", "BETA")
+        assert "ALPHA" in str(exc)
+        assert "BETA" in str(exc)
+        assert exc.from_phase == "ALPHA"
+        assert exc.to_phase == "BETA"
+
+    def test_phase_enum_phases(self):
+        exc = InvalidTransition(Phase.INTAKE, Phase.RUN)
+        assert "INTAKE" in str(exc)
+        assert "RUN" in str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Workflow singleton behavior
+# ---------------------------------------------------------------------------
+
+class TestWorkflowSingletons:
+    def test_coding_same_object(self):
+        a = get_coding_workflow()
+        b = get_coding_workflow()
+        assert a is b
+
+    def test_generic_same_object(self):
+        a = get_generic_workflow()
+        b = get_generic_workflow()
+        assert a is b
+
+    def test_coding_not_generic(self):
+        assert get_coding_workflow() != get_generic_workflow()
+
+```
+
 <details>
 <summary>📁 Final Project Structure</summary>
 
@@ -20340,6 +29928,16 @@ class TestFormatMermaid:
             📄 lobi.py
 📁 configs/
 📁 core/
+    📁 campaign/
+        📄 __init__.py
+        📄 handoff.py
+        📄 hitl.py
+        📄 models.py
+        📄 orchestrator.py
+        📄 planner.py
+        📄 scope.py
+        📄 session.py
+        📄 validator.py
     📁 context/
         📁 symbols/
             📄 __init__.py
@@ -20357,16 +29955,44 @@ class TestFormatMermaid:
         📄 visualize.py
     📁 contracts/
         📄 __init__.py
+        📄 campaign.py
         📄 schemas.py
         📄 validation.py
+    📁 critic/
+        📄 __init__.py
+        📄 backends.py
+        📄 cache.py
+        📄 config.py
+        📄 keystore.py
+        📄 models.py
+        📄 orchestrator.py
+        📄 pack_builder.py
+        📄 redactor.py
+        📄 triggers.py
+    📁 judge/
+        📄 __init__.py
+        📄 candidates.py
+        📄 gpu_profile.py
+        📄 judge.py
+        📄 models.py
+        📄 tiers.py
     📁 kernel/
         📄 __init__.py
         📄 budgets.py
         📄 orchestrator.py
         📄 state.py
+        📄 workflows.py
     📁 memory/
         📄 __init__.py
         📄 memory.py
+    📁 patch/
+        📄 __init__.py
+        📄 applicator.py
+        📄 engine.py
+        📄 matcher.py
+        📄 models.py
+        📄 parser.py
+        📄 worktree.py
     📁 policy/
         📄 __init__.py
         📄 audit.py
@@ -20380,6 +30006,8 @@ class TestFormatMermaid:
             📄 mistral_backend.py
             📄 openai_backend.py
         📄 __init__.py
+        📄 context_window.py
+        📄 gpu.py
         📄 messages.py
         📄 provider_config.py
     📁 sessions/
@@ -20401,6 +30029,7 @@ class TestFormatMermaid:
         📄 fs_tools.py
         📄 git_tools.py
         📄 install_project.py
+        📄 patch_tool.py
         📄 rag_crawler.py
         📄 repo_map_tool.py
         📄 run_python.py
@@ -20408,6 +30037,7 @@ class TestFormatMermaid:
         📄 sandbox.py
         📄 speech.wav
         📄 tool.py
+        📄 tool_output.py
         📄 verify_tools.py
         📄 voice.py
         📄 web_search.py
@@ -20450,10 +30080,26 @@ class TestFormatMermaid:
     📄 test_bus.py
     📄 test_bus_grants.py
     📄 test_bus_preflight.py
+    📄 test_campaign_contracts.py
+    📄 test_campaign_orchestrator.py
+    📄 test_campaign_planner.py
+    📄 test_campaign_scope.py
+    📄 test_campaign_validator.py
     📄 test_capability.py
     📄 test_cli_smoke.py
     📄 test_config_loader.py
+    📄 test_context_window.py
     📄 test_contracts.py
+    📄 test_critic_backends.py
+    📄 test_critic_cache.py
+    📄 test_critic_config.py
+    📄 test_critic_integration.py
+    📄 test_critic_keystore.py
+    📄 test_critic_models.py
+    📄 test_critic_orchestrator.py
+    📄 test_critic_pack_builder.py
+    📄 test_critic_redactor.py
+    📄 test_critic_triggers.py
     📄 test_dependency_graph.py
     📄 test_descriptors.py
     📄 test_descriptors_expanded.py
@@ -20465,6 +30111,11 @@ class TestFormatMermaid:
     📄 test_god_mode.py
     📄 test_graph_multilang.py
     📄 test_judais.py
+    📄 test_judge_candidates.py
+    📄 test_judge_composite.py
+    📄 test_judge_gpu_profile.py
+    📄 test_judge_models.py
+    📄 test_judge_tiers.py
     📄 test_kernel_budgets.py
     📄 test_kernel_orchestrator.py
     📄 test_kernel_state.py
@@ -20472,6 +30123,13 @@ class TestFormatMermaid:
     📄 test_lobi.py
     📄 test_messages.py
     📄 test_orchestrator_sessions.py
+    📄 test_patch_applicator.py
+    📄 test_patch_engine.py
+    📄 test_patch_matcher.py
+    📄 test_patch_models.py
+    📄 test_patch_parser.py
+    📄 test_patch_tool.py
+    📄 test_patch_worktree.py
     📄 test_profile_schemas.py
     📄 test_profiles.py
     📄 test_provider_config.py
@@ -20490,10 +30148,12 @@ class TestFormatMermaid:
     📄 test_validation.py
     📄 test_verify_tools.py
     📄 test_visualize.py
+    📄 test_workflows.py
 📄 LICENSE
 📄 main.py
 📄 Makefile
 📄 MANIFESTO.md
+📄 PHASE_8.md
 📄 project.md
 📄 pyproject.toml
 📄 README.md

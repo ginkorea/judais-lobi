@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional, Any
 
 from core.tools.descriptors import (
     ToolDescriptor,
+    SandboxProfile,
     HIGH_RISK_ACTIONS,
     SKIP_SANDBOX_ACTIONS,
     NETWORK_ACTIONS,
@@ -188,7 +189,12 @@ class ToolBus:
                 return result
 
         # Execute
+        saved_runners = []
         try:
+            if self._should_use_sandbox(tool_name, action, descriptor):
+                runner = self._build_sandbox_runner(descriptor.sandbox_profile)
+                saved_runners = self._apply_subprocess_runner(executor, runner)
+
             if action:
                 result = executor(action, *args, **kwargs)
             else:
@@ -224,6 +230,51 @@ class ToolBus:
                 stderr=f"Tool execution error: {type(ex).__name__}: {ex}",
                 tool_name=tool_name,
             )
+        finally:
+            self._restore_subprocess_runner(saved_runners)
+
+    def _should_use_sandbox(
+        self,
+        tool_name: str,
+        action: Optional[str],
+        descriptor: ToolDescriptor,
+    ) -> bool:
+        if descriptor.skip_sandbox:
+            return False
+        if action and (tool_name, action) in SKIP_SANDBOX_ACTIONS:
+            return False
+        return True
+
+    def _build_sandbox_runner(self, profile: SandboxProfile) -> Callable:
+        def _runner(cmd, *, shell: bool = False, timeout: int = 120,
+                    executable: Optional[str] = None, **_kwargs):
+            return self._sandbox.execute(cmd, profile=profile, timeout=timeout)
+        return _runner
+
+    def _apply_subprocess_runner(self, executor: Callable, runner: Callable):
+        saved = []
+
+        def _set_attr(obj, attr):
+            if hasattr(obj, attr):
+                saved.append((obj, attr, getattr(obj, attr)))
+                setattr(obj, attr, runner)
+
+        _set_attr(executor, "subprocess_runner")
+        _set_attr(executor, "_subprocess_runner")
+
+        engine = getattr(executor, "_engine", None)
+        if engine is not None:
+            _set_attr(engine, "_subprocess_runner")
+            worktree = getattr(engine, "_worktree", None)
+            if worktree is not None:
+                _set_attr(worktree, "_subprocess_runner")
+
+        return saved
+
+    @staticmethod
+    def _restore_subprocess_runner(saved):
+        for obj, attr, old in saved:
+            setattr(obj, attr, old)
 
     def list_tools(self) -> List[str]:
         """Return names of all registered tools."""
