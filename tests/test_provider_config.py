@@ -13,8 +13,12 @@ class TestDefaultModels:
     def test_mistral_default(self):
         assert DEFAULT_MODELS["mistral"] == "codestral-latest"
 
+    def test_local_default(self):
+        """Only the last resort: LOCAL_MODEL and GET /models come first."""
+        assert DEFAULT_MODELS["local"] == "local-model"
+
     def test_keys(self):
-        assert set(DEFAULT_MODELS.keys()) == {"openai", "mistral"}
+        assert set(DEFAULT_MODELS.keys()) == {"openai", "mistral", "local"}
 
 
 class TestResolveProvider:

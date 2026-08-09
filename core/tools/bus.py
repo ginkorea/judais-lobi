@@ -10,6 +10,7 @@ from core.tools.descriptors import (
     HIGH_RISK_ACTIONS,
     SKIP_SANDBOX_ACTIONS,
     NETWORK_ACTIONS,
+    summarize_input_schema,
 )
 from core.tools.capability import CapabilityEngine, CapabilityVerdict
 from core.tools.sandbox import SandboxRunner, NoneSandbox
@@ -27,7 +28,14 @@ class ToolResult:
 
 
 class ToolBus:
-    """MCP-style tool registry with capability gating and sandboxed execution.
+    """Tool registry with capability gating and sandboxed execution.
+
+    This docstring said "MCP-style" for a long time while nothing in the
+    package spoke MCP.  Something does now, but not this file:
+    ``core.tools.mcp_client`` is the real client and it *bridges into
+    this bus* — a tool a server advertises becomes an ordinary
+    ``ToolDescriptor`` registered here, so everything below applies to it
+    unchanged.
 
     Dispatch path: register -> check capabilities -> execute -> result
 
@@ -65,6 +73,26 @@ class ToolBus:
         """Register a tool with its descriptor and executor."""
         self._descriptors[descriptor.tool_name] = descriptor
         self._executors[descriptor.tool_name] = executor
+
+    def unregister(self, tool_name: str) -> bool:
+        """Remove a tool. Returns whether it was registered.
+
+        Registration used to be one-way, which was fine while every tool
+        was compiled in and outlived the process.  It stopped being fine
+        when tools began arriving from an MCP server at runtime: a
+        server that withdraws one leaves a descriptor behind that
+        ``list_tools`` still advertises and ``describe_tool`` still
+        describes, so the model is offered a tool whose only possible
+        answer is an error from the far end.
+
+        Returns a bool instead of raising on an unregistered name: the
+        caller is normally reconciling a *set* against this registry,
+        and "it was already gone" is the ordinary case there.
+        """
+        existed = tool_name in self._descriptors
+        self._descriptors.pop(tool_name, None)
+        self._executors.pop(tool_name, None)
+        return existed
 
     def dispatch(self, tool_name: str, *args: Any,
                  action: Optional[str] = None, **kwargs: Any) -> ToolResult:
@@ -200,15 +228,22 @@ class ToolBus:
             else:
                 result = executor(*args, **kwargs)
 
-            # Handle tuple returns (rc, out, err)
-            if isinstance(result, tuple) and len(result) == 3:
-                rc, out, err = result
+            # Handle tuple returns (rc, out, err) and (rc, out, err, evidence).
+            # The fourth element is for a tool whose answer is *typed* and
+            # not only rendered — an MCP `structuredContent`, say. Without
+            # somewhere to put it, a caller that needs one field of a
+            # governed view has to parse it back out of the text the model
+            # was shown, which is the parse a typed payload exists to avoid.
+            if isinstance(result, tuple) and len(result) in (3, 4):
+                rc, out, err = result[0], result[1], result[2]
                 tool_result = ToolResult(
                     exit_code=rc,
                     stdout=str(out),
                     stderr=str(err),
                     tool_name=tool_name,
                     granted_scopes=list(scopes_to_check),
+                    evidence=(str(result[3]) if len(result) == 4 and result[3]
+                              else None),
                 )
             else:
                 # Handle string returns (legacy tools)
@@ -293,6 +328,14 @@ class ToolBus:
         }
         if desc.action_scopes:
             info["actions"] = list(desc.action_scopes.keys())
+        if desc.input_schema:
+            # The schema itself, not only a rendering of it: a caller
+            # building a native tool-call request needs the whole thing,
+            # and a caller building a prompt wants the summary. Handing
+            # out only the summary would make the prompt the authority on
+            # a tool's arguments, which is how the two drift.
+            info["input_schema"] = desc.input_schema
+            info["arguments"] = summarize_input_schema(desc.input_schema)
         return info
 
     def get_descriptor(self, name: str) -> Optional[ToolDescriptor]:

@@ -73,22 +73,27 @@ class TestMistralBackend:
 
 
 class TestLocalBackend:
-    def test_chat_raises_not_implemented(self):
-        backend = LocalBackend()
-        with pytest.raises(NotImplementedError, match="Phase 8"):
+    """The Phase-8 stub is gone; see tests/test_local_backend.py.
+
+    Those four tests asserted the *absence* of a local backend — a
+    ``NotImplementedError``, three ``False`` capabilities, and a default
+    endpoint with no ``/v1``.  They are replaced rather than deleted so
+    the change is visible here, next to the other two backends, and what
+    stays is only what still belongs in this file: that the class is a
+    ``Backend`` and that constructing one contacts nothing.
+    """
+
+    def test_is_a_backend(self):
+        from core.runtime.backends.base import Backend
+
+        assert isinstance(LocalBackend(endpoint="http://127.0.0.1:1/v1"), Backend)
+
+    def test_chat_no_longer_raises_not_implemented(self):
+        backend = LocalBackend(endpoint="http://127.0.0.1:1/v1")
+        with pytest.raises(Exception) as exc:
             backend.chat("local-model", [{"role": "user", "content": "hi"}])
+        assert not isinstance(exc.value, NotImplementedError)
 
-    def test_capabilities(self):
-        backend = LocalBackend()
-        caps = backend.capabilities
-        assert caps.supports_streaming is False
-        assert caps.supports_json_mode is False
-        assert caps.supports_tool_calls is False
-
-    def test_custom_endpoint(self):
-        backend = LocalBackend(endpoint="http://myhost:9000")
-        assert backend.endpoint == "http://myhost:9000"
-
-    def test_default_endpoint(self):
-        backend = LocalBackend()
-        assert backend.endpoint == "http://localhost:8000"
+    def test_construction_contacts_nothing(self):
+        """No probe at construction: a CLI must start with the server cold."""
+        LocalBackend(endpoint="http://127.0.0.1:1/v1")

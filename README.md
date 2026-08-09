@@ -56,7 +56,118 @@ Frontier models are expensive, rate-limited, and increasingly censored. If you w
 4. Use tools explicitly:
    `lobi --shell "ls -la"`
 
-Local inference is the goal and the architecture already separates providers, but the local backend is still a stub until Phase 8. See `ROADMAP.md` for the timeline and `core/runtime/` for provider wiring.
+### Local inference
+
+`--provider local` talks to any OpenAI-compatible endpoint — `vllm serve`,
+llama.cpp's server, LM Studio, Ollama's `/v1` shim:
+
+```bash
+export LOCAL_API_BASE=http://127.0.0.1:8000/v1   # note the /v1
+export LOCAL_MODEL=gpt-oss-20b                   # optional; else GET /models decides
+lobi --provider local "summarize this repo"
+```
+
+`capabilities` are probed from `GET {base}/models`, so the context window is the
+served model's real `max_model_len` and not a guess. Unlike the other two
+providers, `local` is never silently fallen back away from when a key is
+missing: asking for the endpoint on this host and being answered by OpenAI is
+the opposite of what was asked.
+
+### Mission mode — the model chooses the tool
+
+Everywhere else you choose the tool with a flag. That cannot work against a
+server whose tools are discovered at runtime, so `--mission` puts the catalogue
+in front of the model instead:
+
+```bash
+pip install 'judais-lobi[mcp]'
+lobi --mission --mcp-stdio 'python -m some_mcp_server' "what governed datasets exist?"
+lobi --mission --mcp-url https://host/mcp   "..."   # bearer token in MCP_TOKEN
+```
+
+Each tool a server advertises is registered into the existing `ToolBus` as a
+`ToolDescriptor` whose executor dispatches `tools/call`, namespaced `mcp.<name>`
+so a server cannot shadow a local tool. Capability gating, the panic switch and
+the audit log apply to it exactly as to `fs` or `git`. The tool's JSON Schema is
+carried whole on the descriptor, so the catalogue the model reads says
+`type (string: dataset|model|service)` and not just `type` — types, `required`
+and enums are what decide whether a first call to a faceted search works.
+
+### A skill manifest — `--skill`
+
+The harness owns mechanisms; whoever operates the platform owns content. A
+`SKILL.md` is how the content arrives: YAML frontmatter plus a Markdown body,
+the format Claude-style skills already use.
+
+```bash
+lobi --mission --skill ./skills/catalogue_recon/SKILL.md \
+     --mcp-stdio 'python -m some_mcp_server' "what governed datasets exist?"
+```
+
+Three things come out of it, and nothing else does:
+
+* **a closed tool set**, `allowed_tools`, intersected with what the bridge
+  actually discovered. A bare name matches a namespaced one, so a manifest says
+  `catalog_search_assets` and gets `mcp.catalog_search_assets`. A named tool the
+  server does not offer is a **refusal listing every missing name** — never a
+  silent narrowing, because a mission missing the tool that answers its question
+  answers it from the model's memory instead and the transcript looks ordinary.
+  Suffix an entry with `?` to mean "if the host offers it";
+* **prompt text** — the operational frontmatter fields and the whole body,
+  appended after the persona. Fields this loader has never heard of are rendered
+  too: a manifest is content, and the harness is not the authority on which of a
+  platform's operational fields matter;
+* **a grounding grammar**, below. Optional; absent means nothing is enforced and
+  nothing claims to have been.
+
+### Bounded results, and a store to read the rest from
+
+A tool result is capped at 32 KB (`MAX_RESULT_BYTES`, the kernel's own
+`max_tool_output_bytes_in_context`) before it enters the transcript — head and
+tail with an explicit marker. Uncapped, one large governed view evicts the
+earlier steps the model needs to know what its numbers mean, or exceeds
+`max_model_len` outright, and neither leaves a trace in the answer.
+
+The whole result — including the `structuredContent` that `as_tuple()` drops
+whenever there is text — stays in a per-mission store, and the marker names the
+handle:
+
+```
+mission_result(handle="r1", path="result.actors[0].score")
+```
+
+A few dozen bytes instead of two hundred kilobytes. The store reaches nothing:
+every byte in it already arrived through a gated, audited dispatch of a tool the
+closed set allowed. It is registered on the bus for the length of one run and
+withdrawn after it.
+
+### Grounding — every identifier has to have come from a tool
+
+`core/runtime/grounding.py` is the mission-tier analogue of `CompositeJudge`.
+Every identifier-shaped token in the answer must appear in a tool output **of
+this run**. An unsupported claim gets one repair turn naming the exact tokens;
+a second failure keeps the answer and appends an explicit caveat, because
+deleting it would hide a finding and passing it silently would launder one.
+
+The grammar is not in the code. It comes from the manifest:
+
+```yaml
+grounding:
+  identifier_pattern: '\b(?:asset|labels|run)\.[0-9a-f]{4,}\b'
+  ignore: [asset.0000]
+  max_repairs: 1
+```
+
+No block, no validator, and the transcript's `grounding` stays `None` rather
+than claiming a clean check. A check that could not run reports *no opinion* and
+never a pass — same reason `LLMReviewTier` returns `UNKNOWN` instead of 0.5, and
+a larger one here: a fabricated "grounded" is a governance claim.
+
+### A personality from a file
+
+`--personality <path>` (or `ELF_PERSONALITY`) loads a `PersonalityConfig` from
+TOML, JSON or YAML. The keys are that model's fields and nothing else — an
+unknown key is refused by name. JudAIs and Lobi are unaffected.
 
 ## Extensibility
 
@@ -77,7 +188,7 @@ See: `ROADMAP.md`
 * ✅ Phase 1 — Runtime extraction (provider separation, 107 tests)
 * ✅ Phase 2 — Kernel State Machine & Hard Budgets (164 tests)
 * ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
-* ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
+* ✅ Phase 4 — Tool Bus, Sandboxing & Capability Gating (562 tests)
 * ✅ Phase 5 — Repo Map & Context Compression (783 tests)
 * ✅ Phase 6 — Repository-Native Patch Engine (888 tests)
 * ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction
@@ -87,7 +198,8 @@ See: `ROADMAP.md`
 
 ### Up Next
 
-* ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
+* ✅ Phase 8a — Local inference, a real MCP client, and file-loaded personalities
+* ⏳ Phase 8b — Retrieval & context discipline
 
 ### Phase 7 Highlights (7.0–7.4)
 
@@ -227,7 +339,7 @@ As of Phase 7.4:
 * **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
 * **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
 
-Phase 8+ (in design) focuses on retrieval discipline and local inference. See `ROADMAP.md`.
+Local inference has landed (`--provider local`). Phase 8b focuses on retrieval discipline. See `ROADMAP.md`.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 

@@ -26,6 +26,10 @@ setup(
     ],
     extras_require={
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
+        # An extra, not a hard dependency: the SDK pulls ~20 wheels including
+        # compiled ones, and `judais --help` has to keep working without them.
+        # core/tools/mcp_client.py is the only importer, and imports it lazily.
+        "mcp": ["mcp>=1.25,<2"],
         "critic": [
             "anthropic>=0.30.0",
             "google-generativeai>=0.7.0",

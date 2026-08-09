@@ -1,7 +1,7 @@
 # core/tools/descriptors.py — Declarative tool specifications
 
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,87 @@ class ToolDescriptor:
     high_risk: bool = False
     skip_sandbox: bool = False
     action_scopes: Dict[str, List[str]] = field(default_factory=dict)
+    #: JSON Schema for the tool's arguments, as the tool itself declares
+    #: them.  For a bridged MCP tool this is ``tools/list``'s
+    #: ``inputSchema`` verbatim.
+    #:
+    #: It is carried rather than flattened into the description because
+    #: the description is prose and a schema is not: types, ``required``
+    #: and enums are what stop a model guessing ``limit="ten"`` or
+    #: inventing a facet the server does not have, and they are also the
+    #: only thing a native tool-calling request can be built from. A
+    #: descriptor that reduced them to "Arguments: a, b, c." had thrown
+    #: away everything except the names.
+    input_schema: Dict[str, Any] = field(default_factory=dict)
+
+
+#: How many enum members are shown before the rest are counted.  An enum
+#: is the most useful part of a schema for a model choosing a facet, and
+#: the least useful when it is ninety codes long.
+MAX_ENUM_SHOWN = 8
+
+
+def summarize_input_schema(schema: Optional[Dict[str, Any]]) -> str:
+    """One compact line of argument types, or ``""``.
+
+    ``q (string, required), type (string: dataset|model|service), limit (integer)``
+
+    Compact because it is rendered once per tool into a mission's system
+    message, and a 20b model given twelve tools' worth of pretty-printed
+    JSON Schema has spent its context before the objective arrives.  It
+    is a *summary*: the authority is :attr:`ToolDescriptor.input_schema`,
+    which is kept whole for the callers that need it.
+    """
+    if not schema:
+        return ""
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return ""
+    required = schema.get("required")
+    required = set(required) if isinstance(required, (list, tuple, set)) else set()
+
+    parts: List[str] = []
+    for name, spec in properties.items():
+        spec = spec if isinstance(spec, dict) else {}
+        notes: List[str] = []
+        kind = _schema_type(spec)
+        if kind:
+            notes.append(kind)
+        enum = spec.get("enum")
+        if isinstance(enum, (list, tuple)) and enum:
+            shown = [str(v) for v in list(enum)[:MAX_ENUM_SHOWN]]
+            rest = len(enum) - len(shown)
+            values = "|".join(shown) + (f"|+{rest} more" if rest > 0 else "")
+            notes[-1:] = [f"{notes[-1]}: {values}"] if notes else [values]
+        if name in required:
+            notes.append("required")
+        parts.append(f"{name} ({', '.join(notes)})" if notes else str(name))
+    return ", ".join(parts)
+
+
+def _schema_type(spec: Dict[str, Any]) -> str:
+    """The declared type, including the ``anyOf`` shape MCP servers emit.
+
+    A FastMCP optional argument is ``anyOf: [{type: string}, {type:
+    null}]``; reporting that as no type at all would hide the one thing
+    the model needed to know.
+    """
+    kind = spec.get("type")
+    if isinstance(kind, str):
+        return kind
+    if isinstance(kind, (list, tuple)):
+        return "|".join(str(k) for k in kind if k != "null")
+    for key in ("anyOf", "oneOf"):
+        options = spec.get(key)
+        if isinstance(options, (list, tuple)):
+            kinds = [
+                _schema_type(o) for o in options
+                if isinstance(o, dict) and o.get("type") != "null"
+            ]
+            kinds = [k for k in kinds if k]
+            if kinds:
+                return "|".join(dict.fromkeys(kinds))
+    return ""
 
 
 # Pre-built descriptors for all existing tools
@@ -170,8 +251,13 @@ REPO_MAP_DESCRIPTOR = ToolDescriptor(
         "excerpt":   ["fs.read", "git.read"],
         "status":    ["fs.read", "git.read"],
         "visualize": ["fs.read", "git.read"],
+        "symbol":    ["fs.read"],
     },
-    description="Repository map: build, excerpt (task-scoped), status, visualize (DOT/Mermaid).",
+    description=(
+        "Repository map: build, excerpt (task-scoped), status, "
+        "visualize (DOT/Mermaid), symbol (one function or class body with "
+        "its path:start-end citation, instead of the whole file)."
+    ),
 )
 
 # ---------------------------------------------------------------------------

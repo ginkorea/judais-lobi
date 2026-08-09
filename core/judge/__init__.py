@@ -1,8 +1,14 @@
 # core/judge/__init__.py — Composite Judge & Candidate Sampling (Phase 7.1-7.2)
 #
 # Lightweight imports (models, tiers, judge) are eager.
-# Heavy imports (candidates, gpu_profile) are lazy to avoid circular import
-# with core.contracts.schemas → core.judge.models → core.patch.engine chain.
+# CandidateManager is lazy to avoid the circular import through
+# core.contracts.schemas → core.judge.models → core.patch.engine.
+#
+# There is no GPUProfile here any more. There were two of them: this package's
+# always said "cpu_only" and had no caller at all, while core.runtime.gpu
+# detects honestly and feeds ContextWindowManager. Two types with one name is
+# a coin flip at every import site, so the unused liar was deleted. Ask
+# core.runtime.detect_gpu_profile(). See tests/test_one_gpu_profile.py.
 
 from core.judge.models import (
     TierVerdict,
@@ -20,12 +26,6 @@ def __getattr__(name):
     if name == "CandidateManager":
         from core.judge.candidates import CandidateManager
         return CandidateManager
-    if name == "GPUProfile":
-        from core.judge.gpu_profile import GPUProfile
-        return GPUProfile
-    if name == "detect_profile":
-        from core.judge.gpu_profile import detect_profile
-        return detect_profile
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -45,7 +45,4 @@ __all__ = [
     "CompositeJudge",
     # Candidates (lazy)
     "CandidateManager",
-    # GPU Profile (lazy)
-    "GPUProfile",
-    "detect_profile",
 ]

@@ -276,24 +276,34 @@ class Agent:
     # Agentic task execution
     # =======================
     def run_task(self, task_description: str, budget=None, session_manager=None,
-                 policy=None):
-        """Thin adapter: delegate an agentic task to the kernel orchestrator.
+                 policy=None, workflow=None):
+        """Delegate an agentic task to the kernel orchestrator.
 
-        Phase 4: Creates a CapabilityEngine with the given policy and passes
-        the ToolBus to the orchestrator for capability-gated dispatch.
+        Creates a CapabilityEngine from the policy and passes the ToolBus
+        to the orchestrator for capability-gated dispatch.
+
+        The workflow is resolved **here** and given to both the
+        orchestrator and the dispatcher. They used to default
+        independently, which was harmless only because the dispatcher had
+        no opinion about phases; a dispatcher that maps phases to roles
+        and an orchestrator that walks a different phase list would
+        refuse every phase for a reason neither could explain.
         """
         from core.kernel import Orchestrator
+        from core.kernel.workflows import get_coding_workflow
 
         # Set up capability engine for agentic mode
         if policy is not None:
             cap_engine = CapabilityEngine(policy)
             self.tools.bus._capability = cap_engine
 
-        dispatcher = self._make_task_dispatcher()
+        workflow = workflow or get_coding_workflow()
+        dispatcher = self._make_task_dispatcher(workflow=workflow, budget=budget)
         kwargs = {
             "dispatcher": dispatcher,
             "budget": budget,
             "tool_bus": self.tools.bus,
+            "workflow": workflow,
         }
         if session_manager is not None:
             kwargs["session_manager"] = session_manager
@@ -341,19 +351,30 @@ class Agent:
         plan = self.draft_campaign_plan(mission)
         return self.run_campaign(plan, base_dir=base_dir, auto_approve=auto_approve, editor=editor)
 
-    def _make_task_dispatcher(self):
-        """Create a role dispatcher for agentic task execution.
+    def _make_task_dispatcher(self, workflow=None, budget=None):
+        """The role dispatcher for agentic task execution.
 
-        Phase 2 returns a stub that succeeds on every phase.
-        Phase 7 overrides this with real role implementations.
+        This returned a ``StubDispatcher`` — ``dispatch`` was one line,
+        ``return PhaseResult(success=True)`` — so every phase "succeeded",
+        the state machine walked to COMPLETED, and ``run_task()`` reported
+        a finished task having read nothing and written nothing. It is
+        replaced, not extended: see ``core/kernel/roles.py`` for why a
+        role cannot declare its own success any more.
         """
-        from core.kernel import PhaseResult, SessionState
+        from core.kernel.budgets import BudgetConfig
+        from core.kernel.roles import LLMRoleDispatcher
 
-        class StubDispatcher:
-            def dispatch(self, phase: str, state: SessionState) -> PhaseResult:
-                return PhaseResult(success=True)
+        def chat_fn(messages):
+            return self.client.chat(model=self.model, messages=messages,
+                                    stream=False)
 
-        return StubDispatcher()
+        return LLMRoleDispatcher(
+            chat_fn=chat_fn,
+            tool_bus=self.tools.bus,
+            workflow=workflow,
+            budget=budget or BudgetConfig(),
+            system_message=self.system_message,
+        )
 
     # =======================
     # CLI methods

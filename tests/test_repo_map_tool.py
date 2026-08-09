@@ -85,8 +85,12 @@ class TestDescriptor:
 
     def test_descriptor_actions(self):
         assert set(REPO_MAP_DESCRIPTOR.action_scopes.keys()) == {
-            "build", "excerpt", "status", "visualize"
+            "build", "excerpt", "status", "visualize", "symbol"
         }
+
+    def test_symbol_needs_only_fs_read(self):
+        """Reading one function span is a filesystem read, not a git read."""
+        assert REPO_MAP_DESCRIPTOR.action_scopes["symbol"] == ["fs.read"]
 
     def test_descriptor_has_description(self):
         assert REPO_MAP_DESCRIPTOR.description != ""
