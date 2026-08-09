@@ -27,7 +27,14 @@ class ToolResult:
 
 
 class ToolBus:
-    """MCP-style tool registry with capability gating and sandboxed execution.
+    """Tool registry with capability gating and sandboxed execution.
+
+    This docstring said "MCP-style" for a long time while nothing in the
+    package spoke MCP.  Something does now, but not this file:
+    ``core.tools.mcp_client`` is the real client and it *bridges into
+    this bus* — a tool a server advertises becomes an ordinary
+    ``ToolDescriptor`` registered here, so everything below applies to it
+    unchanged.
 
     Dispatch path: register -> check capabilities -> execute -> result
 

@@ -13,6 +13,12 @@ from core.context.models import RepoMapResult
 # Personality configuration (replaces Elf's abstract properties)
 # ---------------------------------------------------------------------------
 
+#: Suffixes ``PersonalityConfig.from_file`` will parse.  Closed on purpose: an
+#: unknown suffix is refused by name rather than parsed hopefully as one of
+#: these.
+PERSONALITY_FILE_FORMATS = (".toml", ".json", ".yaml", ".yml")
+
+
 class PersonalityConfig(BaseModel):
     """Frozen personality definition. Replaces Elf's abstract properties."""
 
@@ -26,6 +32,89 @@ class PersonalityConfig(BaseModel):
     rag_enhancement_style: str = ""
     default_model: Optional[str] = None
     default_provider: Optional[str] = None
+
+    @classmethod
+    def from_file(cls, path) -> "PersonalityConfig":
+        """Load a personality from a TOML, JSON or YAML file.
+
+        A loader and **not** a new schema: the keys are exactly this
+        model's fields, so a file is a ``PersonalityConfig`` written
+        down.  Anything else is a refusal naming the key — a typo'd
+        ``system_prompt`` that silently produced a personality with an
+        empty system message would be discovered by reading the agent's
+        output, which is the worst possible place to discover it.
+
+        ``examples`` is optional here although the field is required:
+        the few-shot pairs exist to pin a *voice*, and a personality
+        whose point is a neutral, governed register has no voice to pin.
+        A file that omits them gets none — never a default set borrowed
+        from another personality.
+
+        The seam, and its whole reason: JudAIs and Lobi stay
+        compiled-in Python and are untouched by this.  A personality
+        that makes claims about a platform's rules can instead live in
+        the repository that enforces them, where a test can check the
+        prompt still matches the code.
+        """
+        from pathlib import Path
+
+        p = Path(path).expanduser()
+        if not p.is_file():
+            raise FileNotFoundError(f"No personality file at {p}")
+
+        suffix = p.suffix.lower()
+        if suffix not in PERSONALITY_FILE_FORMATS:
+            raise ValueError(
+                f"{p.name} has suffix {suffix or '(none)'}; a personality file "
+                f"is one of {', '.join(PERSONALITY_FILE_FORMATS)}"
+            )
+
+        data = cls._parse_personality_file(p, suffix)
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"{p} holds a {type(data).__name__}; a personality file is a "
+                f"table of the PersonalityConfig fields"
+            )
+
+        known = set(cls.model_fields)
+        unknown = sorted(set(data) - known)
+        if unknown:
+            raise ValueError(
+                f"{p} sets unknown key(s): {', '.join(unknown)}. "
+                f"A personality file mirrors PersonalityConfig exactly "
+                f"({', '.join(sorted(known))})"
+            )
+
+        data.setdefault("examples", [])
+        data["examples"] = [tuple(pair) for pair in data["examples"]]
+        return cls(**data)
+
+    @staticmethod
+    def _parse_personality_file(path, suffix: str):
+        if suffix == ".json":
+            import json
+            return json.loads(path.read_text(encoding="utf-8"))
+        if suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+            except ImportError as exc:  # pragma: no cover - optional extra
+                raise ValueError(
+                    f"{path.name} is YAML, which needs pyyaml: "
+                    f"pip install 'judais-lobi[critic]'"
+                ) from exc
+            return yaml.safe_load(path.read_text(encoding="utf-8"))
+        try:
+            import tomllib
+        except ImportError:  # pragma: no cover - Python 3.10 only
+            try:
+                import tomli as tomllib  # type: ignore[no-redef]
+            except ImportError as exc:
+                raise ValueError(
+                    f"{path.name} is TOML, which needs Python 3.11+ "
+                    f"or `pip install tomli`"
+                ) from exc
+        with open(path, "rb") as handle:
+            return tomllib.load(handle)
 
 
 # ---------------------------------------------------------------------------

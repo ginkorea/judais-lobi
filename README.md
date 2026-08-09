@@ -56,7 +56,45 @@ Frontier models are expensive, rate-limited, and increasingly censored. If you w
 4. Use tools explicitly:
    `lobi --shell "ls -la"`
 
-Local inference is the goal and the architecture already separates providers, but the local backend is still a stub until Phase 8. See `ROADMAP.md` for the timeline and `core/runtime/` for provider wiring.
+### Local inference
+
+`--provider local` talks to any OpenAI-compatible endpoint — `vllm serve`,
+llama.cpp's server, LM Studio, Ollama's `/v1` shim:
+
+```bash
+export LOCAL_API_BASE=http://127.0.0.1:8000/v1   # note the /v1
+export LOCAL_MODEL=gpt-oss-20b                   # optional; else GET /models decides
+lobi --provider local "summarize this repo"
+```
+
+`capabilities` are probed from `GET {base}/models`, so the context window is the
+served model's real `max_model_len` and not a guess. Unlike the other two
+providers, `local` is never silently fallen back away from when a key is
+missing: asking for the endpoint on this host and being answered by OpenAI is
+the opposite of what was asked.
+
+### Mission mode — the model chooses the tool
+
+Everywhere else you choose the tool with a flag. That cannot work against a
+server whose tools are discovered at runtime, so `--mission` puts the catalogue
+in front of the model instead:
+
+```bash
+pip install 'judais-lobi[mcp]'
+lobi --mission --mcp-stdio 'python -m some_mcp_server' "what governed datasets exist?"
+lobi --mission --mcp-url https://host/mcp   "..."   # bearer token in MCP_TOKEN
+```
+
+Each tool a server advertises is registered into the existing `ToolBus` as a
+`ToolDescriptor` whose executor dispatches `tools/call`, namespaced `mcp.<name>`
+so a server cannot shadow a local tool. Capability gating, the panic switch and
+the audit log apply to it exactly as to `fs` or `git`.
+
+### A personality from a file
+
+`--personality <path>` (or `ELF_PERSONALITY`) loads a `PersonalityConfig` from
+TOML, JSON or YAML. The keys are that model's fields and nothing else — an
+unknown key is refused by name. JudAIs and Lobi are unaffected.
 
 ## Extensibility
 
@@ -77,7 +115,7 @@ See: `ROADMAP.md`
 * ✅ Phase 1 — Runtime extraction (provider separation, 107 tests)
 * ✅ Phase 2 — Kernel State Machine & Hard Budgets (164 tests)
 * ✅ Phase 3 — Session Artifacts, Contracts & KV Prefixing (269 tests)
-* ✅ Phase 4 — MCP-Style Tool Bus, Sandboxing & Capability Gating (562 tests)
+* ✅ Phase 4 — Tool Bus, Sandboxing & Capability Gating (562 tests)
 * ✅ Phase 5 — Repo Map & Context Compression (783 tests)
 * ✅ Phase 6 — Repository-Native Patch Engine (888 tests)
 * ✅ Phase 7.0 — Pluggable Workflows & State Machine Abstraction
@@ -87,7 +125,8 @@ See: `ROADMAP.md`
 
 ### Up Next
 
-* ⏳ Phase 8 — Retrieval, Context Discipline & Local Inference
+* ✅ Phase 8a — Local inference, a real MCP client, and file-loaded personalities
+* ⏳ Phase 8b — Retrieval & context discipline
 
 ### Phase 7 Highlights (7.0–7.4)
 
@@ -227,7 +266,7 @@ As of Phase 7.4:
 * **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
 * **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
 
-Phase 8+ (in design) focuses on retrieval discipline and local inference. See `ROADMAP.md`.
+Local inference has landed (`--provider local`). Phase 8b focuses on retrieval discipline. See `ROADMAP.md`.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
