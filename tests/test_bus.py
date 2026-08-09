@@ -358,3 +358,75 @@ class TestToolBusProperties:
         bus = ToolBus()
         assert isinstance(bus.capability_engine, CapabilityEngine)
         assert isinstance(bus.sandbox, NoneSandbox)
+
+
+class TestUnregister:
+    """Registration used to be one-way; MCP made that a defect.
+
+    A server that withdraws a tool would otherwise leave a descriptor the
+    bus still advertises and describes, so the model gets offered a tool
+    whose only possible answer is an error from the far end.
+    """
+
+    def _bus(self):
+        from core.tools.bus import ToolBus
+        from core.tools.capability import CapabilityEngine
+        from core.contracts.schemas import PolicyPack
+        return ToolBus(capability_engine=CapabilityEngine(
+            PolicyPack(allowed_scopes=["*"])))
+
+    def _register(self, bus, name="tmp"):
+        from core.tools.descriptors import ToolDescriptor
+        bus.register(ToolDescriptor(tool_name=name, description="d"),
+                     lambda **_kw: (0, "ran", ""))
+
+    def test_it_removes_the_tool(self):
+        bus = self._bus()
+        self._register(bus)
+        assert bus.unregister("tmp") is True
+        assert "tmp" not in bus.list_tools()
+
+    def test_it_removes_the_executor_too(self):
+        """A descriptor without an executor would KeyError on dispatch."""
+        bus = self._bus()
+        self._register(bus)
+        bus.unregister("tmp")
+        assert bus._executors.get("tmp") is None
+
+    def test_dispatch_afterwards_is_unknown_tool(self):
+        bus = self._bus()
+        self._register(bus)
+        bus.unregister("tmp")
+        result = bus.dispatch("tmp")
+        assert result.exit_code == -1
+        assert "unknown_tool" in result.stderr
+
+    def test_describe_afterwards_is_an_error(self):
+        bus = self._bus()
+        self._register(bus)
+        bus.unregister("tmp")
+        assert "error" in bus.describe_tool("tmp")
+
+    def test_get_descriptor_afterwards_is_none(self):
+        bus = self._bus()
+        self._register(bus)
+        bus.unregister("tmp")
+        assert bus.get_descriptor("tmp") is None
+
+    def test_an_unknown_name_returns_false_rather_than_raising(self):
+        """Callers reconcile sets; 'already gone' is the ordinary case."""
+        assert self._bus().unregister("never-registered") is False
+
+    def test_it_leaves_the_other_tools_alone(self):
+        bus = self._bus()
+        self._register(bus, "a")
+        self._register(bus, "b")
+        bus.unregister("a")
+        assert bus.list_tools() == ["b"]
+
+    def test_re_registering_after_unregister_works(self):
+        bus = self._bus()
+        self._register(bus)
+        bus.unregister("tmp")
+        self._register(bus)
+        assert bus.dispatch("tmp").stdout == "ran"

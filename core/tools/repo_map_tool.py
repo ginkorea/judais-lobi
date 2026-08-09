@@ -8,8 +8,15 @@ from core.context.repo_map import RepoMap
 class RepoMapTool:
     """Multi-action tool for repo map operations.
 
-    Actions: build, excerpt, status, visualize
+    Actions: build, excerpt, status, visualize, symbol
     Returns (exit_code, stdout, stderr) per convention.
+
+    `symbol` is the Phase 8 retrieval action: it returns one function or
+    class body with its `path:start-end` citation, instead of the whole
+    file or the one-line signature the excerpt carries. It lives here
+    rather than in a new tool because it answers a question about the
+    repo map, reads under the same `fs.read` scope, and a second
+    filesystem tool would be a second thing to gate.
     """
 
     def __init__(
@@ -66,6 +73,38 @@ class RepoMapTool:
             ),
             "",
         )
+
+    def _do_symbol(
+        self,
+        *,
+        name: str = "",
+        file_hint: Optional[str] = None,
+        max_lines: int = 400,
+        **kw,
+    ) -> Tuple[int, str, str]:
+        """Return one symbol's source span, with its citation.
+
+        A refusal here is a normal answer with a non-zero exit code and
+        a reason on stderr — "that name is ambiguous, here are the nine
+        candidates" is information the caller can act on, and an
+        exception would only reach it as a traceback.
+        """
+        from core.context.spans import SpanUnavailable, retrieve_symbol
+
+        if not (name or "").strip():
+            return (1, "", "repo_map symbol: `name` is required")
+
+        data = self._repo_map.data
+        if data is None:
+            data = self._repo_map.build()
+
+        try:
+            span = retrieve_symbol(
+                data, name.strip(), file_hint=file_hint, max_lines=max_lines,
+            )
+        except SpanUnavailable as exc:
+            return (1, "", str(exc))
+        return (0, span.render(), "")
 
     def _do_visualize(
         self,

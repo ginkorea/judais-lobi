@@ -33,6 +33,12 @@ from core.tools.mcp_client import (
 
 mcp = pytest.importorskip("mcp", reason="the MCP client is an optional extra")
 
+# StreamableHttpTransport deliberately uses `streamablehttp_client`; see the
+# comment there for why the "replacement" is not one.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Use `streamable_http_client` instead.:DeprecationWarning"
+)
+
 STUB = str(Path(__file__).parent / "mcp_stub_server.py")
 
 
@@ -298,3 +304,167 @@ class TestBridge:
     def test_a_custom_namespace_is_honoured(self, client, bus):
         names = McpToolBridge(client, bus, namespace="taipan").sync()
         assert "taipan.echo" in names
+
+
+# ---------------------------------------------------------------------------
+# The other transport, over a real socket
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def http_server():
+    """The same stub, served over streamable HTTP on an ephemeral port.
+
+    Module-scoped: this spawns a uvicorn process, and paying that once
+    is the difference between a fast file and a slow one. The tests
+    below only read from it, apart from the notification test, which
+    adds a tool the others do not assert the absence of.
+    """
+    import socket
+    import subprocess
+    import time
+    import urllib.error
+    import urllib.request
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    proc = subprocess.Popen(
+        [sys.executable, STUB, "http", str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    url = f"http://127.0.0.1:{port}/mcp"
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError(f"stub server exited with {proc.returncode}")
+        try:
+            urllib.request.urlopen(url, timeout=1)
+        except urllib.error.HTTPError:
+            break          # any HTTP status means the socket is answering
+        except Exception:
+            time.sleep(0.1)
+    else:
+        proc.kill()
+        raise AssertionError("stub HTTP server never came up")
+
+    try:
+        yield url
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:  # pragma: no cover
+            proc.kill()
+
+
+@pytest.fixture
+def http_client(http_server):
+    transport = StreamableHttpTransport(url=http_server, token="test-token")
+    with McpClient(transport, timeout=30.0) as c:
+        yield c
+
+
+class TestStreamableHttpTransport:
+    """The stdio path carried all the end-to-end coverage; this closes it."""
+
+    def test_it_initializes_over_http(self, http_client):
+        assert http_client.connected is True
+
+    def test_tools_list_over_http(self, http_client):
+        names = {t.name for t in http_client.list_tools()}
+        assert {"echo", "add", "always_fails"} <= names
+
+    def test_tools_call_over_http(self, http_client):
+        assert "ping" in http_client.call_tool("echo", {"text": "ping"}).text
+
+    def test_a_failing_tool_over_http_is_an_error_result(self, http_client):
+        assert http_client.call_tool("always_fails", {}).is_error is True
+
+    def test_a_bearer_token_is_accepted(self, http_server):
+        """The stub does not check it; what is under test is that adding
+        an Authorization header does not break the handshake."""
+        transport = StreamableHttpTransport(url=http_server, token="s3cret")
+        with McpClient(transport, timeout=30.0) as client:
+            assert client.list_tools()
+
+    def test_no_token_also_connects(self, http_server):
+        with McpClient(StreamableHttpTransport(url=http_server),
+                       timeout=30.0) as client:
+            assert client.list_tools()
+
+    def test_a_wrong_port_refuses_at_start_rather_than_hanging(self):
+        transport = StreamableHttpTransport(
+            url="http://127.0.0.1:1/mcp", timeout=2.0,
+        )
+        with pytest.raises(McpConnectionError):
+            McpClient(transport, timeout=15.0).start()
+
+    def test_bridged_http_tools_are_network_tools(self, http_client, bus):
+        McpToolBridge(http_client, bus).sync()
+        assert bus.get_descriptor("mcp.echo").requires_network is True
+
+    def test_dispatch_over_http_through_the_bus(self, http_client, bus):
+        McpToolBridge(http_client, bus).sync()
+        result = bus.dispatch("mcp.echo", text="over http")
+        assert result.exit_code == 0
+        assert "over http" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Withdrawal — a server that takes a tool back
+# ---------------------------------------------------------------------------
+
+class TestWithdrawal:
+    def test_sync_unregisters_what_the_server_dropped(self, client, bus):
+        bridge = McpToolBridge(client, bus)
+        bridge.sync()
+        assert "mcp.echo" in bus.list_tools()
+
+        # Pretend the server withdrew everything but `add`.
+        client._tools = [t for t in client.list_tools() if t.name == "add"]
+        bridge.sync()
+
+        assert bus.list_tools() == ["mcp.add"]
+
+    def test_a_withdrawn_tool_stops_being_described(self, client, bus):
+        bridge = McpToolBridge(client, bus)
+        bridge.sync()
+        client._tools = []
+        bridge.sync()
+        assert "error" in bus.describe_tool("mcp.echo")
+
+    def test_withdrawal_never_touches_a_local_tool(self, client, bus):
+        """A server must not be able to unregister `fs` by omitting it."""
+        bus.register(ToolDescriptor(tool_name="fs"), lambda **_kw: (0, "local", ""))
+        bridge = McpToolBridge(client, bus)
+        bridge.sync()
+        client._tools = []
+        bridge.sync()
+        assert "fs" in bus.list_tools()
+
+    def test_withdrawal_never_touches_another_bridge(self, client, bus):
+        first = McpToolBridge(client, bus, namespace="a")
+        second = McpToolBridge(client, bus, namespace="b")
+        first.sync()
+        second.sync()
+        client._tools = []
+        first.sync()
+        assert "b.echo" in bus.list_tools()
+        assert "a.echo" not in bus.list_tools()
+
+    def test_withdraw_removes_everything_this_bridge_added(self, client, bus):
+        bus.register(ToolDescriptor(tool_name="fs"), lambda **_kw: (0, "", ""))
+        bridge = McpToolBridge(client, bus)
+        bridge.sync()
+        removed = bridge.withdraw()
+
+        assert "mcp.echo" in removed
+        assert bus.list_tools() == ["fs"]
+        assert bridge.registered == []
+
+    def test_withdraw_twice_is_harmless(self, client, bus):
+        bridge = McpToolBridge(client, bus)
+        bridge.sync()
+        bridge.withdraw()
+        assert bridge.withdraw() == []

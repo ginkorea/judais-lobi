@@ -170,8 +170,13 @@ REPO_MAP_DESCRIPTOR = ToolDescriptor(
         "excerpt":   ["fs.read", "git.read"],
         "status":    ["fs.read", "git.read"],
         "visualize": ["fs.read", "git.read"],
+        "symbol":    ["fs.read"],
     },
-    description="Repository map: build, excerpt (task-scoped), status, visualize (DOT/Mermaid).",
+    description=(
+        "Repository map: build, excerpt (task-scoped), status, "
+        "visualize (DOT/Mermaid), symbol (one function or class body with "
+        "its path:start-end citation, instead of the whole file)."
+    ),
 )
 
 # ---------------------------------------------------------------------------

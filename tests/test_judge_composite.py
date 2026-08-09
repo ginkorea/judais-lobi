@@ -21,12 +21,19 @@ class TestCompositeJudgeDefaults:
         assert isinstance(tiers[2], LLMReviewTier)
 
     def test_all_pass(self):
-        """Test pass + lint pass + LLM stub(0.5) → score ~0.925, pass."""
+        """Test pass + lint pass, no reviewer configured -> 1.0, pass.
+
+        Was 0.925, which was 0.6 + 0.25 + the stub reviewer's invented
+        0.5*0.15. The reviewer now returns UNKNOWN and its weight leaves
+        the denominator, so two tiers that both passed score full marks
+        instead of being docked for a third that never ran.
+        """
         r = self.judge.evaluate(test_exit_code=0, lint_exit_code=0)
         assert r.verdict == "pass"
-        # 1.0*0.6 + 1.0*0.25 + 0.5*0.15 = 0.925
-        assert r.final_score == pytest.approx(0.925, abs=1e-4)
+        # (1.0*0.6 + 1.0*0.25) * (1.0 / 0.85) = 1.0
+        assert r.final_score == pytest.approx(1.0, abs=1e-4)
         assert len(r.tier_results) == 3
+        assert r.tier_results[2].verdict == TierVerdict.UNKNOWN
 
     def test_test_fail_short_circuits(self):
         """Test fail → short-circuit, lint and LLM skipped."""
@@ -38,16 +45,21 @@ class TestCompositeJudgeDefaults:
         assert r.tier_results[2].verdict == TierVerdict.SKIPPED
 
     def test_test_pass_lint_fail(self):
-        """Test pass + lint fail → score = 0.6 + 0.0 + 0.075 = 0.675."""
+        """Test pass + lint fail, reviewer UNKNOWN -> 0.6 rescaled over 0.85.
+
+        Was 0.675, of which 0.075 was the stub's invention.
+        """
         r = self.judge.evaluate(test_exit_code=0, lint_exit_code=1)
-        assert r.final_score == pytest.approx(0.675, abs=1e-4)
+        # (1.0*0.6) * (1.0 / 0.85)
+        assert r.final_score == pytest.approx(0.705882, abs=1e-4)
         assert r.verdict == "pass"  # >= 0.6
 
     def test_test_pass_lint_waived(self):
-        """Test pass + lint waived(0.5) → score = 0.6 + 0.125 + 0.075 = 0.8."""
+        """Test pass + lint waived(0.5), reviewer UNKNOWN. Was 0.8."""
         r = self.judge.evaluate(test_exit_code=0, lint_exit_code=1,
                                 lint_waive=True)
-        assert r.final_score == pytest.approx(0.8, abs=1e-4)
+        # (1.0*0.6 + 0.5*0.25) * (1.0 / 0.85)
+        assert r.final_score == pytest.approx(0.852941, abs=1e-4)
         assert r.verdict == "pass"
 
     def test_result_is_judge_report(self):

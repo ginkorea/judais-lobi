@@ -19,6 +19,15 @@ class SymbolDef:
     parent: str = ""  # enclosing class name for methods
     decorators: List[str] = field(default_factory=list)
     line: int = 0
+    #: Last line of the definition, 1-based and inclusive. 0 means the
+    #: extractor could not tell — the regex fallback genuinely cannot, and
+    #: a guessed span is worse than none: it silently hands a reader half a
+    #: function. `core.context.spans` refuses rather than guessing.
+    end_line: int = 0
+
+    @property
+    def has_span(self) -> bool:
+        return self.end_line >= self.line > 0
 
 
 @dataclass

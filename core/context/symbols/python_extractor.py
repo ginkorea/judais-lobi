@@ -133,6 +133,7 @@ class PythonExtractor:
             signature=sig,
             decorators=_get_decorators(node),
             line=node.lineno,
+            end_line=getattr(node, "end_lineno", 0) or 0,
         ))
         # Extract methods
         for child in ast.iter_child_nodes(node):
@@ -159,6 +160,7 @@ class PythonExtractor:
             parent=parent,
             decorators=_get_decorators(node),
             line=node.lineno,
+            end_line=getattr(node, "end_lineno", 0) or 0,
         ))
 
     def _extract_import(self, node: ast.Import, imports: List[ImportEdge]) -> None:
@@ -184,4 +186,5 @@ class PythonExtractor:
                     name=target.id,
                     kind="constant",
                     line=node.lineno,
+                    end_line=getattr(node, "end_lineno", 0) or 0,
                 ))

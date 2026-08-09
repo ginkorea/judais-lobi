@@ -27,7 +27,12 @@ class TestTierVerdict:
         assert TierVerdict("pass") is TierVerdict.PASS
 
     def test_all_members(self):
-        assert len(TierVerdict) == 4
+        """UNKNOWN joined the four: "ran and could not answer", which is
+        not SKIPPED ("chose not to run") and not a 0.5 pretending to be
+        an opinion."""
+        assert {v.value for v in TierVerdict} == {
+            "pass", "fail", "waived", "skipped", "unknown",
+        }
 
 
 # ── TierResult ───────────────────────────────────────────────────────────────

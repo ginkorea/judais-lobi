@@ -63,4 +63,14 @@ async def add_a_tool() -> str:
 
 
 if __name__ == "__main__":
-    app.run()
+    import sys
+
+    # `python mcp_stub_server.py`             -> stdio
+    # `python mcp_stub_server.py http <port>` -> streamable HTTP at /mcp
+    if len(sys.argv) > 2 and sys.argv[1] == "http":
+        app.settings.host = "127.0.0.1"
+        app.settings.port = int(sys.argv[2])
+        app.settings.log_level = "error"
+        app.run(transport="streamable-http")
+    else:
+        app.run()

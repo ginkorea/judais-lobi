@@ -308,6 +308,14 @@ class StreamableHttpTransport(McpTransport):
     async def open_streams(self, credential: Optional[str]) -> AsyncIterator[Sequence[Any]]:
         from mcp.client.streamable_http import streamablehttp_client
 
+        # This name is deprecated in favour of `streamable_http_client`, and
+        # it is used anyway, deliberately. The replacement is NOT a rename:
+        # it dropped `headers` and `timeout` for a prepared
+        # `http_client: httpx.AsyncClient`, and it does not exist at the
+        # bottom of the pin (mcp 1.25). Supporting both would mean a second
+        # code path only one of which this suite can exercise, and an
+        # untested branch guarding a signature nobody here has run is worse
+        # than a warning. Revisit when the floor moves.
         headers = dict(self.headers)
         if credential:
             headers["Authorization"] = f"Bearer {credential}"
@@ -624,27 +632,46 @@ class McpToolBridge:
         return f"{self._namespace}.{remote}"
 
     def sync(self, refresh: bool = False) -> List[str]:
-        """Discover and register.  Safe to call again on a change notice."""
+        """Reconcile the bus against ``tools/list``.
+
+        Registers what the server now advertises and **unregisters what
+        it withdrew**, so the bus never offers the model a tool whose
+        only possible answer is an error from the far end.
+
+        Only names this bridge put there are removed. Another bridge's
+        namespace, and every compiled-in tool, are untouched — a server
+        cannot cause the removal of `fs` by any list it sends.
+        """
         specs = self._client.list_tools(refresh=refresh)
         names = []
         for spec in specs:
             name = self.local_name(spec.name)
             self._bus.register(self._descriptor(spec, name), self._executor(spec))
             names.append(name)
+
+        for gone in [n for n in self._registered if n not in names]:
+            self._bus.unregister(gone)
+
         self._registered = names
         return list(names)
 
     def follow_changes(self) -> None:
         """Re-sync whenever the server says its tool list changed.
 
-        Installed as the client's ``on_tools_changed`` listener.  Tools
-        that vanish stay registered — the ToolBus has no ``unregister``,
-        and inventing one here would be a parallel abstraction beside it.
-        Calling a withdrawn tool is a clean ``unknown_tool`` from the
-        server, which is a better failure than a bus that lies about
-        what it holds; the honest fix belongs in ``ToolBus``.
+        Installed as the client's ``on_tools_changed`` listener.
         """
         self._client._on_tools_changed = lambda _specs: self.sync()
+
+    def withdraw(self) -> List[str]:
+        """Unregister everything this bridge added; return what went.
+
+        For a session ending or a server going away. Without it every
+        bridged descriptor outlives the client and dispatches into a
+        closed transport.
+        """
+        removed = [n for n in self._registered if self._bus.unregister(n)]
+        self._registered = []
+        return removed
 
     def _descriptor(self, spec: McpToolSpec, name: str) -> ToolDescriptor:
         args = spec.argument_names

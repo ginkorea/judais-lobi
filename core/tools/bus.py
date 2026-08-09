@@ -73,6 +73,26 @@ class ToolBus:
         self._descriptors[descriptor.tool_name] = descriptor
         self._executors[descriptor.tool_name] = executor
 
+    def unregister(self, tool_name: str) -> bool:
+        """Remove a tool. Returns whether it was registered.
+
+        Registration used to be one-way, which was fine while every tool
+        was compiled in and outlived the process.  It stopped being fine
+        when tools began arriving from an MCP server at runtime: a
+        server that withdraws one leaves a descriptor behind that
+        ``list_tools`` still advertises and ``describe_tool`` still
+        describes, so the model is offered a tool whose only possible
+        answer is an error from the far end.
+
+        Returns a bool instead of raising on an unregistered name: the
+        caller is normally reconciling a *set* against this registry,
+        and "it was already gone" is the ordinary case there.
+        """
+        existed = tool_name in self._descriptors
+        self._descriptors.pop(tool_name, None)
+        self._executors.pop(tool_name, None)
+        return existed
+
     def dispatch(self, tool_name: str, *args: Any,
                  action: Optional[str] = None, **kwargs: Any) -> ToolResult:
         """Dispatch a tool invocation through capability gating.

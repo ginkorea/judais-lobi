@@ -186,6 +186,7 @@ class TreeSitterExtractor:
                     signature=sig,
                     parent=parent_name,
                     line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
                 )
                 symbols.append(sym)
                 # Recurse into class/struct bodies for methods
