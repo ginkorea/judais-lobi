@@ -353,13 +353,24 @@ class TestRetrievePhaseFetchesSpans:
         assert blocks == RetrieveRole.MAX_SYMBOLS
 
     def test_the_model_is_told_the_symbols_key_exists(self):
+        """The instruction asks for `symbols`; the JSON contract says
+        "use only those keys". If the key is not in the advertised list,
+        the prompt forbids the very thing it asks for — and the word
+        appearing in the instruction is not evidence that it does."""
+        import re
+
         from core.kernel.roles import RetrieveRole, RoleContext
         from core.kernel.state import SessionState
         from core.kernel.workflows import get_coding_workflow
 
         ctx = RoleContext(chat=lambda _m: "{}", workflow=get_coding_workflow())
-        messages = RetrieveRole().compose(
+        system = RetrieveRole().compose(
             SessionState(task_description="x"), ctx,
             ctx.schema_for("RETRIEVE"),
-        )
-        assert "symbols" in messages[0]["content"]
+        )[0]["content"]
+
+        advertised = re.search(r"Keys: (.+?)\. Use only", system)
+        assert advertised, f"no JSON contract line in:\n{system}"
+        keys = {k.strip() for k in advertised.group(1).split(",")}
+        assert "symbols" in keys
+        assert "task_id" in keys        # the schema's own are still there
