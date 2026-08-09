@@ -130,9 +130,19 @@ class TestActionMetadataSets:
         assert ("fs", "read") not in HIGH_RISK_ACTIONS
 
     def test_all_descriptors_includes_consolidated(self):
+        """The set, not the count.
+
+        This asserted ``len(...) == 12`` and had been red since
+        ``fetch_page_content`` was added as the thirteenth.  A bare count
+        cannot say *which* descriptor appeared or vanished, so it fails
+        without telling you anything and gets bumped without being read.
+        Naming them makes an accidental removal a specific failure.
+        """
         names = [d.tool_name for d in ALL_DESCRIPTORS]
-        assert "fs" in names
-        assert "git" in names
-        assert "verify" in names
-        assert "patch" in names
-        assert len(ALL_DESCRIPTORS) == 12
+        assert set(names) == {
+            "run_shell_command", "run_python_code", "install_project",
+            "perform_web_search", "perform_web_research", "fetch_page_content",
+            "rag_crawl", "speak_text",
+            "fs", "git", "verify", "repo_map", "patch",
+        }
+        assert len(names) == len(set(names)), "a descriptor is listed twice"
