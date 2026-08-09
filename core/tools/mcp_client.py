@@ -365,10 +365,40 @@ class McpCallResult:
         A tool-level error is a non-zero exit and not an exception: the
         model asked for something the server declined, which is an
         answer the loop should see and act on, not a crash.
+
+        This drops :attr:`structured` whenever there is text, which is
+        the ordinary case — see :meth:`as_bus_tuple`, which does not.
         """
         if self.is_error:
             return (1, "", self.text)
         return (0, self.text, "")
+
+    @property
+    def evidence(self) -> str:
+        """The structured payload as JSON, or ``""``.
+
+        ``structuredContent`` is the *typed* answer — the numbers and
+        identifiers a governed view is made of — and the text block
+        beside it is usually a rendering of it for a human. Keeping only
+        the rendering is how a caller ends up parsing figures back out of
+        a table it was handed, which is the failure mode a typed view
+        exists to remove.
+        """
+        if self.structured is None:
+            return ""
+        return json.dumps(self.structured, ensure_ascii=False, default=str)
+
+    def as_bus_tuple(self) -> Tuple[int, str, str, str]:
+        """``(exit_code, stdout, stderr, evidence)``.
+
+        The four-element form ``ToolBus.dispatch`` unpacks into
+        ``ToolResult.evidence``. Kept separate from :meth:`as_tuple`
+        rather than replacing it: three-tuples are the executor contract
+        every other tool in this package speaks, and widening the one
+        method both of them go through would change that contract for
+        tools that have nothing structured to carry.
+        """
+        return (*self.as_tuple(), self.evidence)
 
 
 # ---------------------------------------------------------------------------
@@ -674,24 +704,29 @@ class McpToolBridge:
         return removed
 
     def _descriptor(self, spec: McpToolSpec, name: str) -> ToolDescriptor:
-        args = spec.argument_names
-        detail = f" Arguments: {', '.join(args)}." if args else ""
+        # The schema is carried whole and NOT flattened into the
+        # description. It used to be reduced to "Arguments: a, b, c." —
+        # which threw away every type, every `required` and every enum,
+        # the three things that decide whether a model's first call to a
+        # faceted search is a valid one. Renderers summarise it
+        # (`summarize_input_schema`); the descriptor keeps it.
         return ToolDescriptor(
             tool_name=name,
             required_scopes=list(self._scopes),
             requires_network=self._client.transport.uses_network,
             network_scopes=list(self._scopes),
-            description=(spec.description or f"MCP tool {spec.name}.") + detail,
+            description=spec.description or f"MCP tool {spec.name}.",
+            input_schema=dict(spec.input_schema or {}),
         )
 
-    def _executor(self, spec: McpToolSpec) -> Callable[..., Tuple[int, str, str]]:
+    def _executor(self, spec: McpToolSpec) -> Callable[..., Tuple[int, str, str, str]]:
         client = self._client
 
-        def _call(**arguments: Any) -> Tuple[int, str, str]:
+        def _call(**arguments: Any) -> Tuple[int, str, str, str]:
             try:
-                return client.call_tool(spec.name, arguments).as_tuple()
+                return client.call_tool(spec.name, arguments).as_bus_tuple()
             except McpConnectionError as exc:
-                return (1, "", f"mcp_unreachable: {exc}")
+                return (1, "", f"mcp_unreachable: {exc}", "")
 
         _call.__name__ = f"mcp_{spec.name}"
         _call.__doc__ = spec.description or f"Dispatches tools/call for {spec.name}."

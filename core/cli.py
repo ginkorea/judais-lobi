@@ -77,18 +77,81 @@ def _build_mcp_transport(args):
     )
 
 
+def _load_skill(args):
+    """The ``--skill`` manifest, or ``None``.
+
+    A refusal here is a ``SystemExit`` and not a warning: an operator who
+    named a skill and got a mission run without one would get a
+    plausible answer produced by an agent holding the whole bus and none
+    of the operational knowledge they meant to supply.
+    """
+    if not getattr(args, "skill", None):
+        return None
+
+    from core.runtime.skills import SkillManifestError, load_skill
+
+    try:
+        return load_skill(args.skill)
+    except SkillManifestError as exc:
+        raise SystemExit(f"--skill: {exc}")
+
+
+def _mission_tools(manifest, discovered, style):
+    """The mission's tool subset: the skill's closed set, or everything.
+
+    With no manifest this is the whole bridge, which is what the mission
+    path did before skills existed.  It is a fallback and not a default
+    posture — ``MissionRunner``'s own contract asks for a subset, and a
+    governed deployment supplies one in a manifest.
+    """
+    if manifest is None:
+        console.print(
+            "⚠️  No --skill: the mission is offered every discovered tool. "
+            "A skill manifest supplies the closed set and the operational "
+            "knowledge that goes with it.",
+            style="yellow",
+        )
+        return list(discovered)
+
+    from core.runtime.skills import SkillToolsUnavailable
+
+    try:
+        return manifest.resolve(discovered)
+    except SkillToolsUnavailable as exc:
+        raise SystemExit(f"--skill: {exc}")
+
+
 def _run_mission(elf, args, name, style):
     """Discover tools over MCP, bridge them, and let the model choose.
 
     Everything the agent can reach in a mission arrives through
     ``tools/list`` and is dispatched through the agent's own ToolBus.
     No store, path or compute plane is touched from here.
+
+    What the model is *told* comes from two files and no code: the
+    persona (``--personality``) and the skill manifest (``--skill``).
+    This function joins them in that order — who you are, then what you
+    are doing — and supplies neither.
     """
+    from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import MissionRunner
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
+    manifest = _load_skill(args)
     transport = _build_mcp_transport(args)
     bus = elf.tools.bus
+
+    try:
+        validator = GroundingValidator.from_config(
+            GroundingConfig.from_mapping(manifest.grounding) if manifest else None
+        )
+    except ValueError as exc:
+        raise SystemExit(f"--skill: {exc}")
+
+    system_message = "\n\n".join(
+        part for part in (elf.system_message, manifest.prompt if manifest else "")
+        if part and part.strip()
+    )
 
     def chat_fn(messages):
         return elf.client.chat(model=elf.model, messages=messages, stream=False)
@@ -97,17 +160,27 @@ def _run_mission(elf, args, name, style):
         with McpClient(transport) as client:
             from core.tools.mcp_client import McpToolBridge
             bridge = McpToolBridge(client, bus)
-            tool_names = bridge.sync()
+            discovered = bridge.sync()
             bridge.follow_changes()
             console.print(
                 f"🔌 {name} connected to {transport.describe()} — "
-                f"{len(tool_names)} tool(s): {', '.join(tool_names) or '(none)'}",
+                f"{len(discovered)} tool(s) discovered: "
+                f"{', '.join(discovered) or '(none)'}",
                 style=style,
             )
+            tool_names = _mission_tools(manifest, discovered, style)
+            if manifest:
+                console.print(
+                    f"📜 skill {manifest.name} — {len(tool_names)} tool(s): "
+                    f"{', '.join(tool_names)}"
+                    + ("" if validator else "  (no grounding grammar)"),
+                    style=style,
+                )
             runner = MissionRunner(
                 chat_fn, bus, tool_names,
-                system_message=elf.system_message,
+                system_message=system_message,
                 max_steps=args.mission_steps,
+                validator=validator,
             )
             transcript = runner.run(args.message)
     except (McpUnavailable, McpConnectionError) as exc:
@@ -117,9 +190,20 @@ def _run_mission(elf, args, name, style):
     for step in transcript.steps:
         if step.tool:
             mark = "⚠️" if step.refused else "🔧"
-            console.print(f"{mark} {step.tool}({step.arguments})", style=style)
+            cut = f" [truncated → {step.handle}]" if step.truncated else ""
+            console.print(f"{mark} {step.tool}({step.arguments}){cut}", style=style)
         if step.error:
             console.print(f"   {step.error}", style="yellow")
+
+    report = transcript.grounding
+    if report is not None and report.ran:
+        state = "grounded" if report.grounded else "UNGROUNDED"
+        console.print(
+            f"🔎 {state}: "
+            + "; ".join(f"{r.check} — {r.detail}" for r in report.results
+                        if r.configured),
+            style=style if report.grounded else "yellow",
+        )
 
     if transcript.completed:
         console.print(Markdown(f"🧞 **{name}:** {transcript.answer}"), style=style)
@@ -163,6 +247,11 @@ def _main(AgentClass):
                              "Prefer the env var; an argument is visible in ps")
     parser.add_argument("--mission-steps", type=int, default=8,
                         help="Hard cap on tool calls in a mission")
+    parser.add_argument("--skill", type=Path, default=_env_path("MISSION_SKILL"),
+                        help="A SKILL.md manifest (or a directory holding one) "
+                             "supplying the mission's closed tool set, its "
+                             "prompt and its grounding grammar "
+                             "(env: MISSION_SKILL)")
 
     parser.add_argument("--md", action="store_true", help="Non-streaming markdown output")
     parser.add_argument("--raw", action="store_true", help="Stream output (default)")

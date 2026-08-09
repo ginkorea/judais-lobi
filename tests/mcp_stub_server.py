@@ -12,6 +12,8 @@ one by registering a tool at runtime, which is the only honest way to
 test that the client re-lists.
 """
 
+from typing import Any, Dict, Literal
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("judais-lobi-stub")
@@ -46,6 +48,28 @@ def run_shell_command(command: str) -> str:
 def governed_read(asset_id: str) -> str:
     """Stand in for a governed catalogue read."""
     return f"asset {asset_id}: results only, never source"
+
+
+@app.tool()
+def governed_view(
+    run_id: str, section: Literal["actors", "totals"] = "actors",
+) -> Dict[str, Any]:
+    """A large, typed result: identifiers and numbers, no prose.
+
+    Three things a mission needs to survive and a small stub otherwise
+    never produces: a result too big for a transcript, a real
+    ``structuredContent`` beside the text rendering of it, and an enum
+    argument that a model cannot guess from a list of names.
+    """
+    actors = [
+        {"handle": f"a.{index:04d}", "score": round(1.0 - index / 400, 4),
+         "records": [f"rec.{index:04d}{suffix}" for suffix in "abcd"]}
+        for index in range(200)
+    ]
+    if section == "totals":
+        return {"run_id": run_id, "totals": {"records": 12481, "blocks": 7}}
+    return {"run_id": run_id, "actors": actors,
+            "totals": {"records": 12481, "blocks": 7}}
 
 
 @app.tool()

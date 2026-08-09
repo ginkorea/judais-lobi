@@ -277,10 +277,24 @@ class TestBridge:
         McpToolBridge(_Fake(), bus).sync()
         assert bus.get_descriptor("mcp.t").requires_network is True
 
-    def test_description_and_arguments_reach_describe_tool(self, client, bus):
+    def test_the_description_is_the_servers_own(self, client, bus):
+        """It used to be "Add two integers. Arguments: a, b." — the names
+        pasted into prose, which was the lossy half of a job the schema
+        now does properly."""
+        McpToolBridge(client, bus).sync()
+        assert bus.describe_tool("mcp.add")["description"] == "Add two integers."
+
+    def test_the_whole_input_schema_reaches_the_descriptor(self, client, bus):
+        McpToolBridge(client, bus).sync()
+        schema = bus.get_descriptor("mcp.add").input_schema
+        assert schema["properties"]["a"]["type"] == "integer"
+        assert sorted(schema["required"]) == ["a", "b"]
+
+    def test_describe_tool_carries_types_and_required(self, client, bus):
         McpToolBridge(client, bus).sync()
         info = bus.describe_tool("mcp.add")
-        assert "a, b" in info["description"]
+        assert info["arguments"] == "a (integer, required), b (integer, required)"
+        assert info["input_schema"]["properties"]["b"]["type"] == "integer"
 
     def test_resync_picks_up_a_new_tool(self, client, bus):
         bridge = McpToolBridge(client, bus)

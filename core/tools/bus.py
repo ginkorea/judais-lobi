@@ -10,6 +10,7 @@ from core.tools.descriptors import (
     HIGH_RISK_ACTIONS,
     SKIP_SANDBOX_ACTIONS,
     NETWORK_ACTIONS,
+    summarize_input_schema,
 )
 from core.tools.capability import CapabilityEngine, CapabilityVerdict
 from core.tools.sandbox import SandboxRunner, NoneSandbox
@@ -227,15 +228,22 @@ class ToolBus:
             else:
                 result = executor(*args, **kwargs)
 
-            # Handle tuple returns (rc, out, err)
-            if isinstance(result, tuple) and len(result) == 3:
-                rc, out, err = result
+            # Handle tuple returns (rc, out, err) and (rc, out, err, evidence).
+            # The fourth element is for a tool whose answer is *typed* and
+            # not only rendered — an MCP `structuredContent`, say. Without
+            # somewhere to put it, a caller that needs one field of a
+            # governed view has to parse it back out of the text the model
+            # was shown, which is the parse a typed payload exists to avoid.
+            if isinstance(result, tuple) and len(result) in (3, 4):
+                rc, out, err = result[0], result[1], result[2]
                 tool_result = ToolResult(
                     exit_code=rc,
                     stdout=str(out),
                     stderr=str(err),
                     tool_name=tool_name,
                     granted_scopes=list(scopes_to_check),
+                    evidence=(str(result[3]) if len(result) == 4 and result[3]
+                              else None),
                 )
             else:
                 # Handle string returns (legacy tools)
@@ -320,6 +328,14 @@ class ToolBus:
         }
         if desc.action_scopes:
             info["actions"] = list(desc.action_scopes.keys())
+        if desc.input_schema:
+            # The schema itself, not only a rendering of it: a caller
+            # building a native tool-call request needs the whole thing,
+            # and a caller building a prompt wants the summary. Handing
+            # out only the summary would make the prompt the authority on
+            # a tool's arguments, which is how the two drift.
+            info["input_schema"] = desc.input_schema
+            info["arguments"] = summarize_input_schema(desc.input_schema)
         return info
 
     def get_descriptor(self, name: str) -> Optional[ToolDescriptor]:

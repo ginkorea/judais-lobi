@@ -88,7 +88,80 @@ lobi --mission --mcp-url https://host/mcp   "..."   # bearer token in MCP_TOKEN
 Each tool a server advertises is registered into the existing `ToolBus` as a
 `ToolDescriptor` whose executor dispatches `tools/call`, namespaced `mcp.<name>`
 so a server cannot shadow a local tool. Capability gating, the panic switch and
-the audit log apply to it exactly as to `fs` or `git`.
+the audit log apply to it exactly as to `fs` or `git`. The tool's JSON Schema is
+carried whole on the descriptor, so the catalogue the model reads says
+`type (string: dataset|model|service)` and not just `type` — types, `required`
+and enums are what decide whether a first call to a faceted search works.
+
+### A skill manifest — `--skill`
+
+The harness owns mechanisms; whoever operates the platform owns content. A
+`SKILL.md` is how the content arrives: YAML frontmatter plus a Markdown body,
+the format Claude-style skills already use.
+
+```bash
+lobi --mission --skill ./skills/catalogue_recon/SKILL.md \
+     --mcp-stdio 'python -m some_mcp_server' "what governed datasets exist?"
+```
+
+Three things come out of it, and nothing else does:
+
+* **a closed tool set**, `allowed_tools`, intersected with what the bridge
+  actually discovered. A bare name matches a namespaced one, so a manifest says
+  `catalog_search_assets` and gets `mcp.catalog_search_assets`. A named tool the
+  server does not offer is a **refusal listing every missing name** — never a
+  silent narrowing, because a mission missing the tool that answers its question
+  answers it from the model's memory instead and the transcript looks ordinary.
+  Suffix an entry with `?` to mean "if the host offers it";
+* **prompt text** — the operational frontmatter fields and the whole body,
+  appended after the persona. Fields this loader has never heard of are rendered
+  too: a manifest is content, and the harness is not the authority on which of a
+  platform's operational fields matter;
+* **a grounding grammar**, below. Optional; absent means nothing is enforced and
+  nothing claims to have been.
+
+### Bounded results, and a store to read the rest from
+
+A tool result is capped at 32 KB (`MAX_RESULT_BYTES`, the kernel's own
+`max_tool_output_bytes_in_context`) before it enters the transcript — head and
+tail with an explicit marker. Uncapped, one large governed view evicts the
+earlier steps the model needs to know what its numbers mean, or exceeds
+`max_model_len` outright, and neither leaves a trace in the answer.
+
+The whole result — including the `structuredContent` that `as_tuple()` drops
+whenever there is text — stays in a per-mission store, and the marker names the
+handle:
+
+```
+mission_result(handle="r1", path="result.actors[0].score")
+```
+
+A few dozen bytes instead of two hundred kilobytes. The store reaches nothing:
+every byte in it already arrived through a gated, audited dispatch of a tool the
+closed set allowed. It is registered on the bus for the length of one run and
+withdrawn after it.
+
+### Grounding — every identifier has to have come from a tool
+
+`core/runtime/grounding.py` is the mission-tier analogue of `CompositeJudge`.
+Every identifier-shaped token in the answer must appear in a tool output **of
+this run**. An unsupported claim gets one repair turn naming the exact tokens;
+a second failure keeps the answer and appends an explicit caveat, because
+deleting it would hide a finding and passing it silently would launder one.
+
+The grammar is not in the code. It comes from the manifest:
+
+```yaml
+grounding:
+  identifier_pattern: '\b(?:asset|labels|run)\.[0-9a-f]{4,}\b'
+  ignore: [asset.0000]
+  max_repairs: 1
+```
+
+No block, no validator, and the transcript's `grounding` stays `None` rather
+than claiming a clean check. A check that could not run reports *no opinion* and
+never a pass — same reason `LLMReviewTier` returns `UNKNOWN` instead of 0.5, and
+a larger one here: a fabricated "grounded" is a governance claim.
 
 ### A personality from a file
 
