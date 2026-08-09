@@ -377,6 +377,16 @@ class TestTheResultStore:
         runner = MissionRunner(ScriptedModel(), bus, ["catalog.search"])
         assert RESULT_TOOL in runner.offered
 
+    def test_the_model_is_told_about_it_during_the_run(self, bus):
+        """It is registered inside `run()`, so a catalogue rendered
+        before then would silently omit the one tool the truncation
+        marker tells the model to call."""
+        model = ScriptedModel('{"answer": "ok"}')
+        MissionRunner(model, bus, ["catalog.search"]).run("go")
+        system = model.seen[0][0]["content"]
+        assert f"- {RESULT_TOOL}:" in system
+        assert "handle (string)" in system
+
     def test_it_is_withdrawn_when_the_mission_ends(self, bus):
         MissionRunner(
             ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
