@@ -1,13 +1,15 @@
 # core/patch/engine.py — Top-level PatchEngine orchestrator
 
+import shlex
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from core.contracts.schemas import PatchSet
 from core.patch.applicator import apply_patch
 from core.patch.matcher import canonicalize, match_file
 from core.patch.models import FileMatchResult, PatchResult
 from core.patch.worktree import PatchWorktree
+from core.tools.executor import run_subprocess
 
 
 class PatchEngine:
@@ -101,6 +103,20 @@ class PatchEngine:
         """Apply all patches. Optionally in a git worktree.
 
         On any file failure: stop, leave worktree intact for diagnostics.
+
+        The returned :class:`PatchResult` carries the **diff of what was
+        actually written**. ``PatchResult.diff`` has existed since the
+        engine was written and nothing ever assigned it, so every caller
+        that serialised a result published an empty string as though the
+        change had no content. A reviewer downstream cannot tell that
+        apart from a change nobody made — which is the same shape as a
+        phase that succeeds having done nothing.
+
+        The diff is taken here, in the same call that did the writing,
+        rather than by a later observation of the tree. A second,
+        separate ``git diff`` would report whatever the tree holds *at
+        that moment*, including edits this patch set did not make; bound
+        to the application it reports this patch set and nothing else.
         """
         worktree_path = ""
 
@@ -124,6 +140,45 @@ class PatchEngine:
             success=all_success,
             file_results=file_results,
             worktree_path=worktree_path,
+            diff=self._diff_of(apply_root, patch_set),
+        )
+
+    def _diff_of(self, root: str, patch_set: PatchSet) -> str:
+        """``git diff`` restricted to the paths this patch set names.
+
+        Restricted on purpose. A bare ``git diff`` in a repository that
+        was already dirty hands back somebody else's work as though this
+        patch set had done it, and a reviewer asked to judge "the change"
+        would be judging edits the run never made.
+
+        A tree that is not a git checkout yields ``""``. That is the
+        honest answer and it is *visible*: the review tier reports "no
+        diff reached the judge" rather than reviewing a fabrication.
+        """
+        paths = [p.file_path for p in patch_set.patches if p.file_path]
+        if not paths:
+            return ""
+
+        # A created file is untracked, and `git diff` does not see
+        # untracked files at all. --intent-to-add registers it in the
+        # index without content, which is exactly enough for the diff to
+        # show the whole file as added.
+        created = [
+            p.file_path for p in patch_set.patches
+            if p.action == "create" and p.file_path
+        ]
+        if created:
+            self._git(root, "add", "--intent-to-add", "--", *created)
+
+        rc, out, _err = self._git(root, "diff", "--", *paths)
+        return out if rc == 0 else ""
+
+    def _git(self, root: str, *args: str) -> Tuple[int, str, str]:
+        parts: List[str] = ["git", *args]
+        cmd = f"cd {shlex.quote(root)} && {' '.join(shlex.quote(a) for a in parts)}"
+        return run_subprocess(
+            cmd, shell=True, timeout=30,
+            subprocess_runner=self._subprocess_runner,
         )
 
     def diff(self) -> str:

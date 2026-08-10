@@ -11,18 +11,38 @@ can take: not missing, but indistinguishable from working.
 
 This module supplies the missing half.
 
-**Two kinds of role, and the split is not an implementation detail.**
+**Three kinds of role, and the split is not an implementation detail.**
 Some phases are a question for a model; some are a fact about the
 repository. Asking a model to produce a ``RepoMapResult`` would be
 asking it to invent a file listing it cannot see, and asking it whether
 the tests passed would be asking it to invent an exit code. So:
 
 * :class:`LLMPhaseRole` — the model is asked, and its reply must parse
-  into the phase's schema. INTAKE, CONTRACT, PLAN, RETRIEVE, PATCH, FIX.
+  into the phase's schema. INTAKE, CONTRACT, PLAN.
 * :class:`ToolPhaseRole` — a tool is dispatched through the ToolBus and
-  the artifact is built from what came back. REPO_MAP, RUN.
+  the artifact is built from what came back. REPO_MAP, RUN, CRITIQUE.
+* :class:`AuthoredToolPhaseRole` — the model *authors a request* and a
+  tool then *settles* it: the artifact records what the tool actually
+  did, not what the model asked for. RETRIEVE, PATCH, FIX.
 
-Both share :meth:`PhaseRole.run`, which is **final**, and the reason it
+The third kind exists because of a bug this module shipped with. PATCH
+was an :class:`LLMPhaseRole`: it asked the model for a ``PatchSet``,
+the ``PatchSet`` validated, the phase succeeded — and nothing ever put
+it on disk. ``PatchEngine.apply`` existed, was tested, and was called
+from no role. RUN then ran the tests against an unchanged tree and
+passed, CRITIQUE scored a diff that was never written, and the session
+walked INTAKE → COMPLETED producing artifacts that each validated and
+connected to nothing. Exactly the shape named above: *not missing, but
+indistinguishable from working*.
+
+Asking a model for a patch is legitimate — a patch is a proposal, and
+proposing is what a model is for. Believing the patch landed because
+the model said so is the same error as asking it whether the tests
+passed. So the phase has two halves and the second one is a tool: the
+model authors, ``patch apply`` disposes, and the phase fails if the
+tool says the change did not land.
+
+All three share :meth:`PhaseRole.run`, which is **final**, and the reason it
 is final is the bug above: *a role never declares its own success*. The
 template asks the subclass for an output and then decides, from whether
 that output satisfies the phase's schema, whether the phase succeeded.
@@ -64,6 +84,22 @@ class RoleRefused(Exception):
     accidentally report a refusal as an output — the same reason
     :meth:`PhaseRole.run` is final.
     """
+
+
+def _stub(method: Callable) -> Callable:
+    """Mark a base-class method as a placeholder a subclass must replace.
+
+    ``__init_subclass__`` used to detect an unimplemented method by
+    comparing it against :class:`PhaseRole`'s own attribute. That works
+    for exactly one level: an intermediate base which introduces a
+    *new* required method has its own stub inherited by the subclass,
+    the identity check against ``PhaseRole`` finds nothing to compare,
+    and a subclass that implements neither half is declared usable. The
+    marker travels with the function instead of with the class, so the
+    check is level-independent.
+    """
+    method._role_stub = True  # type: ignore[attr-defined]
+    return method
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +192,33 @@ class PhaseRole(ABC):
 
     def __init_subclass__(cls, **kw: Any) -> None:
         super().__init_subclass__(**kw)
-        if getattr(cls, "abstract", False):  # an intermediate base is fine
+        # `cls.__dict__` and not `getattr`: `abstract` marks *this* class
+        # as an intermediate base, and inheriting it would exempt every
+        # role beneath it. It did. `LLMPhaseRole.abstract` is True, so
+        # IntakeRole, PlanRole, PatchRole and every ToolPhaseRole came
+        # through here and returned on the first line — the declaration
+        # checks ran on nothing that ships. They happened to be declared
+        # correctly, which is the only reason it never showed.
+        if cls.__dict__.get("abstract", False):
             return
+        problems = cls._declaration_problems()
+        if problems:
+            raise RoleMisdeclared(
+                f"{cls.__name__} is not a usable PhaseRole:\n  - "
+                + "\n  - ".join(problems)
+            )
+
+    @classmethod
+    def _declaration_problems(cls) -> List[str]:
+        """Every reason this class is unusable, gathered not raised.
+
+        Gathered and not raised so an intermediate base that adds its
+        own requirements can extend the list rather than raise a second
+        exception. A subclass told about one mistake at a time learns
+        about the next one only after a round trip, and the whole point
+        of checking at class creation is that the whole answer arrives
+        at once.
+        """
         problems: List[str] = []
         if not cls.phase:
             problems.append(
@@ -171,7 +232,8 @@ class PhaseRole(ABC):
                 "that failed, so a blank one costs both of them"
             )
         for attr in cls._REQUIRED:
-            if getattr(cls, attr, None) is getattr(PhaseRole, attr, None):
+            impl = getattr(cls, attr, None)
+            if impl is None or getattr(impl, "_role_stub", False):
                 problems.append(
                     f"does not implement `{attr}`; the base's stub refuses "
                     f"rather than inventing an answer"
@@ -186,11 +248,7 @@ class PhaseRole(ABC):
                     f"StubDispatcher again, one class further down. Override "
                     f"`produce` instead"
                 )
-        if problems:
-            raise RoleMisdeclared(
-                f"{cls.__name__} is not a usable PhaseRole:\n  - "
-                + "\n  - ".join(problems)
-            )
+        return problems
 
     # ── the template. FINAL. ────────────────────────────────────────────
 
@@ -238,6 +296,7 @@ class PhaseRole(ABC):
     # ── what a subclass supplies ────────────────────────────────────────
 
     @abstractmethod
+    @_stub
     def produce(self, state: SessionState, ctx: RoleContext) -> Any:
         """Return this phase's output, or raise :class:`RoleRefused`."""
         raise NotImplementedError
@@ -246,6 +305,25 @@ class PhaseRole(ABC):
 # ---------------------------------------------------------------------------
 # Roles that ask the model
 # ---------------------------------------------------------------------------
+
+def _dispatch_and_remember(ctx: RoleContext, phase: str,
+                           tool: Tuple[str, Optional[str]], **kwargs):
+    """Run one tool through the bus and put the outcome in the trace.
+
+    Shared by the two kinds of role that dispatch, so that "what the
+    tool returned" is recorded identically whether the tool *is* the
+    phase or only settles it. A role whose dispatch went unrecorded is
+    a role whose failure has to be reconstructed from its consequences.
+    """
+    name, action = tool
+    result = (ctx.dispatch(name, action=action, **kwargs) if action
+              else ctx.dispatch(name, **kwargs))
+    ctx.remember(
+        f"[{phase}] {name}{'.' + action if action else ''} "
+        f"exit={result.exit_code}\n{result.stdout or result.stderr}"
+    )
+    return result
+
 
 class LLMPhaseRole(PhaseRole):
     """Asks the model and parses the reply into the phase's schema."""
@@ -313,6 +391,85 @@ class LLMPhaseRole(PhaseRole):
         return data
 
 
+class AuthoredToolPhaseRole(LLMPhaseRole):
+    """The model authors a request; a tool settles it. The tool wins.
+
+    A phase of this kind has an output the model alone cannot produce
+    honestly. PATCH is the case that named the kind: the model writes
+    search/replace blocks — that is authorship, and only a model can do
+    it — but whether those blocks *matched real text and reached disk*
+    is a fact about the filesystem. The old PATCH role stopped after the
+    authoring half, and a ``PatchSet`` that had touched nothing
+    validated exactly as well as one that had rewritten the repository.
+
+    So :meth:`produce` is final here for the same reason
+    :meth:`PhaseRole.run` is final one level up. ``run`` denies a role
+    the right to declare its own success; ``produce`` denies it the
+    right to *skip the settlement* and hand back the model's proposal as
+    though it were an outcome. A subclass supplies :meth:`settle` and
+    nothing else, and a subclass that supplies neither is refused at
+    class creation rather than at the end of a green run.
+
+    :attr:`settles_with` names the tool that does the settling. It is
+    checked at class creation alongside ``phase`` and ``instruction``,
+    and all three problems arrive in one message: a role of this kind
+    with no tool would dispatch nothing, which is the defect wearing the
+    new base class's name.
+    """
+
+    abstract = True
+
+    #: ``(tool_name, action)`` the settlement dispatches through the bus.
+    #: ``action`` may be None for single-action tools.
+    settles_with: Tuple[str, Optional[str]] = ("", None)
+
+    _REQUIRED = ("produce", "settle")
+    _FINAL = ("run", "produce")
+
+    @classmethod
+    def _declaration_problems(cls) -> List[str]:
+        problems = super()._declaration_problems()
+        tool_name, _action = cls.settles_with
+        if not tool_name:
+            problems.append(
+                "`settles_with` names no tool; a role of this kind exists "
+                "precisely because the model's answer is a proposal that "
+                "something else has to carry out, and one that dispatches "
+                "nothing is an LLMPhaseRole with a misleading base class"
+            )
+        return problems
+
+    def produce(self, state: SessionState, ctx: RoleContext) -> Any:
+        authored = super().produce(state, ctx)
+        return self.settle(state, ctx, authored)
+
+    @_stub
+    def settle(self, state: SessionState, ctx: RoleContext,
+               authored: Any) -> Any:
+        """Carry out what the model asked for; return the real outcome.
+
+        Raise :class:`RoleRefused` when the tool says it did not happen.
+        Returning the authored proposal anyway is the defect.
+        """
+        raise NotImplementedError
+
+    def call(self, ctx: RoleContext, *, remember: bool = True, **kwargs):
+        """Dispatch :attr:`settles_with` through the bus.
+
+        ``remember=False`` for a settlement that dispatches many times
+        and writes its own summary: twelve symbol bodies in the trace
+        push everything a later phase needs out of ``ctx.recent()``,
+        which is a context budget spent on transcript rather than on
+        the work.
+        """
+        if not remember:
+            name, action = self.settles_with
+            return (ctx.dispatch(name, action=action, **kwargs) if action
+                    else ctx.dispatch(name, **kwargs))
+        return _dispatch_and_remember(ctx, self.phase, self.settles_with,
+                                      **kwargs)
+
+
 class IntakeRole(LLMPhaseRole):
     phase = "INTAKE"
     instruction = (
@@ -349,7 +506,7 @@ class PlanRole(LLMPhaseRole):
         return data
 
 
-class RetrieveRole(LLMPhaseRole):
+class RetrieveRole(AuthoredToolPhaseRole):
     """Ask for symbols by name, then fetch their spans through the bus.
 
     The model names what it needs; ``repo_map symbol`` fetches it. That
@@ -373,19 +530,23 @@ class RetrieveRole(LLMPhaseRole):
     )
 
     extra_keys = ("symbols",)
+    settles_with = ("repo_map", "symbol")
 
     #: Enough to work from, few enough to stay inside the context budget.
     MAX_SYMBOLS = 12
 
-    def produce(self, state: SessionState, ctx: RoleContext) -> Any:
-        pack = super().produce(state, ctx)
+    def settle(self, state: SessionState, ctx: RoleContext, authored: Any):
+        pack = authored
         wanted = self._requested(pack)
         if not wanted or ctx.tool_bus is None:
+            # Asking for no symbols is a legitimate answer here — unlike
+            # PATCH, where an empty proposal is the phase declining to do
+            # the only thing it exists for.
             return pack
 
         fetched = []
         for name in wanted[:self.MAX_SYMBOLS]:
-            result = ctx.dispatch("repo_map", action="symbol", name=name)
+            result = self.call(ctx, remember=False, name=name)
             fetched.append(
                 result.stdout if result.exit_code == 0
                 else f"# {name}: not retrieved — {result.stderr}"
@@ -411,26 +572,173 @@ class RetrieveRole(LLMPhaseRole):
         return data
 
 
-class PatchRole(LLMPhaseRole):
+class PatchRole(AuthoredToolPhaseRole):
+    """Write the patches, then put them on disk. Both halves, or neither.
+
+    **Why the application lives inside PATCH and not in a phase of its
+    own.** Three things pin it here.
+
+    The first is the capability scopes. ``fs.write`` and ``git.write``
+    are granted to PATCH and to no other phase of the coding workflow —
+    CRITIQUE and RUN are read-only by declaration. Writing anywhere else
+    would mean widening a phase that is deliberately narrow, and the
+    orchestrator has already narrowed the engine by the time
+    :meth:`settle` runs, so the write is checked against exactly the
+    scopes the workflow says this phase may use.
+
+    The second is recovery. The orchestrator checkpoints
+    ``pre_PATCH_NNN`` immediately before entering PATCH and rolls back
+    to it when RUN fails. Application inside PATCH sits inside that
+    bracket already. A separate APPLY phase would sit *outside* it and
+    would need a checkpoint of its own — a second recovery path, which
+    is the thing not to build.
+
+    The third is that a phase boundary between authoring and landing is
+    a place the run can stop with the first half done and the second
+    never attempted, reporting success for the half that ran. That is
+    the defect this class was rewritten to remove, relocated by one
+    phase rather than fixed.
+
+    **Why not a plain :class:`ToolPhaseRole` over the patch tool.**
+    Because the patches themselves are the model's work. A ToolPhaseRole
+    does not ask the model at all, and something has to write the
+    search/replace blocks. The phase needs both halves, which is what
+    :class:`AuthoredToolPhaseRole` is.
+
+    **Why the patch lands in the tree and not in a worktree.**
+    ``PatchEngine.apply`` defaults to ``use_worktree=True``, which
+    creates a branch, writes there, and leaves the repository untouched
+    until an explicit merge. RUN dispatches ``verify test`` against the
+    repository. A worktree would therefore reproduce the original bug
+    one level down: the change would be real, on disk, and in a
+    directory the tests never look at, and RUN would go green against
+    the unchanged tree exactly as it did before. It is also a second
+    recovery path — create/merge/discard — beside the checkpoint the
+    orchestrator already keeps. So the change lands where the tests run,
+    and rollback stays the orchestrator's.
+
+    A consequence worth stating rather than discovering: the
+    orchestrator's rollback restores the *artifacts* directory, not the
+    working tree, so a failed RUN leaves the applied change on disk for
+    FIX to patch further. That is what the FIX → PATCH loop needs —
+    FIX's ``search_block`` has to match the file as it is now — and the
+    tree's own recovery is the user's git checkout.
+    """
+
     phase = "PATCH"
     instruction = (
         "Write the change as search/replace patches. `search_block` must "
         "be text that exists in the file exactly as written, including "
         "indentation. Change one thing per patch."
     )
+    settles_with = ("patch", "apply")
 
     def fill(self, data):
         data.setdefault("task_id", "patch")
         data.setdefault("patches", [])
         return data
 
+    def settle(self, state: SessionState, ctx: RoleContext, authored: Any):
+        from core.contracts.schemas import PatchSet
 
-class FixRole(PatchRole):
+        try:
+            patch_set = (authored if isinstance(authored, PatchSet)
+                         else PatchSet.model_validate(authored))
+        except Exception as exc:  # noqa: BLE001 — pydantic's own error text
+            raise RoleRefused(
+                f"{self.phase} produced something that is not a PatchSet, so "
+                f"there was nothing to apply: {exc}"
+            ) from exc
+
+        if not patch_set.patches:
+            raise RoleRefused(
+                f"{self.phase} produced a PatchSet with no patches. An empty "
+                f"change validates against the schema and alters nothing, "
+                f"which is the one outcome this phase must not report as "
+                f"success"
+            )
+
+        result = self.call(
+            ctx,
+            patch_set_json=patch_set.model_dump_json(),
+            # See the class docstring: the tests run in the repository,
+            # so the change has to land in the repository.
+            use_worktree=False,
+        )
+        if result.exit_code != 0:
+            raise RoleRefused(
+                f"the patch did not apply: "
+                f"{self._why(result) or 'no detail'}"
+            )
+
+        state.artifacts["_diff"] = self._diff_of(result)
+        return patch_set
+
+    @staticmethod
+    def _why(result) -> str:
+        """The per-file reason the apply failed, not just its exit code.
+
+        FIX is told "the tests failed, read the failure above" and the
+        failure it needs to read is *which search block did not match*.
+        The engine reports that per file; handing on a bare exit code
+        would make the next attempt a guess.
+        """
+        detail = result.stderr.strip()
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return detail or (result.stdout or "").strip()
+        reasons = [
+            f"{f.get('file_path')}: {f.get('error')}"
+            for f in data.get("file_results", [])
+            if not f.get("success") and f.get("error")
+        ]
+        return "; ".join(reasons) or detail or (result.stdout or "").strip()
+
+    @staticmethod
+    def _diff_of(result) -> str:
+        """The diff of what the engine actually wrote.
+
+        Parked on ``state.artifacts`` under ``_diff`` because CRITIQUE
+        reads it there — and until now nothing wrote it, so
+        ``LLMReviewTier`` was handed ``""`` on every live run and
+        returned UNKNOWN forever. ``CompositeJudge`` takes an UNKNOWN
+        tier's weight out of the denominator, which is right when a
+        reviewer is genuinely unavailable and is exactly what made this
+        absence invisible: the composite score was the same number it
+        would have been if the reviewer had read the diff and approved.
+        """
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return ""
+        return str(data.get("diff") or "")
+
+
+class FixRole(LLMPhaseRole):
+    """Diagnose the failure. PATCH lands the change; FIX does not.
+
+    FIX subclassed :class:`PatchRole`, and once PatchRole started
+    applying, FIX would have applied too — but the workflow's branch
+    rule sends FIX straight to PATCH, which asks for the change again
+    and applies it again. The first application replaces the very text
+    the second one searches for, so the second fails against a file that
+    is already correct, and the run halts on a patch that worked.
+
+    So this phase reads the failure and says what it means. Its reply
+    goes into the trace, and the PATCH turn that follows is composed
+    with ``ctx.recent()`` — the diagnosis is how the next attempt knows
+    what went wrong. One phase writes to disk, and it is the one the
+    checkpoint brackets.
+    """
+
     phase = "FIX"
     instruction = (
-        "The tests failed. Read the failure above, say what it means, and "
-        "write patches that address that specific failure. Do not "
-        "re-submit the previous patch."
+        "The tests failed. Read the failure above and say what it means: "
+        "which assertion or error, in which file, and what about the last "
+        "change caused it. Name the fix in one or two sentences. The next "
+        "phase writes it — do not write the patch here, and do not "
+        "re-submit the previous one."
     )
 
 
@@ -452,14 +760,7 @@ class ToolPhaseRole(PhaseRole):
     tool: Tuple[str, Optional[str]] = ("", None)
 
     def call(self, ctx: RoleContext, **kwargs):
-        name, action = self.tool
-        result = (ctx.dispatch(name, action=action, **kwargs) if action
-                  else ctx.dispatch(name, **kwargs))
-        ctx.remember(
-            f"[{self.phase}] {name}{'.' + action if action else ''} "
-            f"exit={result.exit_code}\n{result.stdout or result.stderr}"
-        )
-        return result
+        return _dispatch_and_remember(ctx, self.phase, self.tool, **kwargs)
 
 
 class RepoMapRole(ToolPhaseRole):
@@ -503,26 +804,47 @@ class RunRole(ToolPhaseRole):
 
 
 class CritiqueRole(ToolPhaseRole):
+    """Score the change: tests and lint from tools, review from the model.
+
+    The default judge is built from the role context and not in
+    ``__init__``, because the tier that reviews the diff needs a way to
+    ask the model and ``__init__`` has none. A bare ``CompositeJudge()``
+    gives ``LLMReviewTier`` no ``chat_fn``, so it returned UNKNOWN on
+    every run for a second, independent reason beyond the missing diff —
+    and a judge whose review tier can never speak is a two-tier judge
+    that reports itself as three.
+    """
+
     phase = "CRITIQUE"
     instruction = "Score the change with the composite judge, not by opinion."
     tool = ("verify", "lint")
 
     def __init__(self, judge=None):
-        from core.judge import CompositeJudge
-
-        self._judge = judge if judge is not None else CompositeJudge()
+        self._judge = judge
 
     def produce(self, state: SessionState, ctx: RoleContext):
+        judge = self._judge or self._default_judge(ctx)
         lint = self.call(ctx)
         run_report = state.artifacts.get("_run_report")
         test_rc = getattr(run_report, "exit_code", 0) if run_report else 0
-        return self._judge.evaluate(
+        return judge.evaluate(
             test_exit_code=test_rc,
             test_stdout=getattr(run_report, "stdout", "") if run_report else "",
             lint_exit_code=lint.exit_code,
             lint_stdout=lint.stdout,
             diff=state.artifacts.get("_diff", ""),
         )
+
+    @staticmethod
+    def _default_judge(ctx: RoleContext):
+        from core.judge import CompositeJudge, LintTier, LLMReviewTier, TestTier
+
+        # ctx.ask and not ctx.chat: the reviewer is a role's turn at the
+        # model like any other and is capped by the same per-role context
+        # budget, so a large diff cannot quietly spend the whole window.
+        return CompositeJudge([
+            TestTier(), LintTier(), LLMReviewTier(chat_fn=ctx.ask),
+        ])
 
 
 class FinalizeRole(PhaseRole):

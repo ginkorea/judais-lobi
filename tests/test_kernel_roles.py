@@ -18,9 +18,13 @@ from core.judge.models import JudgeReport
 from core.kernel.budgets import BudgetConfig
 from core.kernel.orchestrator import Orchestrator, PhaseResult
 from core.kernel.roles import (
+    AuthoredToolPhaseRole,
+    CritiqueRole,
+    FixRole,
     IntakeRole,
     LLMPhaseRole,
     LLMRoleDispatcher,
+    PatchRole,
     PhaseRole,
     RepoMapRole,
     RoleContext,
@@ -78,9 +82,47 @@ GOOD_SCRIPT = {
 }
 
 
-def make_bus(*, test_rc=0, lint_rc=0, allowed=("*",)):
+def make_bus(*, test_rc=0, lint_rc=0, patch_rc=0, allowed=("*",)):
+    """A bus with the three tools the coding roles dispatch.
+
+    ``patch`` is here because PATCH now *applies* what the model wrote.
+    While it was absent these tests still reported a completed run: the
+    phase produced a schema-valid ``PatchSet``, nobody dispatched it, and
+    the pipeline walked to COMPLETED having changed nothing. The double
+    records what it was handed so a test can assert the patch set
+    actually reached a tool, and returns the engine's own result shape —
+    including the ``diff``, which is what CRITIQUE reviews.
+    """
     bus = ToolBus(capability_engine=CapabilityEngine(
         PolicyPack(allowed_scopes=list(allowed))))
+    applied = []
+
+    def patch_tool(action=None, *, patch_set_json="", **kw):
+        if action != "apply":
+            return (0, json.dumps({"success": True}), "")
+        applied.append({"patch_set": json.loads(patch_set_json or "{}"),
+                        "kwargs": dict(kw)})
+        if patch_rc != 0:
+            return (patch_rc, json.dumps({
+                "success": False,
+                "file_results": [{"file_path": "v.py", "success": False,
+                                  "error": "search block not found"}],
+            }), "")
+        return (0, json.dumps({
+            "success": True,
+            "file_results": [{"file_path": "v.py", "success": True}],
+            "diff": "--- a/v.py\n+++ b/v.py\n@@\n-a\n+b\n",
+        }), "")
+
+    bus.register(
+        ToolDescriptor(tool_name="patch",
+                       required_scopes=["fs.read", "fs.write", "git.write"],
+                       action_scopes={"apply": ["fs.read", "fs.write",
+                                                "git.write"]},
+                       description="Patch engine."),
+        patch_tool,
+    )
+    bus.applied = applied
     bus.register(
         ToolDescriptor(tool_name="repo_map", required_scopes=["fs.read"],
                        action_scopes={"excerpt": ["fs.read"]},
@@ -162,6 +204,205 @@ class TestRoleDeclaration:
     def test_intermediate_bases_are_allowed(self):
         assert LLMPhaseRole.abstract is True
         assert ToolPhaseRole.abstract is True
+        assert AuthoredToolPhaseRole.abstract is True
+
+
+class TestAuthoredToolRoleDeclaration:
+    """The third kind checks its own extra requirement, in the same message.
+
+    A role of this kind that dispatches nothing is the original defect
+    wearing the new base class's name, so `settles_with` is checked where
+    `phase` and `instruction` are — and the checks compose across levels
+    rather than raising twice.
+    """
+
+    def test_a_role_that_settles_with_nothing_is_refused(self):
+        with pytest.raises(RoleMisdeclared, match="`settles_with` names no tool"):
+            class Unsettled(AuthoredToolPhaseRole):
+                phase = "PATCH"
+                instruction = "write patches"
+
+                def settle(self, state, ctx, authored): return authored
+
+    def test_a_role_that_never_settles_is_refused(self):
+        with pytest.raises(RoleMisdeclared, match="does not implement `settle`"):
+            class NeverSettles(AuthoredToolPhaseRole):
+                phase = "PATCH"
+                instruction = "write patches"
+                settles_with = ("patch", "apply")
+
+    def test_overriding_produce_is_refused(self):
+        """`produce` is final here for the reason `run` is final above.
+
+        A subclass that overrode it could return the model's proposal
+        and skip the settlement, which is the whole bug.
+        """
+        with pytest.raises(RoleMisdeclared, match="overrides `produce`"):
+            class SkipsTheTool(AuthoredToolPhaseRole):
+                phase = "PATCH"
+                instruction = "write patches"
+                settles_with = ("patch", "apply")
+
+                def settle(self, state, ctx, authored): return authored
+                def produce(self, state, ctx): return {"task_id": "t"}
+
+    def test_every_problem_across_both_levels_arrives_at_once(self):
+        """The base's checks and this kind's, in one message.
+
+        Two `__init_subclass__` hooks, each raising, would report the
+        first level's problems and hide the second's until they were
+        fixed — a round trip per mistake.
+        """
+        with pytest.raises(RoleMisdeclared) as exc:
+            class AllWrong(AuthoredToolPhaseRole):
+                pass
+
+        message = str(exc.value)
+        assert "`phase` is empty" in message
+        assert "`instruction` is empty" in message
+        assert "does not implement `settle`" in message
+        assert "`settles_with` names no tool" in message
+
+    def test_the_shipped_authored_roles_name_their_tool(self):
+        from core.kernel.roles import RetrieveRole
+        assert PatchRole.settles_with == ("patch", "apply")
+        assert RetrieveRole.settles_with == ("repo_map", "symbol")
+
+    def test_the_checks_run_on_the_roles_that_ship(self):
+        """`abstract` used to be inherited, which exempted all of them.
+
+        `LLMPhaseRole.abstract` is True and `IntakeRole` inherits it, so
+        `__init_subclass__` returned on its first line for every role in
+        `default_roles()`. The validation was declared and ran on
+        nothing — visible only by asking a shipped role to fail it.
+        """
+        assert "abstract" not in IntakeRole.__dict__
+        with pytest.raises(RoleMisdeclared, match="`instruction` is empty"):
+            class MuteChild(IntakeRole):
+                phase = "PLAN"
+                instruction = ""
+
+
+# ---------------------------------------------------------------------------
+# PATCH: the model authors, the tool disposes
+# ---------------------------------------------------------------------------
+
+class TestPatchIsApplied:
+    """`PatchSet` used to be produced and dispatched to nothing."""
+
+    def _run(self, bus, patches=None, phase="PATCH"):
+        body = {"task_id": "t1", "patches": patches if patches is not None else [
+            {"file_path": "v.py", "search_block": "a", "replace_block": "b",
+             "action": "modify"},
+        ]}
+        role = PatchRole() if phase == "PATCH" else FixRole()
+        state = SessionState(task_description="x")
+        model = ScriptedModel({phase: json.dumps(body)})
+        return role.run(state, make_ctx(model, bus=bus)), state
+
+    def test_the_patch_set_reaches_the_patch_tool(self):
+        bus = make_bus()
+        result, _state = self._run(bus)
+        assert result.success
+        assert len(bus.applied) == 1
+        assert bus.applied[0]["patch_set"]["patches"][0]["file_path"] == "v.py"
+
+    def test_it_applies_to_the_tree_the_tests_run_in(self):
+        """`use_worktree=False`, and not by accident.
+
+        A worktree puts the change somewhere RUN never looks, which is
+        the same bug one level down: real files, real diff, tests green
+        against the untouched tree.
+        """
+        bus = make_bus()
+        self._run(bus)
+        assert bus.applied[0]["kwargs"]["use_worktree"] is False
+
+    def test_the_diff_is_left_where_critique_reads_it(self):
+        bus = make_bus()
+        _result, state = self._run(bus)
+        assert "+b" in state.artifacts["_diff"]
+
+    def test_a_patch_that_does_not_apply_fails_the_phase(self):
+        result, state = self._run(make_bus(patch_rc=1))
+        assert result.success is False
+        assert "did not apply" in result.error
+        assert "search block not found" in result.error  # the per-file reason
+        assert "_diff" not in state.artifacts
+
+    def test_an_empty_patch_set_is_refused(self):
+        result, _state = self._run(make_bus(), patches=[])
+        assert result.success is False
+        assert "no patches" in result.error
+
+    def test_no_bus_is_a_refusal_and_not_a_silent_success(self):
+        model = ScriptedModel({"PATCH": GOOD_SCRIPT["PATCH"]})
+        result = PatchRole().run(SessionState(task_description="x"),
+                                 make_ctx(model))
+        assert result.success is False
+        assert "no ToolBus" in result.error
+
+    def test_a_capability_denial_fails_the_phase(self):
+        """PATCH is the only phase granted fs.write; without it, no change."""
+        bus = make_bus(allowed=("fs.read",))
+        result, state = self._run(bus)
+        assert result.success is False
+        assert "_diff" not in state.artifacts
+
+    def test_fix_diagnoses_and_does_not_apply(self):
+        """FIX subclassed PatchRole, and the workflow sends FIX to PATCH.
+
+        Applying in both would apply the same change twice: the first
+        replaces the text the second searches for, so the second fails
+        against a file that is already right and the run halts on a
+        patch that worked. One phase writes, and it is the one the
+        orchestrator's checkpoint brackets.
+        """
+        bus = make_bus()
+        model = ScriptedModel({"FIX": "the assertion in v.py:12 wants b"})
+        state = SessionState(task_description="x")
+        ctx = make_ctx(model, bus=bus)
+
+        result = FixRole().run(state, ctx)
+
+        assert result.success
+        assert bus.applied == []
+        assert "_diff" not in state.artifacts
+        # The diagnosis is how the next PATCH turn knows what went wrong.
+        assert "v.py:12" in ctx.recent()
+
+
+class TestCritiqueHasAReviewer:
+    def test_the_default_judge_can_reach_the_model(self):
+        """`CompositeJudge()` gives LLMReviewTier no chat_fn at all.
+
+        A judge whose review tier can never speak reports itself as
+        three tiers and votes with two — and the rescaling that makes an
+        absent reviewer cost nothing is exactly what hides it.
+        """
+        state = SessionState(task_description="x")
+        state.artifacts["_diff"] = "--- a/v.py\n+++ b/v.py\n@@\n-a\n+b\n"
+        review = json.dumps({"score": 0.8, "verdict": "pass",
+                             "concerns": ["naming"]})
+        model = ScriptedModel(default=review)
+
+        result = CritiqueRole().run(state, make_ctx(model, bus=make_bus()))
+        tier = next(t for t in result.output.tier_results
+                    if t.tier_name == "llm_review")
+        assert tier.verdict.value != "unknown"
+        assert tier.score == 0.8
+
+    def test_an_injected_judge_still_wins(self):
+        class Fixed:
+            def evaluate(self, **kw):
+                from core.judge.models import JudgeReport
+                return JudgeReport(tier_results=[], final_score=1.0,
+                                   verdict="pass")
+
+        result = CritiqueRole(judge=Fixed()).run(
+            SessionState(task_description="x"),
+            make_ctx(ScriptedModel(), bus=make_bus()))
+        assert result.output.tier_results == []
 
 
 # ---------------------------------------------------------------------------
