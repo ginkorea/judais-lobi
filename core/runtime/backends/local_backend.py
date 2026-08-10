@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional
@@ -184,6 +185,47 @@ class LocalBackend(Backend):
 
     # ── chat ─────────────────────────────────────────────────────────────
 
+    #: Harmony control tokens. gpt-oss models are trained to emit a structured
+    #: header — ``<|start|>assistant<|channel|>commentary to=functions.f
+    #: <|message|>…`` — and vLLM's harmony parser understands them on the way
+    #: OUT. It also parses them on the way IN, and that is where this bites.
+    _HARMONY_HEADER = re.compile(
+        r"<\|start\|>.*?(?:<\|message\|>|$)", re.DOTALL)
+    _HARMONY_TOKEN = re.compile(r"<\|[a-z_]+\|>")
+
+    @classmethod
+    def _strip_harmony(cls, text: str) -> str:
+        """Remove harmony control structure from a message body.
+
+        **Defensive, and honestly not the cure for the bug that prompted it.**
+        This was written to fix Tai's ``500 unexpected tokens remaining in
+        message header: Some("to=")``, on the theory that the mission loop
+        appends the model's harmony-token reply to the conversation and sends
+        it back, and the server chokes re-parsing it. Reasonable, and wrong:
+        the request carries no harmony tokens at all — see
+        :meth:`_locate_suspect_text`, which found none — and the same body
+        succeeds or fails depending only on ``max_tokens``. The malformed
+        header is in what the model GENERATES, and vLLM 500s parsing its own
+        output when the server has no tool-call parser configured. That is
+        fixed where it belongs, in TAIPAN's ``served_model.OUTPUT_PARSERS``.
+
+        Kept anyway, because it is cheap and the reasoning behind it holds for
+        a case that has simply not bitten yet: a history poisoned from
+        somewhere else — a resumed session, a memory store written before the
+        serving fix — should not be able to 500 the server. A conversation on
+        disk outlives the bug that wrote it.
+
+        The header form is removed whole rather than token by token, because
+        ``to=`` lives inside it: dropping only ``<|…|>`` markers would leave
+        ``commentary to=functions.f`` behind as prose, which would be the same
+        parse error with the evidence removed.
+        """
+        if not text or "<|" not in text:
+            return text
+        cleaned = cls._HARMONY_HEADER.sub("", text)
+        cleaned = cls._HARMONY_TOKEN.sub("", cleaned)
+        return cleaned.strip()
+
     def chat(
         self,
         model: str,
@@ -202,7 +244,14 @@ class LocalBackend(Backend):
         """
         body: Dict[str, Any] = {
             "model": model or self.model,
-            "messages": messages,
+            # Inbound scrub: see `_strip_harmony`. A history carrying harmony
+            # tokens is refused by the server with a 500, so this is not
+            # tidying — it is the difference between a second turn and none.
+            "messages": [
+                {**m, "content": self._strip_harmony(m["content"])}
+                if isinstance(m.get("content"), str) else m
+                for m in messages
+            ],
         }
         limit = max_tokens if max_tokens is not None else self._max_output_tokens
         if limit is not None:
@@ -223,18 +272,88 @@ class LocalBackend(Backend):
             stream=stream,
         )
 
+    #: How much of a server's error body to put in front of a caller. Enough
+    #: for vLLM's `{"object":"error","message":...}` to arrive whole; short
+    #: enough that a stack trace does not become the error message.
+    ERROR_DETAIL_CHARS = 600
+
+    #: Fragments that make a harmony-speaking server refuse a whole request.
+    #: Not an exhaustive list of harmony syntax — the ones that have actually
+    #: cost a session.
+    _SUSPECT = ("to=", "<|", "|>")
+
+    @classmethod
+    def _locate_suspect_text(cls, body: Dict[str, Any]) -> str:
+        """Name the message carrying text a harmony parser will reject.
+
+        A server that answers *"unexpected tokens remaining in message
+        header"* is telling you a message is malformed and not WHICH, and a
+        mission prompt is twelve thousand characters across several turns.
+        Finding it by eye cost most of an afternoon; finding it by grep costs
+        nothing, so the failure does it for the next person.
+        """
+        found = []
+        for i, m in enumerate(body.get("messages") or []):
+            content = m.get("content")
+            if not isinstance(content, str):
+                continue
+            for needle in cls._SUSPECT:
+                at = content.find(needle)
+                if at >= 0:
+                    start = max(0, at - 60)
+                    found.append(
+                        f"messages[{i}] role={m.get('role')!r} contains "
+                        f"{needle!r}: ...{content[start:at + 60]!r}...")
+                    break
+        return "\n  ".join(found)
+
+    def _raise_for_status(self, res, body: Optional[Dict[str, Any]] = None) -> None:
+        """Fail with what the server SAID, not just the number it returned.
+
+        ``requests``' own ``raise_for_status`` produces ``500 Server Error for
+        url ...`` and discards the body — and the body is the whole diagnosis.
+        An OpenAI-compatible server puts a real sentence there: which parameter
+        it rejected, that ``max_tokens`` came out negative, that the model name
+        does not match what is loaded.
+
+        This mattered immediately. Tai reached a served gpt-oss-20b during the
+        first bake-off and got ``500`` with nothing else, which is
+        indistinguishable from the server being broken — so the run was
+        reported as "the server rejects the request shape", which was a guess.
+        The shape was in the body the whole time.
+
+        Same fix, same reason, as `RemoteSshComputeProvider._sh` in TAIPAN:
+        bounded, and in front of the operator.
+        """
+        if res.status_code < 400:
+            return
+        try:
+            detail = (res.json() or {}).get("message") or res.text
+        except ValueError:
+            detail = res.text
+        detail = (detail or "").strip()[:self.ERROR_DETAIL_CHARS]
+        message = (f"{res.status_code} from {self.endpoint}/chat/completions"
+                   + (f": {detail}" if detail
+                      else " (and the server said nothing)"))
+        where = self._locate_suspect_text(body or {})
+        if where:
+            message += ("\n\nText a harmony parser will refuse, in what we "
+                        "sent:\n  " + where)
+        raise requests.HTTPError(message, response=res)
+
     def _complete(self, body: Dict[str, Any]) -> str:
         res = self._post(body, stream=False)
-        res.raise_for_status()
+        self._raise_for_status(res, body)
         payload = res.json() or {}
         choices = payload.get("choices") or []
         if not choices:
             return ""
-        return (choices[0].get("message") or {}).get("content") or ""
+        content = (choices[0].get("message") or {}).get("content") or ""
+        return self._strip_harmony(content)
 
     def _stream(self, body: Dict[str, Any]) -> Iterator[SimpleNamespace]:
         res = self._post(body, stream=True)
-        res.raise_for_status()
+        self._raise_for_status(res, body)
         for line in res.iter_lines():
             if not line:
                 continue
