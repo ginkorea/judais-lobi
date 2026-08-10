@@ -444,3 +444,87 @@ def main_lobi():
 def main_judais():
     from judais import JudAIs
     _main(JudAIs)
+
+
+#: Where Tai's ``PersonalityConfig`` is looked for, in order, and why there are
+#: four sources rather than a constant.
+#:
+#: Tai is TAIPAN's agent and its personality file lives in TAIPAN — on purpose,
+#: so that a claim Tai makes about governance sits under the test suite that
+#: owns the governance. That makes it the one personality this repository ships
+#: without shipping: judais-lobi has to find a file it does not contain, and
+#: must not hard-code a path on one developer's laptop to do it.
+#:
+#: The installed package is tried before the checkouts because it is the only
+#: source that is right by construction: if ``taipan`` imports, its ``tai.toml``
+#: is the one matching the SDK in that same environment. Env vars come first so
+#: an operator can always overrule the search.
+TAI_PERSONALITY_ENV = ("TAI_PERSONALITY", "ELF_PERSONALITY")
+TAI_PERSONALITY_RELPATH = Path("src/taipan/agent/personalities/tai.toml")
+
+
+def tai_personality_path():
+    """Tai's personality file, or ``None`` — never a guess.
+
+    Returning ``None`` rather than a plausible default is the point. A missing
+    personality would mean Tai starting on whatever config it was handed while
+    still calling itself Tai in the banner, which is the exact failure this
+    file exists to prevent: an agent whose stated rules are not the rules it
+    loaded. :func:`main_tai` turns ``None`` into a sentence naming everywhere
+    it looked.
+    """
+    for var in TAI_PERSONALITY_ENV:
+        candidate = _env_path(var)
+        if candidate and candidate.exists():
+            return candidate
+
+    try:  # the installed SDK — right by construction when it is present
+        from importlib.resources import files
+        resource = files("taipan.agent.personalities") / "tai.toml"
+        if resource.is_file():
+            return Path(str(resource))
+    except (ImportError, ModuleNotFoundError, TypeError, AttributeError):
+        pass
+
+    roots = []
+    if os.getenv("TAIPAN_HOME"):
+        roots.append(Path(os.environ["TAIPAN_HOME"]))
+    roots += [Path.home() / "data" / "workspace" / "TAIPAN",
+              Path.home() / "workspace" / "TAIPAN",
+              Path.cwd().parent / "TAIPAN"]
+    for root in roots:
+        candidate = root / TAI_PERSONALITY_RELPATH
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def main_tai():
+    """TAIPAN's mission agent, by name.
+
+    Everything Tai *is* lives in the TOML — the persona, the governance rules,
+    the default provider and model. This function contributes one thing: that
+    ``tai`` is a name you can type, and that typing it is enough.
+    """
+    import sys
+
+    from core.agent import Agent
+
+    if "--personality" not in sys.argv:
+        found = tai_personality_path()
+        if found is None:
+            print(
+                "Cannot find Tai's personality file (tai.toml).\n\n"
+                "Tai is TAIPAN's agent and its personality ships in TAIPAN, so "
+                "that what Tai says about governance is tested against the "
+                "governance itself. This repository does not contain it.\n\n"
+                "Any one of these fixes it:\n"
+                "  pip install taipan                     # found by import\n"
+                "  export TAIPAN_HOME=/path/to/TAIPAN\n"
+                "  export TAI_PERSONALITY=/path/to/tai.toml\n"
+                "  python main.py tai <message> --personality /path/to/tai.toml",
+                file=sys.stderr)
+            sys.exit(2)
+        sys.argv += ["--personality", str(found)]
+
+    _main(Agent)
