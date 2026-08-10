@@ -46,6 +46,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from core.runtime.grounding import GroundingReport, GroundingValidator
+from core.runtime.mission_stream import (
+    ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
+    REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT, Observer,
+)
 from core.runtime.results import RESULT_TOOL, MissionResultStore
 from core.tools.descriptors import summarize_input_schema
 
@@ -91,6 +95,36 @@ MAX_RESULT_BYTES = 32_768
 HEAD_FRACTION = 0.6
 
 
+def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
+                      repairing: bool = False, caveat: str = "") -> Dict[str, Any]:
+    """A :class:`GroundingReport` as the observer's ``grounding`` fields.
+
+    Read off the report with ``getattr`` defaults rather than by unpacking a
+    known shape: this module's job is to say what the validator said, and a
+    check the validator grows next month should reach a watcher as a row in
+    ``checks`` rather than as an ``AttributeError`` inside a mission.
+    """
+    return {
+        "ran": bool(getattr(report, "ran", False)),
+        "grounded": bool(getattr(report, "grounded", False)),
+        "repairs": repairs,
+        "repairing": repairing,
+        "caveat": caveat or (getattr(report, "caveat", "") or ""),
+        # The tokens themselves, not a count of them. "3 figures were not in
+        # any tool output" sends a reader looking; "0.181 was not" tells them
+        # where, and 0.181 is the exact figure this check was written after.
+        "unsupported": list(getattr(report, "unsupported", ()) or ()),
+        "checks": [
+            {"check": getattr(row, "check", ""),
+             "configured": bool(getattr(row, "configured", False)),
+             "grounded": bool(getattr(row, "grounded", False)),
+             "unsupported": list(getattr(row, "unsupported", ()) or ()),
+             "detail": getattr(row, "detail", "")}
+            for row in (getattr(report, "results", ()) or ())
+        ],
+    }
+
+
 @dataclass
 class MissionStep:
     """One turn: what the model said, and what came back."""
@@ -112,6 +146,17 @@ class MissionStep:
         return self.exit_code is not None and self.exit_code != 0
 
 
+#: Terminal outcome for a mission that named a tool this deployment offers and
+#: **gates**. The call was not made.  It is not "refused" and it is not
+#: "answered": the mission stopped because it reached something a person has to
+#: say yes to, and the harness has no way to be that person.
+#:
+#: Written as its own outcome rather than folded into ``incomplete`` because a
+#: caller resuming a gated mission has to be able to tell "nobody has decided
+#: yet" from "the model gave up", and those are the same string otherwise.
+AWAITING_APPROVAL = "awaiting_approval"
+
+
 @dataclass
 class MissionTranscript:
     """The whole run, in the order it happened."""
@@ -123,6 +168,9 @@ class MissionTranscript:
     outcome: str = "incomplete"
     #: What the grounding validator said, when one was configured.
     grounding: Optional[GroundingReport] = None
+    #: The gated call this mission stopped at, as ``{tool, arguments}``, when
+    #: :attr:`outcome` is :data:`AWAITING_APPROVAL`.
+    awaiting: Optional[Dict[str, Any]] = None
 
     @property
     def completed(self) -> bool:
@@ -167,6 +215,34 @@ class MissionRunner:
         to run without one.  Without it, a bounded result is a result
         with a hole in it and nothing to fill the hole from.
 
+    gated:
+        Tool names that are **offered and not dispatched**.  The model
+        sees them in the catalogue, marked; naming one ends the mission
+        at :data:`AWAITING_APPROVAL` with the proposed arguments intact
+        and nothing called.
+
+        Offered rather than withheld, on purpose.  A tool simply left
+        out of the set produces "there is no tool named X", which is
+        false — it exists, this deployment serves it, and the true
+        sentence is *somebody has to say yes first*.  A model told the
+        false version reroutes around it and reports the capability as
+        absent; a model told the true one asks.  And a gate is only
+        worth having if what a person approves is the bytes that would
+        run, which means the call has to be *proposed* before it is
+        stopped.
+
+        The harness supplies the mechanism and never the decision.
+        There is deliberately no parameter here by which a caller could
+        pre-answer one.
+    observer:
+        ``dict -> None``, called with one record per thing that happens.
+        See :mod:`core.runtime.mission_stream` for the vocabulary; it is
+        a published contract rather than these dataclasses' field names.
+        ``None`` runs exactly as this loop ran before one existed.
+
+        A mission on a local model is minutes long, and a caller holding
+        only :meth:`run` has nothing to show for any of them.
+
     The store tool is offered **in addition to** ``tool_names``, and
     that is not a hole in a closed set: it reaches nothing outside the
     mission.  Every byte it can return already arrived through a gated,
@@ -185,6 +261,8 @@ class MissionRunner:
         validator: Optional[GroundingValidator] = None,
         max_result_bytes: int = MAX_RESULT_BYTES,
         store_tool: str = RESULT_TOOL,
+        gated: Sequence[str] = (),
+        observer: Optional[Observer] = None,
     ):
         self._chat = chat_fn
         self._bus = bus
@@ -195,6 +273,8 @@ class MissionRunner:
         self._max_result_bytes = max(0, int(max_result_bytes))
         self._store_tool = (store_tool or "").strip()
         self._store = MissionResultStore()
+        self._gated = frozenset(str(name) for name in gated if name)
+        self._observer = observer
 
     @property
     def store(self) -> MissionResultStore:
@@ -207,6 +287,28 @@ class MissionRunner:
         if self._store_tool:
             return [*self._tool_names, self._store_tool]
         return list(self._tool_names)
+
+    @property
+    def gated(self) -> List[str]:
+        """Offered tools that need a person, in catalogue order."""
+        return [name for name in self.offered if name in self._gated]
+
+    # ── telling a watcher ───────────────────────────────────────────────
+
+    def _emit(self, event: str, **fields: Any) -> None:
+        """One record to the observer, or nothing.  Never raises.
+
+        A mission must not fail because somebody was watching it, so an
+        observer that throws is dropped rather than propagated — the
+        alternative is a browser tab closing and taking an 11,000 s
+        submission with it.
+        """
+        if self._observer is None:
+            return
+        try:
+            self._observer({"event": event, **fields})
+        except Exception:                       # pragma: no cover - defensive
+            pass
 
     # ── the catalogue ───────────────────────────────────────────────────
 
@@ -231,7 +333,13 @@ class MissionRunner:
             if "error" in info:
                 continue
             desc = info.get("description") or ""
-            lines.append(f"- {name}: {desc}".rstrip())
+            # Marked in the catalogue rather than withheld from it. See the
+            # `gated` parameter: "there is no tool named X" is false and a
+            # model told it reroutes around a capability it actually has.
+            mark = (" [NEEDS APPROVAL — propose it and a person decides; the "
+                    "call is not made until they do]"
+                    if name in self._gated else "")
+            lines.append(f"- {name}: {desc}{mark}".rstrip())
             arguments = info.get("arguments") or summarize_input_schema(
                 info.get("input_schema")
             )
@@ -260,11 +368,19 @@ class MissionRunner:
         offered = self.offered
         transcript = MissionTranscript(objective=objective, catalogue=list(offered))
         registered = self._register_store()
+        self._emit(MISSION_STARTED, objective=objective, catalogue=list(offered),
+                   gated=self.gated, max_steps=self._max_steps)
         try:
             return self._loop(objective, offered, transcript)
         finally:
             if registered:
                 self._bus.unregister(registered)
+            # In `finally` so that a mission killed by an exception still tells
+            # the watcher the mission is over. A stream that just stops is
+            # indistinguishable from an agent that is thinking, and a pane
+            # showing a spinner forever is the state an analyst cannot leave.
+            self._emit(MISSION_FINISHED, outcome=transcript.outcome,
+                       steps=len(transcript.steps))
 
     def _register_store(self) -> str:
         """Put the result store on the bus for the length of this run.
@@ -286,6 +402,7 @@ class MissionRunner:
         repairs = 0
 
         for index in range(self._max_steps):
+            self._emit(STEP_STARTED, index=index)
             reply = str(self._chat(messages) or "")
             step = MissionStep(index=index, raw_reply=reply)
             messages.append({"role": "assistant", "content": reply})
@@ -294,6 +411,7 @@ class MissionRunner:
             if problem:
                 step.error = problem
                 transcript.steps.append(step)
+                self._emit(REPLY_REJECTED, index=index, problem=problem)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -308,27 +426,45 @@ class MissionRunner:
                         problem = self._validator.repair_prompt(report)
                         step.error = problem
                         transcript.steps.append(step)
+                        # A repair turn is a whole extra round-trip to the
+                        # model and, from outside, looks exactly like a stall.
+                        # Said out loud so a watcher can show WHY the answer
+                        # is taking longer — the check caught something.
+                        self._emit(GROUNDING, **_grounding_record(
+                            report, repairs=repairs, repairing=True))
                         messages.append({"role": "user", "content": problem})
                         continue
                     # One repair turn was spent and the claim is still
                     # unsupported. The answer is kept — deleting it would
                     # hide a finding — and says so about itself.
                     caveat = self._validator.caveat(report)
-                    transcript.grounding = GroundingReport(
+                    marked = GroundingReport(
                         results=report.results, repairs=repairs, caveat=caveat,
                     )
+                    transcript.grounding = marked
                     transcript.answer = answer + caveat
                     transcript.outcome = "answered_with_caveat"
                     transcript.steps.append(step)
+                    # The verdict BEFORE the answer, so a consumer building a
+                    # frame around the prose already knows what to mark it
+                    # with. A caveat that arrives after the text it qualifies
+                    # is a caveat that can be rendered separately from it.
+                    self._emit(GROUNDING, **_grounding_record(
+                        marked, repairs=repairs, caveat=caveat))
+                    self._emit(ANSWER, text=transcript.answer,
+                               outcome=transcript.outcome)
                     return transcript
 
                 if report is not None:
                     transcript.grounding = GroundingReport(
                         results=report.results, repairs=repairs,
                     )
+                    self._emit(GROUNDING, **_grounding_record(
+                        transcript.grounding, repairs=repairs))
                 transcript.answer = answer
                 transcript.outcome = "answered"
                 transcript.steps.append(step)
+                self._emit(ANSWER, text=answer, outcome=transcript.outcome)
                 return transcript
 
             name = str(decision.get("tool") or "")
@@ -340,6 +476,8 @@ class MissionRunner:
                 )
                 step.tool, step.error = name, problem
                 transcript.steps.append(step)
+                self._emit(REPLY_REJECTED, index=index, tool=name,
+                           problem=problem)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -352,9 +490,32 @@ class MissionRunner:
                 )
                 step.error = problem
                 transcript.steps.append(step)
+                self._emit(REPLY_REJECTED, index=index, tool=name,
+                           problem=problem)
                 messages.append({"role": "user", "content": problem})
                 continue
 
+            if name in self._gated:
+                # STOP. Not dispatched, not retried, and not handed back to
+                # the model to work around — the mission ends here holding the
+                # exact call it proposed, and somebody who is not this process
+                # decides what happens to it.
+                reason = (
+                    f"{name} needs a person's approval on this deployment. It "
+                    f"has been proposed exactly as written and NOT called. "
+                    f"Nothing further happens on this mission until somebody "
+                    f"decides.")
+                step.error = reason
+                transcript.steps.append(step)
+                transcript.outcome = AWAITING_APPROVAL
+                transcript.awaiting = {"tool": name,
+                                       "arguments": dict(arguments)}
+                self._emit(GATE_REQUESTED, index=index, tool=name,
+                           arguments=dict(arguments), reason=reason)
+                return transcript
+
+            self._emit(TOOL_CALL, index=index, tool=name,
+                       arguments=dict(arguments))
             result = self._bus.dispatch(name, **arguments)
             step.exit_code = result.exit_code
             step.output = result.stdout
@@ -370,6 +531,16 @@ class MissionRunner:
                 name, result, stored.handle,
             )
             transcript.steps.append(step)
+            # The WHOLE result, not the bounded rendering. The bound exists
+            # because a model's context is finite; a watcher's is not, and a
+            # pane showing an analyst 60% of a governed listing because the
+            # model could only be shown that much would be inventing a limit
+            # nobody imposed.
+            self._emit(TOOL_RESULT, index=index, tool=name,
+                       arguments=dict(arguments),
+                       ok=result.exit_code == 0, exit_code=result.exit_code,
+                       output=result.stdout or "", error=result.stderr or "",
+                       handle=stored.handle, truncated=step.truncated)
             messages.append({"role": "user", "content": rendered})
 
         transcript.outcome = "budget_exhausted"

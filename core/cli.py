@@ -134,7 +134,8 @@ def _run_mission(elf, args, name, style):
     are doing — and supplies neither.
     """
     from core.runtime.grounding import GroundingConfig, GroundingValidator
-    from core.runtime.mission import MissionRunner
+    from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
+    from core.runtime.mission_stream import open_sink
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
     manifest = _load_skill(args)
@@ -198,6 +199,15 @@ def _run_mission(elf, args, name, style):
         return elf.client.chat(model=elf.model, messages=messages,
                                stream=False, **extra)
 
+    # Opened BEFORE the connection, so that a harness watching this mission is
+    # told about a server it could not reach. A stream that never produces a
+    # byte and a mission that failed to start look identical from the far end
+    # of a pipe, and only one of them is worth waiting on.
+    try:
+        sink = open_sink(getattr(args, "events", "") or "")
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"--events: {exc}")
+
     try:
         with McpClient(transport) as client:
             from core.tools.mcp_client import McpToolBridge
@@ -219,16 +229,29 @@ def _run_mission(elf, args, name, style):
                     + ("" if validator else "  (no grounding grammar)"),
                     style=style,
                 )
+            gated = [name for name in (getattr(args, "gate_tool", None) or [])
+                     if name in tool_names]
+            if gated:
+                console.print(
+                    f"🔒 gated: {', '.join(gated)} — offered and not called; "
+                    f"proposing one ends the mission for a person to decide",
+                    style=style,
+                )
             runner = MissionRunner(
                 chat_fn, bus, tool_names,
                 system_message=system_message,
                 max_steps=args.mission_steps,
                 validator=validator,
+                gated=gated,
+                observer=sink,
             )
             transcript = runner.run(args.message)
     except (McpUnavailable, McpConnectionError) as exc:
         console.print(f"❌ {exc}", style="red")
         return
+    finally:
+        if sink is not None:
+            sink.close()
 
     for step in transcript.steps:
         if step.tool:
@@ -250,6 +273,17 @@ def _run_mission(elf, args, name, style):
 
     if transcript.completed:
         console.print(Markdown(f"🧞 **{name}:** {transcript.answer}"), style=style)
+    elif transcript.outcome == AWAITING_APPROVAL:
+        # Distinguished from every other unfinished outcome, because it is the
+        # only one where the right next move belongs to a person rather than
+        # to the operator: nothing failed, and nothing was called.
+        proposed = transcript.awaiting or {}
+        console.print(
+            f"⏸️  Waiting on a person: {name} proposed "
+            f"{proposed.get('tool', '?')}({proposed.get('arguments', {})}) "
+            f"and it was NOT called.",
+            style="yellow",
+        )
     else:
         console.print(
             f"⏹️  Mission ended without an answer: {transcript.outcome}",
@@ -295,6 +329,20 @@ def _main(AgentClass):
                              "supplying the mission's closed tool set, its "
                              "prompt and its grounding grammar "
                              "(env: MISSION_SKILL)")
+    parser.add_argument("--events", type=str,
+                        default=os.getenv("MISSION_EVENTS", ""),
+                        help="Write an NDJSON account of the mission AS IT "
+                             "HAPPENS: '-' for stdout, 'fd:N' for a pipe the "
+                             "parent process passed, or a path. The vocabulary "
+                             "is core/runtime/mission_stream.py "
+                             "(env: MISSION_EVENTS)")
+    parser.add_argument("--gate-tool", action="append", default=None,
+                        metavar="NAME",
+                        help="A tool this deployment offers and GATES. It is "
+                             "shown in the catalogue, marked; naming it ends "
+                             "the mission holding the proposed arguments, and "
+                             "the call is not made. Repeatable. There is "
+                             "deliberately no flag that answers a gate.")
 
     parser.add_argument("--md", action="store_true", help="Non-streaming markdown output")
     parser.add_argument("--raw", action="store_true", help="Stream output (default)")
