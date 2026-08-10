@@ -173,6 +173,29 @@ def _run_mission(elf, args, name, style):
         Declared from the bus rather than restated here, for the reason
         ``MissionRunner.catalogue`` gives: a second copy of a tool's contract
         disagrees with the first the day a server changes a description.
+
+        PROBED 10 Aug 2026 against the live lease (vLLM **0.14.1** serving
+        ``openai/gpt-oss-20b``; ``{"version":"0.14.1"}`` off ``/version``).
+        Both grammar constraints the OpenAI schema defines are **supported**:
+
+        * ``response_format={"type": "json_object"}`` returned
+          ``{"answer": 42}`` — valid JSON, clean finish;
+        * ``tool_choice="required"`` returned a well-formed native call,
+          ``catalog_search_assets({"text": "assets we hold"})``, with
+          ``content`` null and ``tool_calls`` populated.
+
+        **This closes a whole failure class at zero token cost.** On the 10
+        August suite Tai spent two turns on a malformed tool name and two more
+        on invalid JSON before recovering, out of a budget of eight — a
+        quarter of the mission burned on protocol rather than on the question.
+        Neither mistake is representable under those flags: the decoder cannot
+        emit a name outside the namespace, nor JSON that does not parse.
+
+        Deliberately NOT wired here yet. It was probed the same day the
+        grounding control was turned on, and enabling both at once would make
+        the measured delta unattributable to either. It is the next commit,
+        and the probe is recorded here so nobody has to lease a card to
+        rediscover it.
         """
         schemas = []
         for name in names:
