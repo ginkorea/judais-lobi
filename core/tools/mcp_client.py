@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -46,6 +47,36 @@ from core.tools.descriptors import ToolDescriptor
 
 _IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 _SCHEMES = frozenset({"stdio", "http"})
+
+#: What we call ourselves in ``initialize``, when nothing says otherwise.
+DEFAULT_CLIENT_NAME = "judais-lobi"
+CLIENT_VERSION = "1"
+
+#: The environment variable a harness sets to say which agent is running.
+CLIENT_NAME_ENV = "MCP_CLIENT_NAME"
+
+
+def client_name() -> str:
+    """Who this client says it is in the MCP ``initialize`` handshake.
+
+    **A server that governs by principal still has to be able to say which
+    agent acted, and it can only know what we tell it.** The handshake was sent
+    with no ``clientInfo`` at all, so the SDK's own default went out and TAIPAN
+    — which builds its audit actor as ``<person> via agent:<clientInfo.name>``
+    — recorded every one of Tai's calls as ``analyst via agent:mcp``.
+
+    That is not cosmetic. It made Tai indistinguishable in the governance
+    record from any other bare MCP caller, and TAIPAN's bake-off harness, which
+    scores an agent by filtering the shared audit trail on the actor, therefore
+    measured Tai as having called **no tools at all** across a whole suite it
+    had in fact worked through correctly. An agent that cannot be told apart in
+    the audit cannot be graded, credited, or held to anything.
+
+    Read from the environment rather than fixed, because this module is shared
+    by three personas and the one that is running is the harness's knowledge,
+    not this file's.
+    """
+    return (os.environ.get(CLIENT_NAME_ENV) or DEFAULT_CLIENT_NAME).strip()
 
 #: The pin.  Kept here as well as in setup.py because this is the module a
 #: reader lands on when an import fails, and "install the extra" is only
@@ -192,6 +223,8 @@ class McpTransport(ABC):
             read_stream, write_stream = streams[0], streams[1]
             async with ClientSession(
                 read_stream, write_stream, message_handler=message_handler,
+                client_info=_types.Implementation(
+                    name=client_name(), version=CLIENT_VERSION),
             ) as sess:
                 await sess.initialize()
                 yield sess
