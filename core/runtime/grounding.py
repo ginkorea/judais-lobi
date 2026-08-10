@@ -173,6 +173,31 @@ class GroundingReport:
 
         A report where nothing was configured is **not** grounded: it is
         a report with no opinion, and callers ask :attr:`ran` first.
+
+        KNOWN HOLE, MEASURED 10 Aug 2026 — **an answer that cites nothing
+        passes.** The rule above is right for *no grammar configured* and
+        wrong one level in, for *grammar configured and nothing matched*. A
+        check that extracted zero tokens has ``unsupported == ()``, so
+        :attr:`CheckResult.grounded` is True and so is this.
+
+        Not hypothetical. In the first measured run with the manifests'
+        ``grounding:`` blocks switched on, **six of the first ten missions
+        reported** ``grounded: identifiers — 0/0 supported by a tool result
+        in this run`` — among them ``what_shape_is_the_catalogue`` and
+        ``what_can_this_pool_run``, both of which should be naming assets.
+        The control was satisfied by silence.
+
+        This is the ``UNKNOWN``-not-``0.5`` failure the module docstring is
+        built around, one turn further in, and it is the obvious way for a
+        weak model to pass a citation check: say nothing checkable.
+
+        The fix is NOT to make ``0/0`` ungrounded here.
+        ``absence_is_an_answer`` legitimately cites nothing — reporting that a
+        corpus is not held is a correct answer with no identifiers in it. What
+        is needed is for :class:`CheckResult` to distinguish ``considered ==
+        0`` from ``considered > 0 and unsupported == 0``, and for a *skill* to
+        declare whether its answers must cite at least one thing. That is
+        content, like the grammar, and it belongs in the manifest.
         """
         return self.ran and all(
             r.grounded for r in self.results if r.configured
