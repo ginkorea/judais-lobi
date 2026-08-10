@@ -348,8 +348,49 @@ class LocalBackend(Backend):
         choices = payload.get("choices") or []
         if not choices:
             return ""
-        content = (choices[0].get("message") or {}).get("content") or ""
-        return self._strip_harmony(content)
+        message = choices[0].get("message") or {}
+        content = message.get("content") or ""
+        return self._strip_harmony(content) or self._as_mission_json(message)
+
+    @staticmethod
+    def _as_mission_json(message: Dict[str, Any]) -> str:
+        """Render a native ``tool_calls`` reply into the mission protocol.
+
+        The kernel reads one JSON object — ``{"tool": …, "arguments": {…}}`` —
+        out of the reply text. A model given ``tools`` answers in the OpenAI
+        tool-call field instead, with empty content, and the loop would see
+        nothing and spend a repair turn asking for JSON it already has.
+
+        Translating here rather than teaching the kernel two dialects is the
+        adapter doing its job: this class exists to make one server's habits
+        look like the protocol everything else speaks. The kernel stays
+        unchanged and keeps working against a backend with no tool-call
+        support at all.
+
+        Only the FIRST call is rendered. The protocol is one tool per turn on
+        purpose — the loop dispatches, appends the result, and asks again —
+        and quietly dropping a second call would be worse than never seeing
+        it, so the model is told what happened.
+        """
+        calls = message.get("tool_calls") or []
+        if not calls:
+            return ""
+        function = (calls[0] or {}).get("function") or {}
+        raw = function.get("arguments")
+        if isinstance(raw, str):
+            try:
+                arguments = json.loads(raw or "{}")
+            except ValueError:
+                arguments = {}
+        else:
+            arguments = raw or {}
+        decision: Dict[str, Any] = {"tool": function.get("name") or "",
+                                    "arguments": arguments}
+        if len(calls) > 1:
+            decision["note"] = (
+                f"{len(calls)} tool calls were offered; this protocol takes "
+                f"one per turn, so the rest were not run.")
+        return json.dumps(decision)
 
     def _stream(self, body: Dict[str, Any]) -> Iterator[SimpleNamespace]:
         res = self._post(body, stream=True)

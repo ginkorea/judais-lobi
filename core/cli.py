@@ -153,8 +153,50 @@ def _run_mission(elf, args, name, style):
         if part and part.strip()
     )
 
+    def _function_schemas(names):
+        """The offered tools as OpenAI function schemas, or ``[]``.
+
+        **Declaring these is what stops a harmony model from 500ing the
+        server.** gpt-oss emits its tool intent as a native header —
+        ``to=functions.catalog_search_assets`` — whatever the prompt asks for.
+        With no ``tools`` in the request there is no function namespace to
+        resolve that against, and vLLM fails parsing its OWN model's output:
+
+            500  unexpected tokens remaining in message header: Some("to=")
+
+        Proven on 10 Aug against a live lease: identical body, 500 with no
+        tools, ``finish_reason='tool_calls'`` with them. It is also why Goose
+        never hit this and Tai hit it every single time — Goose declares tools
+        and Tai did not.
+
+        Declared from the bus rather than restated here, for the reason
+        ``MissionRunner.catalogue`` gives: a second copy of a tool's contract
+        disagrees with the first the day a server changes a description.
+        """
+        schemas = []
+        for name in names:
+            info = bus.describe_tool(name)
+            if "error" in info:
+                continue
+            parameters = info.get("input_schema") or {
+                "type": "object", "properties": {}}
+            schemas.append({"type": "function", "function": {
+                "name": name,
+                "description": info.get("description") or "",
+                "parameters": parameters}})
+        return schemas
+
+    declared: list = []
+
     def chat_fn(messages):
-        return elf.client.chat(model=elf.model, messages=messages, stream=False)
+        # The mission loop still reads one JSON object out of the reply; the
+        # backend renders any native tool_call back into that shape. So this
+        # changes what the SERVER is told, not what the kernel understands.
+        extra = {}
+        if declared and getattr(elf.client, "supports_tool_calls", True):
+            extra = {"tools": declared, "tool_choice": "auto"}
+        return elf.client.chat(model=elf.model, messages=messages,
+                               stream=False, **extra)
 
     try:
         with McpClient(transport) as client:
@@ -169,6 +211,7 @@ def _run_mission(elf, args, name, style):
                 style=style,
             )
             tool_names = _mission_tools(manifest, discovered, style)
+            declared[:] = _function_schemas(tool_names)
             if manifest:
                 console.print(
                     f"📜 skill {manifest.name} — {len(tool_names)} tool(s): "
