@@ -327,7 +327,13 @@ class TestPatchIsApplied:
         result, state = self._run(make_bus(patch_rc=1))
         assert result.success is False
         assert "did not apply" in result.error
-        assert "search block not found" in result.error  # the per-file reason
+        # The per-file reason, named — not the engine's JSON handed on
+        # whole. FIX is told to read the failure, and "which search block
+        # missed, in which file" is the part it has to read; a serialised
+        # result contains that string too, which is why this asserts the
+        # rendering and not merely the substring.
+        assert "v.py: search block not found" in result.error
+        assert "file_results" not in result.error
         assert "_diff" not in state.artifacts
 
     def test_an_empty_patch_set_is_refused(self):
