@@ -164,6 +164,64 @@ class TestFigureGrounding:
         assert report.unsupported == ("13,902",)
 
 
+class TestFiguresAreComparedAsNumbers:
+    """Structural extraction and numeric comparison, not `token in text`.
+
+    The substring implementation reported `0.387` as supported by an unrelated
+    pagerank of `10.3871`, because it is a substring of it. A fabricated figure
+    only had to appear inside a real one somewhere in a governed view to be
+    laundered into a grounded answer, and a governed view is tens of thousands
+    of numbers wide.
+    """
+
+    CONFIG = GroundingConfig(number_pattern=r"\b\d+\.\d{2,}\b")
+    VIEW = ['{"nodes": [{"pagerank": 10.3871, "out_weight": 338.0}], '
+            '"gate": {"confidence": 0.7446}}']
+
+    def report(self, answer, evidence=None):
+        return GroundingValidator.from_config(self.CONFIG).validate(
+            answer, self.VIEW if evidence is None else evidence)
+
+    def test_a_figure_that_is_merely_a_substring_is_unsupported(self):
+        """THE test. `"0.387" in "10.3871"` is true and means nothing."""
+        report = self.report("the actor scored 0.387 on the estimate.")
+        assert report.unsupported == ("0.387",)
+
+    def test_the_figure_it_hid_behind_is_still_supported(self):
+        """The real 10.3871 must still pass, or this is just a stricter bug."""
+        assert self.report("its pagerank is 10.3871.").grounded
+
+    def test_a_leading_digit_run_does_not_support_a_longer_claim(self):
+        report = self.report("the score is 10.38710001.")
+        assert report.unsupported == ("10.38710001",)
+
+    def test_a_figure_inside_a_hex_identifier_is_not_a_figure(self):
+        """`04349a489b2a1457` is a corpus hash. It supports nothing."""
+        report = self.report(
+            "the estimate is 43.49.",
+            ['{"provenance": {"corpus_hash": "04349a489b2a1457"}}'])
+        assert report.unsupported == ("43.49",)
+
+    def test_separators_still_do_not_make_it_a_different_figure(self):
+        config = GroundingConfig(number_pattern=r"\b\d[\d,]{3,}\b")
+        validator = GroundingValidator.from_config(config)
+        evidence = ['{"records": 12481}']
+        assert validator.validate("12,481 records.", evidence).grounded
+        assert validator.validate("12481 records.", evidence).grounded
+        assert validator.validate(
+            "12,481 records.", ["Taiwan corpus, 12,481 records"]).grounded
+
+    def test_a_trailing_zero_is_the_same_figure(self):
+        """338 and 338.0 are one out-weight, written two ways."""
+        config = GroundingConfig(number_pattern=r"\b\d+(?:\.\d+)?\b")
+        report = GroundingValidator.from_config(config).validate(
+            "an out-weight of 338.", self.VIEW)
+        assert report.grounded
+
+    def test_a_figure_the_evidence_does_not_hold_is_still_caught(self):
+        assert not self.report("a confidence of 0.7448.").grounded
+
+
 class TestNoOpinionIsNotAPass:
     def test_an_unconfigured_check_is_not_grounded(self, ):
         result = IdentifierGroundingCheck(GroundingConfig()).check("anything", [])

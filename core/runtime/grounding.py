@@ -645,22 +645,51 @@ class NumericGroundingCheck(GroundingCheck):
     #: the other way round.
     SEPARATORS = ",_ "
 
-    def prepare(self, evidence: Sequence[str]) -> Sequence[str]:
-        """Evidence as written, and again with separators stripped."""
-        return [*evidence, *(self._plain(text) for text in evidence)]
+    #: One figure, wherever it sits in a payload or a sentence.  The
+    #: boundaries do the work.  ``(?<![\w.])`` refuses a run of digits that
+    #: continues a word or follows a dot, so ``5f21c9`` yields no ``21``
+    #: and ``10.3871`` yields no ``3871``; ``(?![\w])`` refuses one that
+    #: runs on into a word, so ``04349a489b2a1457`` is a corpus hash and
+    #: not the number 4349.  Group separators are honoured only where they
+    #: group — ``12,481`` is one figure and ``3, 127`` is two.
+    FIGURE = re.compile(r"(?<![\w.])[+-]?\d(?:[\d,_]*\d)?(?:\.\d+)?(?![\w])")
 
-    def supported(self, token: str, evidence: Sequence[str]) -> bool:
-        """A figure is supported as written or with its separators gone.
+    def prepare(self, evidence: Sequence[str]) -> Sequence[Any]:
+        """Every figure in the evidence, as an exact decimal.
 
-        ``12,481`` in a draft and ``12481`` in the payload it was read
-        from are the same figure, in either direction, and failing that
-        pair would make the check a formatting complaint that whoever
-        reads the report soon learns to skip.
+        Extracted **structurally** and compared **numerically**, which is
+        the whole substance of this check.  The obvious implementation —
+        ``token in text`` — reports ``0.387`` as supported by an unrelated
+        pagerank of ``10.3871``, because it is a substring of it.  That is
+        not a corner case: scores share digits, a fabricated figure only
+        has to be a substring of a real one somewhere in a governed view
+        to be laundered into a grounded answer, and the bigger the payload
+        the likelier it is.
         """
-        return (
-            super().supported(token, evidence)
-            or super().supported(self._plain(token), evidence)
-        )
+        figures = set()
+        for text in evidence:
+            for match in self.FIGURE.finditer(str(text or "")):
+                value = _as_decimal(self._plain(match.group(0)))
+                if value is not None:
+                    figures.add(value)
+        return sorted(figures)
+
+    def supported(self, token: str, evidence: Sequence[Any]) -> bool:
+        """Whether some figure in the evidence *is* this figure.
+
+        Equality of value, not of spelling: ``12,481`` in a draft and
+        ``12481`` in the payload it was read from are the same figure, and
+        so are ``338`` and ``338.0``.  Failing either pair would make this
+        a formatting complaint that whoever reads the report learns to
+        skip.
+
+        A token that is not a number at all cannot be compared as one, and
+        is reported unsupported rather than fallen back to substring
+        matching.  The fallback is the leak; a ``number_pattern`` matching
+        things that are not numbers is a manifest to fix.
+        """
+        value = _as_decimal(self._plain(token))
+        return value is not None and value in evidence
 
     @classmethod
     def _plain(cls, text: str) -> str:

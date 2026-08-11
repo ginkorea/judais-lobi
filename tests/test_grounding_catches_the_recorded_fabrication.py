@@ -372,22 +372,31 @@ class TestTheSameFabricationInAClaimTable:
         assert "claims" in report.uncited
 
 
-class TestTheKnownLeakInSubstringSupport:
-    """`supported()` is substring matching, and substrings coincide.
+class TestTheFabricationCannotBorrowARealFiguresDigits:
+    """`0.387` is not supported by a pagerank of `10.3871`.
 
-    Not a hypothetical: `"0.387" in "10.3871"` is true, so a fabricated score
-    is "supported" by an unrelated pagerank that happens to contain its digits.
-    This test documents the hole rather than asserting the desired behaviour,
-    because fixing it is a change to `NumericGroundingCheck` and belongs in a
-    change of its own — but a hole nobody has written down is a hole that gets
-    rediscovered by an incident.
+    This replaces the test that documented the opposite. `supported()` was
+    substring matching, so a fabricated score was "supported" by any unrelated
+    figure in the payload that happened to contain its digits — and the larger
+    the governed view, the likelier that is. The check now extracts figures
+    structurally and compares them as decimals; the pinned behaviours live in
+    `tests/test_grounding.py::TestFiguresAreComparedAsNumbers`, and what is
+    kept here is the version of the recorded fabrication that used to slip
+    through.
     """
 
-    def test_a_coincidental_substring_currently_passes(self):
+    def test_a_coincidental_substring_is_no_longer_support(self):
         validator = GroundingValidator.from_config(AS_DECLARED)
         report = validator.validate(
             "the actor scored 0.387 on the estimate.",
             ['{"nodes": [{"pagerank": 10.3871}]}'])
-        assert "0.387" not in report.unsupported, (
-            "the leak has been fixed — good. Delete this test and assert the "
-            "opposite in the check's own suite.")
+        assert "0.387" in report.unsupported, report.unsupported
+
+    def test_the_recorded_figure_cannot_hide_inside_a_longer_one(self):
+        """80.847 laundered by a view that happens to contain 180.8471."""
+        validator = GroundingValidator.from_config(AS_DECLARED)
+        report = validator.validate(
+            DRAFT, [*EVIDENCE, '{"weights": {"total_out": 180.8471}}'])
+        assert FABRICATION in report.unsupported, (
+            f"{FABRICATION} was supported by a figure that merely contains "
+            f"its digits: {report.unsupported}")
