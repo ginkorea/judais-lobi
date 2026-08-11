@@ -541,6 +541,7 @@ class MissionRunner:
             step.handle = stored.handle
             rendered, step.truncated = self._render_result(
                 name, result, stored.handle,
+                already=self._store.first_identical(stored),
             )
             transcript.steps.append(step)
             # The WHOLE result, not the bounded rendering. The bound exists
@@ -605,9 +606,21 @@ class MissionRunner:
             )
         return decision, None
 
-    def _render_result(self, name: str, result: Any, handle: str = ""):
-        """``(what the model is shown, whether it was cut down)``."""
+    def _render_result(self, name: str, result: Any, handle: str = "",
+                       already: Any = None):
+        """``(what the model is shown, whether it was cut down)``.
+
+        *already* is an earlier result of this exact call with these exact
+        bytes, when there is one.  See
+        :meth:`~core.runtime.results.MissionResultStore.first_identical`:
+        the call is made and recorded either way, and only the paste into
+        the transcript is collapsed, so a poll that returned something new
+        is still shown in full while a re-fetch of an unchanged view costs
+        one line instead of thirty-three thousand characters.
+        """
         if result.exit_code == 0:
+            if already is not None:
+                return self._say_it_is_unchanged(name, already), False
             body, truncated = self._bound(result.stdout or "(no output)", handle)
             return f"Result of {name} (ok):\n{body}", truncated
         body, truncated = self._bound(
@@ -617,6 +630,31 @@ class MissionRunner:
             f"Result of {name} (refused, exit {result.exit_code}):\n{body}\n"
             f"Do not retry the same call unchanged."
         ), truncated
+
+    def _say_it_is_unchanged(self, name: str, already: Any) -> str:
+        """The one line an unchanged re-fetch is worth, and what to do next.
+
+        Written as a teaching refusal rather than a bare notice.  The
+        measured lesson of 10 August is that the platform's own refusal
+        text taught a 20B model a rule verbatim at the turn it bound,
+        while the same rule 2,000 tokens upstream in a persona did
+        nothing.  A model that re-fetched a view has not understood that
+        the whole of it is already addressable, so this is the moment to
+        say so — with the handle, and with the call spelled out.
+        """
+        where = (
+            f' Call {self._store_tool}(handle="{already.handle}", path="...") '
+            f"to read any field of it — the whole result is there, including "
+            f"the parts the transcript truncated."
+            if self._store_tool else
+            " Re-read it in the transcript above."
+        )
+        return (
+            f"Result of {name} (ok): byte-for-byte identical to "
+            f"{already.handle}, which you already received in this mission. "
+            f"It is not shown again.{where} Calling {name} with the same "
+            f"arguments will keep returning this."
+        )
 
     def _bound(self, body: str, handle: str = ""):
         """Head and tail of *body*, with a marker saying so.

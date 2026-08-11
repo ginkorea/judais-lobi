@@ -649,3 +649,112 @@ class TestDrivenByAManifest:
             validator=validator,
         ).run("go")
         assert transcript.outcome == "answered_with_caveat"
+
+
+class TestAnUnchangedResultIsNotPastedTwice:
+    """The Qwen3-30B context death, as a harness behaviour.
+
+    Recorded 10 August 2026: three `runs_get` calls on the same `run_id` at
+    turns 1, 2 and 4, three copies of one 33,000-character view in a history
+    nothing trims, and a context overflow at turn 5 that was not about
+    context. `mission_result` was offered in the truncation marker of every
+    one of those turns and never called.
+
+    The call is still made — this platform is submit-and-poll and a repeated
+    `compute_job_status` is a mission working correctly. What is collapsed is
+    the paste, and only when the bytes are identical.
+    """
+
+    @pytest.fixture
+    def polling_bus(self):
+        """A tool whose answer changes, and one whose answer does not."""
+        b = ToolBus(capability_engine=CapabilityEngine(
+            PolicyPack(allowed_scopes=["*"])))
+        b.register(
+            ToolDescriptor(tool_name="runs.get", description="One run, whole."),
+            lambda **kw: (0, "X" * 5_000, ""),
+        )
+        polls = {"n": 0}
+
+        def status(**kw):
+            polls["n"] += 1
+            return 0, f"status poll {polls['n']}", ""
+
+        b.register(
+            ToolDescriptor(tool_name="compute.status", description="Job state."),
+            status,
+        )
+        return b
+
+    def shown(self, model):
+        """Every tool-result message the model was handed."""
+        return [m["content"] for m in model.seen[-1]
+                if m["role"] == "user" and m["content"].startswith("Result of")]
+
+    def test_the_second_identical_fetch_is_one_line(self, polling_bus):
+        model = ScriptedModel(
+            tool_call("runs.get", run_id="a1"),
+            tool_call("runs.get", run_id="a1"),
+            '{"answer": "done"}',
+        )
+        MissionRunner(model, polling_bus, ["runs.get"], max_steps=5).run("go")
+        first, second = self.shown(model)[:2]
+        assert len(first) > 4_000
+        assert len(second) < 400, (
+            f"the unchanged re-fetch was pasted again in full: {len(second)} "
+            f"chars")
+
+    def test_it_names_the_handle_and_the_call_that_reads_it(self, polling_bus):
+        model = ScriptedModel(
+            tool_call("runs.get", run_id="a1"),
+            tool_call("runs.get", run_id="a1"),
+            '{"answer": "done"}',
+        )
+        MissionRunner(model, polling_bus, ["runs.get"], max_steps=5).run("go")
+        second = self.shown(model)[1]
+        assert "r1" in second
+        assert f'{RESULT_TOOL}(handle="r1"' in second, (
+            "a notice that does not spell out the call is a notice the model "
+            "has to guess its way past")
+
+    def test_the_call_is_still_dispatched_and_still_recorded(self, polling_bus):
+        """Not a refusal. The audit log and the evidence must not lose it."""
+        model = ScriptedModel(
+            tool_call("runs.get", run_id="a1"),
+            tool_call("runs.get", run_id="a1"),
+            '{"answer": "done"}',
+        )
+        runner = MissionRunner(model, polling_bus, ["runs.get"], max_steps=5)
+        transcript = runner.run("go")
+        calls = [s for s in transcript.steps if s.tool == "runs.get"]
+        assert len(calls) == 2
+        assert [s.exit_code for s in calls] == [0, 0]
+        assert len(runner.store) == 2, "the repeat was not recorded"
+
+    def test_a_poll_that_changed_is_shown_in_full(self, polling_bus):
+        """The behaviour a blanket repeat-refusal would have broken."""
+        model = ScriptedModel(
+            tool_call("compute.status", job="j1"),
+            tool_call("compute.status", job="j1"),
+            '{"answer": "done"}',
+        )
+        MissionRunner(model, polling_bus, ["compute.status"],
+                      max_steps=5).run("go")
+        first, second = self.shown(model)[:2]
+        assert "status poll 1" in first
+        assert "status poll 2" in second, (
+            "a poll whose answer changed was collapsed as a duplicate")
+        assert "identical" not in second
+
+    def test_a_different_argument_is_not_a_duplicate(self, polling_bus):
+        model = ScriptedModel(
+            tool_call("runs.get", run_id="a1"),
+            tool_call("runs.get", run_id="a2"),
+            '{"answer": "done"}',
+        )
+        MissionRunner(model, polling_bus, ["runs.get"], max_steps=5).run("go")
+        second = self.shown(model)[1]
+        assert "identical" not in second, (
+            "runs.get(a2) returned the same bytes as runs.get(a1) only "
+            "because this stub ignores its arguments; the check must compare "
+            "the call as well")

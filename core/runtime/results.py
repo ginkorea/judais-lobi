@@ -136,6 +136,45 @@ class MissionResultStore:
     def get(self, handle: str) -> Optional[StoredResult]:
         return self._by_handle.get(handle)
 
+    def first_identical(self, stored: StoredResult) -> Optional[StoredResult]:
+        """An earlier result of the same call with the same bytes, or ``None``.
+
+        Recorded 10 August 2026: a Qwen3-30B mission called ``runs_get`` on
+        the *same* ``run_id`` at turns 1, 2 and 4 and died at turn 5 on a
+        context overflow that had nothing to do with a long conversation.
+        Three copies of one 33,000-character view sat in a history nothing
+        trims, and ``mission_result`` — which exists for exactly that, with
+        the handle named in the truncation marker of all three turns — was
+        never called.
+
+        Compared on **bytes**, not on the call, and that is the whole
+        subtlety.  Refusing a repeated call outright would be wrong here:
+        this platform is submit-and-poll, and ``compute_job_status`` asked
+        twice is a mission working correctly.  A poll that returns something
+        new differs in its bytes and is shown in full; a re-fetch of an
+        unchanged view does not, and that is the case worth collapsing.  So
+        the call is always made and the *rendering* is what gets
+        deduplicated — which needs no idempotency flag, and none is
+        available: the MCP bridge does not carry the platform's
+        ``idempotent`` across.
+
+        Only successful results, and only against successful ones.  Two
+        identical refusals are two different problems for the model to read,
+        and the loop already tells it not to retry an unchanged call.
+        """
+        if not stored.succeeded:
+            return None
+        for earlier in self._results:
+            if earlier.handle == stored.handle:
+                break
+            if (earlier.succeeded
+                    and earlier.tool == stored.tool
+                    and earlier.arguments == stored.arguments
+                    and earlier.text == stored.text
+                    and earlier.evidence == stored.evidence):
+                return earlier
+        return None
+
     def evidence_texts(self) -> List[str]:
         """Every successful result's text and typed payload.
 
