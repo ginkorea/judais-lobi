@@ -85,9 +85,17 @@ GATE_REQUESTED = "gate_requested"
 ANSWER = "answer"
 
 #: What the grounding validator said, when one was configured.  ``ran``,
-#: ``grounded``, ``repairs``, ``caveat``, ``checks`` (``[{check, configured,
-#: passed, detail}]``).  Absent entirely when no grammar was supplied — an
-#: absent report and a clean one are different facts.
+#: ``grounded``, ``verified``, ``repairs``, ``caveat``, ``unsupported``,
+#: ``silent``, ``uncited``, ``checks`` (``[{check, configured, grounded,
+#: verdict, considered, minimum, unsupported, detail}]``).  Absent entirely
+#: when no grammar was supplied — an absent report and a clean one are
+#: different facts.
+#:
+#: So are ``grounded`` and ``verified``.  The first says nothing unsupported
+#: was found; the second says something was found to check at all.  A
+#: consumer reading only ``grounded`` cannot tell an answer that cited three
+#: things correctly from one that cited nothing — which is what six of the
+#: first ten measured missions did.
 GROUNDING = "grounding"
 
 #: Terminal.  ``outcome`` — the transcript's own word — and ``steps``.

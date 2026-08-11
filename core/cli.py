@@ -286,12 +286,20 @@ def _run_mission(elf, args, name, style):
 
     report = transcript.grounding
     if report is not None and report.ran:
-        state = "grounded" if report.grounded else "UNGROUNDED"
+        # Three words, not two. "grounded" over an answer that cited nothing
+        # is what six of the first ten measured missions printed, and it read
+        # exactly like the line over an answer that cited three things right.
+        if not report.grounded:
+            state = "UNGROUNDED"
+        elif not report.verified:
+            state = "NOTHING CHECKED"
+        else:
+            state = "grounded"
         console.print(
             f"🔎 {state}: "
             + "; ".join(f"{r.check} — {r.detail}" for r in report.results
                         if r.configured),
-            style=style if report.grounded else "yellow",
+            style=style if report.verified else "yellow",
         )
 
     if transcript.completed:

@@ -18,15 +18,28 @@ this file asserts the two things that were never asserted together:
   **not** grounded — because the difference between a control and a decoration
   is entirely whether a check that could not run says so.
 
+And, from the first measured run with those blocks switched on, the escape that
+opens: six of the first ten missions reported `grounded: identifiers — 0/0
+supported by a tool result in this run`. A fabrication check that is passed by
+deleting the fabrication has one move in it. `TestTheEscapeTheFirstFixtureOpens`
+is the second move — an answer that cites nothing must not report like an
+answer that cited correctly, and under a skill that requires a citation it must
+fail.
+
 The evidence below is what the mission's tools returned, in the shape
 `MissionResultStore.evidence_texts()` hands to the validator: whole tool
 payloads, untruncated. Every figure in it is one the 10 August graders
 confirmed against the run.
 """
 
+import re
+from dataclasses import replace
+
 import pytest
 
 from core.runtime.grounding import (
+    NOTHING_CONSIDERED,
+    SUPPORTED,
     GroundingConfig,
     GroundingValidator,
     NumericGroundingCheck,
@@ -61,7 +74,10 @@ EVIDENCE = [
     '"gate": {"decision": 3, "confidence": 0.7446}}',
 ]
 
-#: As `run_inspection/SKILL.md` now declares it.
+#: The two grammars `run_inspection/SKILL.md` declares. The draft above is an
+#: EXCERPT — its figure-bearing sentences — so the tests that replay it are the
+#: ones about the grammar, and the whole-answer minimums live in
+#: :data:`WITH_ITS_MINIMUMS` below and are exercised against whole answers.
 AS_DECLARED = GroundingConfig(
     identifier_pattern=r"\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b",
     number_pattern=r"\b\d+\.\d{2,}\b",
@@ -69,7 +85,31 @@ AS_DECLARED = GroundingConfig(
     max_repairs=1,
 )
 
+#: The rest of what that manifest declares: a drafting skill's answer has to
+#: state something. Added 10 Aug 2026 with the three-state verdict, because
+#: without it "delete every number" passes every other test in this file.
+#:
+#: Only the figures minimum is pinned here. The manifest also requires an
+#: identifier, and the recorded evidence above holds no dotted asset id at all
+#: — that mission never called `catalog_get_asset` — so no answer over THIS
+#: evidence could satisfy it. A mutation with no green side asserts nothing;
+#: the identifier minimum is pinned in `tests/test_grounding.py`, against
+#: evidence built for it.
+WITH_ITS_MINIMUMS = replace(AS_DECLARED, must_cite=(("figures", 1),))
+
 FABRICATION = "80.847"
+
+#: An answer of the shape the six `0/0` reports were written over: fluent,
+#: on-topic, and carrying nothing a tool result can be compared against. Not a
+#: recorded transcript — what was recorded on 10 August is the report line
+#: `grounded: identifiers — 0/0 supported by a tool result in this run`, and
+#: this is the input class that produces it.
+SILENT_DRAFT = (
+    "The run finished and its network is tightly connected, clustered into a "
+    "handful of communities. The gate settled on a block count with reasonable "
+    "confidence. One account stands out as the strongest propagator of the "
+    "narratives, with substantially more outward than inward weight."
+)
 
 
 @pytest.fixture()
@@ -174,6 +214,88 @@ class TestTheMutations:
         `grounding:` block was invisible.
         """
         assert GroundingValidator.from_config(None) is None
+
+
+class TestTheEscapeTheFirstFixtureOpens:
+    """Having learned it cannot invent 80.847, a model can write no numbers.
+
+    The same day the checks above were switched on, six of the first ten
+    missions reported `grounded: identifiers — 0/0 supported by a tool result
+    in this run` — the control satisfied by silence. A fabrication check that
+    can be passed by deleting the fabrication is a check with one move in it,
+    and this is the second move.
+    """
+
+    def test_the_silent_draft_is_not_reported_as_verified(self):
+        """Under ANY skill: nothing was checked, and the report says so."""
+        validator = GroundingValidator.from_config(AS_DECLARED)
+        report = validator.validate(SILENT_DRAFT, EVIDENCE)
+        assert report.verified is False
+        assert set(report.silent) == {"identifiers", "figures"}
+        for row in report.results:
+            assert row.verdict == NOTHING_CONSIDERED
+
+    def test_the_zero_of_zero_wording_is_gone(self):
+        """The exact string those six reports printed."""
+        validator = GroundingValidator.from_config(AS_DECLARED)
+        report = validator.validate(SILENT_DRAFT, EVIDENCE)
+        for row in report.results:
+            assert "0/0 supported" not in row.detail
+
+    def test_a_drafting_skill_fails_it_outright(self):
+        """`run_inspection` declares that its answers cite something."""
+        validator = GroundingValidator.from_config(WITH_ITS_MINIMUMS)
+        report = validator.validate(SILENT_DRAFT, EVIDENCE)
+        assert report.ran
+        assert not report.grounded
+        assert report.uncited == ("figures",)
+
+    def test_deleting_the_fabrication_alone_does_not_save_it(self):
+        """The move this test exists to price.
+
+        Take the recorded draft, strike every figure out of it, and the answer
+        that remains passes the figures check on the old rule and fails on
+        this one.
+        """
+        validator = GroundingValidator.from_config(WITH_ITS_MINIMUMS)
+        struck = re.sub(r"\d[\d,.]*", "some", DRAFT)
+        report = validator.validate(struck, EVIDENCE)
+        assert FABRICATION not in report.unsupported     # it is gone
+        assert not report.grounded                       # and so is the answer
+        assert "figures" in report.uncited
+
+    def test_a_skill_that_declares_no_minimum_still_allows_silence(self):
+        """`absence_is_an_answer` is a real mission and must keep passing.
+
+        `catalogue_recon` deliberately declares no minimum: "the catalogue
+        holds none of that" is a correct answer with nothing in it to check.
+        What it may NOT do is look like an answer that cited three things.
+        """
+        recon = GroundingConfig(
+            identifier_pattern=AS_DECLARED.identifier_pattern,
+            ignore=AS_DECLARED.ignore)
+        report = GroundingValidator.from_config(recon).validate(
+            "The catalogue returns nothing for that mission.", EVIDENCE)
+        assert report.grounded is True
+        assert report.verified is False
+        assert report.uncited == ()
+
+    def test_it_is_distinguishable_from_an_answer_that_cited_correctly(self):
+        """The mutation: silence and a clean citation must not report alike."""
+        validator = GroundingValidator.from_config(WITH_ITS_MINIMUMS)
+        silent = validator.validate(SILENT_DRAFT, EVIDENCE)
+        cited = validator.validate(
+            "The gate settled at a confidence of 0.7446 and the strongest "
+            "account carries an out-weight of 338.0 against an in-weight of "
+            "1081.0.",
+            EVIDENCE)
+
+        assert (silent.grounded, silent.verified) == (False, False)
+        assert (cited.grounded, cited.verified) == (True, True)
+        figures = [r for r in cited.results if r.check == "figures"]
+        assert [r.verdict for r in figures] == [SUPPORTED]
+        assert "figures" not in cited.silent
+        assert "figures" in silent.silent
 
 
 class TestTheKnownLeakInSubstringSupport:

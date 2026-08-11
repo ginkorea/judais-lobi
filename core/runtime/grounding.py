@@ -33,6 +33,24 @@ does not get another turn and does not get suppressed: the answer is
 kept and an explicit caveat is appended naming what could not be
 supported.  Deleting the answer would hide the finding; passing it
 silently would launder it.
+
+**A check reports three states, not two.**  Measured 10 Aug 2026, the
+first run with the manifests' ``grounding:`` blocks switched on: six of
+the first ten missions reported ``grounded: identifiers — 0/0 supported
+by a tool result in this run``, among them ``what_shape_is_the_catalogue``
+and ``what_can_this_pool_run``, both of which should have been naming
+assets.  *The control was satisfied by silence* — a check that extracted
+zero tokens had nothing unsupported, so it passed.  A model that learns
+that writes no identifiers.
+
+So the verdict is :data:`NOTHING_CONSIDERED`, :data:`SUPPORTED` or
+:data:`UNSUPPORTED` (and :data:`UNCONFIGURED` for a check that could not
+run at all), and *whether saying nothing is acceptable* is not the
+harness's call.  ``absence_is_an_answer`` is a legitimate mission whose
+correct answer cites nothing; ``run_inspection`` drafting a finding with
+no figures in it is a failure.  The difference is content, like the
+grammar, so it arrives in the manifest as ``must_cite:`` — a per-check
+minimum the skill declares for itself.
 """
 
 from __future__ import annotations
@@ -45,6 +63,38 @@ from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 class GroundingMisdeclared(TypeError):
     """A check subclass is unusable, with every reason in one message."""
+
+
+# ---------------------------------------------------------------------------
+# The verdicts.  Three for a check that ran, one for a check that did not.
+# ---------------------------------------------------------------------------
+
+#: The check could not run — no grammar for it in the manifest.  Not a pass
+#: and not a failure: no opinion.  ``UNKNOWN``, not ``0.5``.
+UNCONFIGURED = "unconfigured"
+
+#: The check ran and the answer stated **nothing of its kind**.  Whether
+#: that is acceptable is the skill's declaration (``must_cite``), not this
+#: module's: reporting a corpus is not held is a correct answer with no
+#: identifiers in it, and drafting a finding with no figures is not.
+NOTHING_CONSIDERED = "nothing_considered"
+
+#: The check ran, the answer stated things of its kind, and every one of
+#: them came back from a tool in this run.  **The only verdict that is a
+#: positive result**, and the one ``0/0`` used to be indistinguishable from.
+SUPPORTED = "supported"
+
+#: At least one stated thing appears in no tool output of this run.
+UNSUPPORTED = "unsupported"
+
+#: The closed vocabulary, so a consumer can assert it knows all of them.
+VERDICTS: Tuple[str, ...] = (
+    UNCONFIGURED, NOTHING_CONSIDERED, SUPPORTED, UNSUPPORTED,
+)
+
+#: ``must_cite: true`` means every configured check, and is stored as a
+#: minimum against this name.  An explicit check name always wins over it.
+ANY_CHECK = "*"
 
 
 @dataclass(frozen=True)
@@ -66,6 +116,26 @@ class GroundingConfig:
     ignore: Tuple[str, ...] = ()
     #: Repair turns before the caveat. Zero goes straight to the caveat.
     max_repairs: int = 1
+    #: ``(check name, minimum)`` pairs: how many things of that kind an
+    #: answer under this skill must state before it can be called grounded.
+    #: Empty means silence is acceptable here — which is a *declaration*
+    #: now, not the absence of one.
+    must_cite: Tuple[Tuple[str, int], ...] = ()
+
+    def minimum_for(self, check: str) -> int:
+        """How many tokens *check* must consider, or ``0`` for no floor.
+
+        An explicit name beats the ``must_cite: true`` wildcard, so a skill
+        can require citations generally and still say ``figures: 0`` for the
+        one kind its answers legitimately omit.
+        """
+        wildcard = 0
+        for name, minimum in self.must_cite:
+            if name == check:
+                return minimum
+            if name == ANY_CHECK:
+                wildcard = minimum
+        return wildcard
 
     @classmethod
     def from_mapping(cls, raw: Optional[Mapping[str, Any]]) -> Optional["GroundingConfig"]:
@@ -84,7 +154,8 @@ class GroundingConfig:
                 f"a grounding block is a mapping, not a {type(raw).__name__}"
             )
 
-        known = {"identifier_pattern", "number_pattern", "ignore", "max_repairs"}
+        known = {"identifier_pattern", "number_pattern", "ignore",
+                 "max_repairs", "must_cite"}
         problems: List[str] = []
         unknown = sorted(set(raw) - known)
         if unknown:
@@ -112,6 +183,9 @@ class GroundingConfig:
             problems.append(f"`max_repairs` is a count of turns, got {repairs!r}")
             repairs = 1
 
+        must_cite, cite_problems = cls._read_must_cite(raw.get("must_cite"))
+        problems.extend(cite_problems)
+
         if problems:
             raise ValueError("unusable grounding block:\n  - " + "\n  - ".join(problems))
 
@@ -125,12 +199,77 @@ class GroundingConfig:
             ),
             ignore=tuple(str(item) for item in ignore),
             max_repairs=repairs,
+            must_cite=must_cite,
         )
+
+    @staticmethod
+    def _read_must_cite(
+        raw: Any,
+    ) -> Tuple[Tuple[Tuple[str, int], ...], List[str]]:
+        """``must_cite:`` in any of its three spellings, plus problems.
+
+        * absent or ``false`` — nothing is required, and an answer that
+          cites nothing is reported as having cited nothing rather than as
+          having passed;
+        * ``true`` — every configured check must consider at least one
+          thing;
+        * ``[identifiers]`` — those checks must, at least one each;
+        * ``{claims: 3}`` — that check must consider at least three, which
+          is how a drafting skill states a schema minimum.
+
+        The names are **not** validated here.  Which checks exist is known
+        to :meth:`GroundingValidator.from_config`, and validating a name
+        against a hard-coded list in this method is how the list and the
+        checks drift apart.
+        """
+        if raw is None or raw is False:
+            return (), []
+        if raw is True:
+            return ((ANY_CHECK, 1),), []
+
+        problems: List[str] = []
+        pairs: List[Tuple[str, int]] = []
+
+        if isinstance(raw, Mapping):
+            items = list(raw.items())
+        elif isinstance(raw, str) or not isinstance(raw, Sequence):
+            return (), [
+                f"`must_cite` is a {type(raw).__name__}; it is true, a list of "
+                f"check names, or a mapping of check name to a minimum count"
+            ]
+        else:
+            items = [(entry, 1) for entry in raw]
+
+        for name, minimum in items:
+            name = str(name or "").strip()
+            if not name:
+                problems.append("`must_cite` names an empty check")
+                continue
+            if isinstance(minimum, bool) or not isinstance(minimum, int):
+                problems.append(
+                    f"`must_cite: {name}` is {minimum!r}; it is a count of "
+                    f"things an answer has to state"
+                )
+                continue
+            if minimum < 0:
+                problems.append(
+                    f"`must_cite: {name}` is {minimum}; a negative minimum is "
+                    f"not a lenient one, it is a typo"
+                )
+                continue
+            pairs.append((name, minimum))
+
+        return tuple(pairs), problems
 
 
 @dataclass(frozen=True)
 class CheckResult:
-    """One check's opinion, or its explicit lack of one."""
+    """One check's opinion, or its explicit lack of one.
+
+    Three states for a check that ran — see :attr:`verdict` — because two
+    were not enough.  With two, ``0/0`` and ``3/3`` were the same answer,
+    and the first is the one a model can always produce.
+    """
 
     check: str
     #: False means *this check could not run*. It is not a pass.
@@ -138,11 +277,42 @@ class CheckResult:
     considered: Tuple[str, ...] = ()
     unsupported: Tuple[str, ...] = ()
     detail: str = ""
+    #: How many things of this kind the *skill* said an answer must state.
+    #: Zero is the harness's default and means the skill declared nothing;
+    #: it is not the harness deciding that silence is fine.
+    minimum: int = 0
+
+    @property
+    def verdict(self) -> str:
+        """One of :data:`VERDICTS`. What this check actually found."""
+        if not self.configured:
+            return UNCONFIGURED
+        if self.unsupported:
+            return UNSUPPORTED
+        if not self.considered:
+            return NOTHING_CONSIDERED
+        return SUPPORTED
+
+    @property
+    def cited_enough(self) -> bool:
+        """Whether the answer stated as much as the skill requires.
+
+        Always true where a skill declared no minimum — the requirement is
+        content and its absence is not this module's to invent.
+        """
+        return len(self.considered) >= self.minimum
 
     @property
     def grounded(self) -> bool:
-        """True only when the check ran and found nothing unsupported."""
-        return self.configured and not self.unsupported
+        """True only when the check ran, found nothing unsupported, **and**
+        the answer stated at least what its skill requires it to state.
+
+        An answer that cites nothing is grounded here only because some
+        skill said citing nothing is acceptable for it.  Under a skill that
+        said otherwise it is a failure, and under every skill it is a
+        :data:`NOTHING_CONSIDERED` verdict rather than a clean pass.
+        """
+        return self.configured and not self.unsupported and self.cited_enough
 
 
 @dataclass(frozen=True)
@@ -168,39 +338,56 @@ class GroundingReport:
         return tuple(seen)
 
     @property
+    def silent(self) -> Tuple[str, ...]:
+        """Checks that ran and found **nothing in the answer to check**.
+
+        Reported separately from :attr:`grounded` on purpose.  Where the
+        skill allows it, an answer citing nothing is still a legitimate
+        answer — and a reader has to be able to see that nothing was
+        actually verified, which is the fact ``0/0 supported`` hid.
+        """
+        return tuple(
+            r.check for r in self.results
+            if r.configured and not r.considered
+        )
+
+    @property
+    def uncited(self) -> Tuple[str, ...]:
+        """Checks whose skill required a citation and did not get one."""
+        return tuple(
+            r.check for r in self.results
+            if r.configured and not r.cited_enough
+        )
+
+    @property
     def grounded(self) -> bool:
         """Every configured check passed.
 
         A report where nothing was configured is **not** grounded: it is
         a report with no opinion, and callers ask :attr:`ran` first.
 
-        KNOWN HOLE, MEASURED 10 Aug 2026 — **an answer that cites nothing
-        passes.** The rule above is right for *no grammar configured* and
-        wrong one level in, for *grammar configured and nothing matched*. A
-        check that extracted zero tokens has ``unsupported == ()``, so
-        :attr:`CheckResult.grounded` is True and so is this.
-
-        Not hypothetical. In the first measured run with the manifests'
-        ``grounding:`` blocks switched on, **six of the first ten missions
-        reported** ``grounded: identifiers — 0/0 supported by a tool result
-        in this run`` — among them ``what_shape_is_the_catalogue`` and
-        ``what_can_this_pool_run``, both of which should be naming assets.
-        The control was satisfied by silence.
-
-        This is the ``UNKNOWN``-not-``0.5`` failure the module docstring is
-        built around, one turn further in, and it is the obvious way for a
-        weak model to pass a citation check: say nothing checkable.
-
-        The fix is NOT to make ``0/0`` ungrounded here.
-        ``absence_is_an_answer`` legitimately cites nothing — reporting that a
-        corpus is not held is a correct answer with no identifiers in it. What
-        is needed is for :class:`CheckResult` to distinguish ``considered ==
-        0`` from ``considered > 0 and unsupported == 0``, and for a *skill* to
-        declare whether its answers must cite at least one thing. That is
-        content, like the grammar, and it belongs in the manifest.
+        A report where every check ran and considered nothing **can** be
+        grounded — but only under a skill that declared silence acceptable,
+        and even then :attr:`silent` names the checks that had nothing to
+        do.  ``grounded and not silent`` is the answer that was actually
+        verified; the pair is what the ``0/0`` hole collapsed into one bit.
         """
         return self.ran and all(
             r.grounded for r in self.results if r.configured
+        )
+
+    @property
+    def verified(self) -> bool:
+        """Grounded, and **something was actually checked** to say so.
+
+        *Any* configured check having considered something, not every one:
+        a draft that quotes figures and names no asset is a normal answer,
+        and demanding both would make this false so often that nobody would
+        read it.  What was not checked is named in :attr:`silent`; what this
+        separates is a verified answer from an empty one.
+        """
+        return self.grounded and any(
+            r.considered for r in self.results if r.configured
         )
 
 
@@ -279,6 +466,7 @@ class GroundingCheck(ABC):
     def __init__(self, config: GroundingConfig):
         self._config = config
         self._ignore = frozenset(config.ignore)
+        self._minimum = config.minimum_for(self.name)
 
     @property
     def config(self) -> GroundingConfig:
@@ -309,11 +497,32 @@ class GroundingCheck(ABC):
             configured=True,
             considered=tuple(considered),
             unsupported=tuple(unsupported),
-            detail=(
-                f"{len(considered) - len(unsupported)}/{len(considered)} "
-                f"supported by a tool result in this run"
-            ),
+            detail=self._detail(len(considered), len(unsupported)),
+            minimum=self._minimum,
         )
+
+    def _detail(self, stated: int, failed: int) -> str:
+        """The one line a reader sees.  ``0/0 supported`` is not one of them.
+
+        The old wording read ``0/0 supported by a tool result in this run``
+        for an answer that cited nothing, which is true and is why six
+        missions looked checked when nothing had been.  An answer with
+        nothing in it now says so in words.
+        """
+        if not stated:
+            detail = f"nothing to check — the answer states no {self.name}"
+        else:
+            detail = (
+                f"{stated - failed}/{stated} supported by a tool result "
+                f"in this run"
+            )
+        if self._minimum:
+            met = "met" if stated >= self._minimum else "NOT met"
+            detail += (
+                f"; this skill requires at least {self._minimum} "
+                f"({met})"
+            )
+        return detail
 
     # ── what a subclass supplies ────────────────────────────────────────
 
@@ -458,7 +667,44 @@ class GroundingValidator:
         built = [check(config) for check in checks]
         if not any(not c.unconfigured() for c in built):
             return None
+        cls._audit_must_cite(config, built)
         return cls(built, max_repairs=config.max_repairs)
+
+    @staticmethod
+    def _audit_must_cite(
+        config: GroundingConfig, built: Sequence["GroundingCheck"],
+    ) -> None:
+        """Refuse a ``must_cite`` that can never be satisfied or never bind.
+
+        Both failures are silent otherwise, and both produce a mission that
+        looks governed.  A minimum on a check this manifest did not
+        configure never binds — the check reports no opinion and the
+        requirement evaporates, which is the ``0/0`` hole wearing the
+        clothes of the fix for it.  A minimum on a name no check answers to
+        is a typo (``identifier`` for ``identifiers``) and does the same.
+        """
+        runnable = {c.name for c in built if not c.unconfigured()}
+        known = {c.name for c in built}
+        problems: List[str] = []
+        for name, minimum in config.must_cite:
+            if name == ANY_CHECK or not minimum:
+                continue
+            if name not in known:
+                problems.append(
+                    f"`must_cite` requires {minimum} from {name!r}, which is "
+                    f"not a check this validator runs. Checks: "
+                    f"{', '.join(sorted(known))}"
+                )
+            elif name not in runnable:
+                problems.append(
+                    f"`must_cite` requires {minimum} from {name!r} and this "
+                    f"block does not configure that check, so it reports no "
+                    f"opinion and the requirement never binds"
+                )
+        if problems:
+            raise ValueError(
+                "unusable grounding block:\n  - " + "\n  - ".join(problems)
+            )
 
     @property
     def checks(self) -> List[GroundingCheck]:
@@ -478,34 +724,77 @@ class GroundingValidator:
 
     @staticmethod
     def repair_prompt(report: GroundingReport) -> str:
-        """One turn, naming exactly what could not be supported."""
-        lines = [
-            "That answer contains claims no tool result in this mission "
-            "supports. Every one of these appears in your answer and in no "
-            "tool output you received:",
-        ]
-        for result in report.results:
-            if result.unsupported:
-                lines.append(
-                    f"  {result.check}: "
-                    + ", ".join(repr(t) for t in result.unsupported)
-                )
-        lines.append(
-            "Either call a tool that returns them, or rewrite the answer "
-            "without them and say plainly what the tools could not establish. "
-            "Do not substitute a similar-looking value. Reply with one JSON "
-            "object as before."
-        )
+        """One turn, naming exactly what failed and in which direction.
+
+        Two failures reach here and they need opposite instructions.  A
+        model told "your figures are unsupported" and nothing else has an
+        obvious way out — delete the figures — and that move is the one the
+        second half of this prompt closes.
+        """
+        lines: List[str] = []
+
+        if report.unsupported:
+            lines.append(
+                "That answer contains claims no tool result in this mission "
+                "supports. Every one of these appears in your answer and in "
+                "no tool output you received:"
+            )
+            for result in report.results:
+                if result.unsupported:
+                    lines.append(
+                        f"  {result.check}: "
+                        + ", ".join(repr(t) for t in result.unsupported)
+                    )
+            lines.append(
+                "Either call a tool that returns them, or rewrite the answer "
+                "without them and say plainly what the tools could not "
+                "establish. Do not substitute a similar-looking value."
+            )
+
+        if report.uncited:
+            lines.append(
+                "That answer states less than this skill requires it to "
+                "state. Removing what cannot be supported is not the same as "
+                "supporting it:"
+            )
+            for result in report.results:
+                if result.configured and not result.cited_enough:
+                    lines.append(
+                        f"  {result.check}: {len(result.considered)} stated, "
+                        f"at least {result.minimum} required"
+                    )
+            lines.append(
+                "Quote the values and identifiers the tool results actually "
+                "returned, with the field each came from. If the tools "
+                "genuinely returned nothing to cite, say that explicitly and "
+                "name the calls you made — an empty answer is not a grounded "
+                "one."
+            )
+
+        lines.append("Reply with one JSON object as before.")
         return "\n".join(lines)
 
     @staticmethod
     def caveat(report: GroundingReport) -> str:
         """The abstention appended when a repair turn did not fix it."""
-        listed = ", ".join(report.unsupported)
-        return (
-            "\n\n---\n"
-            "⚠️ Ungrounded: the following appear in this answer and in no "
-            f"tool result from this mission: {listed}. They were not "
-            "established by this run and must not be relied on or cited "
-            "onward."
-        )
+        parts: List[str] = []
+        if report.unsupported:
+            listed = ", ".join(report.unsupported)
+            parts.append(
+                "⚠️ Ungrounded: the following appear in this answer and in no "
+                f"tool result from this mission: {listed}. They were not "
+                "established by this run and must not be relied on or cited "
+                "onward."
+            )
+        if report.uncited:
+            listed = ", ".join(report.uncited)
+            parts.append(
+                f"⚠️ Uncited: this answer states none of what the skill "
+                f"requires it to cite ({listed}), so nothing in it was "
+                "checked against a tool result. It carries no more support "
+                "than an unsourced assertion and must not be relied on or "
+                "cited onward."
+            )
+        if not parts:
+            return ""
+        return "\n\n---\n" + "\n\n".join(parts)

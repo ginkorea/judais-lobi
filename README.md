@@ -156,12 +156,31 @@ grounding:
   identifier_pattern: '\b(?:asset|labels|run)\.[0-9a-f]{4,}\b'
   ignore: [asset.0000]
   max_repairs: 1
+  must_cite: {identifiers: 1}     # optional; see below
 ```
 
 No block, no validator, and the transcript's `grounding` stays `None` rather
 than claiming a clean check. A check that could not run reports *no opinion* and
 never a pass — same reason `LLMReviewTier` returns `UNKNOWN` instead of 0.5, and
 a larger one here: a fabricated "grounded" is a governance claim.
+
+**Three states, not two.** A check reports `unconfigured`,
+`nothing_considered`, `supported` or `unsupported`. The third exists because the
+second was being reported as a pass: on 10 August 2026, the first run with these
+blocks switched on, six of the first ten missions reported `grounded:
+identifiers — 0/0 supported by a tool result in this run`. The control was
+satisfied by silence. `report.grounded` now means *nothing unsupported*;
+`report.verified` means *and something was actually checked*, and the CLI prints
+`NOTHING CHECKED` for the gap between them.
+
+**Whether silence is acceptable is the skill's call, not the harness's.**
+`must_cite` is a minimum per check — `true` for every configured check, a list
+of names, or `{claims: 3}` for a schema minimum. A skill whose answer may
+legitimately be "the catalogue holds none of that" declares no minimum; a skill
+drafting a finding declares one, and an answer with nothing in it fails. A
+`must_cite` naming a check the same block does not configure is refused at
+load: a requirement that never binds is the original hole wearing the name of
+the fix for it.
 
 ### A personality from a file
 

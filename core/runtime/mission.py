@@ -107,6 +107,11 @@ def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
     return {
         "ran": bool(getattr(report, "ran", False)),
         "grounded": bool(getattr(report, "grounded", False)),
+        # Grounded AND something was actually checked. Carried beside
+        # `grounded` rather than instead of it because they are different
+        # facts and a watcher that cannot tell them apart is the watcher six
+        # missions looked clean to on 10 August.
+        "verified": bool(getattr(report, "verified", False)),
         "repairs": repairs,
         "repairing": repairing,
         "caveat": caveat or (getattr(report, "caveat", "") or ""),
@@ -114,10 +119,17 @@ def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
         # any tool output" sends a reader looking; "0.181 was not" tells them
         # where, and 0.181 is the exact figure this check was written after.
         "unsupported": list(getattr(report, "unsupported", ()) or ()),
+        # Which checks found nothing in the answer at all, and which of those
+        # the skill had required to find something.
+        "silent": list(getattr(report, "silent", ()) or ()),
+        "uncited": list(getattr(report, "uncited", ()) or ()),
         "checks": [
             {"check": getattr(row, "check", ""),
              "configured": bool(getattr(row, "configured", False)),
              "grounded": bool(getattr(row, "grounded", False)),
+             "verdict": getattr(row, "verdict", ""),
+             "considered": len(getattr(row, "considered", ()) or ()),
+             "minimum": int(getattr(row, "minimum", 0) or 0),
              "unsupported": list(getattr(row, "unsupported", ()) or ()),
              "detail": getattr(row, "detail", "")}
             for row in (getattr(report, "results", ()) or ())
