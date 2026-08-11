@@ -238,7 +238,7 @@ class MissionResultStore:
                 f"summary."
             ))
 
-        value, problem = _walk(structured, path.strip())
+        value, problem = walk_path(structured, path.strip())
         if problem:
             return (1, "", f"{stored.handle}: {problem}")
         return (0, self._render(value), "")
@@ -304,11 +304,18 @@ def _shape(value: Any) -> str:
     return type(value).__name__
 
 
-def _walk(value: Any, path: str) -> Tuple[Any, str]:
+def walk_path(value: Any, path: str) -> Tuple[Any, str]:
     """``(value, problem)``; exactly one is meaningful.
 
     A path that misses says what *was* there.  "no such field" without
     the alternatives is how a model tries the same wrong guess again.
+
+    Public, and named rather than private, because
+    :class:`~core.runtime.grounding.ClaimGroundingCheck` verifies a claim
+    table with it: ``{"value": 0.7446, "path": "gate.confidence"}`` is
+    checked by walking the same path into the same stored payload the
+    model read it from.  One walker, so what a claim *means* cannot
+    disagree with what ``mission_result`` returns for the same path.
     """
     current = value
     for token in _tokens(path):

@@ -32,6 +32,7 @@ payloads, untruncated. Every figure in it is one the 10 August graders
 confirmed against the run.
 """
 
+import json
 import re
 from dataclasses import replace
 
@@ -233,7 +234,8 @@ class TestTheEscapeTheFirstFixtureOpens:
         assert report.verified is False
         assert set(report.silent) == {"identifiers", "figures"}
         for row in report.results:
-            assert row.verdict == NOTHING_CONSIDERED
+            if row.configured:
+                assert row.verdict == NOTHING_CONSIDERED
 
     def test_the_zero_of_zero_wording_is_gone(self):
         """The exact string those six reports printed."""
@@ -296,6 +298,78 @@ class TestTheEscapeTheFirstFixtureOpens:
         assert [r.verdict for r in figures] == [SUPPORTED]
         assert "figures" not in cited.silent
         assert "figures" in silent.silent
+
+
+class TestTheSameFabricationInAClaimTable:
+    """The recorded draft rewritten the way `run_inspection` now asks for it.
+
+    `output_format` requires every figure beside the prose as
+    `{"value": ..., "path": ...}` into the run view, so verification stops
+    being a search over flattened text and becomes a walk: read that path out
+    of the payload the mission received and compare. The 80.847 has to survive
+    that too, and it does not — there is no path in the view holding it.
+    """
+
+    CONFIG = replace(AS_DECLARED, claim_table=True,
+                     must_cite=(("claims", 3),))
+
+    @staticmethod
+    def table(*claims):
+        return "\n\n```claims\n" + json.dumps(list(claims)) + "\n```"
+
+    def validate(self, answer):
+        return GroundingValidator.from_config(self.CONFIG).validate(
+            answer, EVIDENCE)
+
+    def test_the_true_claims_walk_to_their_values(self):
+        report = self.validate(self.table(
+            {"value": 0.7446, "path": "gate.confidence"},
+            {"value": 127, "path": "network.node_count"},
+            {"value": 338.0, "path": "network.nodes[0].scores.out_weight"}))
+        claims = [r for r in report.results if r.check == "claims"][0]
+        assert claims.verdict == SUPPORTED, claims
+
+    def test_the_fabrication_has_no_path_to_stand_on(self):
+        """80.847 is not anywhere in that view, under any field name."""
+        report = self.validate(self.table(
+            {"value": 0.7446, "path": "gate.confidence"},
+            {"value": 127, "path": "network.node_count"},
+            {"value": 80.847, "path": "network.total_influence_strength"}))
+        assert not report.grounded
+        assert any(FABRICATION in token for token in report.unsupported), \
+            report.unsupported
+
+    def test_pointing_it_at_a_real_field_does_not_save_it(self):
+        """The substitution move, structurally: right path, wrong number.
+
+        `total_causal_influence` IS in the view and it is 0.0. A claim that
+        the same field holds 80.847 is checked against the payload, not
+        against whether the field exists.
+        """
+        report = self.validate(self.table(
+            {"value": 0.7446, "path": "gate.confidence"},
+            {"value": 127, "path": "network.node_count"},
+            {"value": 80.847, "path": "blocks[0].total_causal_influence"}))
+        assert not report.grounded
+        assert "blocks[0].total_causal_influence=80.847" in report.unsupported
+
+    def test_the_true_value_of_that_field_is_accepted(self):
+        """0.0 is what the run says, and the draft may say it."""
+        report = self.validate(self.table(
+            {"value": 0.7446, "path": "gate.confidence"},
+            {"value": 127, "path": "network.node_count"},
+            {"value": 0.0, "path": "blocks[0].total_causal_influence"}))
+        assert report.grounded and report.verified
+
+    def test_a_draft_with_no_table_at_all_fails_the_minimum(self):
+        """The escape closed: writing no numbers is not a way through.
+
+        This is the recorded draft with every figure struck out — the answer a
+        model produces once it learns that figures get it caught.
+        """
+        report = self.validate(re.sub(r"\d[\d,.]*", "some", DRAFT))
+        assert not report.grounded
+        assert "claims" in report.uncited
 
 
 class TestTheKnownLeakInSubstringSupport:

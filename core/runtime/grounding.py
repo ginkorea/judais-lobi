@@ -55,10 +55,14 @@ minimum the skill declares for itself.
 
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+from core.runtime.results import walk_path
 
 
 class GroundingMisdeclared(TypeError):
@@ -96,6 +100,14 @@ VERDICTS: Tuple[str, ...] = (
 #: minimum against this name.  An explicit check name always wins over it.
 ANY_CHECK = "*"
 
+#: The fenced block a claim table is written in.  Module level because two
+#: checks need it and for opposite reasons: :class:`ClaimGroundingCheck`
+#: reads it, and every *prose* check has to not — a table of
+#: ``{"path": "gate.confidence"}`` is full of dotted lower-case tokens that
+#: an identifier grammar matches, and a report that flags a field path the
+#: skill asked for is a report its reader learns to skip.
+CLAIM_BLOCK = re.compile(r"```claims\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class GroundingConfig:
@@ -111,6 +123,11 @@ class GroundingConfig:
     identifier_pattern: Optional[str] = None
     #: Regex matching a figure, when figures are checked at all.
     number_pattern: Optional[str] = None
+    #: Whether the answer carries a ``claims`` table — every figure emitted
+    #: a second time as ``{"value": ..., "path": ...}`` into what a tool
+    #: returned. The skill's ``output_format`` has to ask for one; this is
+    #: the half that checks it arrived and is true.
+    claim_table: bool = False
     #: Literals that match a pattern but are not claims — placeholders,
     #: field names, the platform's own word for "none".
     ignore: Tuple[str, ...] = ()
@@ -155,7 +172,7 @@ class GroundingConfig:
             )
 
         known = {"identifier_pattern", "number_pattern", "ignore",
-                 "max_repairs", "must_cite"}
+                 "max_repairs", "must_cite", "claim_table"}
         problems: List[str] = []
         unknown = sorted(set(raw) - known)
         if unknown:
@@ -186,6 +203,15 @@ class GroundingConfig:
         must_cite, cite_problems = cls._read_must_cite(raw.get("must_cite"))
         problems.extend(cite_problems)
 
+        claim_table = raw.get("claim_table", False)
+        if not isinstance(claim_table, bool):
+            problems.append(
+                f"`claim_table` is {claim_table!r}; it is true or false — "
+                f"whether this skill's answers carry a claim table. What the "
+                f"table looks like belongs in the skill's `output_format`"
+            )
+            claim_table = False
+
         if problems:
             raise ValueError("unusable grounding block:\n  - " + "\n  - ".join(problems))
 
@@ -197,6 +223,7 @@ class GroundingConfig:
             number_pattern=(
                 str(raw["number_pattern"]) if raw.get("number_pattern") else None
             ),
+            claim_table=claim_table,
             ignore=tuple(str(item) for item in ignore),
             max_repairs=repairs,
             must_cite=must_cite,
@@ -399,8 +426,8 @@ class GroundingCheck(ABC):
     """One way of asking whether an answer's claims came from a tool.
 
     A subclass supplies :meth:`extract` — which tokens in the answer are
-    claims of its kind — and may narrow :meth:`supported` and
-    :meth:`unconfigured`.  :meth:`check` is the template and is
+    claims of its kind — and may narrow :meth:`text`, :meth:`supported`
+    and :meth:`unconfigured`.  :meth:`check` is the template and is
     **final**, because it is a statement about ORDER and the first step
     is the one a re-implementation drops:
 
@@ -485,7 +512,7 @@ class GroundingCheck(ABC):
             )
 
         considered: List[str] = []
-        for token in self.extract(answer or ""):
+        for token in self.extract(self.text(answer or "")):
             token = str(token)
             if token and token not in considered and not self.ignored(token):
                 considered.append(token)
@@ -530,6 +557,18 @@ class GroundingCheck(ABC):
     def extract(self, answer: str) -> Iterable[str]:
         """The tokens in *answer* this check is responsible for."""
         raise NotImplementedError
+
+    def text(self, answer: str) -> str:
+        """The part of the answer this check reads.  Prose, by default.
+
+        A claim table is a machine-readable annex the skill asked for, and
+        it is verified by walking its paths — not by pattern-matching them.
+        Left in, its ``"path": "gate.confidence"`` entries are dotted
+        lower-case tokens an identifier grammar matches, so a draft that did
+        exactly what its skill required would be reported as inventing
+        identifiers.  :class:`ClaimGroundingCheck` reads the table instead.
+        """
+        return CLAIM_BLOCK.sub(" ", answer)
 
     def unconfigured(self) -> List[str]:
         """Why this check cannot run, or an empty list."""
@@ -630,10 +669,174 @@ class NumericGroundingCheck(GroundingCheck):
         return text
 
 
+class ClaimGroundingCheck(GroundingCheck):
+    """Every figure beside the prose, as a path into what a tool returned.
+
+    The complement to :class:`NumericGroundingCheck`, and the reason it is
+    needed: a model told its figures are unsupported has an obvious way
+    out, which is to write no figures.  Silence passes a fabrication check
+    trivially, and the whole point of a synthesis is the numbers in it.
+
+    So a drafting skill's ``output_format`` requires a **claim table**
+    beside the prose — every figure emitted a second time as the path it
+    came from::
+
+        ```claims
+        [{"value": 0.7446, "path": "gate.confidence"},
+         {"value": 338.0, "path": "network.nodes[0].scores.out_weight"}]
+        ```
+
+    Verification is then arithmetic rather than search:
+    :func:`~core.runtime.results.walk_path` — the same walker
+    ``mission_result`` answers with — reads that path out of the payloads
+    this mission actually received and compares the value.  A claim whose
+    path does not resolve, or resolves to something else, is unsupported.
+    Paired with a ``must_cite`` minimum ("a draft states at least three
+    claims"), *delete all the numbers* stops being a winning move.
+
+    Off unless a manifest sets ``claim_table``, like every other grammar
+    here: requiring a table from a skill whose answers are prose would
+    make the check a formatting complaint.
+    """
+
+    name = "claims"
+
+    #: The fence the table is written in.  One spelling, because two
+    #: spellings is a model guessing which one this deployment parses.
+    BLOCK = CLAIM_BLOCK
+
+    #: What a claim that could not be read is called in the report.  It is
+    #: extracted rather than skipped: a table the harness cannot parse is a
+    #: table nobody verified, and dropping it silently would make an
+    #: unreadable claim table indistinguishable from a correct one.
+    UNREADABLE = "unreadable claim table"
+
+    def unconfigured(self) -> List[str]:
+        if not self._config.claim_table:
+            return [
+                "no `claim_table` in the grounding block; a claim table is "
+                "required only of skills whose answers carry figures"
+            ]
+        return []
+
+    def text(self, answer: str) -> str:
+        """The whole answer: this is the check that reads the table."""
+        return answer
+
+    def extract(self, answer: str) -> Iterable[str]:
+        blocks = self.BLOCK.findall(answer or "")
+        if not blocks:
+            return
+        for raw in blocks:
+            try:
+                claims = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                yield f"{self.UNREADABLE}: {exc.msg} at line {exc.lineno}"
+                continue
+            if isinstance(claims, Mapping):
+                claims = [claims]
+            if not isinstance(claims, list):
+                yield f"{self.UNREADABLE}: it holds a {type(claims).__name__}"
+                continue
+            for claim in claims:
+                yield self._token(claim)
+
+    @classmethod
+    def _token(cls, claim: Any) -> str:
+        """One claim as the string the report and the repair turn quote."""
+        if not isinstance(claim, Mapping):
+            return f"{cls.UNREADABLE}: a claim is an object, got {claim!r}"
+        if "path" not in claim or "value" not in claim:
+            return (
+                f"{cls.UNREADABLE}: a claim is "
+                f'{{"value": ..., "path": ...}}, got {sorted(claim)}'
+            )
+        return f"{claim['path']}={json.dumps(claim['value'], default=str)}"
+
+    def prepare(self, evidence: Sequence[str]) -> Sequence[Any]:
+        """Every tool payload that is JSON, parsed once.
+
+        Once per check rather than once per claim: the evidence of a
+        mission is the largest thing in reach and a draft can carry a
+        dozen claims.
+        """
+        payloads: List[Any] = []
+        for text in evidence:
+            try:
+                payloads.append(json.loads(text))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return payloads
+
+    def supported(self, token: str, evidence: Sequence[Any]) -> bool:
+        """Walk the claimed path and compare the claimed value.
+
+        Any payload may answer it: a mission reads several tools and the
+        claim carries the path, not the handle.  The value still has to
+        match, so a path that happens to exist elsewhere supports nothing
+        on its own.
+        """
+        path, _, raw = token.rpartition("=")
+        if not path or token.startswith(self.UNREADABLE):
+            return False
+        try:
+            claimed = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+
+        for payload in evidence:
+            found, problem = walk_path(payload, path)
+            if problem:
+                continue
+            if _same_value(claimed, found):
+                return True
+        return False
+
+
+def _same_value(claimed: Any, found: Any) -> bool:
+    """Whether a claimed value is the value the payload holds.
+
+    Numerically where both are numbers — ``338`` and ``338.0`` are the
+    same out-weight, and a draft that rounded a display is not making a
+    different claim — and exactly otherwise.
+    """
+    left, right = _as_decimal(claimed), _as_decimal(found)
+    if left is not None and right is not None:
+        return left == right
+    if isinstance(claimed, str) and isinstance(found, str):
+        return claimed.strip() == found.strip()
+    return claimed == found
+
+
+def _as_decimal(value: Any) -> Optional[Decimal]:
+    """*value* as an exact decimal, or ``None`` if it is not a number.
+
+    ``Decimal`` rather than ``float``: the figures in reach are scores and
+    weights read out of JSON, and ``0.1 + 0.2`` arithmetic has no business
+    deciding whether a governed number was fabricated.  ``bool`` is not a
+    number here — ``True == 1`` is a Python fact, not a claim about a run.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, Decimal)):
+        return Decimal(value)
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, str):
+        try:
+            return Decimal(value.strip())
+        except InvalidOperation:
+            return None
+    return None
+
+
 #: The order checks run in. Identifiers first: they are the finding a
 #: reader acts on, and a repair turn that leads with them is the one
-#: most likely to be actionable.
-DEFAULT_CHECKS: Tuple[type, ...] = (IdentifierGroundingCheck, NumericGroundingCheck)
+#: most likely to be actionable. Claims last: it is the most structural
+#: and the least likely to be the thing a reader looks at first.
+DEFAULT_CHECKS: Tuple[type, ...] = (
+    IdentifierGroundingCheck, NumericGroundingCheck, ClaimGroundingCheck,
+)
 
 
 # ---------------------------------------------------------------------------

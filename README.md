@@ -173,6 +173,24 @@ satisfied by silence. `report.grounded` now means *nothing unsupported*;
 `report.verified` means *and something was actually checked*, and the CLI prints
 `NOTHING CHECKED` for the gap between them.
 
+**A claim table, where the figures matter.** `claim_table: true` turns on a
+third check. The skill's `output_format` asks for every figure a second time
+beside the prose, as a path into what a tool returned:
+
+````
+```claims
+[{"value": 0.7446, "path": "gate.confidence"},
+ {"value": 338.0,  "path": "network.nodes[0].scores.out_weight"}]
+```
+````
+
+Verification is then arithmetic rather than search: `results.walk_path` — the
+same walker `mission_result` answers with — reads that path out of the payloads
+the mission received and compares. A path that does not resolve, or resolves to
+something else, is unsupported; an unreadable table is a finding rather than a
+skip. The prose checks do not read the block, because a table full of
+`gate.confidence` would otherwise be reported as invented identifiers.
+
 **Whether silence is acceptable is the skill's call, not the harness's.**
 `must_cite` is a minimum per check — `true` for every configured check, a list
 of names, or `{claims: 3}` for a schema minimum. A skill whose answer may

@@ -7,6 +7,9 @@ check that could not run must not report a pass — the second is the one
 that would otherwise turn "we had no grammar" into a governance claim.
 """
 
+import json
+from dataclasses import replace
+
 import pytest
 
 from core.runtime.grounding import (
@@ -17,6 +20,7 @@ from core.runtime.grounding import (
     UNSUPPORTED,
     VERDICTS,
     CheckResult,
+    ClaimGroundingCheck,
     GroundingCheck,
     GroundingConfig,
     GroundingMisdeclared,
@@ -209,6 +213,143 @@ class TestTheReport:
         )
         report = GroundingValidator.from_config(config).validate("ZZ42", [])
         assert report.unsupported == ("ZZ42",)
+
+
+class TestTheClaimTable:
+    """Every figure emitted a second time as the path it came from.
+
+    The complement to the figures check, and the control that prices the
+    escape it opens: a model told its numbers are unsupported can delete its
+    numbers. It cannot delete them and still state three claims.
+
+    Verification here is arithmetic, not search — `walk_path` reads the claimed
+    path out of the payload the model was given and the values are compared.
+    """
+
+    VIEW = [
+        '{"gate": {"confidence": 0.7446, "decision": 3}, '
+        '"network": {"node_count": 127, '
+        '"nodes": [{"actor_id": "6436464948", '
+        '"scores": {"out_weight": 338.0, "pagerank": 10.3871}}]}}',
+    ]
+    CONFIG = GroundingConfig(claim_table=True)
+
+    def report(self, answer, evidence=None, **kw):
+        config = replace(self.CONFIG, **kw) if kw else self.CONFIG
+        return GroundingValidator.from_config(config).validate(
+            answer, self.VIEW if evidence is None else evidence)
+
+    @staticmethod
+    def table(*claims):
+        return "The run is described above.\n\n```claims\n" + json.dumps(
+            list(claims)) + "\n```"
+
+    def test_a_claim_that_walks_to_its_value_is_supported(self):
+        report = self.report(self.table(
+            {"value": 0.7446, "path": "gate.confidence"},
+            {"value": 338.0, "path": "network.nodes[0].scores.out_weight"}))
+        assert report.grounded and report.verified
+
+    def test_a_fabricated_value_at_a_real_path_is_not(self):
+        """The 80.847 move, in the table rather than in the prose."""
+        report = self.report(self.table(
+            {"value": 80.847, "path": "gate.confidence"}))
+        assert not report.grounded
+        assert report.unsupported == ("gate.confidence=80.847",)
+
+    def test_a_path_that_does_not_resolve_is_not_supported(self):
+        report = self.report(self.table(
+            {"value": 80.847, "path": "network.total_influence"}))
+        assert not report.grounded
+
+    def test_a_value_at_the_wrong_path_is_not_supported(self):
+        """0.7446 IS in the view, and not there. The path is the claim."""
+        report = self.report(self.table(
+            {"value": 0.7446, "path": "network.nodes[0].scores.pagerank"}))
+        assert not report.grounded
+
+    def test_an_integer_and_a_float_are_the_same_figure(self):
+        report = self.report(self.table(
+            {"value": 338, "path": "network.nodes[0].scores.out_weight"}))
+        assert report.grounded
+
+    def test_a_missing_table_considers_nothing_rather_than_passing(self):
+        report = self.report("A fluent paragraph with no table in it.")
+        claims = [r for r in report.results if r.check == "claims"][0]
+        assert claims.verdict == NOTHING_CONSIDERED
+        assert report.verified is False
+
+    def test_a_missing_table_fails_a_skill_that_requires_claims(self):
+        """The schema minimum: 'delete all the numbers' stops working."""
+        report = self.report("A fluent paragraph with no table in it.",
+                             must_cite=(("claims", 3),))
+        assert not report.grounded
+        assert report.uncited == ("claims",)
+
+    def test_too_few_claims_fails_the_minimum(self):
+        report = self.report(
+            self.table({"value": 0.7446, "path": "gate.confidence"}),
+            must_cite=(("claims", 3),))
+        assert not report.grounded
+        assert "at least 3" in [
+            r for r in report.results if r.check == "claims"][0].detail
+
+    def test_enough_true_claims_passes_it(self):
+        report = self.report(
+            self.table(
+                {"value": 0.7446, "path": "gate.confidence"},
+                {"value": 3, "path": "gate.decision"},
+                {"value": 127, "path": "network.node_count"}),
+            must_cite=(("claims", 3),))
+        assert report.grounded and report.verified
+
+    def test_an_unreadable_table_is_a_finding_and_not_a_skip(self):
+        """A table nobody could parse is a table nobody verified."""
+        report = self.report(
+            "```claims\n[{'value': 0.7446, 'path': 'gate.confidence'}]\n```")
+        assert not report.grounded
+        assert "unreadable claim table" in report.unsupported[0]
+
+    def test_a_claim_missing_its_path_is_a_finding(self):
+        report = self.report(self.table({"value": 0.7446}))
+        assert not report.grounded
+        assert "unreadable claim table" in report.unsupported[0]
+
+    def test_the_check_is_off_unless_the_manifest_asks(self):
+        result = ClaimGroundingCheck(GroundingConfig()).check(
+            self.table({"value": 1, "path": "gate.decision"}), self.VIEW)
+        assert result.configured is False
+        assert result.grounded is False
+
+    def test_text_evidence_that_is_not_json_is_skipped_not_crashed(self):
+        report = self.report(
+            self.table({"value": 0.7446, "path": "gate.confidence"}),
+            evidence=["Stored results in this mission: r1, r2", *self.VIEW])
+        assert report.grounded
+
+    def test_the_prose_checks_do_not_read_the_table(self):
+        """A field path is not an invented asset id.
+
+        `{"path": "gate.confidence"}` is a dotted lower-case token and an
+        identifier grammar matches it. Left in the prose the checks read, a
+        draft that did exactly what its skill required would be reported as
+        inventing identifiers — and a report that cries wolf is one nobody
+        reads.
+        """
+        config = replace(self.CONFIG,
+                         identifier_pattern=r"\b[a-z][a-z0-9_]*\.[a-z0-9_.]+\b")
+        report = GroundingValidator.from_config(config).validate(
+            "The gate is confident.\n\n" + self.table(
+                {"value": 0.7446, "path": "gate.confidence"},
+                {"value": 127, "path": "network.node_count"}),
+            self.VIEW)
+        assert report.grounded, report.unsupported
+
+    def test_the_repair_turn_quotes_the_claim(self):
+        report = self.report(self.table(
+            {"value": 80.847, "path": "gate.confidence"}))
+        assert "gate.confidence=80.847" in GroundingValidator.repair_prompt(
+            report)
 
 
 class TestSilenceIsNotAPass:
@@ -429,5 +570,8 @@ class TestDeclaration:
 
         assert Custom(GroundingConfig()).check("a b", ["a b"]).grounded
 
-    def test_the_default_checks_are_the_two_named(self):
-        assert DEFAULT_CHECKS == (IdentifierGroundingCheck, NumericGroundingCheck)
+    def test_the_default_checks_are_the_three_named(self):
+        assert DEFAULT_CHECKS == (
+            IdentifierGroundingCheck, NumericGroundingCheck,
+            ClaimGroundingCheck,
+        )
