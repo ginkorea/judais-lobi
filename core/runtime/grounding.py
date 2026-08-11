@@ -119,6 +119,39 @@ ANY_CHECK = "*"
 CLAIM_BLOCK = re.compile(r"```claims\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
+#: Characters a language model reaches for in prose and a payload never
+#: contains, mapped to the ASCII a tool result is written in. The soft hyphen
+#: is deleted rather than mapped: it is an invisible line-break hint and not a
+#: hyphen anybody wrote.
+#:
+#: Measured 10 August 2026 on ``what_can_this_pool_run``: the answer carried
+#: **17** U+2011 non-breaking hyphens — ``paraphrase‑multilingual‑mpnet‑base‑v2``
+#: for a model whose id is spelled with U+002D everywhere in the catalogue.
+#: A substring test between those two strings fails on every one of them, so
+#: an identifier read correctly out of a tool result and typed back with
+#: prettier punctuation is reported as invented. That is the worst possible
+#: false positive: it teaches the reader that the check is noise, on the one
+#: mission where the answer was right.
+_TYPOGRAPHIC = {
+    0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-",
+    0x2015: "-", 0x2212: "-", 0x00AD: "",
+    0x2018: "'", 0x2019: "'", 0x201C: '"', 0x201D: '"',
+    0x00A0: " ", 0x202F: " ", 0x2009: " ",
+}
+
+
+def typographic_plain(text: str) -> str:
+    """*text* with a model's punctuation replaced by a payload's.
+
+    Applied to the answer **and** to the evidence, in ``GroundingCheck.check``,
+    so that every check compares content rather than typography and none of
+    them can be written to forget. Normalising only one side would be worse
+    than normalising neither: it would turn a real match into a miss in
+    exactly the direction that flatters the check.
+    """
+    return str(text or "").translate(_TYPOGRAPHIC)
+
+
 @dataclass(frozen=True)
 class GroundingConfig:
     """The content half: what counts as a claim, and how strict to be.
@@ -565,8 +598,13 @@ class GroundingCheck(ABC):
                 detail="; ".join(problems),
             )
 
+        # BOTH SIDES, and here rather than in a subclass, so no check can be
+        # comparing typography instead of content. See `typographic_plain`.
+        answer = typographic_plain(answer or "")
+        evidence = [typographic_plain(str(text or "")) for text in evidence]
+
         considered: List[str] = []
-        for token in self.extract(self.text(answer or "")):
+        for token in self.extract(self.text(answer)):
             token = str(token)
             if token and token not in considered and not self.ignored(token):
                 considered.append(token)

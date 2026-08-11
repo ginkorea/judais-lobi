@@ -136,6 +136,57 @@ class TestIdentifierGrounding:
         assert not report.grounded
 
 
+class TestTypographyIsNotContent:
+    """The 17 non-breaking hyphens of ``what_can_this_pool_run``.
+
+    The answer named a model whose id it had read correctly out of the
+    catalogue and typed back with U+2011 instead of U+002D. A substring
+    test between those two strings fails, which would report a correctly
+    cited identifier as invented — the false positive that teaches a
+    reader the check is noise, on the mission where the answer was right.
+    """
+
+    HF = r"\b[A-Za-z][\w.-]*/[A-Za-z0-9][\w.-]*[A-Za-z0-9]\b"
+    MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+
+    def test_a_model_id_typed_with_non_breaking_hyphens_is_grounded(self):
+        pretty = self.MODEL.replace("-", "‑", 99)
+        report = GroundingValidator.from_config(
+            GroundingConfig(identifier_pattern=self.HF)
+        ).validate(f"The pool serves {pretty}.", [f'{{"id": "{self.MODEL}"}}'])
+        assert report.grounded, report.unsupported
+        # THE WHOLE id, not a prefix of it. Unnormalised, U+2011 is not a word
+        # character, so the pattern stops at the first one and considers
+        # `sentence-transformers/paraphrase` — which is a substring of the
+        # real id and therefore "supported". A pass for the wrong reason, and
+        # a check that would then miss an invention past the first pretty
+        # hyphen.
+        considered = next(r for r in report.results
+                          if r.check == "identifiers").considered
+        assert considered == (self.MODEL,), considered
+
+    def test_the_evidence_side_is_normalised_too(self):
+        """One-sided normalisation flatters the check; both sides or neither."""
+        pretty = self.MODEL.replace("-", "‑", 99)
+        report = GroundingValidator.from_config(
+            GroundingConfig(identifier_pattern=self.HF)
+        ).validate(f"The pool serves {self.MODEL}.", [f'{{"id": "{pretty}"}}'])
+        assert report.grounded, report.unsupported
+
+    def test_an_invention_is_not_laundered_by_normalising(self):
+        report = GroundingValidator.from_config(
+            GroundingConfig(identifier_pattern=self.HF)
+        ).validate("The pool serves meta‑llama/Llama‑4.",
+                   [f'{{"id": "{self.MODEL}"}}'])
+        assert report.unsupported == ("meta-llama/Llama-4",)
+
+    def test_a_figure_written_with_a_unicode_minus_still_compares(self):
+        report = GroundingValidator.from_config(
+            GroundingConfig(number_pattern=r"-?\b\d[\d,]*\.\d+\b")
+        ).validate("The margin was −0.25 nats.", ['{"dl_margin": -0.25}'])
+        assert report.grounded, report.unsupported
+
+
 class TestTheNameOfAnOfferedToolIsNotAnInvention:
     """The recorded ``absence_is_an_answer`` fault, and the derivation fix.
 

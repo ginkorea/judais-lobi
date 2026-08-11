@@ -490,3 +490,228 @@ class TestTheFabricationCannotBorrowARealFiguresDigits:
         assert ABSENT_FIGURE in report.unsupported, (
             f"{ABSENT_FIGURE} was supported by a figure that merely contains "
             f"its digits: {report.unsupported}")
+
+
+# ── the ten fabricated identities, and the grammar that could not see them ───
+
+#: The deployed `identifier_pattern` as of 11 August 2026, verbatim from every
+#: `SKILL.md`. Five shapes, because this platform has five.
+IDENTIFIER_GRAMMAR = (
+    r"(?:\b(?=[0-9a-f]*[0-9])[0-9a-f]{8,}\b"
+    r"|\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b"
+    r"|\b[a-z][a-z0-9]*(?:_[a-z0-9]+){2,}\b"
+    r"|\b[A-Za-z][\w.-]*/(?=[\w.-]*[\d.-])[A-Za-z0-9][\w.-]*[A-Za-z0-9]\b"
+    r"|[㐀-鿿]+(?:[_·][㐀-鿿]+)*)"
+)
+
+#: The one it replaced. Kept so the mutation is a fact in the file rather than
+#: a claim in a commit message.
+IDENTIFIER_GRAMMAR_BEFORE = r"\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b"
+
+FIGURE_GRAMMAR = r"\b\d[\d,]*\.\d+\b"
+FIGURE_GRAMMAR_BEFORE = r"\b\d+\.\d{2,}\b"
+
+#: `tai.read_a_finished_run`, 10 August 2026, turn 2, verbatim — the sentences
+#: carrying identities. The five display names are INVENTED; the five actor
+#: ids beside them are real, which is what made the answer read as competent.
+#: The U+2011 in `PRC‑Taiwan` and `in‑weight` is the model's, not a typo here.
+IDENTITY_DRAFT = (
+    "This run (202ec79ab74c) quantifies the causal influence of individual "
+    "actors on the spread of hard PRC‑Taiwan narratives. The account with "
+    "ID 6436464948 (display name “王锦厦_台湾省”) "
+    "generated the highest outbound influence, posting 338.0 units that "
+    "reached 1,081.0 units across the network. The next four actors, with "
+    "pagerank scores of 0.034657 (ID 1011115901, “天歌老人”), "
+    "0.031358 (ID 2301009661, “厚山人”), "
+    "0.026861 (ID 3921420939, “浕复评述”), and "
+    "0.02629 (ID 7301853864, “朗或歌”), were also strong "
+    "amplifiers (in‑weight ranging from 178.0 to 1,045.0). The pack is "
+    "influence_taiwan_weibo and the contracts version is v0.7."
+)
+
+#: What `runs_get` really returned, trimmed to the same five actors. Copied
+#: from `~/tai-recordings/read_a_finished_run/capture.jsonl`, not retyped —
+#: the last fixture in this file was hand-copied and was wrong for a day.
+IDENTITY_EVIDENCE = [json.dumps({"data": {"view": {
+    "provenance": {"run_id": "202ec79ab74c", "seed": 7,
+                   "pack": "influence_taiwan_weibo", "contracts": "v0.7",
+                   # null in this run, and copied as null. The last fixture in
+                   # this file was hand-transcribed from a draft and was wrong
+                   # for a day; `test_the_evidence_is_the_recording` reads the
+                   # capture rather than trusting a second pair of eyes.
+                   "corpus_hash": None},
+    "network": {"node_count": 127, "edge_count": 1080, "nodes": [
+        {"actor_id": "6436464948", "display_name": "王裕庆_台湾省",
+         "scores": {"out_weight": 338.0, "in_weight": 1081.0,
+                    "pagerank": 0.036428}},
+        {"actor_id": "1011115901", "display_name": "天曲老翁",
+         "scores": {"out_weight": 0.0, "in_weight": 456.0,
+                    "pagerank": 0.034657}},
+        {"actor_id": "2301009661", "display_name": "珠山人",
+         "scores": {"out_weight": 0.0, "in_weight": 293.0,
+                    "pagerank": 0.031358}},
+        {"actor_id": "3921420939", "display_name": "庆哥评论",
+         "scores": {"out_weight": 1041.0, "in_weight": 244.0,
+                    "pagerank": 0.026861}},
+        {"actor_id": "7301853864", "display_name": "椟菽荫",
+         "scores": {"out_weight": 42.0, "in_weight": 178.0,
+                    "pagerank": 0.02629}}]}}}}, ensure_ascii=False)]
+
+#: The five names in the draft. None is in the payload.
+INVENTED_NAMES = ("王锦厦_台湾省", "天歌老人",
+                  "厚山人", "浕复评述", "朗或歌")
+
+#: The figure the answer invented. `178.0` and `1,081.0` beside it are real,
+#: and the grammar has to see all three or seeing the invention is luck.
+INVENTED_FIGURE = "1,045.0"
+
+
+class TestTheTenFabricatedIdentities:
+    """Both runs reported `grounded: True`. Both were wrong, and now fail.
+
+    This is the black-box recorder's top finding replayed end to end. Two
+    compounding causes, and the fixture holds both: the wire ASCII-escaped
+    every CJK string so the model was decoding `\\u738b\\u88d5...` by hand
+    (fixed in TAIPAN's MCP server), and `identifier_pattern` began `[a-z]`
+    so a Chinese name was never extracted to be checked at all.
+    """
+
+    @pytest.fixture
+    def validator(self):
+        return GroundingValidator.from_config(GroundingConfig(
+            identifier_pattern=IDENTIFIER_GRAMMAR,
+            number_pattern=FIGURE_GRAMMAR,
+            ignore=("e.g", "i.e")))
+
+    def test_every_invented_display_name_is_named_as_unsupported(self, validator):
+        report = validator.validate(IDENTITY_DRAFT, IDENTITY_EVIDENCE)
+        missed = [n for n in INVENTED_NAMES if n not in report.unsupported]
+        assert not missed, (
+            f"{missed} were invented and the check did not say so. Ten of ten "
+            f"display names went out under `grounded: True` on 10 August.")
+        assert not report.grounded
+
+    def test_the_real_ids_beside_them_are_not_flagged(self, validator):
+        """The half that makes the report readable rather than noise."""
+        report = validator.validate(IDENTITY_DRAFT, IDENTITY_EVIDENCE)
+        for real in ("202ec79ab74c", "6436464948", "1011115901",
+                     "influence_taiwan_weibo", "v0.7"):
+            assert real not in report.unsupported, (
+                f"{real!r} came back from a tool in this run and the check "
+                f"called it invented")
+
+    def test_the_invented_figure_is_caught_across_its_separator(self, validator):
+        report = validator.validate(IDENTITY_DRAFT, IDENTITY_EVIDENCE)
+        assert INVENTED_FIGURE in report.unsupported
+        for real in ("338.0", "1,081.0", "178.0", "0.036428"):
+            assert real not in report.unsupported, real
+
+    def test_the_grammar_before_saw_almost_none_of_it(self):
+        """THE MUTATION, and it is the deployed configuration of 10 August.
+
+        One identifier considered out of eleven citable tokens, nothing
+        unsupported, and the whole answer grounded — with five invented
+        names and an invented figure in it.
+        """
+        before = GroundingValidator.from_config(GroundingConfig(
+            identifier_pattern=IDENTIFIER_GRAMMAR_BEFORE,
+            number_pattern=FIGURE_GRAMMAR_BEFORE,
+            ignore=("e.g", "i.e")))
+        report = before.validate(IDENTITY_DRAFT, IDENTITY_EVIDENCE)
+        identifiers = next(r for r in report.results if r.check == "identifiers")
+        figures = next(r for r in report.results if r.check == "figures")
+
+        assert identifiers.considered == ("v0.7",), identifiers.considered
+        assert INVENTED_FIGURE not in figures.considered
+        assert report.grounded, (
+            "the old configuration is supposed to pass this draft — that is "
+            "the finding. If it now fails, this fixture is no longer "
+            "reproducing 10 August and the comparison above means nothing.")
+
+    def test_the_names_are_seen_even_when_the_wire_escaped_them(self, validator):
+        """The two causes are independent, and each alone is enough.
+
+        TAIPAN's MCP server no longer ASCII-escapes the text block, but the
+        grammar must not depend on that: a payload from any other server,
+        or a model quoting an escape back, still has to be checkable.
+        """
+        escaped = [IDENTITY_EVIDENCE[0].encode("ascii", "backslashreplace")
+                   .decode("ascii")]
+        report = validator.validate(IDENTITY_DRAFT, escaped)
+        assert "王裕庆_台湾省" not in report.unsupported[:0]
+        # Every name in the draft is invented, and with the evidence escaped
+        # the true ones are unreadable too — so the check must fail loudly
+        # rather than pass by finding nothing.
+        assert not report.grounded
+        assert set(INVENTED_NAMES) <= set(report.unsupported)
+
+
+class TestTheEvidenceIsTheRecording:
+    """This file's whole authority is that it copies a recording accurately.
+
+    It did not, once. `EVIDENCE` above was transcribed from the DRAFT rather
+    than from the capture, dropped `total_s` from the `runs_list` row, and
+    five tests in this file then asserted that `80.847` was a fabrication —
+    in the one file every fabrication claim was anchored to. Correcting it
+    (2bc53c6) turned those five red, correctly.
+
+    Writing `IDENTITY_EVIDENCE` by hand reproduced the same defect within the
+    hour: one display name was mistyped and `corpus_hash` was given a value
+    the run does not have. So the copy is CHECKED against the capture rather
+    than proof-read, and this is the check.
+
+    Skipped where the recording is not on the machine — it is an operator's
+    artifact directory, not a repository fixture — because a test that failed
+    on a laptop would be deleted and this one is worth keeping.
+    """
+
+    CAPTURE = (
+        "/home/gompert/tai-recordings/read_a_finished_run/capture.jsonl")
+
+    @pytest.fixture
+    def recorded(self):
+        import pathlib
+        path = pathlib.Path(self.CAPTURE)
+        if not path.is_file():
+            pytest.skip(f"no recording at {path}; this check needs the capture")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            if row.get("event") == "mcp.result" and row.get("tool") == "runs_get":
+                return row["structured"]["data"]["view"]
+        pytest.skip("the capture holds no runs_get result")
+
+    def test_every_node_matches_the_capture(self, recorded):
+        truth = {n["actor_id"]: n for n in recorded["network"]["nodes"]}
+        view = json.loads(IDENTITY_EVIDENCE[0])["data"]["view"]
+        wrong = []
+        for node in view["network"]["nodes"]:
+            real = truth[node["actor_id"]]
+            if node["display_name"] != real["display_name"]:
+                wrong.append((node["actor_id"], "display_name",
+                              node["display_name"], real["display_name"]))
+            for field, value in node["scores"].items():
+                if real["scores"][field] != value:
+                    wrong.append((node["actor_id"], field, value,
+                                  real["scores"][field]))
+        assert not wrong, f"hand-copied and wrong (fixture, recording): {wrong}"
+
+    def test_the_provenance_matches_the_capture(self, recorded):
+        view = json.loads(IDENTITY_EVIDENCE[0])["data"]["view"]
+        wrong = [(k, v, recorded["provenance"].get(k))
+                 for k, v in view["provenance"].items()
+                 if recorded["provenance"].get(k) != v]
+        assert not wrong, f"hand-copied and wrong (fixture, recording): {wrong}"
+
+    def test_the_invented_names_really_are_absent_from_the_capture(self, recorded):
+        whole = json.dumps(recorded, ensure_ascii=False)
+        present = [n for n in INVENTED_NAMES if n in whole]
+        assert not present, (
+            f"{present} is in the recorded payload, so it was not invented and "
+            f"this fixture is asserting the wrong thing about it — which is "
+            f"exactly what happened to 80.847")
+
+    def test_the_true_names_really_are_present(self, recorded):
+        whole = json.dumps(recorded, ensure_ascii=False)
+        for real in ("王裕庆_台湾省", "天曲老翁", "珠山人",
+                     "庆哥评论", "椟菽荫"):
+            assert real in whole, real
