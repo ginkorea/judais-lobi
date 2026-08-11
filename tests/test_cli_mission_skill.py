@@ -185,3 +185,80 @@ class TestWithoutASkill:
         run_cli(MockClass)
         out = capsys.readouterr().out
         assert "grounded" not in out.lower()
+
+
+class TestSamplingIsExplicitAndNotChosenForYou:
+    """What goes on the wire, and the decision recorded in `chat_fn`.
+
+    Until 11 August 2026 the mission request carried `model`, `messages`,
+    `tools` and `tool_choice` and nothing else. No temperature, no top_p, no
+    seed, anywhere on this path — so every mission ran at the server's own
+    default (~1.0 for gpt-oss) and no configuration had ever been run twice.
+    Every measured difference between two arms sat on unmeasured sampling
+    variance of unknown size, which is the finding that invalidates every
+    number taken before that date.
+
+    The fix is NOT a pinned temperature. Pinning one makes the agent easier to
+    measure by making it a different agent: it collapses the noise instead of
+    measuring it, and the thing shipped stops being the thing scored. The
+    noise floor has to be taken at the sampling the product runs at. What was
+    missing was the ability to STATE one, and to see what went out.
+
+    So both halves are held: unset sends nothing, and passed sends exactly
+    what was passed.
+    """
+
+    def _body(self, agent) -> dict:
+        return agent.client.chat.call_args_list[0].kwargs
+
+    def test_by_default_no_sampling_parameter_is_sent_at_all(
+            self, elf, skill_file):
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        body = self._body(agent)
+        for knob in ("temperature", "top_p", "seed"):
+            assert knob not in body, (
+                f"{knob} was sent without anybody asking for it. The default "
+                f"has to be the server's own, or the noise floor is measured "
+                f"at a setting the product does not run at.")
+
+    def test_a_pinned_temperature_reaches_the_request(self, elf, skill_file):
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--temperature", "0")
+        assert self._body(agent)["temperature"] == 0.0
+
+    def test_zero_is_sent_rather_than_treated_as_unset(self, elf, skill_file):
+        """The bug this shape invites. `if temperature:` drops exactly the
+        value an arm most wants to pin."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--temperature", "0.0")
+        assert "temperature" in self._body(agent)
+
+    def test_top_p_and_seed_travel_too(self, elf, skill_file):
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--top-p", "0.9", "--seed", "7")
+        body = self._body(agent)
+        assert body["top_p"] == 0.9 and body["seed"] == 7
+
+    def test_pinning_does_not_displace_the_declared_tools(self, elf, skill_file):
+        """`extra` carries both, and the tool declaration is what stops a
+        harmony model 500ing on its own output."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--temperature", "0")
+        body = self._body(agent)
+        assert body["tool_choice"] == "auto"
+        assert [t["function"]["name"] for t in body["tools"]] == \
+            ["mcp.governed_read"]
+
+    def test_the_run_says_out_loud_what_it_pinned(self, elf, skill_file, capsys):
+        """A sampling setting that is not in the transcript is a setting the
+        next reader has to take on trust."""
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--temperature", "0.2")
+        assert "temperature=0.2" in capsys.readouterr().out
+
+    def test_it_is_silent_when_nothing_is_pinned(self, elf, skill_file, capsys):
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert "🎲" not in capsys.readouterr().out

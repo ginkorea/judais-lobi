@@ -218,13 +218,47 @@ def _run_mission(elf, args, name, style):
 
     declared: list = []
 
+    # SAMPLING, AND THE DECISION NOT TO CHOOSE ONE FOR YOU.
+    #
+    # Until 11 August 2026 no temperature, top_p or seed was set anywhere on
+    # this path. The request carried `model`, `messages`, `tools` and
+    # `tool_choice` and nothing else, so every mission ran at whatever the
+    # server defaults to — ~1.0 for gpt-oss — and no configuration had ever
+    # been run twice. Every measured difference between two arms sat on top of
+    # unmeasured sampling variance of unknown size.
+    #
+    # These flags do NOT change that default, and that is deliberate. Pinning
+    # `temperature=0` would make the agent easier to measure by making it a
+    # different agent: it collapses the noise instead of measuring it, and the
+    # thing shipped would no longer be the thing scored. The noise floor has
+    # to be taken at the sampling the product actually runs at, or it is not a
+    # floor. What was missing was not a temperature but the ABILITY to state
+    # one and to see what went out — "server default" is a setting nobody
+    # chose and a vLLM upgrade can move it with nothing in any log.
+    #
+    # So: unset by default, explicit when passed, and on the wire either way
+    # where the recorder's `llm.request` layer captures it. Pinning one is a
+    # pre-registered arm with its own prediction, not a Round 0 edit — the
+    # same attribution discipline the decode probe above is held to.
+    sampling = {name: value for name, value in (
+        ("temperature", getattr(args, "temperature", None)),
+        ("top_p", getattr(args, "top_p", None)),
+        ("seed", getattr(args, "seed", None)),
+    ) if value is not None}
+    if sampling:
+        console.print(
+            "🎲 sampling: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(sampling.items()))
+            + " — pinned for this run; unset means the server's own default",
+            style=style)
+
     def chat_fn(messages):
         # The mission loop still reads one JSON object out of the reply; the
         # backend renders any native tool_call back into that shape. So this
         # changes what the SERVER is told, not what the kernel understands.
-        extra = {}
+        extra = dict(sampling)
         if declared and getattr(elf.client, "supports_tool_calls", True):
-            extra = {"tools": declared, "tool_choice": "auto"}
+            extra.update({"tools": declared, "tool_choice": "auto"})
         return elf.client.chat(model=elf.model, messages=messages,
                                stream=False, **extra)
 
@@ -373,6 +407,20 @@ def _main(AgentClass):
                              "Prefer the env var; an argument is visible in ps")
     parser.add_argument("--mission-steps", type=int, default=8,
                         help="Hard cap on tool calls in a mission")
+    # Unset means UNSENT, not zero. See the note beside `chat_fn`: the default
+    # is the server's own, deliberately, because a noise floor taken at a
+    # temperature nobody ships is not a floor.
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="Sampling temperature for a mission. Unset sends "
+                             "none and the server's default applies — which "
+                             "is what the product runs at, so a measurement "
+                             "of the deployed agent leaves this alone")
+    parser.add_argument("--top-p", type=float, default=None,
+                        help="Nucleus sampling for a mission. Unset sends none")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Sampling seed for a mission, where the server "
+                             "honours one. Unset sends none. NOT a determinism "
+                             "guarantee: a batching server can still vary")
     parser.add_argument("--skill", type=Path, default=_env_path("MISSION_SKILL"),
                         help="A SKILL.md manifest (or a directory holding one) "
                              "supplying the mission's closed tool set, its "
