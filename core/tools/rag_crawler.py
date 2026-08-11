@@ -86,8 +86,24 @@ class RagCrawlerTool(Tool):
         super().__init__()
         self.memory = memory
         self.debug = debug
-        self.client = OpenAI()
+        # LAZY, for the same reason `UnifiedMemory` is. This tool is
+        # CONSTRUCTED whenever the tool bus is built, so constructing it
+        # demanded an OpenAI key whether or not anyone ever crawled anything —
+        # and a mission running wholly on a local model died before its first
+        # turn because a tool it never called wanted a credential.
+        #
+        # Both users below are genuinely OpenAI-only (an embedding model, and a
+        # summarising completion), so the credential is real when the work is.
+        # It is simply not real when the work never happens.
+        self._client = None
         self.model = model
+
+    @property
+    def client(self):
+        """The OpenAI client, built on first use rather than at construction."""
+        if self._client is None:
+            self._client = OpenAI()
+        return self._client
 
     # --- low-level helpers ---
     def _hash_file(self, path: Path) -> str:
