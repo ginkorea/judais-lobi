@@ -51,6 +51,14 @@ correct answer cites nothing; ``run_inspection`` drafting a finding with
 no figures in it is a failure.  The difference is content, like the
 grammar, so it arrives in the manifest as ``must_cite:`` — a per-check
 minimum the skill declares for itself.
+
+The other half of that is :class:`ClaimGroundingCheck`, because a
+minimum on prose only asks for more prose.  A skill whose figures matter
+requires them a second time as a **claim table** — ``{"value": 0.7446,
+"path": "gate.confidence"}`` — and those are verified by walking the path
+into the payload the mission received rather than by matching text.  With
+a floor of three claims, *say nothing checkable* is no longer the cheapest
+way past a fabrication check.
 """
 
 from __future__ import annotations
