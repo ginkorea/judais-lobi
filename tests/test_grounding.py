@@ -136,6 +136,68 @@ class TestIdentifierGrounding:
         assert not report.grounded
 
 
+class TestTheNameOfAnOfferedToolIsNotAnInvention:
+    """The recorded ``absence_is_an_answer`` fault, and the derivation fix.
+
+    10 August 2026, turn 3: the answer said truthfully which tool it had
+    used. The identifier check flagged ``mcp.catalog_search_assets`` — the
+    tool's own wire name — as an ungrounded asset id, because the
+    manifest's ``ignore`` list carried only the *dotted* spelling somebody
+    had typed. The repair turn deleted the sentence, and the mission
+    answered with nothing citable at all: ``0/0``, ``grounded: True``.
+
+    The grammar here deliberately matches a wire name, because that is the
+    grammar the recording ran under.
+    """
+
+    #: Wide enough to match a tool name, exactly as the deployed one was.
+    WIRE = r"\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b"
+
+    @pytest.mark.parametrize("spelling", [
+        "mcp.catalog_search_assets",   # what the bus dispatches
+        "catalog.search_assets",       # what the catalogue prose says
+        "catalog_search_assets",       # what the skill prose says
+        "MCP.Catalog_Search_Assets",   # a fourth nobody has invented yet
+    ])
+    def test_no_spelling_of_an_offered_tool_is_flagged(self, spelling):
+        config = GroundingConfig(identifier_pattern=self.WIRE).offering(
+            ["mcp.catalog_search_assets", "mcp.runs_get"])
+        report = GroundingValidator.from_config(config).validate(
+            f"I searched the catalogue with {spelling} and found nothing.",
+            EVIDENCE)
+        assert report.grounded, (
+            f"{spelling!r} is a spelling of a tool this mission offered — the "
+            f"harness wrote that name into the prompt itself — and the check "
+            f"called it an invented identifier")
+        assert not report.unsupported
+
+    def test_without_the_derivation_the_recorded_fault_reproduces(self):
+        """The mutation. Drop ``offering`` and turn 3 happens again."""
+        config = GroundingConfig(
+            identifier_pattern=self.WIRE,
+            # exactly what the deployed manifest carried: the dotted one
+            ignore=("catalog.search_assets",))
+        report = GroundingValidator.from_config(config).validate(
+            "I searched the catalogue with mcp.catalog_search_assets.",
+            EVIDENCE)
+        assert not report.grounded
+        assert report.unsupported == ("mcp.catalog_search_assets",)
+
+    def test_a_tool_that_was_not_offered_is_still_a_claim(self):
+        """Derivation, not amnesty. An unoffered name is still checked."""
+        config = GroundingConfig(identifier_pattern=self.WIRE).offering(
+            ["mcp.catalog_search_assets"])
+        report = GroundingValidator.from_config(config).validate(
+            "I used mcp.compute_submit_job to run it.", EVIDENCE)
+        assert report.unsupported == ("mcp.compute_submit_job",)
+
+    def test_a_manifest_cannot_declare_the_offered_set(self):
+        """It is derived at run time; a manifest that types it is refused."""
+        with pytest.raises(ValueError, match="tools_offered"):
+            GroundingConfig.from_mapping(
+                {"identifier_pattern": PATTERN, "tools_offered": ["x"]})
+
+
 class TestFigureGrounding:
     def test_it_is_off_unless_a_manifest_asks(self, config):
         result = NumericGroundingCheck(config).check("There were 4 blocks.", EVIDENCE)

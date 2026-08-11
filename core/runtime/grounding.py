@@ -63,6 +63,7 @@ way past a fabrication check.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from abc import ABC, abstractmethod
@@ -71,6 +72,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from core.runtime.results import walk_path
+from core.tools.descriptors import same_tool
 
 
 class GroundingMisdeclared(TypeError):
@@ -138,7 +140,13 @@ class GroundingConfig:
     claim_table: bool = False
     #: Literals that match a pattern but are not claims — placeholders,
     #: field names, the platform's own word for "none".
+    #:
+    #: **Tool names do not belong here.** They are derived instead, from
+    #: the set the mission actually offered — see :meth:`offering`.
     ignore: Tuple[str, ...] = ()
+    #: The tools this mission offered, as the bus resolved them. Set by
+    #: :meth:`offering` at run time and never authored in a manifest.
+    tools_offered: Tuple[str, ...] = ()
     #: Repair turns before the caveat. Zero goes straight to the caveat.
     max_repairs: int = 1
     #: ``(check name, minimum)`` pairs: how many things of that kind an
@@ -146,6 +154,39 @@ class GroundingConfig:
     #: Empty means silence is acceptable here — which is a *declaration*
     #: now, not the absence of one.
     must_cite: Tuple[Tuple[str, int], ...] = ()
+
+    def offering(self, tools: Sequence[str]) -> "GroundingConfig":
+        """This config, told which tools the mission put on the table.
+
+        **The name of a tool the model was offered is never an invented
+        identifier.** It is a word the harness itself put in the prompt,
+        and a check that flags it is asking the model to cite the
+        catalogue it was handed.
+
+        On 10 August 2026 that is exactly what happened.
+        ``absence_is_an_answer`` turn 3: the identifier check flagged
+        ``mcp.catalog_search_assets`` — the tool's own wire name, in a
+        sentence saying truthfully which tool had been used — as an
+        ungrounded asset id. The manifest's ``ignore`` list did carry a
+        spelling of that tool. It carried ``catalog.search_assets``, the
+        dotted one, because a person had typed it. The repair turn that
+        followed deleted the sentence, and the mission answered with
+        nothing citable at all: ``0/0``, and ``grounded: True``.
+
+        So the list is derived rather than typed, from the resolved
+        offered set, and matched with
+        :func:`~core.tools.descriptors.tool_key` so **every** spelling of
+        an offered tool is covered — including a convention nobody has
+        invented yet. A hand-written list can only ever carry the
+        spellings its author happened to think of, which is the property
+        that made this a two-turn defect instead of a typo.
+
+        Returns a new config; the manifest's own ``ignore`` is untouched,
+        because prose noise (``e.g``, ``report_view.json``) is a genuine
+        authoring decision and this is not.
+        """
+        return dataclasses.replace(
+            self, tools_offered=tuple(str(t) for t in tools if str(t or "").strip()))
 
     def minimum_for(self, check: str) -> int:
         """How many tokens *check* must consider, or ``0`` for no floor.
@@ -501,6 +542,11 @@ class GroundingCheck(ABC):
     def __init__(self, config: GroundingConfig):
         self._config = config
         self._ignore = frozenset(config.ignore)
+        #: The tools this mission offered. Compared with
+        #: :func:`~core.tools.descriptors.same_tool`, so every spelling of
+        #: one is covered. See :meth:`GroundingConfig.offering` for why
+        #: this is derived and the manifest's ``ignore`` list is not.
+        self._offered = tuple(config.tools_offered)
         self._minimum = config.minimum_for(self.name)
 
     @property
@@ -583,7 +629,15 @@ class GroundingCheck(ABC):
         return []
 
     def ignored(self, token: str) -> bool:
-        return token in self._ignore
+        """A literal the manifest named, or **any spelling of an offered tool**.
+
+        The second half is derived rather than authored, and it is not a
+        convenience: a token the harness itself wrote into the prompt is
+        not something the model can be asked to have got from a tool
+        result. See :meth:`GroundingConfig.offering`.
+        """
+        return token in self._ignore or any(
+            same_tool(token, offered) for offered in self._offered)
 
     def prepare(self, evidence: Sequence[str]) -> Sequence[str]:
         """The evidence in whatever form :meth:`supported` compares against."""

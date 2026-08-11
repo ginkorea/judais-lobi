@@ -136,16 +136,22 @@ def _run_mission(elf, args, name, style):
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
     from core.runtime.mission_stream import open_sink
+    from core.runtime.results import RESULT_TOOL
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
     manifest = _load_skill(args)
     transport = _build_mcp_transport(args)
     bus = elf.tools.bus
 
+    # Parsed BEFORE the connection, so an unusable regex or an unknown key is
+    # a refusal at the door rather than at the end of an 11,000-second
+    # mission. The validator itself is built twice: once here so `--skill`
+    # can refuse, and again below once the offered set is known, because
+    # `offering()` needs the tools the bus actually resolved.
     try:
-        validator = GroundingValidator.from_config(
-            GroundingConfig.from_mapping(manifest.grounding) if manifest else None
-        )
+        grounding = (GroundingConfig.from_mapping(manifest.grounding)
+                     if manifest else None)
+        validator = GroundingValidator.from_config(grounding)
     except ValueError as exc:
         raise SystemExit(f"--skill: {exc}")
 
@@ -245,6 +251,18 @@ def _run_mission(elf, args, name, style):
             )
             tool_names = _mission_tools(manifest, discovered, style)
             declared[:] = _function_schemas(tool_names)
+            # The identifier check must not flag the name of a tool this
+            # mission offered — the harness wrote that name into the prompt
+            # itself. Derived from the resolved set rather than typed into a
+            # manifest's `ignore` list, which is how a mission came to spend
+            # a repair turn deleting a true sentence about
+            # `mcp.catalog_search_assets` while the list carried
+            # `catalog.search_assets`. See `GroundingConfig.offering`.
+            # `RESULT_TOOL` because `MissionRunner.offered` adds it: the
+            # store is on the table too, and the model names it in prose.
+            if grounding is not None:
+                validator = GroundingValidator.from_config(
+                    grounding.offering([*tool_names, RESULT_TOOL]))
             if manifest:
                 console.print(
                     f"📜 skill {manifest.name} — {len(tool_names)} tool(s): "

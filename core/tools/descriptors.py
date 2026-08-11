@@ -1,7 +1,71 @@
 # core/tools/descriptors.py — Declarative tool specifications
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+
+#: Everything that separates one segment of a tool name from the next, in
+#: every convention any of our servers uses: the dot of a governed
+#: ``tool_id``, the underscore a host demands, the dot the bridge adds to
+#: namespace a discovered server.
+_NOT_A_SEGMENT = re.compile(r"[^a-z0-9]+")
+
+
+def tool_key(name: Any) -> str:
+    """One tool reduced to the thing **every spelling of it shares**.
+
+    ``catalog.search_assets``, ``catalog_search_assets`` and
+    ``mcp.catalog_search_assets`` are one tool written three ways, and on
+    10 August 2026 a single mission prompt carried all three: the dotted
+    form in the catalogue prose and in the skill's grounding ``ignore``
+    list, the bare form in the skill's own prose and its closed set, the
+    namespaced form in the dispatch table and the tool schemas. It cost
+    two turns of a fourteen-turn budget — one to ``reply_rejected`` on the
+    bare form, and one to a repair that **deleted a true sentence**,
+    because the identifier check had flagged the *namespaced* form as an
+    invented asset id while the ``ignore`` list carried only the dotted
+    one.
+
+    Three places in this harness compare tool names across conventions —
+    :meth:`SkillManifest.resolve`, ``MissionRunner._near_miss``, and the
+    grounding checks' ``ignored`` — and three implementations of "same
+    tool, different spelling" is that same defect one level up. This is
+    the one implementation. **A convention nobody has invented yet reduces
+    here too**, which is what stops a fourth spelling from costing what
+    the third one did: the rule is about separators, not about a list of
+    known prefixes.
+
+    The reduction keeps the *segments* and throws away only the choice of
+    separator and of case: ``catalog.search_assets`` and
+    ``catalog_search_assets`` both become ``catalog.search.assets``, while
+    ``mcp.catalog_search_assets`` becomes ``mcp.catalog.search.assets`` and
+    is therefore recognisably that same tool under a namespace rather than
+    a different one. Flattening the separators away entirely would lose
+    that boundary and make ``xruns.get`` a spelling of ``runs.get``.
+
+    Deliberately not a normaliser anything prints. It answers *"are these
+    the same tool"* and nothing else; the name a human or a model reads is
+    always the one its own surface authored.
+    """
+    return ".".join(
+        part for part in _NOT_A_SEGMENT.split(str(name or "").lower()) if part)
+
+
+def same_tool(one: Any, other: Any) -> bool:
+    """Whether two names name one tool. An empty name names nothing.
+
+    Equal after reduction, or one is the other under a namespace — the
+    bridge prefixes a discovered server's tools so that one server cannot
+    shadow another's, and a manifest, a skill's prose and a model all
+    write the unprefixed name. The suffix is anchored to a segment
+    boundary, so ``runs.get`` is not a spelling of ``xruns.get``.
+    """
+    left, right = tool_key(one), tool_key(other)
+    if not left or not right:
+        return False
+    return (left == right
+            or left.endswith(f".{right}")
+            or right.endswith(f".{left}"))
 
 
 @dataclass(frozen=True)

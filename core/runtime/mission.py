@@ -51,7 +51,7 @@ from core.runtime.mission_stream import (
     REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT, Observer,
 )
 from core.runtime.results import RESULT_TOOL, MissionResultStore
-from core.tools.descriptors import summarize_input_schema
+from core.tools.descriptors import same_tool, summarize_input_schema
 
 #: The whole protocol between the loop and the model.  Kept in one string
 #: because a contract split across three f-strings is a contract that
@@ -647,26 +647,19 @@ class MissionRunner:
         whole catalogue and never said *which* entry the model had nearly
         typed.
 
-        The comparison strips namespace separators and case, so
+        The comparison is :func:`~core.tools.descriptors.tool_key` — the
+        harness's one answer to *"are these the same tool"*, shared with
+        ``SkillManifest.resolve`` and with the grounding checks' ignore
+        rule, because three private copies of that question is the
+        three-spellings defect one level up.  So
         ``catalog_search_assets``, ``catalog.search_assets`` and
-        ``mcp.catalog_search_assets`` all normalise together, and a suffix
+        ``mcp.catalog_search_assets`` all reduce together, and a suffix
         match catches an unqualified name against its namespaced form.  A
-        name that normalises to two offered tools proposes neither: an
+        name that reduces to two offered tools proposes neither: an
         ambiguous suggestion is a coin flip the model cannot see it is
         taking.
         """
-        def flatten(text: str) -> str:
-            return re.sub(r"[^a-z0-9]", "", text.lower())
-
-        wanted = flatten(name)
-        if not wanted:
-            return ""
-        matches = [
-            candidate for candidate in offered
-            if flatten(candidate) == wanted
-            or flatten(candidate).endswith(wanted)
-            or wanted.endswith(flatten(candidate))
-        ]
+        matches = [c for c in offered if same_tool(c, name)]
         return matches[0] if len(matches) == 1 else ""
 
     def _no_such_tool(self, name: str, offered: Sequence[str]) -> str:

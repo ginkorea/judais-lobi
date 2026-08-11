@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from core.tools.descriptors import same_tool
+
 #: Frontmatter fence.  A line that is exactly three dashes.
 _FENCE = re.compile(r"^---[ \t]*$", re.MULTILINE)
 
@@ -340,6 +342,15 @@ class SkillManifest:
         namespaced one, and an entry that matches two namespaces is a
         problem rather than a coin flip.
 
+        The comparison is :func:`~core.tools.descriptors.tool_key`, the
+        harness's one answer to *"are these the same tool"* — the same one
+        ``MissionRunner._near_miss`` and the grounding ignore rule use.  It
+        reduces on separators rather than on a list of known prefixes, so
+        a manifest written in **any** convention resolves, including one
+        nobody has invented yet.  That is half the fix for the three
+        spellings measured on 10 August 2026: an author writes one, and
+        every other surface derives it.
+
         Returns names in manifest order — the order a skill author chose
         is the order the catalogue is read in.
         """
@@ -348,10 +359,7 @@ class SkillManifest:
         problems: List[str] = []
 
         for wanted in self.allowed_tools:
-            matches = [
-                name for name in offered
-                if name == wanted or name.endswith(f".{wanted}")
-            ]
+            matches = [name for name in offered if same_tool(name, wanted)]
             if len(matches) == 1:
                 resolved.append(matches[0])
             elif len(matches) > 1:
