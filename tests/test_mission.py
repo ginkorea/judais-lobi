@@ -758,3 +758,73 @@ class TestAnUnchangedResultIsNotPastedTwice:
             "runs.get(a2) returned the same bytes as runs.get(a1) only "
             "because this stub ignores its arguments; the check must compare "
             "the call as well")
+
+
+class TestTheRefusalNamesTheNearMiss:
+    """Three spellings of one tool in one prompt, and the turns they cost.
+
+    Measured 10 August 2026. `mcp.catalog_search_assets` is the dispatch
+    name; the catalogue prose says `catalog.search_assets`; the skill prose
+    says bare `catalog_search_assets`. A mission emitted the bare form, burnt
+    a turn on `reply_rejected`, then burnt a second on a repair that guessed
+    wrong — because the refusal listed the whole catalogue and never said
+    which entry the model had nearly typed.
+
+    The set is derived from the bus at runtime, so a tool TAIPAN adds is
+    matchable here without a judais-lobi release.
+    """
+
+    @pytest.fixture
+    def namespaced_bus(self):
+        b = ToolBus(capability_engine=CapabilityEngine(
+            PolicyPack(allowed_scopes=["*"])))
+        for name in ("mcp.catalog_search_assets", "mcp.catalog_get_asset",
+                     "mcp.runs_list"):
+            b.register(ToolDescriptor(tool_name=name, description="A tool."),
+                       lambda **kw: (0, "ok", ""))
+        return b
+
+    def refusal_for(self, bus, spelling):
+        model = ScriptedModel(tool_call(spelling), '{"answer": "done"}')
+        offered = ["mcp.catalog_search_assets", "mcp.catalog_get_asset",
+                   "mcp.runs_list"]
+        transcript = MissionRunner(model, bus, offered, max_steps=4).run("go")
+        return transcript.steps[0].error
+
+    @pytest.mark.parametrize("spelling", [
+        "catalog_search_assets",            # the skill prose spelling
+        "catalog.search_assets",            # the catalogue prose spelling
+        "CATALOG_SEARCH_ASSETS",            # case
+    ])
+    def test_every_recorded_spelling_gets_the_dispatch_name(
+            self, namespaced_bus, spelling):
+        refusal = self.refusal_for(namespaced_bus, spelling)
+        assert "mcp.catalog_search_assets" in refusal
+        assert "almost certainly mean" in refusal, (
+            f"{spelling!r} was refused with a bare catalogue dump; that is "
+            f"the refusal that cost two turns on 10 August")
+
+    def test_the_catalogue_still_follows_it(self, namespaced_bus):
+        """A model that meant a different tool must still see the set."""
+        refusal = self.refusal_for(namespaced_bus, "catalog_search_assets")
+        assert "mcp.runs_list" in refusal
+
+    def test_a_genuinely_unknown_tool_gets_no_suggestion(self, namespaced_bus):
+        """A confident wrong suggestion is worse than none."""
+        refusal = self.refusal_for(namespaced_bus, "run_inspection")
+        assert "almost certainly mean" not in refusal
+        assert "Choose one of" in refusal
+
+    def test_an_ambiguous_name_proposes_neither(self):
+        """Two tools normalising the same way is a coin flip the model
+        cannot see it is taking."""
+        b = ToolBus(capability_engine=CapabilityEngine(
+            PolicyPack(allowed_scopes=["*"])))
+        for name in ("mcp.runs_list", "local.runs_list"):
+            b.register(ToolDescriptor(tool_name=name, description="A tool."),
+                       lambda **kw: (0, "ok", ""))
+        model = ScriptedModel(tool_call("runs_list"), '{"answer": "done"}')
+        transcript = MissionRunner(
+            model, b, ["mcp.runs_list", "local.runs_list"],
+            max_steps=4).run("go")
+        assert "almost certainly mean" not in transcript.steps[0].error

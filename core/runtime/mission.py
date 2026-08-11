@@ -496,10 +496,7 @@ class MissionRunner:
             step.tool, step.arguments = name, dict(arguments)
 
             if name not in offered:
-                problem = (
-                    f"There is no tool named {name!r} in this mission. "
-                    f"Choose one of: {', '.join(offered) or '(none)'}."
-                )
+                problem = self._no_such_tool(name, offered)
                 step.error = problem
                 transcript.steps.append(step)
                 self._emit(REPLY_REJECTED, index=index, tool=name,
@@ -630,6 +627,69 @@ class MissionRunner:
             f"Result of {name} (refused, exit {result.exit_code}):\n{body}\n"
             f"Do not retry the same call unchanged."
         ), truncated
+
+    @staticmethod
+    def _near_miss(name: str, offered: Sequence[str]) -> str:
+        """The offered tool *name* was probably trying to be, or ``""``.
+
+        Not fuzzy matching.  The recorded failures are all one shape — the
+        right tool under a different **namespace convention** — and a
+        deliberately narrow rule catches them without ever proposing a
+        genuinely different tool, which is the way a helpful suggestion
+        becomes a wrong call the model makes confidently.
+
+        Measured 10 August 2026: one prompt carried three spellings of one
+        tool.  ``mcp.catalog_search_assets`` is the dispatch name, the
+        catalogue prose says ``catalog.search_assets``, and the skill prose
+        says bare ``catalog_search_assets``.  A mission emitted the bare
+        form, spent a turn on ``reply_rejected``, and spent a second turn
+        on a repair that guessed wrong — because the refusal listed the
+        whole catalogue and never said *which* entry the model had nearly
+        typed.
+
+        The comparison strips namespace separators and case, so
+        ``catalog_search_assets``, ``catalog.search_assets`` and
+        ``mcp.catalog_search_assets`` all normalise together, and a suffix
+        match catches an unqualified name against its namespaced form.  A
+        name that normalises to two offered tools proposes neither: an
+        ambiguous suggestion is a coin flip the model cannot see it is
+        taking.
+        """
+        def flatten(text: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", text.lower())
+
+        wanted = flatten(name)
+        if not wanted:
+            return ""
+        matches = [
+            candidate for candidate in offered
+            if flatten(candidate) == wanted
+            or flatten(candidate).endswith(wanted)
+            or wanted.endswith(flatten(candidate))
+        ]
+        return matches[0] if len(matches) == 1 else ""
+
+    def _no_such_tool(self, name: str, offered: Sequence[str]) -> str:
+        """The refusal for a tool this mission does not offer.
+
+        Leads with the near miss when there is one.  The catalogue still
+        follows it, because a model that meant a different tool entirely
+        needs to see the set — but a refusal whose first line is the
+        answer is the one that costs a single turn instead of three.
+        """
+        listed = ", ".join(offered) or "(none)"
+        near = self._near_miss(name, offered)
+        if near:
+            return (
+                f"There is no tool named {name!r} in this mission. You almost "
+                f"certainly mean {near!r} — that is the same tool under the "
+                f"name this deployment dispatches it by. Spell it exactly as "
+                f"{near!r}. The full set is: {listed}."
+            )
+        return (
+            f"There is no tool named {name!r} in this mission. "
+            f"Choose one of: {listed}."
+        )
 
     def _say_it_is_unchanged(self, name: str, already: Any) -> str:
         """The one line an unchanged re-fetch is worth, and what to do next.
