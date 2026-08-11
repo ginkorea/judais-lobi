@@ -81,7 +81,20 @@ class UnifiedMemory:
         if self.debug: print(f"db_path: {self.db_path}")
         self.model = model
         if self.debug: print(f"model: {self.model}")
-        self.client = embedding_client if embedding_client is not None else OpenAI()
+        # LAZY, and that is the whole point. This was
+        # `embedding_client if ... is not None else OpenAI()`, constructed
+        # here — so building a UnifiedMemory reached for an OpenAI key whether
+        # or not anything ever embedded anything. `Elf.__init__` builds one
+        # unconditionally, so on 11 August 2026 a mission running entirely on a
+        # LOCAL model against a local tool plane died before its first turn on
+        # `openai.OpenAIError: Missing credentials`. Nothing in that mission
+        # wanted OpenAI; the memory it never used did.
+        #
+        # An injected client is still honoured, and eagerly. Only the DEFAULT
+        # is deferred, to the one place that needs it — `_embed` — so the
+        # credential is required when an embedding is actually taken and not
+        # before.
+        self._client = embedding_client
 
         # FAISS indexes
         self.long_index = None
@@ -151,6 +164,18 @@ class UnifiedMemory:
 
 
     # ----- Embedding -----
+    @property
+    def client(self):
+        """The embedding client, built on first use.
+
+        A property rather than a constructor line so that a session which
+        never embeds never needs the credential. Kept as `client` because
+        callers and tests already read it; what changed is *when* it exists.
+        """
+        if self._client is None:
+            self._client = OpenAI()
+        return self._client
+
     def _embed(self, text: str) -> np.ndarray:
         """Embed a text string safely (hard-cut to avoid token overflows)."""
         text = text[:8000]  # defensive cap; chunking should keep us below this anyway
