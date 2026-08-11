@@ -197,23 +197,88 @@ def _siblings(
 
 
 # ---------------------------------------------------------------------------
-# The question
+# Step one: what is this field?  Asked with the claim WITHHELD.
 # ---------------------------------------------------------------------------
 
-#: The whole prompt.  One string, like ``mission.PROTOCOL``, because a
-#: contract split across f-strings is a contract that drifts from the
-#: parser below it.
-#:
-#: The phrasing is doing work.  It does **not** ask "is this value in the
-#: payload" — that question is already answered, mechanically, and asking
-#: it again invites a reader to confirm the membership it can see and stop
-#: there.  It asks what the field *is*, which is the part that was wrong
-#: in both recorded cases.
-READER_PROMPT = """\
-A field was read out of a tool result and a sentence was written about it.
-The value is definitely in the payload — that has already been checked. \
-Your job is the other half: does the sentence describe the field for what \
-it actually is?
+"""Why this is two calls and not one.
+
+The obvious design is one prompt: here is the field, here is the sentence,
+did it read it correctly?  That was built first and measured on the twelve
+ground-truth cases in ``tests/fixtures/field_misreadings.json``, and it
+does not work — not because the reader is incapable, but because it is
+**anchored by the sentence it is shown**.
+
+Measured 11 August 2026, one call per case, cases isolated from each other:
+
+===========================================  ======  ======  ======
+case                                          truth   strict  lenient
+===========================================  ======  ======  ======
+``total_s`` 80.847 as "influence score"       misread  caught  MISSED
+``total_s`` 80.889 as "influence score"       misread  caught  MISSED
+``edge_count`` as a count of actors           misread  caught  caught
+``coverage.records`` as labelled posts        misread  caught  caught
+``gate.confidence`` as classifier accuracy    misread  caught  caught
+``blocks[0].size`` as a share of influence    misread  caught  caught
+``total_s`` as elapsed seconds                correct  passed  passed
+``gate.confidence`` as a gate confidence      correct  passed  passed
+``node_count`` as a count of actors           correct  FLAGGED passed
+``edge_count`` as directed edges              correct  passed  passed
+``out_weight`` as an out-weight               correct  FLAGGED passed
+``coverage.share`` as a labelled fraction     correct  FLAGGED FLAGGED
+===========================================  ======  ======  ======
+
+Both score 9 of 12 and they are wrong about different things.  The strict
+wording catches every misreading and objects to three innocent sentences
+on **diction** — "earned an out-weight", "actors" for nodes — which is a
+check whoever reads the report learns to skip.  Adding one clause telling
+it to judge the quantity and not the wording fixes two of those three and
+**loses both recorded** ``total_s`` **cases**: the same leniency that
+stops it complaining about "earned" also lets "the overall influence
+score reached 80.847" through.
+
+The tell is *which* cases moved.  Every field whose name says what it is
+— ``edge_count``, ``records``, ``confidence``, ``size`` — is caught under
+both wordings.  The only field that moved is the only opaque one,
+``total_s``, and on the opaque field the reader simply ratifies whatever
+the sentence proposes.
+
+So the sentence was withheld and the reader asked, cold, what the field
+holds.  All nine distinct fields, ``confident: true`` on every one:
+
+* ``data.runs[0].total_s`` 80.847 → *"total elapsed time for the analysis
+  run"*, unit **seconds**;
+* ``data.runs[0].total_s`` 80.889 → *"total elapsed time"*, **seconds**;
+* ``network.edge_count`` → *"number of edges in network"*;
+* ``coverage.records`` → *"total records in dataset"*;
+* ``gate.confidence`` → *"confidence in decision"*;
+* ``blocks[0].size`` → *"number of members"*;
+* ``network.node_count`` → *"number of nodes in a network"*;
+* ``nodes[0].scores.out_weight`` → *"sum of outgoing edge weights"*;
+* ``coverage.share`` → *"proportion of labeled records"*.
+
+**The reader knew ``total_s`` was seconds the whole time.**  It stops
+knowing the moment it is shown a sentence calling it an influence score.
+That is the failure the two-harness result hinted at — a same-family
+critic sharing the generator's prior — pinned to a specific and
+avoidable mechanism, and the mechanism is the prompt's, not the model's.
+
+Hence: **commit the reader to a reading before it sees the claim.**  Step
+one is this prompt.  Step two compares the reader's own answer against
+the sentence, and by then the reader has an answer of its own to defend.
+
+The other reason to split it: step one depends only on the path and the
+shape around it, so it is **cacheable per field**.  A mission that quotes
+five figures out of one run view asks step one once per distinct field
+and step two once per claim, and a deployment that has seen ``total_s``
+before does not ask at all.
+"""
+
+#: Step one.  The sentence is deliberately absent, and the prompt says so
+#: — a reader told "you are not being shown any claim" does not go looking
+#: for one to agree with.
+WHAT_IS_THIS_FIELD = """\
+A field was read out of a tool result. You are not being shown any claim \
+about it.
 
   path:  {path}
   value: {value}
@@ -221,51 +286,132 @@ it actually is?
 The object it sits in also holds:
 {siblings}
 
-The sentence that was written:
+What quantity does this field hold? Judge from the field name, the value, \
+and the fields beside it. If the name is opaque and the neighbours do not \
+settle it, say so with `confident: false` rather than guessing.
+
+Reply with exactly one JSON object and no other text:
+{{"quantity": "<what this field is, in a few words>",
+  "unit": "<the unit, e.g. seconds / count / probability / weight; empty if none>",
+  "confident": true or false}}
+"""
+
+
+@dataclass(frozen=True)
+class FieldReading:
+    """What a reader says a field holds, before it is shown any claim."""
+
+    path: str
+    quantity: str = ""
+    unit: str = ""
+    #: The reader's own confidence.  ``False`` means step two is skipped:
+    #: a reader that cannot say what the field is has no standing to call
+    #: a sentence about it wrong, and guessing here would put the tier's
+    #: uncertainty into a governance report as a finding.
+    confident: bool = False
+    problem: str = ""
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.quantity) and self.confident and not self.problem
+
+    def describe(self) -> str:
+        return f"{self.quantity} ({self.unit})" if self.unit else self.quantity
+
+
+def field_question(context: FieldContext) -> str:
+    """Step one's prompt.  See the section docstring for why it is separate."""
+    return WHAT_IS_THIS_FIELD.format(
+        path=context.path,
+        value=json.dumps(context.value, ensure_ascii=False, default=str),
+        siblings=context.render(),
+    )
+
+
+def parse_field_reading(reply: str, *, path: str = "") -> FieldReading:
+    data, problem = _one_object(reply)
+    if problem:
+        return FieldReading(path=path, problem=problem)
+    quantity = str(data.get("quantity") or "").strip()
+    if not quantity:
+        return FieldReading(path=path, problem="the reader named no quantity")
+    confident = data.get("confident")
+    return FieldReading(
+        path=path, quantity=quantity,
+        unit=str(data.get("unit") or "").strip(),
+        confident=bool(confident) if isinstance(confident, bool) else False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step two: does the sentence say that?
+# ---------------------------------------------------------------------------
+
+#: Step two.  The reader's **own** step-one answer is quoted back to it as
+#: the established fact, and the sentence is the thing on trial.  That
+#: ordering is the entire fix: shown the sentence first, a reader adopts
+#: it; shown its own reading first, it has something to compare against.
+DOES_THE_SENTENCE_SAY_THAT = """\
+You already established what this field holds:
+
+  path:  {path}
+  value: {value}
+  this field is: {quantity}
+
+Someone then wrote this sentence about that value:
   "{sentence}"
 
-Field names carry meaning. A duration is not a score, a count of edges is \
-not a count of actors, and a confidence in one decision is not an accuracy \
-of another. If the sentence calls this field something it is not, say so \
-and name what it really is.
+Does the sentence describe the same quantity you established above? The \
+value is definitely in the payload — that is not in question. What is in \
+question is whether the sentence names the RIGHT quantity for it.
 
-Judge the QUANTITY, not the wording. Answer false only if the sentence \
-attributes the value to a different quantity, unit, subject or scope than \
-this field holds. Loose, informal or paraphrased language for the RIGHT \
-quantity is read correctly — an actor and a node, or a count and a total, \
-may be the same thing said two ways, and a field name you cannot fully \
-decode is not by itself a misreading. You are not reviewing the prose.
+Judge the quantity, not the wording. Loose or informal language for the \
+right quantity is fine. Answer false when the sentence attributes the \
+value to a different quantity, unit, subject or scope than the one above \
+— a duration reported as a score, a count of edges reported as a count of \
+actors, a confidence in one decision reported as an accuracy of another.
 
 Reply with exactly one JSON object and no other text:
 {{"read_correctly": true or false,
   "why": "<one sentence>",
   "correction": "<if it was misread: what this field actually is, and the \
-path of the field the sentence should have used if one is visible above. \
+path of the field the sentence should have used if one is visible. \
 Otherwise an empty string.>"}}
 """
 
 
-def reader_question(context: FieldContext, sentence: str) -> str:
-    """The prompt for one claim.  Small by construction; see the module doc."""
-    return READER_PROMPT.format(
+def match_question(
+    context: FieldContext, reading: FieldReading, sentence: str,
+) -> str:
+    """Step two's prompt, carrying step one's answer as the premise."""
+    return DOES_THE_SENTENCE_SAY_THAT.format(
         path=context.path,
         value=json.dumps(context.value, ensure_ascii=False, default=str),
-        siblings=context.render(),
+        quantity=reading.describe(),
         sentence=(sentence or "").strip().replace('"', "'"),
     )
 
 
 # ---------------------------------------------------------------------------
-# The answer
+# The verdict
 # ---------------------------------------------------------------------------
 
-#: A reader that did not answer usably.  Not ``read_correctly=False``:
-#: an unparseable reply is an absent opinion, and reporting it as a
-#: misreading would make the tier's failures look like the agent's. Same
-#: ``UNKNOWN``-not-``0.5`` rule the judge and the grounding checks follow.
-UNREADABLE = "unreadable"
-
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
+
+
+def _one_object(reply: str) -> Tuple[Mapping[str, Any], str]:
+    """``(object, problem)``; exactly one is meaningful."""
+    text = _FENCE.sub("", str(reply or "").strip()).strip()
+    if not text:
+        return {}, "the reader replied with nothing"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return {}, f"the reader's reply is not JSON ({exc.msg})"
+    if not isinstance(data, Mapping):
+        return {}, (f"the reader replied with a {type(data).__name__}, "
+                    f"not an object")
+    return data, ""
 
 
 @dataclass(frozen=True)
@@ -278,6 +424,10 @@ class ReadingVerdict:
     read_correctly: Optional[bool] = None
     why: str = ""
     correction: str = ""
+    #: What step one established, when it ran.  Carried on the verdict
+    #: because it is the most useful line in a repair turn: naming what the
+    #: field *is* beats naming what it is not.
+    reading: Optional[FieldReading] = None
     #: Why there is no opinion, when there is none.
     problem: str = ""
 
@@ -292,40 +442,35 @@ class ReadingVerdict:
 
     def as_repair_line(self) -> str:
         """One line a repair turn can quote.  See the module docstring."""
-        parts = [f"{self.path} = misread"]
+        parts = [self.path]
+        if self.reading is not None and self.reading.quantity:
+            parts.append(f"is {self.reading.describe()}")
         if self.why:
             parts.append(self.why.strip().rstrip("."))
         if self.correction:
             parts.append(self.correction.strip().rstrip("."))
-        return "; ".join(parts) + "."
+        return " — ".join(parts) + "."
 
 
-def parse_reader_reply(reply: str, *, path: str = "", sentence: str = "") -> ReadingVerdict:
-    """A reader's reply as a verdict, or an explicit lack of one."""
-    text = _FENCE.sub("", str(reply or "").strip()).strip()
-    if not text:
+def parse_reader_reply(
+    reply: str, *, path: str = "", sentence: str = "",
+    reading: Optional[FieldReading] = None,
+) -> ReadingVerdict:
+    """A reader's step-two reply as a verdict, or an explicit lack of one."""
+    data, problem = _one_object(reply)
+    if problem:
         return ReadingVerdict(path=path, sentence=sentence,
-                              problem="the reader replied with nothing")
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return ReadingVerdict(
-            path=path, sentence=sentence,
-            problem=f"the reader's reply is not JSON ({exc.msg})")
-    if not isinstance(data, Mapping):
-        return ReadingVerdict(
-            path=path, sentence=sentence,
-            problem=f"the reader replied with a {type(data).__name__}, not an object")
+                              reading=reading, problem=problem)
 
     verdict = data.get("read_correctly")
     if not isinstance(verdict, bool):
         return ReadingVerdict(
-            path=path, sentence=sentence,
+            path=path, sentence=sentence, reading=reading,
             why=str(data.get("why") or ""),
             problem=f"`read_correctly` is {verdict!r}; it is true or false")
 
     return ReadingVerdict(
-        path=path, sentence=sentence,
+        path=path, sentence=sentence, reading=reading,
         read_correctly=verdict,
         why=str(data.get("why") or ""),
         correction=str(data.get("correction") or ""),
@@ -377,8 +522,13 @@ class ReadingCheck:
     what survives it, and the critic is expensive and triggered.  A claim
     the mechanical tier already rejected is **not** sent here — it is
     named in :attr:`ReadingReport.skipped` — because a second opinion on a
-    path that does not resolve buys nothing and the whole affordability
+    path that does not resolve buys nothing, and the whole affordability
     argument is that this tier only pays for claims that look fine.
+
+    Two calls per claim, for the reason in the step-one section docstring,
+    minus the ones the cache answers.  *cache* is any mutable mapping;
+    pass a persistent one and a deployment learns its own platform's
+    fields once.
     """
 
     def __init__(
@@ -387,10 +537,39 @@ class ReadingCheck:
         *,
         max_claims: int = 12,
         max_siblings: int = MAX_SIBLINGS,
+        cache: Optional[dict] = None,
     ):
         self._ask = ask
         self._max_claims = max(0, int(max_claims))
         self._max_siblings = max_siblings
+        self._cache = {} if cache is None else cache
+
+    # ── step one, memoised ──────────────────────────────────────────────
+
+    def reading_for(self, context: FieldContext) -> FieldReading:
+        """What the field holds, asked cold and remembered.
+
+        Keyed on the path alone.  Not on the value: ``total_s`` is elapsed
+        seconds whichever run's row it sits in, and keying on the value
+        would ask again for every row of a listing.
+        """
+        key = context.path
+        if key in self._cache:
+            return self._cache[key]
+        try:
+            reply = self._ask(field_question(context))
+        except Exception as exc:                # pragma: no cover - defensive
+            return FieldReading(path=key,
+                                problem=f"the reader could not be reached: {exc}")
+        reading = parse_field_reading(reply, path=key)
+        if reading.usable:
+            # Only a usable answer is cached. A transport failure or an
+            # unparseable reply must not become this deployment's permanent
+            # opinion of a field.
+            self._cache[key] = reading
+        return reading
+
+    # ── both steps, per claim ───────────────────────────────────────────
 
     def review(
         self,
@@ -406,25 +585,35 @@ class ReadingCheck:
             if not context.resolved:
                 skipped.append(path)
                 continue
-            question = reader_question(context, sentence)
-            try:
-                reply = self._ask(question)
-            except Exception as exc:                # pragma: no cover - defensive
+
+            reading = self.reading_for(context)
+            if not reading.usable:
+                # No opinion, said out loud. A reader that cannot say what
+                # the field is has no standing to judge a sentence about it.
                 verdicts.append(ReadingVerdict(
-                    path=path, sentence=sentence,
+                    path=path, sentence=sentence, reading=reading,
+                    problem=reading.problem or (
+                        f"the reader could not say what {path} holds")))
+                continue
+
+            try:
+                reply = self._ask(match_question(context, reading, sentence))
+            except Exception as exc:            # pragma: no cover - defensive
+                verdicts.append(ReadingVerdict(
+                    path=path, sentence=sentence, reading=reading,
                     problem=f"the reader could not be reached: {exc}"))
                 continue
             verdicts.append(parse_reader_reply(
-                reply, path=path, sentence=sentence))
+                reply, path=path, sentence=sentence, reading=reading))
         return ReadingReport(verdicts=tuple(verdicts), skipped=tuple(skipped))
 
     @staticmethod
     def repair_prompt(report: ReadingReport) -> str:
         """One turn naming every misread field and what it really is.
 
-        Written like the platform's own refusals — the control that was
-        measured teaching a 20B model a rule verbatim, at the turn it
-        bound — rather than as a verdict the model has to interpret.
+        Written like the platform's own refusals — the control measured
+        teaching a 20B model a rule verbatim, at the turn it bound — rather
+        than as a verdict the model has to interpret.
         """
         lines = [
             "One or more figures in that answer are real values read from the "
