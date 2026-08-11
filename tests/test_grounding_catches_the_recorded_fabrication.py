@@ -1,19 +1,35 @@
 # tests/test_grounding_catches_the_recorded_fabrication.py
 
-"""The 10 August 2026 fabrication, replayed through the real validator.
+"""The 10 August 2026 misreading, replayed through the real validator.
 
 A permanent regression fixture. On 10 August two agents on the same 20B base
 model — one carrying a governance persona, one carrying none — independently
 reported "total influence strength 80.847" over a run whose
-`total_causal_influence` is 0.0. The figure appears in no tool result.
+`total_causal_influence` is 0.0.
 
-`NumericGroundingCheck` is the check built for exactly that input, and it did
-not run, because it only activates when a skill manifest supplies a
-`grounding:` block and the mission was launched with no `--skill` at all. So
-this file asserts the two things that were never asserted together:
+**Corrected 11 August 2026.** This docstring used to continue "The figure
+appears in no tool result", and that was false. 80.847 is
+`data.runs[0].total_s` — the run's wall-clock seconds — returned by
+`runs_list` and quoted without a digit changed. The error is semantic: a
+duration reported as an influence score. Goose read 80.889 out of the same
+field the same way on a different run, and Qwen3-30B called it "a bridge
+count of 80.847", so three models on two harnesses made one error.
 
-* configured as the manifests now configure it, the validator **fails** that
-  draft and names the figure;
+The evidence list below was the cause of the mistake: it had been transcribed
+from the draft rather than from the recording, and it omitted `total_s`. Under
+the real payload the membership check calls the figure supported — correctly —
+and `TestTheFigureWasNeverFabricated` pins that, because it is the measured
+ceiling of "is this value in the evidence?" and the reason
+:mod:`core.runtime.reading` exists.
+
+`NumericGroundingCheck` is still the check built for a genuinely invented
+figure, and it did not run on 10 August, because it only activates when a
+skill manifest supplies a `grounding:` block and the mission was launched with
+no `--skill` at all. So this file asserts the two things that were never
+asserted together:
+
+* configured as the manifests now configure it, the validator **fails** a
+  draft carrying a figure the run did not return, and names it;
 * configured without a `number_pattern`, it reports `configured: false` and
   **not** grounded — because the difference between a control and a decoration
   is entirely whether a check that could not run says so.
@@ -60,9 +76,25 @@ DRAFT = (
 )
 
 #: What `runs_list` and `runs_get` actually returned, as the store keeps them.
+#:
+#: **Corrected 11 August 2026 against the recording, and the correction is the
+#: finding.** The first version of this list was written from the draft rather
+#: than from the transcript, and it left `total_s` out of the `runs_list` row.
+#: That single omission is the only reason 80.847 looked invented. It is not
+#: invented: it is the run's wall-clock duration, and the row below is quoted
+#: from `02-read_a_finished_run/events.jsonl` as `mcp.runs_list` returned it.
+#: See :class:`TestTheFigureWasNeverFabricated`.
+#:
+#: A hand-copied payload, in the file that anchors every fabrication claim in
+#: this package. The defect the module docstrings warn about, in the worst
+#: available place.
 EVIDENCE = [
-    '{"runs": [{"run_id": "a971d4c4149c", "stage": "gate", '
-    '"node_count": 127, "edge_count": 1080, "blocks": 3}]}',
+    '{"data": {"runs": [{"run_id": "a971d4c4149c", "stage": "gate", '
+    '"created_at": "2026-08-10T16:29:32.027779+00:00", "mode": "agentic", '
+    '"nodes": 127, "edges": 1080, "communities": 3, '
+    '"communities_decided_by": "agent", "communities_confidence": 0.7446, '
+    '"communities_outcome": "pass", "total_s": 80.847, '
+    '"has_interpretation": false, "corpus_hash": "04349a489b2a1457"}]}}',
     '{"provenance": {"run_id": "a971d4c4149c", '
     '"corpus_hash": "04349a489b2a1457", "seed": 7}, '
     '"network": {"node_count": 127, "edge_count": 1080, '
@@ -98,7 +130,15 @@ AS_DECLARED = GroundingConfig(
 #: evidence built for it.
 WITH_ITS_MINIMUMS = replace(AS_DECLARED, must_cite=(("figures", 1),))
 
+#: The figure this whole file was built around. Called `FABRICATION` until
+#: 11 August 2026, which was wrong: it is `data.runs[0].total_s`, the run's
+#: wall-clock seconds, and the draft above is not inventing it but renaming it.
 FABRICATION = "80.847"
+
+#: A figure that genuinely appears in nothing this mission received, kept for
+#: the tests that need one. `0.181` is the value from the original report line
+#: that motivated `unsupported` naming the tokens rather than counting them.
+ABSENT_FIGURE = "0.181"
 
 #: An answer of the shape the six `0/0` reports were written over: fluent,
 #: on-topic, and carrying nothing a tool result can be compared against. Not a
@@ -120,17 +160,54 @@ def validator():
     return built
 
 
-class TestTheFabricationIsCaught:
-    def test_the_report_is_not_grounded(self, validator):
+class TestTheFigureWasNeverFabricated:
+    """The correction, pinned so it cannot be un-learned.
+
+    This class replaces `TestTheFabricationIsCaught`, whose four assertions
+    were all true only because :data:`EVIDENCE` had been transcribed from the
+    draft instead of from the recording and had dropped one field.
+
+    With the real `runs_list` row in place, `NumericGroundingCheck` reports
+    80.847 as **supported** — and it is right to. The value is in the payload,
+    at `data.runs[0].total_s`, unaltered. What the draft got wrong is not the
+    number but the *name*: it calls a duration "the overall influence score".
+
+    That is the measured ceiling of asking "is this value in the evidence?",
+    and the reason :mod:`core.runtime.reading` exists. Two other models made
+    the identical error on the identical field — Goose read 80.889 the same
+    way, and Qwen3-30B called it "a bridge count of 80.847" — so this is a
+    class of failure and not one bad draft.
+    """
+
+    def test_the_figure_is_in_the_payload(self):
+        """Ground truth, stated as an assertion rather than as prose."""
+        row = json.loads(EVIDENCE[0])["data"]["runs"][0]
+        assert row["total_s"] == 80.847
+        assert row["run_id"] == "a971d4c4149c"
+
+    def test_the_membership_check_calls_it_supported(self, validator):
+        """The hole, in one assertion.
+
+        Not a bug in `NumericGroundingCheck`. It answers the question it was
+        asked, correctly. The question is the wrong one for this failure.
+        """
         report = validator.validate(DRAFT, EVIDENCE)
         assert report.ran
-        assert not report.grounded
+        assert FABRICATION not in report.unsupported, (
+            "80.847 is data.runs[0].total_s and IS in the evidence; a check "
+            "reporting otherwise is matching against a payload that is not "
+            "the one the mission received")
 
-    def test_the_invented_figure_is_named(self, validator):
+    def test_and_therefore_the_whole_draft_passes(self, validator):
+        """The consequence: a governed report says this draft is grounded.
+
+        Every figure in it came back from a tool. The sentence calling a
+        duration an influence score is not visible to any check in
+        :mod:`core.runtime.grounding`, and the answer is reported clean.
+        """
         report = validator.validate(DRAFT, EVIDENCE)
-        assert FABRICATION in report.unsupported, (
-            f"the validator did not name {FABRICATION!r}. It is the whole "
-            f"reason this fixture exists: unsupported={report.unsupported}")
+        assert report.grounded and report.verified, (
+            f"unsupported={report.unsupported}")
 
     def test_the_real_figures_are_not_named(self, validator):
         """The confidence and the weights DID come back from `runs_get`.
@@ -145,19 +222,25 @@ class TestTheFabricationIsCaught:
                 f"{report.unsupported}")
 
     def test_the_repair_turn_quotes_the_figure(self, validator):
-        """A repair turn that does not name the token is unactionable."""
-        report = validator.validate(DRAFT, EVIDENCE)
+        """A repair turn that does not name the token is unactionable.
+
+        Exercised against a figure that really is absent, since the one this
+        file is named after is not.
+        """
+        draft = DRAFT.replace(FABRICATION, ABSENT_FIGURE)
+        report = validator.validate(draft, EVIDENCE)
         prompt = validator.repair_prompt(report)
-        assert FABRICATION in prompt
+        assert ABSENT_FIGURE in prompt
         assert "similar-looking" in prompt, (
             "the repair turn does not close the substitution move, which is "
             "the fluent thing a weak model reaches for under challenge")
 
     def test_an_unrepaired_answer_keeps_its_text_and_gains_a_caveat(
             self, validator):
-        report = validator.validate(DRAFT, EVIDENCE)
+        draft = DRAFT.replace(FABRICATION, ABSENT_FIGURE)
+        report = validator.validate(draft, EVIDENCE)
         caveat = validator.caveat(report)
-        assert FABRICATION in caveat
+        assert ABSENT_FIGURE in caveat
         assert "must not be relied on" in caveat
 
 
@@ -392,11 +475,18 @@ class TestTheFabricationCannotBorrowARealFiguresDigits:
             ['{"nodes": [{"pagerank": 10.3871}]}'])
         assert "0.387" in report.unsupported, report.unsupported
 
-    def test_the_recorded_figure_cannot_hide_inside_a_longer_one(self):
-        """80.847 laundered by a view that happens to contain 180.8471."""
+    def test_an_absent_figure_cannot_hide_inside_a_longer_one(self):
+        """`0.181` laundered by a view that happens to contain `10.1815`.
+
+        Written against 80.847 until 11 August 2026, which made it a test
+        that could not fail for the reason it claimed: 80.847 is in the
+        evidence on its own account. The leak it guards is real, so it is
+        exercised here against a figure that is genuinely absent.
+        """
         validator = GroundingValidator.from_config(AS_DECLARED)
+        draft = DRAFT.replace(FABRICATION, ABSENT_FIGURE)
         report = validator.validate(
-            DRAFT, [*EVIDENCE, '{"weights": {"total_out": 180.8471}}'])
-        assert FABRICATION in report.unsupported, (
-            f"{FABRICATION} was supported by a figure that merely contains "
+            draft, [*EVIDENCE, '{"weights": {"total_out": 10.1815}}'])
+        assert ABSENT_FIGURE in report.unsupported, (
+            f"{ABSENT_FIGURE} was supported by a figure that merely contains "
             f"its digits: {report.unsupported}")
