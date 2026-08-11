@@ -1,0 +1,516 @@
+{
+  "cases": [
+    {
+      "id": "total_s_as_influence_score_tai",
+      "expect": "misread",
+      "provenance": "verbatim, Tai draft, run a971d4c4149c, 10 Aug 2026",
+      "sentence": "The overall influence score, a summed measure of out-flow and in-flow centrality across the network, reached 80.847, indicating a relatively high magnitude of propagated influence across the Weibo-based corpus.",
+      "context": {
+        "path": "data.runs[0].total_s",
+        "value": 80.847,
+        "siblings": [
+          [
+            "run_id",
+            "\"a971d4c4149c\""
+          ],
+          [
+            "stage",
+            "\"gate\""
+          ],
+          [
+            "created_at",
+            "\"2026-08-10T16:29:32.027779+00:00\""
+          ],
+          [
+            "mode",
+            "\"agentic\""
+          ],
+          [
+            "question",
+            "\"Which accounts most caused the spread …"
+          ],
+          [
+            "nodes",
+            "127"
+          ],
+          [
+            "edges",
+            "1080"
+          ],
+          [
+            "communities",
+            "3"
+          ],
+          [
+            "communities_decided_by",
+            "\"agent\""
+          ],
+          [
+            "communities_confidence",
+            "0.7446"
+          ],
+          [
+            "communities_outcome",
+            "\"pass\""
+          ],
+          [
+            "has_interpretation",
+            "false"
+          ],
+          [
+            "corpus_hash",
+            "\"04349a489b2a1457\""
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "total_s_as_influence_score_goose",
+      "expect": "misread",
+      "provenance": "verbatim, Goose draft, run 202ec79ab74c, 10 Aug 2026",
+      "sentence": "The influence score metric, named Total_S (calculated via a graph-theoretic centrality blend), summed to 80.89, placing this run among the highest-impact scores we have processed to date.",
+      "context": {
+        "path": "data.runs[0].total_s",
+        "value": 80.889,
+        "siblings": [
+          [
+            "run_id",
+            "\"202ec79ab74c\""
+          ],
+          [
+            "stage",
+            "\"gate\""
+          ],
+          [
+            "created_at",
+            "\"2026-08-10T17:17:50.861595+00:00\""
+          ],
+          [
+            "mode",
+            "\"agentic\""
+          ],
+          [
+            "question",
+            "\"Which accounts most caused the spread …"
+          ],
+          [
+            "nodes",
+            "127"
+          ],
+          [
+            "edges",
+            "1080"
+          ],
+          [
+            "communities",
+            "3"
+          ],
+          [
+            "communities_decided_by",
+            "\"agent\""
+          ],
+          [
+            "communities_confidence",
+            "0.7446"
+          ],
+          [
+            "communities_outcome",
+            "\"pass\""
+          ],
+          [
+            "has_interpretation",
+            "false"
+          ],
+          [
+            "corpus_hash",
+            "\"04349a489b2a1457\""
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "edges_as_actors",
+      "expect": "misread",
+      "provenance": "constructed: same-number, wrong-unit",
+      "sentence": "The network comprises 1,080 distinct actors.",
+      "context": {
+        "path": "data.view.network.edge_count",
+        "value": 1080,
+        "siblings": [
+          [
+            "nodes",
+            "[127 items]"
+          ],
+          [
+            "edges",
+            "[1080 items]"
+          ],
+          [
+            "node_count",
+            "127"
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "records_as_labelled",
+      "expect": "misread",
+      "provenance": "constructed: the labelled figure is 27,639 in the same object",
+      "sentence": "1,192,938 posts carry narrative labels.",
+      "context": {
+        "path": "data.coverage.records",
+        "value": 1192938,
+        "siblings": [
+          [
+            "labelled",
+            "27639"
+          ],
+          [
+            "share",
+            "0.023169"
+          ],
+          [
+            "detail",
+            "\"The causal estimate is computed over t…"
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "gate_confidence_as_accuracy",
+      "expect": "misread",
+      "provenance": "constructed: confidence in a community count, not model accuracy",
+      "sentence": "The narrative classifier achieved 74.46% accuracy on this corpus.",
+      "context": {
+        "path": "data.view.gate.confidence",
+        "value": 0.7446,
+        "siblings": [
+          [
+            "decision",
+            "\"3\""
+          ],
+          [
+            "decided_by",
+            "\"agent\""
+          ],
+          [
+            "outcome",
+            "\"pass\""
+          ],
+          [
+            "machine_recommendation",
+            "\"3\""
+          ],
+          [
+            "override",
+            "false"
+          ],
+          [
+            "alternatives",
+            "[7 items]"
+          ],
+          [
+            "metrics",
+            "{24 fields}"
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "block_size_as_share_of_influence",
+      "expect": "misread",
+      "provenance": "constructed: a member count read as a percentage",
+      "sentence": "Block 0 accounts for 51% of all influence propagated in the network.",
+      "context": {
+        "path": "data.view.blocks[0].size",
+        "value": 51,
+        "siblings": [
+          [
+            "block",
+            "0"
+          ],
+          [
+            "members",
+            "[51 items]"
+          ],
+          [
+            "internal_weight",
+            "924.0"
+          ],
+          [
+            "out_weight",
+            "1.0"
+          ],
+          [
+            "in_weight",
+            "6915.0"
+          ],
+          [
+            "internal_share",
+            "0.1179"
+          ],
+          [
+            "out_in_ratio",
+            "0.0003"
+          ],
+          [
+            "cohesion",
+            "\"diffuse\""
+          ],
+          [
+            "role",
+            "\"audience\""
+          ],
+          [
+            "verdict",
+            "\"diffuse audience\""
+          ],
+          [
+            "nameable_as_community",
+            "false"
+          ],
+          [
+            "top_by_out_weight",
+            "[8 items]"
+          ],
+          [
+            "top_by_in_weight",
+            "[8 items]"
+          ],
+          [
+            "flow_to",
+            "{3 fields}"
+          ],
+          [
+            "total_causal_influence",
+            "0.0"
+          ],
+          [
+            "boundary_weight",
+            "6916.0"
+          ],
+          [
+            "label_kind",
+            "\"role\""
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "total_s_as_duration",
+      "expect": "correct",
+      "provenance": "the discriminating control: same field, same value, right sentence",
+      "sentence": "The run took 80.847 seconds of wall-clock time end to end.",
+      "context": {
+        "path": "data.runs[0].total_s",
+        "value": 80.847,
+        "siblings": [
+          [
+            "run_id",
+            "\"a971d4c4149c\""
+          ],
+          [
+            "stage",
+            "\"gate\""
+          ],
+          [
+            "created_at",
+            "\"2026-08-10T16:29:32.027779+00:00\""
+          ],
+          [
+            "mode",
+            "\"agentic\""
+          ],
+          [
+            "question",
+            "\"Which accounts most caused the spread …"
+          ],
+          [
+            "nodes",
+            "127"
+          ],
+          [
+            "edges",
+            "1080"
+          ],
+          [
+            "communities",
+            "3"
+          ],
+          [
+            "communities_decided_by",
+            "\"agent\""
+          ],
+          [
+            "communities_confidence",
+            "0.7446"
+          ],
+          [
+            "communities_outcome",
+            "\"pass\""
+          ],
+          [
+            "has_interpretation",
+            "false"
+          ],
+          [
+            "corpus_hash",
+            "\"04349a489b2a1457\""
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "gate_confidence_correct",
+      "expect": "correct",
+      "provenance": "verbatim, Tai draft",
+      "sentence": "The community-detection gate settled on three communities with a confidence of 0.7446.",
+      "context": {
+        "path": "data.view.gate.confidence",
+        "value": 0.7446,
+        "siblings": [
+          [
+            "decision",
+            "\"3\""
+          ],
+          [
+            "decided_by",
+            "\"agent\""
+          ],
+          [
+            "outcome",
+            "\"pass\""
+          ],
+          [
+            "machine_recommendation",
+            "\"3\""
+          ],
+          [
+            "override",
+            "false"
+          ],
+          [
+            "alternatives",
+            "[7 items]"
+          ],
+          [
+            "metrics",
+            "{24 fields}"
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "node_count_correct",
+      "expect": "correct",
+      "provenance": "verbatim, Tai draft",
+      "sentence": "The causal-influence model analyzed 127 distinct actors.",
+      "context": {
+        "path": "data.view.network.node_count",
+        "value": 127,
+        "siblings": [
+          [
+            "nodes",
+            "[127 items]"
+          ],
+          [
+            "edges",
+            "[1080 items]"
+          ],
+          [
+            "edge_count",
+            "1080"
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "edge_count_correct",
+      "expect": "correct",
+      "provenance": "verbatim, Tai draft",
+      "sentence": "The 127 actors interact through 1,080 directed edges.",
+      "context": {
+        "path": "data.view.network.edge_count",
+        "value": 1080,
+        "siblings": [
+          [
+            "nodes",
+            "[127 items]"
+          ],
+          [
+            "edges",
+            "[1080 items]"
+          ],
+          [
+            "node_count",
+            "127"
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "out_weight_correct",
+      "expect": "correct",
+      "provenance": "verbatim, Tai draft",
+      "sentence": "Account 6436464948 earned an out-weight of 338.0.",
+      "context": {
+        "path": "data.view.network.nodes[0].scores.out_weight",
+        "value": 338.0,
+        "siblings": [
+          [
+            "in_weight",
+            "1081.0"
+          ],
+          [
+            "out_degree",
+            "16"
+          ],
+          [
+            "in_degree",
+            "18"
+          ],
+          [
+            "pagerank",
+            "0.036428"
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    },
+    {
+      "id": "coverage_share_correct",
+      "expect": "correct",
+      "provenance": "constructed from the real value 0.023169",
+      "sentence": "Only about 2.3% of the records carry narrative labels.",
+      "context": {
+        "path": "data.coverage.share",
+        "value": 0.023169,
+        "siblings": [
+          [
+            "records",
+            "1192938"
+          ],
+          [
+            "labelled",
+            "27639"
+          ],
+          [
+            "detail",
+            "\"The causal estimate is computed over t…"
+          ]
+        ],
+        "siblings_truncated": false
+      }
+    }
+  ]
+}
