@@ -304,6 +304,14 @@ def _run_mission(elf, args, name, style):
         return elf.client.chat(model=elf.model, messages=messages,
                                stream=False, **extra)
 
+    def plain_chat_fn(messages):
+        # No tool schemas, deliberately: the swarm's router, planner, gate
+        # and synthesizer must answer their question in bare JSON or prose,
+        # and a harmony model with a function namespace declared will answer
+        # a yes/no question with a tool call.
+        return elf.client.chat(model=elf.model, messages=messages,
+                               stream=False, **dict(sampling))
+
     # Opened BEFORE the connection, so that a harness watching this mission is
     # told about a server it could not reach. A stream that never produces a
     # byte and a mission that failed to start look identical from the far end
@@ -360,15 +368,34 @@ def _run_mission(elf, args, name, style):
                     f"chat messages ahead of the objective",
                     style=style,
                 )
-            runner = MissionRunner(
-                chat_fn, bus, tool_names,
-                system_message=system_message,
-                max_steps=args.mission_steps,
-                validator=validator,
-                gated=gated,
-                history=history,
-                observer=sink,
-            )
+            if getattr(args, "swarm", False):
+                from core.runtime.swarm import SwarmRunner
+                console.print(
+                    "🐝 swarm: triage first; small questions run direct, "
+                    "complex ones are planned, executed in small steps, "
+                    "gated and synthesized — same model throughout",
+                    style=style,
+                )
+                runner = SwarmRunner(
+                    chat_fn, bus, tool_names,
+                    system_message=system_message,
+                    max_steps=args.mission_steps,
+                    validator=validator,
+                    gated=gated,
+                    history=history,
+                    observer=sink,
+                    plain_chat_fn=plain_chat_fn,
+                )
+            else:
+                runner = MissionRunner(
+                    chat_fn, bus, tool_names,
+                    system_message=system_message,
+                    max_steps=args.mission_steps,
+                    validator=validator,
+                    gated=gated,
+                    history=history,
+                    observer=sink,
+                )
             transcript = runner.run(args.message)
     except (McpUnavailable, McpConnectionError) as exc:
         console.print(f"❌ {exc}", style="red")
@@ -456,6 +483,16 @@ def _main(AgentClass):
                              "Prefer the env var; an argument is visible in ps")
     parser.add_argument("--mission-steps", type=int, default=8,
                         help="Hard cap on tool calls in a mission")
+    parser.add_argument("--swarm", action="store_true",
+                        default=bool((os.getenv("MISSION_SWARM") or "").strip()),
+                        help="Stage the mission when it needs staging: a "
+                             "cheap triage call routes small questions "
+                             "straight to the ordinary mission loop and "
+                             "complex ones through plan / execute / gate / "
+                             "synthesize — small specialized prompts over "
+                             "the SAME model and the SAME tool bus. The "
+                             "events vocabulary and the step cap are "
+                             "unchanged (env: MISSION_SWARM)")
     parser.add_argument("--history", type=Path,
                         default=_env_path("MISSION_HISTORY"),
                         help="JSON file of prior conversation turns — an "
