@@ -384,3 +384,51 @@ class TestHistoryFlag:
                 "--history", str(path))
         messages = self._messages(agent)
         assert [m["role"] for m in messages] == ["system", "user"]
+
+
+class TestSwarmFlag:
+    """`--swarm` wires the staged runner through the SAME spawn path.
+
+    Exercised against the real stub server, like everything above: the
+    manifest still gates the closed set, the grounding validator is still
+    built, and the swarm's router — scripted DIRECT here — hands the turn
+    to the ordinary loop, so the whole run should be indistinguishable
+    from a plain mission apart from one extra (plain, tool-free) triage
+    call at the front.
+    """
+
+    def test_swarm_direct_route_completes_like_a_plain_mission(
+            self, elf, skill_file, capsys):
+        MockClass, agent = elf
+        agent.replies = [
+            '{"route": "direct"}',
+            json.dumps({"tool": "mcp.governed_read",
+                        "arguments": {"asset_id": "asset.5f21"}}),
+            json.dumps({"answer": "The asset is asset.5f21."}),
+        ]
+        run_cli(MockClass, "--skill", str(skill_file), "--swarm")
+        out = capsys.readouterr().out
+        assert "asset.5f21" in out
+        assert "grounded" in out
+
+    def test_the_triage_call_declares_no_tool_schemas(self, elf, skill_file):
+        MockClass, agent = elf
+        agent.replies = [
+            '{"route": "direct"}',
+            json.dumps({"tool": "mcp.governed_read",
+                        "arguments": {"asset_id": "asset.5f21"}}),
+            json.dumps({"answer": "The asset is asset.5f21."}),
+        ]
+        run_cli(MockClass, "--skill", str(skill_file), "--swarm")
+        first = agent.client.chat.call_args_list[0].kwargs
+        assert "tools" not in first
+        # ... and the executor's calls keep the declared function
+        # namespace and its decode-level guarantees.
+        second = agent.client.chat.call_args_list[1].kwargs
+        assert second.get("tools")
+
+    def test_without_the_flag_no_triage_call_happens(self, elf, skill_file):
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        first_system = agent.seeds[0][0]["content"]
+        assert "router" not in first_system
