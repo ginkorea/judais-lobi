@@ -96,6 +96,44 @@ def _load_skill(args):
         raise SystemExit(f"--skill: {exc}")
 
 
+def _load_history(args):
+    """The ``--history`` turns, or ``[]``.  Refusals are ``SystemExit``.
+
+    A file and not an argv string, for the same reason ``--mcp-token``
+    prefers the environment: a conversation can be many kilobytes, and
+    argv is world-readable in ``/proc/<pid>/cmdline`` on a shared host.
+    The analyst's prior questions do not belong in ``ps`` output.
+
+    Refused loudly rather than dropped, because a dropped history is the
+    bug this flag fixes wearing a different hat: the operator believes
+    the agent has the conversation, and the agent answers cold.
+    """
+    path = getattr(args, "history", None)
+    if not path:
+        return []
+
+    import json
+
+    from core.runtime.mission import validate_history
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"--history: cannot read {path}: {exc}")
+    try:
+        turns = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"--history: {path} is not valid JSON ({exc.msg} at line "
+            f"{exc.lineno}). Expected an array of "
+            f'{{"role": "user"|"assistant", "content": "..."}} objects.'
+        )
+    try:
+        return validate_history(turns)
+    except ValueError as exc:
+        raise SystemExit(f"--history: {path}: {exc}")
+
+
 def _mission_tools(manifest, discovered, style):
     """The mission's tool subset: the skill's closed set, or everything.
 
@@ -140,6 +178,10 @@ def _run_mission(elf, args, name, style):
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
     manifest = _load_skill(args)
+    # Read and validated BEFORE the connection, like the grounding grammar
+    # below: a malformed history is a refusal at the door, not a mission
+    # that runs to completion answering questions nobody quite asked.
+    history = _load_history(args)
     transport = _build_mcp_transport(args)
     bus = elf.tools.bus
 
@@ -312,12 +354,19 @@ def _run_mission(elf, args, name, style):
                     f"proposing one ends the mission for a person to decide",
                     style=style,
                 )
+            if history:
+                console.print(
+                    f"🧵 history: {len(history)} prior turn(s) seeded as "
+                    f"chat messages ahead of the objective",
+                    style=style,
+                )
             runner = MissionRunner(
                 chat_fn, bus, tool_names,
                 system_message=system_message,
                 max_steps=args.mission_steps,
                 validator=validator,
                 gated=gated,
+                history=history,
                 observer=sink,
             )
             transcript = runner.run(args.message)
@@ -407,6 +456,19 @@ def _main(AgentClass):
                              "Prefer the env var; an argument is visible in ps")
     parser.add_argument("--mission-steps", type=int, default=8,
                         help="Hard cap on tool calls in a mission")
+    parser.add_argument("--history", type=Path,
+                        default=_env_path("MISSION_HISTORY"),
+                        help="JSON file of prior conversation turns — an "
+                             "array of {role: user|assistant, content} "
+                             "objects, oldest first — seeded into the model's "
+                             "message list as real chat turns ahead of the "
+                             "objective. A chat-tuned model attends to "
+                             "role-tagged turns and ignores the same turns "
+                             "pasted into the objective as text, so a caller "
+                             "passing this must NOT also fold the history "
+                             "into the message. A file, not an argument: a "
+                             "conversation is many KB and argv is visible in "
+                             "ps (env: MISSION_HISTORY)")
     # Unset means UNSENT, not zero. See the note beside `chat_fn`: the default
     # is the server's own, deliberately, because a noise floor taken at a
     # temperature nobody ships is not a floor.

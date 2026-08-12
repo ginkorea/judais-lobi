@@ -94,6 +94,79 @@ MAX_RESULT_BYTES = 32_768
 #: puts the counts.
 HEAD_FRACTION = 0.6
 
+#: Bounds on a seeded conversation history, chosen as a safety net and not
+#: a working limit.  The one caller that seeds history today (TAIPAN's
+#: Mission Pane) already caps what it sends at 12 turns of ≤4,000
+#: characters — ~48 KB worst case — so anything near these numbers is a
+#: caller that lost its own cap, and the honest response is a refusal at
+#: the door rather than a silent trim.  An oversized history has the same
+#: defect as an unbounded tool result (see MAX_RESULT_BYTES): it can push
+#: the catalogue and the protocol out of a small model's window with
+#: nothing in the answer saying so.
+HISTORY_MAX_TURNS = 100
+HISTORY_MAX_CHARS = 262_144
+
+
+def validate_history(turns: Any) -> List[Dict[str, str]]:
+    """*turns* as a clean ``[{"role", "content"}, …]``, or ``ValueError``.
+
+    The one answer to "is this a conversation history this loop will
+    seed".  Both callers use it — :class:`MissionRunner` on whatever it
+    is constructed with, and the CLI on what ``--history`` read from disk
+    — so a history the CLI accepted is a history the runner accepts, and
+    the refusal text is identical wherever the bad shape arrives.
+
+    Refusals are loud on purpose.  A malformed history silently dropped
+    would reproduce the exact failure this feature exists to fix: an
+    agent that looks like it has the conversation and answers as if it
+    does not.
+    """
+    # A tuple is allowed because it is what a Python caller's default
+    # argument looks like; anything else — a dict, a string — is a caller
+    # holding the wrong shape, and coercing it would validate its pieces
+    # rather than the mistake.
+    if not isinstance(turns, (list, tuple)):
+        raise ValueError(
+            f"history must be a JSON array of "
+            f'{{"role": "user"|"assistant", "content": "..."}} objects, '
+            f"got {type(turns).__name__}"
+        )
+    if len(turns) > HISTORY_MAX_TURNS:
+        raise ValueError(
+            f"history has {len(turns)} turns; the cap is "
+            f"{HISTORY_MAX_TURNS}. Trim it at the caller — a silent trim "
+            f"here would hide which turns the model never saw."
+        )
+    cleaned: List[Dict[str, str]] = []
+    total = 0
+    for index, turn in enumerate(turns):
+        if not isinstance(turn, dict):
+            raise ValueError(
+                f"history[{index}] must be an object with 'role' and "
+                f"'content', got {type(turn).__name__}"
+            )
+        role = turn.get("role")
+        content = turn.get("content")
+        if role not in ("user", "assistant"):
+            raise ValueError(
+                f"history[{index}].role must be 'user' or 'assistant', "
+                f"got {role!r}. System text belongs to the harness, and "
+                f"tool turns are this mission's own to make."
+            )
+        if not isinstance(content, str):
+            raise ValueError(
+                f"history[{index}].content must be a string, got "
+                f"{type(content).__name__}"
+            )
+        total += len(content)
+        cleaned.append({"role": role, "content": content})
+    if total > HISTORY_MAX_CHARS:
+        raise ValueError(
+            f"history totals {total} characters; the cap is "
+            f"{HISTORY_MAX_CHARS}. Trim it at the caller."
+        )
+    return cleaned
+
 
 def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
                       repairing: bool = False, caveat: str = "") -> Dict[str, Any]:
@@ -246,6 +319,24 @@ class MissionRunner:
         The harness supplies the mechanism and never the decision.
         There is deliberately no parameter here by which a caller could
         pre-answer one.
+    history:
+        Prior conversation turns, oldest first, as
+        ``[{"role": "user"|"assistant", "content": …}, …]`` — the
+        analyst's questions and the agent's final answers, never the
+        tool-call plumbing of earlier missions.  Seeded into the message
+        list **as messages**, between the system prompt and the current
+        objective.
+
+        As messages and not as text folded into the objective, because
+        that difference was measured: a chat-tuned model attends to
+        role-tagged turns in its own chat template and skates over the
+        same turns pasted into one user string.  On 12 August 2026 a
+        served gpt-oss-20b, given the prior turns as an "Earlier in this
+        conversation:" preamble inside the objective, answered "tell me
+        more about headline #2" by web-searching the literal string
+        "headline #2" — the headlines were in the prompt and the model
+        never looked.  The default ``()`` is a mission that starts cold,
+        exactly as every mission started before this parameter existed.
     observer:
         ``dict -> None``, called with one record per thing that happens.
         See :mod:`core.runtime.mission_stream` for the vocabulary; it is
@@ -274,6 +365,7 @@ class MissionRunner:
         max_result_bytes: int = MAX_RESULT_BYTES,
         store_tool: str = RESULT_TOOL,
         gated: Sequence[str] = (),
+        history: Sequence[Dict[str, str]] = (),
         observer: Optional[Observer] = None,
     ):
         self._chat = chat_fn
@@ -286,6 +378,11 @@ class MissionRunner:
         self._store_tool = (store_tool or "").strip()
         self._store = MissionResultStore()
         self._gated = frozenset(str(name) for name in gated if name)
+        # Validated here as well as at the CLI, because the CLI is one
+        # caller of several and a runner seeded with a system turn or a
+        # non-string content would fail somewhere much less legible than
+        # this line.
+        self._history = validate_history(history)
         self._observer = observer
 
     @property
@@ -360,7 +457,19 @@ class MissionRunner:
         return "\n".join(lines) if lines else "(no tools available)"
 
     def seed(self, objective: str) -> List[Dict[str, str]]:
-        """The PLAN-phase messages: persona, protocol, catalogue, objective."""
+        """The PLAN-phase messages: persona, protocol, catalogue, history, objective.
+
+        The prior turns sit between the system prompt and the current
+        question, so what the model receives is a genuine multi-turn
+        conversation whose newest user message is the objective.  The
+        objective must arrive **without** the history also folded into it
+        as text — a caller that does both injects every prior turn twice,
+        once where the model attends to it and once where it does not.
+
+        Fresh dicts each call: the loop appends to the list this returns,
+        and a runner run twice must not find its history aliased to a
+        previous run's messages.
+        """
         system = "\n\n".join(
             part for part in (
                 self._system_message.strip(),
@@ -370,6 +479,7 @@ class MissionRunner:
         )
         return [
             {"role": "system", "content": system},
+            *(dict(turn) for turn in self._history),
             {"role": "user", "content": objective},
         ]
 
@@ -380,8 +490,12 @@ class MissionRunner:
         offered = self.offered
         transcript = MissionTranscript(objective=objective, catalogue=list(offered))
         registered = self._register_store()
+        # `history` is a count, not the turns: a watcher needs to tell a
+        # seeded conversation from a cold start, and the turns themselves
+        # already travelled once — TAIPAN holds the thread it sent.
         self._emit(MISSION_STARTED, objective=objective, catalogue=list(offered),
-                   gated=self.gated, max_steps=self._max_steps)
+                   gated=self.gated, max_steps=self._max_steps,
+                   history=len(self._history))
         try:
             return self._loop(objective, offered, transcript)
         finally:

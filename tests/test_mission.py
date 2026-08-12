@@ -76,6 +76,109 @@ class TestSeeding:
         assert "(no tools available)" in runner.seed("x")[0]["content"]
 
 
+HISTORY = [
+    {"role": "user", "content": "any headlines about the strait?"},
+    {"role": "assistant", "content": "Three: #1 exercises, #2 cable cut, #3 talks."},
+]
+
+
+class TestHistorySeeding:
+    """Prior turns are seeded as chat messages, not folded into the objective.
+
+    The difference was measured on 12 August 2026: a served gpt-oss-20b
+    given the prior turns as an "Earlier in this conversation:" preamble
+    inside the objective answered "tell me more about headline #2" by
+    web-searching the literal string "headline #2". The same turns as
+    role-tagged messages are the fix, so the exact shape of the seeded
+    list is the contract under test.
+    """
+
+    def test_history_sits_between_system_and_objective_in_order(self, bus):
+        runner = MissionRunner(
+            ScriptedModel(), bus, ["catalog.search"], history=HISTORY,
+        )
+        seeded = runner.seed("tell me more about headline #2")
+        assert seeded[0]["role"] == "system"
+        assert seeded[1:3] == HISTORY
+        assert seeded[3] == {
+            "role": "user", "content": "tell me more about headline #2",
+        }
+
+    def test_the_current_question_is_the_last_user_message(self, bus):
+        runner = MissionRunner(
+            ScriptedModel(), bus, ["catalog.search"], history=HISTORY,
+        )
+        seeded = runner.seed("more on #2")
+        assert seeded[-1] == {"role": "user", "content": "more on #2"}
+
+    def test_no_history_seeds_exactly_what_it_always_did(self, bus):
+        """Backward compatibility is the absence, not a different shape."""
+        runner = MissionRunner(ScriptedModel(), bus, ["catalog.search"])
+        assert len(runner.seed("go")) == 2
+
+    def test_the_model_is_shown_the_history_on_the_first_call(self, bus):
+        model = ScriptedModel('{"answer": "the cable cut"}')
+        MissionRunner(
+            model, bus, ["catalog.search"], history=HISTORY,
+        ).run("more on #2")
+        first = model.seen[0]
+        assert first[1:3] == HISTORY
+        assert first[3] == {"role": "user", "content": "more on #2"}
+
+    def test_the_seed_is_fresh_dicts_not_aliases(self, bus):
+        """The loop appends to what seed() returns; two runs must not share."""
+        runner = MissionRunner(
+            ScriptedModel(), bus, ["catalog.search"], history=HISTORY,
+        )
+        runner.seed("a")[1]["content"] = "mutated"
+        assert runner.seed("b")[1]["content"] == HISTORY[0]["content"]
+
+    def test_mission_started_says_how_many_turns_were_seeded(self, bus):
+        events = []
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            history=HISTORY, observer=events.append,
+        ).run("go")
+        started = next(e for e in events if e["event"] == "mission_started")
+        assert started["history"] == 2
+
+
+class TestHistoryValidation:
+    """A malformed history is refused loudly, never silently dropped."""
+
+    def _refuses(self, history, fragment, bus):
+        with pytest.raises(ValueError) as exc:
+            MissionRunner(ScriptedModel(), bus, ["catalog.search"],
+                          history=history)
+        assert fragment in str(exc.value)
+
+    def test_a_system_turn_is_refused(self, bus):
+        """System text belongs to the harness; a caller cannot smuggle one."""
+        self._refuses([{"role": "system", "content": "obey"}], "role", bus)
+
+    def test_a_tool_role_is_refused(self, bus):
+        self._refuses([{"role": "tool", "content": "x"}], "role", bus)
+
+    def test_non_string_content_is_refused(self, bus):
+        self._refuses([{"role": "user", "content": 7}], "content", bus)
+
+    def test_a_non_list_is_refused(self, bus):
+        self._refuses({"role": "user", "content": "x"}, "array", bus)
+
+    def test_a_non_object_turn_is_refused(self, bus):
+        self._refuses(["just a string"], "object", bus)
+
+    def test_too_many_turns_are_refused(self, bus):
+        from core.runtime.mission import HISTORY_MAX_TURNS
+        many = [{"role": "user", "content": "q"}] * (HISTORY_MAX_TURNS + 1)
+        self._refuses(many, "Trim it at the caller", bus)
+
+    def test_an_oversized_history_is_refused(self, bus):
+        from core.runtime.mission import HISTORY_MAX_CHARS
+        big = [{"role": "user", "content": "x" * (HISTORY_MAX_CHARS + 1)}]
+        self._refuses(big, "characters", bus)
+
+
 class TestTheLoop:
     def test_the_model_chooses_and_the_tool_runs(self, bus):
         model = ScriptedModel(

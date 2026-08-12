@@ -48,7 +48,9 @@ __all__ = [
 
 #: The mission has begun.  ``objective``, ``catalogue`` (the tool names the
 #: model was offered, in order), ``gated`` (offered but needing a person),
-#: ``max_steps``.
+#: ``max_steps``, ``history`` (how many prior conversation turns were seeded
+#: ahead of the objective — a count, so a watcher can tell a continued
+#: conversation from a cold start without the turns travelling twice).
 MISSION_STARTED = "mission_started"
 
 #: A step of the plan/act loop is about to ask the model.  ``index``.

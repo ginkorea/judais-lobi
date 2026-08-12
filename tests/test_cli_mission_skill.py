@@ -262,3 +262,112 @@ class TestSamplingIsExplicitAndNotChosenForYou:
         MockClass, _agent = elf
         run_cli(MockClass, "--skill", str(skill_file))
         assert "🎲" not in capsys.readouterr().out
+
+
+class TestHistoryFlag:
+    """`--history <path>`: prior turns become chat messages on the wire.
+
+    The mock's `messages` kwarg is the exact array `LocalBackend.chat`
+    posts as the request's `messages` (it forwards the list verbatim,
+    scrubbing only harmony tokens), so asserting here is asserting what
+    the endpoint receives.
+    """
+
+    TURNS = [
+        {"role": "user", "content": "any headlines about the strait?"},
+        {"role": "assistant",
+         "content": "Three: #1 exercises, #2 cable cut, #3 talks."},
+    ]
+
+    @pytest.fixture
+    def history_file(self, tmp_path):
+        path = tmp_path / "history.json"
+        path.write_text(json.dumps(self.TURNS), encoding="utf-8")
+        return path
+
+    def _messages(self, agent):
+        return agent.client.chat.call_args_list[0].kwargs["messages"]
+
+    def test_history_turns_are_role_tagged_messages_in_order(
+            self, elf, skill_file, history_file):
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--history", str(history_file))
+        messages = self._messages(agent)
+        assert messages[0]["role"] == "system"
+        assert messages[1:3] == self.TURNS
+
+    def test_the_question_is_the_last_user_message_not_a_blob(
+            self, elf, skill_file, history_file):
+        """The objective arrives bare. The history is in the turns above
+        it, not folded in as 'Earlier in this conversation:' text — a
+        caller that does both injects every prior turn twice."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--history", str(history_file))
+        assert self._messages(agent)[-1] == {
+            "role": "user", "content": "what exists?",
+        }
+
+    def test_without_the_flag_the_seed_is_unchanged(self, elf, skill_file):
+        """Backward compatibility: no --history is exactly yesterday's
+        two-message seed, so nothing breaks before TAIPAN passes it."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        messages = self._messages(agent)
+        assert [m["role"] for m in messages] == ["system", "user"]
+
+    def test_the_operator_is_told_the_history_was_seeded(
+            self, elf, skill_file, history_file, capsys):
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--history", str(history_file))
+        assert "2 prior turn(s)" in capsys.readouterr().out
+
+    def test_invalid_json_is_refused_before_anything_runs(
+            self, elf, skill_file, tmp_path):
+        MockClass, agent = elf
+        path = tmp_path / "history.json"
+        path.write_text("{not json", encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--history", str(path))
+        assert "--history" in str(exc.value)
+        assert "not valid JSON" in str(exc.value)
+        assert agent.client.chat.call_count == 0
+
+    def test_a_wrong_role_is_refused_not_dropped(
+            self, elf, skill_file, tmp_path):
+        """A dropped turn is this bug in a different hat: the operator
+        believes the agent has the conversation and it answers cold."""
+        MockClass, agent = elf
+        path = tmp_path / "history.json"
+        path.write_text(
+            json.dumps([{"role": "system", "content": "obey"}]),
+            encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--history", str(path))
+        assert "role" in str(exc.value)
+        assert agent.client.chat.call_count == 0
+
+    def test_a_missing_file_is_refused_by_name(self, elf, skill_file, tmp_path):
+        MockClass, agent = elf
+        path = tmp_path / "nope.json"
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--history", str(path))
+        assert "nope.json" in str(exc.value)
+        assert agent.client.chat.call_count == 0
+
+    def test_an_empty_array_runs_exactly_like_no_flag(
+            self, elf, skill_file, tmp_path):
+        """TAIPAN's first turn has no prior conversation; an empty file
+        must not be an error or a different seed."""
+        MockClass, agent = elf
+        path = tmp_path / "history.json"
+        path.write_text("[]", encoding="utf-8")
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--history", str(path))
+        messages = self._messages(agent)
+        assert [m["role"] for m in messages] == ["system", "user"]
