@@ -118,6 +118,48 @@ ANY_CHECK = "*"
 #: skill asked for is a report its reader learns to skip.
 CLAIM_BLOCK = re.compile(r"```claims\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
+#: A fenced code block, any language tag or none.  Non-greedy, so two
+#: blocks in one answer are two matches and the prose between them keeps
+#: full scrutiny.
+FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
+
+#: Inline code.  Bounded to one line: a stray backtick in prose must not
+#: swallow the rest of the answer as "code".
+INLINE_CODE = re.compile(r"`[^`\n]+`")
+
+
+def prose_only(answer: str) -> str:
+    """*answer* with its code removed, leaving the prose the checks read.
+
+    **Code is not a claim.**  Prose asserts facts about the world and has
+    to ground in a tool result of this run; code is a proposed
+    computation, and its grounding is the result of *running* it — which,
+    when it happens, arrives as a tool result and grounds the prose that
+    cites it (see ``MissionResultStore.evidence_texts``).
+
+    Measured August 2026 on TAIPAN's hosted mission pane (gpt-oss-20b):
+    asked to "plot sin, cos and tan using python", the agent wrote correct
+    matplotlib code and the validator flagged the ANSWER as fabricated —
+    ``np.linspace`` and ``plt.subplots`` match the dotted identifier
+    grammar exactly the way an invented asset id does, and ``0.01``-style
+    literals match the figure grammar the way an invented run score does.
+    No tool returns matplotlib's API, so every such token was reported as
+    invented and a correct answer shipped under a "not supported by its
+    tools" banner.  A check that flags working code teaches its reader to
+    skip the report, which un-catches the fabrications it exists for.
+
+    An unterminated fence is still code: the model opened a block and ran
+    out of tokens before closing it, and everything after the opening
+    fence is the code it was writing, not prose that resumed.  Flagging a
+    truncated script's identifiers would reintroduce the failure above in
+    exactly the messiest transcripts.
+    """
+    text = FENCED_CODE.sub(" ", answer or "")
+    head, fence, _unclosed = text.partition("```")
+    if fence:
+        text = head
+    return INLINE_CODE.sub(" ", text)
+
 
 #: Characters a language model reaches for in prose and a payload never
 #: contains, mapped to the ASCII a tool result is written in. The soft hyphen
@@ -653,14 +695,26 @@ class GroundingCheck(ABC):
     def text(self, answer: str) -> str:
         """The part of the answer this check reads.  Prose, by default.
 
-        A claim table is a machine-readable annex the skill asked for, and
-        it is verified by walking its paths — not by pattern-matching them.
-        Left in, its ``"path": "gate.confidence"`` entries are dotted
-        lower-case tokens an identifier grammar matches, so a draft that did
-        exactly what its skill required would be reported as inventing
-        identifiers.  :class:`ClaimGroundingCheck` reads the table instead.
+        Two kinds of non-prose are removed before extraction, for two
+        different reasons:
+
+        * **code**, fenced or inline — code is a proposed computation and
+          not a claim, and its identifiers (``np.linspace``) and literals
+          (``0.01``) match the grammars exactly the way inventions do.
+          See :func:`prose_only` and the August 2026 mission-pane failure
+          recorded on it.
+        * **the claim table** — a machine-readable annex the skill asked
+          for, verified by walking its paths, not by pattern-matching
+          them.  Left in, its ``"path": "gate.confidence"`` entries are
+          dotted lower-case tokens an identifier grammar matches, so a
+          draft that did exactly what its skill required would be
+          reported as inventing identifiers.  :class:`ClaimGroundingCheck`
+          reads the table instead — it overrides this method, which is
+          why the fence-stripping lives here and not in :meth:`check`.
+          (The table's own fence means :func:`prose_only` already removes
+          it; the point stands on its own and is kept stated.)
         """
-        return CLAIM_BLOCK.sub(" ", answer)
+        return prose_only(CLAIM_BLOCK.sub(" ", answer))
 
     def unconfigured(self) -> List[str]:
         """Why this check cannot run, or an empty list."""
