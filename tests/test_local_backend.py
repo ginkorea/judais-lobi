@@ -320,3 +320,70 @@ class TestProviderResolution:
         from core.runtime.provider_config import API_KEY_ENV
 
         assert "local" not in API_KEY_ENV
+
+
+class TestConnectRetry:
+    """A refused connect gets a bounded retry; an answering server does not.
+
+    Measured 12 Aug 2026 on the pool: one mid-eval turn died at step 0 on a
+    single refused connect to the served endpoint while the turns on either
+    side succeeded. The endpoint blipped; the turn paid with its life.
+    `_post` now retries CONNECT_RETRIES times on ConnectionError only.
+    """
+
+    def _backend(self, monkeypatch):
+        b = LocalBackend(endpoint="http://127.0.0.1:1/v1")
+        # No real sleeping in a unit test; record the waits instead.
+        waits = []
+        monkeypatch.setattr(
+            "core.runtime.backends.local_backend.time.sleep", waits.append)
+        return b, waits
+
+    def test_a_refused_connect_is_retried_then_succeeds(self, monkeypatch):
+        import requests as rq
+        b, waits = self._backend(monkeypatch)
+        calls = []
+
+        def post(url, **kw):
+            calls.append(url)
+            if len(calls) < 3:
+                raise rq.exceptions.ConnectionError("refused")
+            from types import SimpleNamespace
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr(b._session, "post", post)
+        out = b._post({"messages": []}, stream=False)
+        assert out.status_code == 200
+        assert len(calls) == 3
+        assert waits == list(b.CONNECT_RETRIES[:2])
+
+    def test_a_dead_endpoint_still_raises_after_the_budget(self, monkeypatch):
+        import requests as rq
+        b, waits = self._backend(monkeypatch)
+        calls = []
+
+        def post(url, **kw):
+            calls.append(url)
+            raise rq.exceptions.ConnectionError("refused")
+
+        monkeypatch.setattr(b._session, "post", post)
+        import pytest as _pytest
+        with _pytest.raises(rq.exceptions.ConnectionError):
+            b._post({"messages": []}, stream=False)
+        assert len(calls) == 1 + len(b.CONNECT_RETRIES)
+
+    def test_an_http_error_is_never_resent(self, monkeypatch):
+        """The server ANSWERED — re-sending could double a decode."""
+        import requests as rq
+        b, _ = self._backend(monkeypatch)
+        calls = []
+
+        def post(url, **kw):
+            calls.append(url)
+            raise rq.exceptions.ReadTimeout("mid-body")
+
+        monkeypatch.setattr(b._session, "post", post)
+        import pytest as _pytest
+        with _pytest.raises(rq.exceptions.ReadTimeout):
+            b._post({"messages": []}, stream=False)
+        assert len(calls) == 1

@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional
@@ -263,14 +264,34 @@ class LocalBackend(Backend):
             return self._stream(body)
         return self._complete(body)
 
+    #: Backoff (seconds) before each retry of a refused connection. Three
+    #: tries spanning ~17s: a vLLM endpoint that bounces or hands off ports
+    #: mid-session comes back inside that window; one that is truly down
+    #: fails just as clearly 17 seconds later. Measured 12 Aug 2026: one
+    #: mid-eval turn died at step 0 on a single refused connect while the
+    #: turns on either side of it succeeded — a whole turn is too much to
+    #: pay for one blip.
+    CONNECT_RETRIES = (2.0, 5.0, 10.0)
+
     def _post(self, body: Dict[str, Any], stream: bool):
-        return self._session.post(
-            f"{self.endpoint}/chat/completions",
-            headers=self._headers(),
-            json=body,
-            timeout=CHAT_TIMEOUT,
-            stream=stream,
-        )
+        last: Exception | None = None
+        for wait in (0.0, *self.CONNECT_RETRIES):
+            if wait:
+                time.sleep(wait)
+            try:
+                return self._session.post(
+                    f"{self.endpoint}/chat/completions",
+                    headers=self._headers(),
+                    json=body,
+                    timeout=CHAT_TIMEOUT,
+                    stream=stream,
+                )
+            except requests.exceptions.ConnectionError as exc:
+                # Refused/reset connect only — an HTTP error or a mid-body
+                # timeout is the server ANSWERING, and re-sending those
+                # would double a completion that may already be decoding.
+                last = exc
+        raise last  # type: ignore[misc]
 
     #: How much of a server's error body to put in front of a caller. Enough
     #: for vLLM's `{"object":"error","message":...}` to arrive whole; short
