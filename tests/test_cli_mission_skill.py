@@ -72,9 +72,20 @@ def elf():
         json.dumps({"tool": "mcp.governed_read", "arguments": {"asset_id": "asset.5f21"}}),
         json.dumps({"answer": "The asset is asset.5f21."}),
     ]
-    agent.client.chat.side_effect = lambda **_kw: (
-        agent.replies.pop(0) if agent.replies else '{"answer": "done"}'
-    )
+    # Snapshot `messages` at call time. MagicMock records kwargs by
+    # reference and MissionRunner appends every later turn to the same
+    # list, so by the time a test reads
+    # `call_args_list[0].kwargs["messages"]` the "seed" is the whole
+    # conversation — measured 12 Aug 2026, three seed-shape assertions in
+    # TestHistoryFlag read a post-mission transcript and failed against a
+    # loop that was working correctly.
+    agent.seeds = []
+
+    def _chat(**kw):
+        agent.seeds.append([dict(m) for m in kw["messages"]])
+        return agent.replies.pop(0) if agent.replies else '{"answer": "done"}'
+
+    agent.client.chat.side_effect = _chat
     MockClass = MagicMock(return_value=agent)
     MockClass.__name__ = "Tai"
     return MockClass, agent
@@ -286,7 +297,9 @@ class TestHistoryFlag:
         return path
 
     def _messages(self, agent):
-        return agent.client.chat.call_args_list[0].kwargs["messages"]
+        # The seed as the first chat call RECEIVED it, not the shared list
+        # after the mission appended its turns — see the `elf` fixture.
+        return agent.seeds[0]
 
     def test_history_turns_are_role_tagged_messages_in_order(
             self, elf, skill_file, history_file):
