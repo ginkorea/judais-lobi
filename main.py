@@ -7,8 +7,9 @@ from core.cli import main_judais, main_lobi, main_tai
 #: The agents this entry point can start, and one line each for `--help`.
 #:
 #: `tai` is here because a personality you can only reach by asking for a
-#: different agent does not have a name. Tai shipped as a TOML file in TAIPAN
-#: and `--personality` in `core.cli`, which made it *loadable* — but the only
+#: different agent does not have a name. Tai shipped as a TOML file in the
+#: deployment that operates it (TAIPAN, where this was learned) plus
+#: `--personality` in `core.cli`, which made it *loadable* — but the only
 #: way to run it was `python main.py lobi --personality .../tai.toml`, so the
 #: mission agent had to impersonate Lobi to start, its debug banner said Lobi,
 #: and nobody reading this file would learn Tai existed. `main_tai` finds the
@@ -16,8 +17,9 @@ from core.cli import main_judais, main_lobi, main_tai
 AGENTS = {
     "lobi": (main_lobi, "the mischievous one — a general assistant"),
     "judais": (main_judais, "the sharp one — a general assistant"),
-    "tai": (main_tai, "TAIPAN's mission agent — governed tools over MCP, "
-                      "cites every claim, never sees source"),
+    "tai": (main_tai, "the mission-agent personality — governed tools over "
+                      "MCP, cites every claim, never sees source "
+                      "(TAIPAN's deployment of judais-lobi uses this name)"),
 }
 
 
@@ -31,9 +33,13 @@ def _usage(stream=sys.stdout):
           file=stream)
     print("  python main.py tai --help", file=stream)
     print("\nExample:", file=stream)
+    # A placeholder URL and an env var, not a real one of either. An
+    # example is copied before it is read, so a live internal hostname in
+    # `--help` is a hostname published to everyone who ever runs `--help`,
+    # and a token named in argv is a token visible in `ps`.
     print("  python main.py tai 'What governed corpora exist?' \\\n"
-          "      --mission --mcp-url http://jl-i.pedalstate.com:8091/mcp \\\n"
-          "      --mcp-token \"$TAIPAN_TOKEN\"", file=stream)
+          "      --mission --mcp-url http://<mcp-host>:<port>/mcp \\\n"
+          "      --mcp-token \"$MCP_TOKEN\"", file=stream)
 
 
 def main():

@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = "0.7.2"
+VERSION = "0.8.0"
 
 setup(
     name="judais-lobi",
@@ -30,6 +30,13 @@ setup(
         # compiled ones, and `judais --help` has to keep working without them.
         # core/tools/mcp_client.py is the only importer, and imports it lazily.
         "mcp": ["mcp>=1.25,<2"],
+        # What a mission actually needs, as one name. `mcp` alone installs
+        # a runnable mission and a silently ungoverned one: `--skill` reads
+        # YAML frontmatter, and with no pyyaml the manifest never loads —
+        # so the closed tool set is never applied and the grounding check
+        # never runs, while the transcript looks exactly like a governed
+        # one. Both, or neither.
+        "mission": ["mcp>=1.25,<2", "pyyaml>=6.0"],
         "critic": [
             "anthropic>=0.30.0",
             "google-generativeai>=0.7.0",
@@ -65,10 +72,14 @@ setup(
         "console_scripts": [
             "lobi = core.cli:main_lobi",
             "judais = core.cli:main_judais",
+            # Same shape as the other two: no arguments, reads `sys.argv`
+            # itself. A personality reachable only by asking for another
+            # agent does not have a name.
+            "tai = core.cli:main_tai",
         ],
     },
     author="Josh Gompert",
-    description="JudAIs & Lobi v0.7.2 — Dual-agent terminal AI with unified OpenAI/Mistral backend, memory, and tools",
+    description="JudAIs & Lobi v0.8.0 — Terminal agents and a governed mission runtime over a unified OpenAI/Mistral backend, with memory and tools",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/judais-lobi",

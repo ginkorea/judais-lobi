@@ -68,19 +68,38 @@ from core.runtime.mission_stream import (
 )
 from core.runtime.results import RESULT_TOOL
 
-__all__ = ["SwarmRunner", "PlanStep", "RUNGS"]
+__all__ = ["SwarmRunner", "PlanStep", "RUNGS", "RUNGS_WITHOUT_SDK", "SDK_RUNG"]
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
-#: The three ways a step gets done.  The vocabulary is the planner's whole
-#: knowledge of the platform's rungs; everything tool-specific stays in the
-#: bus's own catalogue, so these never name a tool and never go stale.
+#: Every rung this runner knows how to describe.  The vocabulary is the
+#: planner's whole knowledge of the platform's rungs; everything
+#: tool-specific stays in the bus's own catalogue, so these never name a
+#: tool and never go stale.
+#:
+#: Not every rung is *offered* on every run — see :data:`SDK_RUNG`.
 RUNGS = ("tool", "code", "code+sdk")
+
+#: The one rung that cannot be described without knowing the platform.
+SDK_RUNG = "code+sdk"
+
+#: The rungs offered when nothing names an SDK.  Withholding
+#: :data:`SDK_RUNG` rather than describing it vaguely is the point: a
+#: sentence telling a model to "import the platform SDK" without naming
+#: one is an invitation to invent a module, and a 20B accepts it.
+RUNGS_WITHOUT_SDK = tuple(rung for rung in RUNGS if rung != SDK_RUNG)
 
 #: What each rung means, said to the executor at the moment it acts — the
 #: one place a short instruction has been measured to bind on a 20B, per
 #: the 10 August finding that a refusal taught a rule verbatim where the
 #: same rule 2,000 tokens upstream in a persona did nothing.
+#:
+#: These two are true of every platform.  The third is composed per run by
+#: :func:`sdk_rung_sentence` from a name only the skill manifest knows.
+#: It used to be a constant here reading ``import taipan`` — one
+#: deployment's module name frozen into the framework meant to drive any
+#: of them, twenty lines under a comment promising that a role never names
+#: a platform's particulars.
 _RUNG_SENTENCES = {
     "tool": (
         "a registered platform tool. Pick the one whose catalogue "
@@ -90,14 +109,36 @@ _RUNG_SENTENCES = {
         "writing code and running it through a code-execution tool. "
         "Have the code print the values that prove it worked."
     ),
-    "code+sdk": (
-        "code that itself reads platform data and computes over it in "
-        "one run — `import taipan`, connect (the credential is already "
-        "in the execution environment), fetch what the step names, then "
-        "compute. Run it through a code-execution tool and have it "
-        "print the values that prove it worked."
-    ),
 }
+
+#: How each rung is offered to the *planner*: shorter than the executor's
+#: sentence, because the planner is choosing between rungs rather than
+#: acting on one.  Only the offered rungs are ever listed, so a planner is
+#: never told about a route it would then be refused for taking.
+_RUNG_PLAN_LINES = {
+    "tool": ('- "tool": a platform tool from the list below does exactly '
+             'this (search, fetch, submit, poll, read a run).'),
+    "code": ('- "code": computation, transformation or visualization — '
+             'code written and run through a code-execution tool.'),
+}
+
+
+def sdk_rung_sentence(sdk_import: str) -> str:
+    """The ``code+sdk`` executor sentence, naming one declared SDK."""
+    return (
+        "code that itself reads platform data and computes over it in "
+        f"one run — `import {sdk_import}`, connect (the credential is "
+        "already in the execution environment), fetch what the step "
+        "names, then compute. Run it through a code-execution tool and "
+        "have it print the values that prove it worked."
+    )
+
+
+def sdk_rung_plan_line(sdk_import: str) -> str:
+    """The ``code+sdk`` planner line, naming one declared SDK."""
+    return (f'- "code+sdk": code that also fetches platform data itself '
+            f'with `import {sdk_import}`, because the step composes '
+            f'governed data with computation.')
 
 # ── the role prompts ─────────────────────────────────────────────────────
 # Short on purpose, and general on purpose.  Each one describes a KIND of
@@ -121,12 +162,7 @@ PLAN_PROMPT = """\
 You are a planner. Break the objective into the fewest small steps that \
 answer it — {max_steps} at most, usually 2 or 3. Each step is ONE action \
 with a checkable result. Tag each step with how it gets done:
-- "tool": a platform tool from the list below does exactly this \
-(search, fetch, submit, poll, read a run).
-- "code": computation, transformation or visualization — code written \
-and run through a code-execution tool.
-- "code+sdk": code that also fetches platform data itself, because the \
-step composes governed data with computation.
+{rungs}
 Steps run in order. "needs" names earlier steps whose results this step \
 uses. "done" states the evidence of success in one clause: a value \
 printed, an artifact produced, a handle returned, an id found.
@@ -246,6 +282,15 @@ class SwarmRunner:
         eight turns was two steps.
     retries_per_step:
         Bounded retries before the plan is redrawn.
+    sdk_import:
+        What the platform's SDK is called to ``import``, from the skill
+        manifest's ``sdk_import`` field.  Naming it offers the planner the
+        ``code+sdk`` rung and composes the sentence the executor is given;
+        leaving it empty withholds that rung entirely, and the planner's
+        prose then lists only the rungs it may actually use.  The harness
+        does not know this name and must not guess it: it drives whatever
+        platform it is pointed at, and a manifest is where a platform
+        describes itself.
     """
 
     def __init__(
@@ -265,6 +310,7 @@ class SwarmRunner:
         step_budget: int = 4,
         retries_per_step: int = 1,
         summary_chars: int = 1_200,
+        sdk_import: str = "",
     ):
         self._chat = chat_fn
         self._plain_chat = plain_chat_fn or chat_fn
@@ -280,6 +326,19 @@ class SwarmRunner:
         self._step_budget = max(1, int(step_budget))
         self._retries = max(0, int(retries_per_step))
         self._summary_chars = max(200, int(summary_chars))
+
+        # The rungs THIS run offers, and what each one says.  Resolved once
+        # here rather than at each use, so the planner's prose, the plan
+        # validator and the executor's instruction cannot disagree about
+        # which routes exist — a planner offered a rung the validator then
+        # rejects burns a re-plan on the harness's own inconsistency.
+        self._sdk_import = str(sdk_import or "").strip()
+        self._rungs = RUNGS if self._sdk_import else RUNGS_WITHOUT_SDK
+        self._rung_sentences = dict(_RUNG_SENTENCES)
+        self._rung_plan_lines = dict(_RUNG_PLAN_LINES)
+        if self._sdk_import:
+            self._rung_sentences[SDK_RUNG] = sdk_rung_sentence(self._sdk_import)
+            self._rung_plan_lines[SDK_RUNG] = sdk_rung_plan_line(self._sdk_import)
 
     # ── telling a watcher ───────────────────────────────────────────────
 
@@ -375,6 +434,10 @@ class SwarmRunner:
             lines.append(f"- {name}: {first}" if first else f"- {name}")
         return "\n".join(lines) if lines else "(no tools available)"
 
+    def _plan_rung_lines(self) -> str:
+        """The offered rungs, described, in :data:`RUNGS` order."""
+        return "\n".join(self._rung_plan_lines[rung] for rung in self._rungs)
+
     def _plan(self, objective: str,
               carried: Optional[Dict[str, str]] = None,
               failure: str = "") -> Optional[List[PlanStep]]:
@@ -387,7 +450,8 @@ class SwarmRunner:
         """
         system = "\n\n".join(part for part in (
             self._system_message.strip(),
-            PLAN_PROMPT.format(max_steps=self._max_plan_steps),
+            PLAN_PROMPT.format(max_steps=self._max_plan_steps,
+                               rungs=self._plan_rung_lines()),
             "Tools that exist here:\n" + self._short_catalogue(),
         ) if part)
         user_parts = [objective]
@@ -441,10 +505,14 @@ class SwarmRunner:
             done = str(entry.get("done") or "").strip()
             if not goal:
                 return None, f"steps[{position}] has no goal."
-            if rung not in RUNGS:
+            if rung not in self._rungs:
+                # Against the OFFERED rungs, not every rung that exists.
+                # A plan tagged `code+sdk` where no SDK was declared is
+                # rejected naming what is actually available, which is the
+                # repair the planner can act on.
                 return None, (
                     f'steps[{position}].rung is {rung!r}; it is one of '
-                    f'{", ".join(RUNGS)}.'
+                    f'{", ".join(self._rungs)}.'
                 )
             if sid in seen:
                 return None, f"step id {sid!r} appears twice."
@@ -595,8 +663,14 @@ class SwarmRunner:
         any of them, and never the rest of the plan.  This bound is the
         design: the executor's context must not grow with the mission.
         """
+        # `.get` with the plain-code fallback, and not a KeyError: a rung
+        # this run does not offer cannot reach here through `_read_plan`,
+        # and if a caller builds a `PlanStep` by hand, code without the
+        # SDK is the honest degradation of code with it.
+        sentence = self._rung_sentences.get(step.rung,
+                                            self._rung_sentences["code"])
         parts = [f"Step {step.id} of a plan: {step.goal}",
-                 f"Do it via: {_RUNG_SENTENCES[step.rung]}"]
+                 f"Do it via: {sentence}"]
         if step.done:
             parts.append(f"Success looks like: {step.done}")
         needed = [(sid, results[sid].summary) for sid in step.needs

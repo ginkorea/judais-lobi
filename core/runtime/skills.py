@@ -23,7 +23,14 @@ Three things come out of a manifest, and nothing else does:
 * an optional **grounding configuration**: the identifier grammar and
   the strictness a :mod:`core.runtime.grounding` validator enforces over
   the answer.  The grammar is content and lives in the file.  What the
-  harness owns is the checking.
+  harness owns is the checking;
+* an optional **SDK import name** (``sdk_import``): what a platform calls
+  itself to Python.  A planner that can propose *code which fetches
+  platform data itself* has to name the module that does the fetching,
+  and the harness cannot know it — the framework drives whatever platform
+  it is pointed at.  Declared here, it composes the sentence
+  :mod:`core.runtime.swarm` shows the executor; undeclared, that whole
+  rung is withheld rather than offered with a blank where the name goes.
 
 **The format is generic.**  Frontmatter between ``---`` fences, an
 optional ``skill:`` block for the operational fields, a Markdown body.
@@ -57,7 +64,7 @@ _OPTIONAL = "?"
 #: validator, the identity becomes the header line.
 _STRUCTURAL = frozenset({
     "name", "skill_id", "version", "description",
-    "allowed_tools", "grounding",
+    "allowed_tools", "grounding", "sdk_import",
 })
 
 #: Operational fields rendered first, in this order, with these labels.
@@ -145,6 +152,11 @@ class SkillManifest:
     #: The raw ``grounding:`` block, or ``None``.  Interpreted by
     #: :mod:`core.runtime.grounding`, never here.
     grounding: Optional[Dict[str, Any]] = None
+    #: What the platform's SDK is called to ``import``, or ``""``.  Read
+    #: by :mod:`core.runtime.swarm` to compose the ``code+sdk`` rung, and
+    #: the reason that rung is offered at all.  Empty is not a defect: a
+    #: platform reached only through its tools has no SDK to name.
+    sdk_import: str = ""
     source: Optional[Path] = None
 
     # ── loading ─────────────────────────────────────────────────────────
@@ -225,6 +237,21 @@ class SkillManifest:
             )
             grounding = None
 
+        # Refused rather than coerced. `sdk_import: [acme]` would render as
+        # "import ['acme']" in a sentence handed to a model, and the model
+        # would write that line.
+        raw_sdk = fields.get("sdk_import")
+        sdk_import = ""
+        if raw_sdk is not None:
+            if isinstance(raw_sdk, str) and raw_sdk.strip():
+                sdk_import = raw_sdk.strip()
+            else:
+                problems.append(
+                    f"`sdk_import:` holds a {type(raw_sdk).__name__}; it is "
+                    f"the module name a step would `import` to reach this "
+                    f"platform from code (sdk_import: acme), or absent"
+                )
+
         if not body.strip() and not any(
             fields.get(key) for key, _label in _PROMPT_FIELDS
         ):
@@ -250,6 +277,7 @@ class SkillManifest:
             prompt=cls._render_prompt(name, fields, body, output),
             output_contract=output,
             grounding=dict(grounding) if grounding is not None else None,
+            sdk_import=sdk_import,
             source=path,
         )
 

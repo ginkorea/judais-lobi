@@ -316,8 +316,8 @@ class TestBridge:
         _wait_for(lambda: "mcp.late_arrival" in bus.list_tools())
 
     def test_a_custom_namespace_is_honoured(self, client, bus):
-        names = McpToolBridge(client, bus, namespace="taipan").sync()
-        assert "taipan.echo" in names
+        names = McpToolBridge(client, bus, namespace="acme").sync()
+        assert "acme.echo" in names
 
 
 # ---------------------------------------------------------------------------

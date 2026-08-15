@@ -388,6 +388,10 @@ def _run_mission(elf, args, name, style):
                     history=history,
                     observer=sink,
                     plain_chat_fn=plain_chat_fn,
+                    # The manifest is the only thing here that knows what
+                    # the platform is called to `import`. Without it the
+                    # planner is not offered the code+sdk rung at all.
+                    sdk_import=manifest.sdk_import if manifest else "",
                 )
             else:
                 runner = MissionRunner(
@@ -736,65 +740,111 @@ def main_judais():
     _main(JudAIs)
 
 
-#: Where Tai's ``PersonalityConfig`` is looked for, in order, and why there are
-#: four sources rather than a constant.
+#: Where Tai's ``PersonalityConfig`` is looked for, in order, and why the
+#: search is two sources long rather than five.
 #:
-#: Tai is TAIPAN's agent and its personality file lives in TAIPAN — on purpose,
-#: so that a claim Tai makes about governance sits under the test suite that
-#: owns the governance. That makes it the one personality this repository ships
-#: without shipping: judais-lobi has to find a file it does not contain, and
-#: must not hard-code a path on one developer's laptop to do it.
+#: Tai's personality is content, and it belongs to whoever operates Tai —
+#: on purpose, so that a claim Tai makes about governance sits under the
+#: test suite that owns the governance. That makes it the one personality
+#: this framework ships without shipping: judais-lobi has to find a file
+#: it does not contain.
 #:
-#: The installed package is tried before the checkouts because it is the only
-#: source that is right by construction: if ``taipan`` imports, its ``tai.toml``
-#: is the one matching the SDK in that same environment. Env vars come first so
-#: an operator can always overrule the search.
+#: It used to do that by guessing. Three fixed directories under ``$HOME``
+#: and a sibling of the cwd, plus a deployment's own source layout frozen
+#: into a relative-path constant — one developer's laptop, shipped inside
+#: a package to every other machine. A guess that lands on the *wrong*
+#: checkout is worse than no guess at all: it produces an agent whose
+#: stated rules are not the rules it loaded, which is the exact failure
+#: this resolution exists to prevent.
+#:
+#: What is left is what can be right by construction. An operator's
+#: explicit path always wins. Otherwise the deployment package's own
+#: resource, because if it imports, its ``tai.toml`` is the one matching
+#: the code in that same environment. Nothing else is consulted, and
+#: nothing is invented: the third outcome is a refusal that names what was
+#: consulted.
 TAI_PERSONALITY_ENV = ("TAI_PERSONALITY", "ELF_PERSONALITY")
-TAI_PERSONALITY_RELPATH = Path("src/taipan/agent/personalities/tai.toml")
+
+#: The deployment package whose installed resources are consulted, and the
+#: file inside it. Named in one place so the refusal cannot drift from the
+#: lookup: an error message that names a package the code no longer tries
+#: is a message that sends an operator to fix the wrong thing.
+TAI_PERSONALITY_PACKAGE = "taipan.agent.personalities"
+TAI_PERSONALITY_RESOURCE = "tai.toml"
+
+
+def _installed_personality():
+    """Tai's personality from the installed deployment package, or ``None``.
+
+    The import is guarded and a missing package is an ordinary ``None``,
+    not an error: this framework is installable and runnable on its own,
+    and a deployment that is simply not present here is the common case
+    rather than a fault.
+    """
+    try:
+        from importlib.resources import files
+        resource = files(TAI_PERSONALITY_PACKAGE) / TAI_PERSONALITY_RESOURCE
+        if resource.is_file():
+            return Path(str(resource))
+    except (ImportError, ModuleNotFoundError, TypeError,
+            AttributeError, OSError):
+        pass
+    return None
 
 
 def tai_personality_path():
     """Tai's personality file, or ``None`` — never a guess.
 
-    Returning ``None`` rather than a plausible default is the point. A missing
-    personality would mean Tai starting on whatever config it was handed while
-    still calling itself Tai in the banner, which is the exact failure this
-    file exists to prevent: an agent whose stated rules are not the rules it
-    loaded. :func:`main_tai` turns ``None`` into a sentence naming everywhere
-    it looked.
+    Returning ``None`` rather than a plausible default is the point. A
+    missing personality would mean Tai starting on whatever config it was
+    handed while still calling itself Tai in the banner. :func:`main_tai`
+    turns ``None`` into a sentence naming exactly what was consulted.
     """
     for var in TAI_PERSONALITY_ENV:
         candidate = _env_path(var)
         if candidate and candidate.exists():
             return candidate
+    return _installed_personality()
 
-    try:  # the installed SDK — right by construction when it is present
-        from importlib.resources import files
-        resource = files("taipan.agent.personalities") / "tai.toml"
-        if resource.is_file():
-            return Path(str(resource))
-    except (ImportError, ModuleNotFoundError, TypeError, AttributeError):
-        pass
 
-    roots = []
-    if os.getenv("TAIPAN_HOME"):
-        roots.append(Path(os.environ["TAIPAN_HOME"]))
-    roots += [Path.home() / "data" / "workspace" / "TAIPAN",
-              Path.home() / "workspace" / "TAIPAN",
-              Path.cwd().parent / "TAIPAN"]
-    for root in roots:
-        candidate = root / TAI_PERSONALITY_RELPATH
-        if candidate.exists():
-            return candidate
-    return None
+def _personality_refusal() -> str:
+    """What was consulted, in the order it was consulted, and the fix.
+
+    Composed from the constants above rather than typed out, and it
+    distinguishes an env var that is unset from one that points at a file
+    that is not there — the second is a typo, the first is a missing
+    export, and they are not the same repair.
+    """
+    consulted = []
+    for var in TAI_PERSONALITY_ENV:
+        raw = (os.getenv(var) or "").strip()
+        state = f"set to {raw!r}, which is not a file" if raw else "unset"
+        consulted.append(f"  ${var} — {state}")
+    consulted.append(
+        f"  the installed {TAI_PERSONALITY_PACKAGE.split('.')[0]!r} package "
+        f"({TAI_PERSONALITY_PACKAGE}/{TAI_PERSONALITY_RESOURCE}) — not found"
+    )
+    return (
+        "Cannot find Tai's personality file (tai.toml).\n\n"
+        "Tai's personality is content and belongs to the deployment that "
+        "operates Tai, so that what Tai says about governance is tested "
+        "against the governance itself. This framework does not contain "
+        "it, and it does not guess at where a checkout of one might be.\n\n"
+        "Consulted, in this order:\n"
+        + "\n".join(consulted)
+        + "\n\nPoint it at a file:\n"
+        f"  export {TAI_PERSONALITY_ENV[0]}=/path/to/tai.toml\n"
+        "  python main.py tai <message> --personality /path/to/tai.toml"
+    )
 
 
 def main_tai():
-    """TAIPAN's mission agent, by name.
+    """The mission-agent personality, by name.
 
-    Everything Tai *is* lives in the TOML — the persona, the governance rules,
-    the default provider and model. This function contributes one thing: that
-    ``tai`` is a name you can type, and that typing it is enough.
+    Everything Tai *is* lives in the TOML — the persona, the governance
+    rules, the default provider and model. This function contributes one
+    thing: that ``tai`` is a name you can type, and that typing it is
+    enough.
     """
     import sys
 
@@ -803,17 +853,7 @@ def main_tai():
     if "--personality" not in sys.argv:
         found = tai_personality_path()
         if found is None:
-            print(
-                "Cannot find Tai's personality file (tai.toml).\n\n"
-                "Tai is TAIPAN's agent and its personality ships in TAIPAN, so "
-                "that what Tai says about governance is tested against the "
-                "governance itself. This repository does not contain it.\n\n"
-                "Any one of these fixes it:\n"
-                "  pip install taipan                     # found by import\n"
-                "  export TAIPAN_HOME=/path/to/TAIPAN\n"
-                "  export TAI_PERSONALITY=/path/to/tai.toml\n"
-                "  python main.py tai <message> --personality /path/to/tai.toml",
-                file=sys.stderr)
+            print(_personality_refusal(), file=sys.stderr)
             sys.exit(2)
         sys.argv += ["--personality", str(found)]
 

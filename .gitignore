@@ -1,6 +1,7 @@
 # Ignore Python virtual environments
 .jlenv/
 .judais-lobi-venv/
+.venv/
 
 # Ignore editor settings and caches
 .idea/
@@ -27,3 +28,14 @@ speech.wav
 # Byte-compiled and temporary files
 .DS_Store
 .judais-lobi/
+
+# A private handoff note between agents working this checkout. Untracked on
+# purpose: it is working correspondence, not a document the repository keeps.
+CLAUDE.local.md
+
+# Copies made before a risky edit, which exist on the deployment and have no
+# business travelling back. A `core.bak-*/` is a second copy of the package
+# on `sys.path`, and the stale one wins as often as not.
+*.bak-*
+*.bak-prehistory
+core.bak-*/

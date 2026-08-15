@@ -49,6 +49,7 @@ confirmed against the run.
 """
 
 import json
+import os
 import re
 from dataclasses import replace
 
@@ -663,15 +664,27 @@ class TestTheEvidenceIsTheRecording:
     Skipped where the recording is not on the machine — it is an operator's
     artifact directory, not a repository fixture — because a test that failed
     on a laptop would be deleted and this one is worth keeping.
+
+    The directory is named by whoever holds the recordings, in
+    ``TAI_RECORDINGS_DIR``, and there is no default: the absolute path that
+    used to be written here was one developer's home directory, which made
+    "skipped where the recording is not on the machine" true of every
+    machine but one, silently and with no way to opt in.
     """
 
-    CAPTURE = (
-        "/home/gompert/tai-recordings/read_a_finished_run/capture.jsonl")
+    #: Env var naming the directory of recordings, and the capture within it.
+    RECORDINGS_ENV = "TAI_RECORDINGS_DIR"
+    CAPTURE_RELPATH = "read_a_finished_run/capture.jsonl"
 
     @pytest.fixture
     def recorded(self):
         import pathlib
-        path = pathlib.Path(self.CAPTURE)
+        root = (os.getenv(self.RECORDINGS_ENV) or "").strip()
+        if not root:
+            pytest.skip(
+                f"set {self.RECORDINGS_ENV} to the directory holding "
+                f"{self.CAPTURE_RELPATH}; this check needs the capture")
+        path = pathlib.Path(root).expanduser() / self.CAPTURE_RELPATH
         if not path.is_file():
             pytest.skip(f"no recording at {path}; this check needs the capture")
         for line in path.read_text(encoding="utf-8").splitlines():
