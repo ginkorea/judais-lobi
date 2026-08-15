@@ -13,10 +13,14 @@ So the loop takes an **observer** — one callable, one dict per thing that
 happened — and this module is the observer that writes those dicts as NDJSON to
 a stream.  It is deliberately the whole of the streaming contract:
 
-* **the names below are the interface.**  A caller switches on ``event`` and
-  nothing else.  They are stated here, once, so that a harness on the other end
-  of a pipe is reading a published vocabulary rather than the field names of
-  whichever dataclass happened to be convenient;
+* **the names are the interface**, and they are declared in
+  :mod:`core.runtime.contract` and re-exported here.  A caller switches on
+  ``event`` and nothing else.  They live one module over because a stream is
+  one way to carry these records and not what they are — an observer that is a
+  queue or a websocket speaks the same vocabulary without going near NDJSON —
+  and because a consumer pinning a release of this repo needs the whole seam,
+  names and required fields and outcome words together, in one importable
+  place;
 * **these are this harness's own facts, not somebody's rendering of them.**
   ``tool_call`` says the model named a tool and ``tool_result`` says what came
   back through :meth:`ToolBus.dispatch`.  What a *consumer* decides about that —
@@ -42,71 +46,16 @@ from typing import Any, Callable, Dict, IO, Optional
 __all__ = [
     "MISSION_STARTED", "STEP_STARTED", "REPLY_REJECTED", "TOOL_CALL",
     "TOOL_RESULT", "GATE_REQUESTED", "ANSWER", "GROUNDING", "MISSION_FINISHED",
-    "EVENTS", "NdjsonSink", "open_sink",
+    "EVENTS", "NdjsonSink", "open_sink", "close_on_sigterm",
 ]
 
-
-#: The mission has begun.  ``objective``, ``catalogue`` (the tool names the
-#: model was offered, in order), ``gated`` (offered but needing a person),
-#: ``max_steps``, ``history`` (how many prior conversation turns were seeded
-#: ahead of the objective — a count, so a watcher can tell a continued
-#: conversation from a cold start without the turns travelling twice).
-MISSION_STARTED = "mission_started"
-
-#: A step of the plan/act loop is about to ask the model.  ``index``.
-STEP_STARTED = "step_started"
-
-#: The model's reply was not a decision this loop could act on — unparseable,
-#: not an object, no ``tool`` and no ``answer``, or a tool nobody offers.
-#: ``index``, ``problem`` (the sentence handed back to the model), ``tool`` when
-#: one was named.  A recorded step, never a crash, and never a guess at intent.
-REPLY_REJECTED = "reply_rejected"
-
-#: The model named a tool and the loop is about to dispatch it.  ``index``,
-#: ``tool``, ``arguments``.  **Emitted before the call**, which is what lets a
-#: watcher show what is about to happen rather than only what happened.
-TOOL_CALL = "tool_call"
-
-#: The bus answered.  ``index``, ``tool``, ``arguments``, ``ok``, ``exit_code``,
-#: ``output`` (stdout, whole — bounding is what the *model* is shown, not what a
-#: watcher is), ``error`` (stderr), ``handle`` (the mission store's handle for
-#: the full result), ``truncated``.
-TOOL_RESULT = "tool_result"
-
-#: The model named a tool this deployment offers **and gates**: the call was not
-#: made, and it will not be made unless somebody says so.  ``index``, ``tool``,
-#: ``arguments``, ``reason``.  The mission ends here — see
-#: :data:`~core.runtime.mission.AWAITING_APPROVAL`.
-#:
-#: The arguments travel verbatim, because what a person approves has to be the
-#: bytes that would run.
-GATE_REQUESTED = "gate_requested"
-
-#: The model finished.  ``text``.  One event, after any grounding repair turns,
-#: carrying exactly what :attr:`MissionTranscript.answer` will carry.
-ANSWER = "answer"
-
-#: What the grounding validator said, when one was configured.  ``ran``,
-#: ``grounded``, ``verified``, ``repairs``, ``caveat``, ``unsupported``,
-#: ``silent``, ``uncited``, ``checks`` (``[{check, configured, grounded,
-#: verdict, considered, minimum, unsupported, detail}]``).  Absent entirely
-#: when no grammar was supplied — an absent report and a clean one are
-#: different facts.
-#:
-#: So are ``grounded`` and ``verified``.  The first says nothing unsupported
-#: was found; the second says something was found to check at all.  A
-#: consumer reading only ``grounded`` cannot tell an answer that cited three
-#: things correctly from one that cited nothing — which is what six of the
-#: first ten measured missions did.
-GROUNDING = "grounding"
-
-#: Terminal.  ``outcome`` — the transcript's own word — and ``steps``.
-MISSION_FINISHED = "mission_finished"
-
-#: The closed vocabulary, so a consumer can assert it knows all of them.
-EVENTS: tuple[str, ...] = (
-    MISSION_STARTED, STEP_STARTED, REPLY_REJECTED, TOOL_CALL, TOOL_RESULT,
-    GATE_REQUESTED, ANSWER, GROUNDING, MISSION_FINISHED,
+# The vocabulary is `core.runtime.contract`'s to own — see its module docstring
+# for the compatibility rule and for what each record is required to carry.
+# Re-exported under the names they have always had here so that every existing
+# importer, in this repo and in whatever pinned a release of it, is untouched.
+from core.runtime.contract import (           # noqa: E402  (re-export)
+    ANSWER, EVENTS, GATE_REQUESTED, GROUNDING, MISSION_FINISHED,
+    MISSION_STARTED, REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
 )
 
 
@@ -140,6 +89,18 @@ class NdjsonSink:
         except (OSError, ValueError):
             # The watcher went away.  That is a fact about the watcher and
             # must never become a fact about the mission.
+            pass
+
+    def flush(self) -> None:
+        """Push whatever is buffered, and never raise.
+
+        Every line is flushed as it is written, so this is a no-op on the
+        ordinary path.  It exists for the path that is not ordinary: a signal
+        handler has microseconds and no business assuming which stream it got.
+        """
+        try:
+            self._stream.flush()
+        except (OSError, ValueError):
             pass
 
     def close(self) -> None:
@@ -177,6 +138,49 @@ def open_sink(spec: str) -> Optional[NdjsonSink]:
                           close=True)
     handle = open(spec, "a", encoding="utf-8")
     return NdjsonSink(handle, close=True)
+
+
+def close_on_sigterm(sink: Optional[NdjsonSink]) -> None:
+    """Flush and close ``sink`` if this process is asked to wind up.
+
+    A consumer that stops a turn sends ``SIGTERM`` and expects the events
+    already written to be on the transcript — TAIPAN's ``MissionAgent.stop``
+    says so in as many words, and picks ``SIGTERM`` over ``SIGKILL`` precisely
+    "so the harness gets to close its stream".  Nothing made that true.  The
+    default disposition kills the process outright: no ``finally`` runs, the
+    ``fd:`` sink is never closed, and a reader on the far end of the pipe is
+    left waiting on a descriptor nobody is going to shut.
+
+    So: flush, close, restore the default disposition, and re-raise the signal
+    at ourselves.  The last part matters — swallowing it would turn a killed
+    mission into a clean exit, and a consumer reading the exit status would be
+    told the turn finished.  It did not; it was stopped, and the status says
+    so.
+
+    Best effort by construction.  A platform without ``SIGTERM``, or a call
+    from a thread that is not the main one, is a no-op rather than a mission
+    that failed to start because somebody was watching it.
+    """
+    if sink is None:
+        return
+    import signal
+
+    term = getattr(signal, "SIGTERM", None)
+    if term is None:                            # pragma: no cover - not POSIX
+        return
+
+    def _wind_up(signum, frame):                # pragma: no cover - signalled
+        sink.flush()
+        sink.close()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    try:
+        signal.signal(term, _wind_up)
+    except (ValueError, OSError):
+        # Not the main thread, or a platform that will not have it. The
+        # mission is what matters and it runs either way.
+        pass
 
 
 #: The type the loop asks for.  Named so that a caller supplying its own
