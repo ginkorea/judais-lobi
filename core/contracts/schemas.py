@@ -100,7 +100,7 @@ class PersonalityConfig(BaseModel):
             except ImportError as exc:  # pragma: no cover - optional extra
                 raise ValueError(
                     f"{path.name} is YAML, which needs pyyaml: "
-                    f"pip install 'judais-lobi[critic]'"
+                    f"pip install 'judais-lobi[mission]'"
                 ) from exc
             return yaml.safe_load(path.read_text(encoding="utf-8"))
         try:

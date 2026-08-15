@@ -211,8 +211,8 @@ OUTCOMES: tuple[str, ...] = (
 # ── how a consumer spawns us ─────────────────────────────────────────────────
 
 #: The mission-mode flags a consumer may rely on.  Every one of these is
-#: accepted by :func:`core.cli.build_parser` and there is a test that says so;
-#: the rest of the CLI is a person's surface and may move.
+#: accepted by the parser :func:`core.cli._main` builds and there is a test
+#: that says so; the rest of the CLI is a person's surface and may move.
 CLI_FLAGS: tuple[str, ...] = (
     "--mission", "--mcp-url", "--mission-steps", "--provider", "--model",
     "--skill", "--swarm", "--events", "--history", "--gate-tool",
@@ -223,13 +223,23 @@ CLI_FLAGS: tuple[str, ...] = (
 #: read somewhere in ``core/``, and tested to still be.
 #:
 #: ``MCP_TOKEN`` and ``MCP_CLIENT_NAME`` are the tool plane's credential and
-#: the name it is announced under; ``ELF_PERSONALITY`` and ``TAI_PERSONALITY``
-#: point at persona files; ``LOCAL_API_BASE`` and ``LOCAL_MODEL`` aim the local
-#: backend; ``MISSION_SKILL`` and ``MISSION_SWARM`` are the environment forms of
-#: ``--skill`` and ``--swarm``.
+#: the name it is announced under; ``MCP_URL`` and ``MCP_STDIO`` are the
+#: environment forms of the two transports; ``ELF_PERSONALITY`` and
+#: ``TAI_PERSONALITY`` point at persona files, on **every** entry point and not
+#: only ``tai`` — ``TAI_PERSONALITY`` first where both are set;
+#: ``LOCAL_API_BASE`` and ``LOCAL_MODEL`` aim the local backend;
+#: ``MISSION_SKILL``, ``MISSION_SWARM``, ``MISSION_EVENTS`` and
+#: ``MISSION_HISTORY`` are the environment forms of ``--skill``, ``--swarm``,
+#: ``--events`` and ``--history``.
+#:
+#: Where a variable has a flag beside it, it is that flag's argparse
+#: default, so the flag still wins: a consumer that exports one and passes
+#: the other gets the one it passed.
 ENV_VARS: tuple[str, ...] = (
-    "MCP_TOKEN", "MCP_CLIENT_NAME", "ELF_PERSONALITY", "TAI_PERSONALITY",
-    "LOCAL_API_BASE", "LOCAL_MODEL", "MISSION_SKILL", "MISSION_SWARM",
+    "MCP_TOKEN", "MCP_CLIENT_NAME", "MCP_URL", "MCP_STDIO",
+    "ELF_PERSONALITY", "TAI_PERSONALITY",
+    "LOCAL_API_BASE", "LOCAL_MODEL",
+    "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
 )
 
 

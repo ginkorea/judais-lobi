@@ -432,3 +432,141 @@ class TestSwarmFlag:
         run_cli(MockClass, "--skill", str(skill_file))
         first_system = agent.seeds[0][0]["content"]
         assert "router" not in first_system
+
+
+class TestTheGate:
+    """`--gate-tool`, against the names the bus actually dispatches.
+
+    The consumer passes the wire spelling it read off its own tool table
+    — `compute_cancel_job` — and the bridge namespaces everything it
+    discovers, so the offered name is `mcp.compute_cancel_job`. Matched
+    with `in`, that gated nothing at all: the `🔒 gated:` line never
+    printed, the catalogue carried no approval marker, and the call a
+    person was meant to decide on was dispatched like any other. The
+    whole feature was off, and every surface said it was on.
+    """
+
+    def test_the_wire_spelling_gates_the_namespaced_tool(
+            self, elf, skill_file, capsys):
+        MockClass, agent = elf
+        agent.replies = [json.dumps(
+            {"tool": "mcp.governed_read", "arguments": {"asset_id": "asset.5f21"}})]
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--gate-tool", "governed_read")
+        out = capsys.readouterr().out
+        assert "gated: mcp.governed_read" in out
+        # And the gate did what a gate is for: the mission ended holding
+        # the proposed call, and nobody ran it.
+        assert "Waiting on a person" in out
+
+    def test_a_gate_naming_nothing_is_refused_at_the_door(self, elf, skill_file):
+        """Loudly, like a manifest naming a tool the server does not have.
+        Dropping it quietly is how the mismatch above stayed quiet: an
+        operator who asked for a gate and got a mission without one has
+        been told the opposite of what happened."""
+        MockClass, agent = elf
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--gate-tool", "runs_cancel")
+        assert "runs_cancel" in str(exc.value)
+        assert "mcp.governed_read" in str(exc.value)     # what WAS offered
+        assert agent.client.chat.call_count == 0
+
+
+class RecordingSink:
+    """What `--events` opens, near enough: an observer that can be closed."""
+
+    def __init__(self):
+        self.records, self.closed = [], 0
+
+    def __call__(self, record):
+        self.records.append(dict(record))
+
+    def close(self):
+        self.closed += 1
+
+
+class TestTheMissionWiring:
+    """Two lines in `_run_mission` that nothing downstream would notice.
+
+    Both are invisible to every assertion above. A mission with no
+    SIGTERM handler runs identically until somebody stops it; a staged
+    mission with no `sdk_import` runs identically until a planner wants
+    the `code+sdk` rung. Neither failure shows up in a transcript, which
+    is why they are asserted at the wiring instead.
+    """
+
+    def test_the_opened_sink_is_the_one_the_sigterm_handler_gets(
+            self, elf, skill_file, monkeypatch):
+        """A consumer stops a turn with SIGTERM rather than SIGKILL *so
+        that* what was already written survives. Without this call the
+        default disposition kills the process outright: no `finally`
+        runs, the `fd:` sink is never closed, and the reader on the far
+        end of the pipe waits on a descriptor nobody will shut."""
+        import core.runtime.mission_stream as stream
+
+        MockClass, _agent = elf
+        sink, handed = RecordingSink(), []
+        monkeypatch.setattr(stream, "open_sink", lambda spec: sink)
+        monkeypatch.setattr(stream, "close_on_sigterm", handed.append)
+
+        run_cli(MockClass, "--skill", str(skill_file))
+
+        assert handed == [sink]
+        # The same object, not merely one of the same kind: what the
+        # handler flushes has to be what the mission was writing to.
+        assert sink.records and sink.closed == 1
+
+    def test_the_manifests_sdk_name_reaches_the_staged_runner(
+            self, elf, tmp_path, monkeypatch):
+        """The manifest is the only thing here that knows what the
+        platform is called to `import`. Passing `""` instead withholds
+        the `code+sdk` rung from every planner, silently — the rung is
+        not offered, so nothing ever asks for it and nothing complains."""
+        import core.runtime.swarm as swarm_module
+
+        MockClass, agent = elf
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            SKILL.replace("  output_format: A table.\n",
+                          "  output_format: A table.\n  sdk_import: acme\n"),
+            encoding="utf-8")
+        agent.replies = [
+            '{"route": "direct"}',
+            json.dumps({"tool": "mcp.governed_read",
+                        "arguments": {"asset_id": "asset.5f21"}}),
+            json.dumps({"answer": "The asset is asset.5f21."}),
+        ]
+
+        captured = {}
+        real = swarm_module.SwarmRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        run_cli(MockClass, "--skill", str(path), "--swarm")
+
+        assert captured["sdk_import"] == "acme"
+
+    def test_no_manifest_declares_no_sdk_rather_than_guessing_one(
+            self, elf, monkeypatch):
+        import core.runtime.swarm as swarm_module
+
+        MockClass, agent = elf
+        agent.replies = ['{"route": "direct"}', '{"answer": "no tools needed"}']
+
+        captured = {}
+        real = swarm_module.SwarmRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        run_cli(MockClass, "--swarm")
+
+        assert captured["sdk_import"] == ""

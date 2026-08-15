@@ -108,12 +108,16 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 
 - `MCP_TOKEN` — the tool plane's credential.
 - `MCP_CLIENT_NAME` — the name this client is announced under.
-- `ELF_PERSONALITY` — a persona file for the elf.
-- `TAI_PERSONALITY` — a persona file for Tai.
+- `MCP_URL` — the environment form of `--mcp-url`.
+- `MCP_STDIO` — the environment form of `--mcp-stdio`, as a command line.
+- `ELF_PERSONALITY` — a persona file, on any entry point.
+- `TAI_PERSONALITY` — the same, on any entry point, and it wins over `ELF_PERSONALITY`.
 - `LOCAL_API_BASE` — where the local backend answers.
 - `LOCAL_MODEL` — which model it is serving.
 - `MISSION_SKILL` — the environment form of `--skill`.
 - `MISSION_SWARM` — the environment form of `--swarm`.
+- `MISSION_EVENTS` — the environment form of `--events`.
+- `MISSION_HISTORY` — the environment form of `--history`.
 
 ## The exit contract
 

@@ -327,6 +327,97 @@ class TestTheRefusalNamesWhatWasConsulted:
         cli.main_tai()
 
 
+class TestBothEnvNamesResolveOnEveryEntryPoint:
+    """`--personality`'s default, which is where `TAI_PERSONALITY` stopped.
+
+    `contract.ENV_VARS` publishes both names, but only `main_tai` read
+    `TAI_PERSONALITY`: the flag's default read `ELF_PERSONALITY` alone.
+    So a consumer that exported the *published* name and spawned
+    `judais --mission` — the documented way to run a mission — got the
+    JudAIs persona instead of the one it named, and nothing on stdout,
+    on stderr or on the event stream said so.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_env(self, monkeypatch):
+        from core.cli import TAI_PERSONALITY_ENV
+
+        for var in TAI_PERSONALITY_ENV:
+            monkeypatch.delenv(var, raising=False)
+
+    def _default(self, monkeypatch):
+        """`--personality`'s default as `judais` itself builds it.
+
+        Caught on the way to `parse_args` rather than rebuilt here: a
+        copy of the declaration in a test would keep passing forever
+        after somebody edited the real one.
+        """
+        import argparse
+        import sys
+
+        import core.cli as cli
+
+        class Caught(Exception):
+            pass
+
+        caught = {}
+
+        def capture(self, *args, **kwargs):
+            caught["parser"] = self
+            raise Caught
+
+        monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
+        monkeypatch.setattr(sys, "argv", ["judais", "hello"])
+        with pytest.raises(Caught):
+            cli.main_judais()
+        return caught["parser"].get_default("personality")
+
+    def test_the_published_name_resolves(self, toml_file, monkeypatch):
+        monkeypatch.setenv("TAI_PERSONALITY", str(toml_file))
+        assert self._default(monkeypatch) == toml_file
+
+    def test_the_historical_name_still_resolves(self, toml_file, monkeypatch):
+        """`ELF_PERSONALITY` is what the reference deployment exports.
+        Nothing about publishing a second name may cost it that."""
+        monkeypatch.setenv("ELF_PERSONALITY", str(toml_file))
+        assert self._default(monkeypatch) == toml_file
+
+    def test_the_published_name_wins_when_both_are_set(
+            self, toml_file, tmp_path, monkeypatch):
+        """Stated rather than left to be discovered, and it is the same
+        order `tai_personality_path` already resolves in. Nothing
+        regresses on the choice: the reference deployment exports only
+        the historical name, so the two are never both set by anything
+        that exists today."""
+        other = tmp_path / "other.toml"
+        other.write_text(TOML, encoding="utf-8")
+        monkeypatch.setenv("TAI_PERSONALITY", str(toml_file))
+        monkeypatch.setenv("ELF_PERSONALITY", str(other))
+        assert self._default(monkeypatch) == toml_file
+
+    def test_neither_set_leaves_the_entry_points_own_personality(
+            self, monkeypatch):
+        assert self._default(monkeypatch) is None
+
+    def test_the_order_is_the_one_tai_resolves_in(self):
+        """One owner for the order, so the two paths cannot disagree
+        about which file an operator meant."""
+        from core.cli import TAI_PERSONALITY_ENV
+
+        assert TAI_PERSONALITY_ENV == ("TAI_PERSONALITY", "ELF_PERSONALITY")
+
+    def test_a_path_that_points_nowhere_is_still_the_answer(
+            self, tmp_path, monkeypatch):
+        """Unlike `tai_personality_path`, which needs the file to exist
+        because it has a package resource to fall back to. Here the
+        alternative is a built-in persona under an operator who believes
+        they replaced it, so a typo has to reach
+        `PersonalityConfig.from_file` and be named there."""
+        typo = tmp_path / "gone.toml"
+        monkeypatch.setenv("TAI_PERSONALITY", str(typo))
+        assert self._default(monkeypatch) == typo
+
+
 class TestCliWiring:
     def test_no_flag_builds_the_built_in_personality(self, monkeypatch):
         from argparse import Namespace
