@@ -360,7 +360,7 @@ console and the value is on the wire.
 
 ### A personality from a file
 
-`--personality <path>` (or `ELF_PERSONALITY`) loads a `PersonalityConfig` from
+`--personality <path>` (or `TAI_PERSONALITY`, then `ELF_PERSONALITY`) loads a `PersonalityConfig` from
 TOML, JSON or YAML. The keys are that model's fields and nothing else — an
 unknown key is refused by name. JudAIs and Lobi are unaffected.
 
