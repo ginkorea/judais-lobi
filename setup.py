@@ -23,6 +23,15 @@ setup(
         "pydantic>=2.11.0",
         "annotated-types>=0.7.0",
         "certifi>=2025.8.3",
+        # `tomllib` is 3.11+. `python_requires` is 3.10, and
+        # core/contracts/schemas.py reads a TOML personality by importing
+        # `tomllib`, falling back to `tomli`, and raising ValueError when
+        # neither is there. That is core, not an extra: the reference
+        # deployment points ELF_PERSONALITY at a `tai.toml`, so on a clean
+        # 3.10 install every turn dies before `mission_started` — the
+        # silence the exit contract says a consumer must report as a
+        # failure, caused by a wheel nobody declared.
+        'tomli>=1.2; python_version < "3.11"',
     ],
     extras_require={
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
@@ -31,11 +40,11 @@ setup(
         # core/tools/mcp_client.py is the only importer, and imports it lazily.
         "mcp": ["mcp>=1.25,<2"],
         # What a mission actually needs, as one name. `mcp` alone installs
-        # a runnable mission and a silently ungoverned one: `--skill` reads
-        # YAML frontmatter, and with no pyyaml the manifest never loads —
-        # so the closed tool set is never applied and the grounding check
-        # never runs, while the transcript looks exactly like a governed
-        # one. Both, or neither.
+        # half of it: `--skill` reads YAML frontmatter, and with no pyyaml
+        # `load_skill` raises `SkillManifestError`, which `_load_skill`
+        # turns into `SystemExit`. So the failure is loud and nothing runs
+        # ungoverned — the extra exists to spare an operator discovering
+        # that at the door and installing the second half by hand.
         "mission": ["mcp>=1.25,<2", "pyyaml>=6.0"],
         "critic": [
             "anthropic>=0.30.0",

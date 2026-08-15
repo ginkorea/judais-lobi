@@ -105,7 +105,7 @@ def _require_yaml(path: Path):
     except ImportError as exc:  # pragma: no cover - optional extra
         raise SkillManifestError(
             f"{path.name} has YAML frontmatter, which needs pyyaml: "
-            f"pip install 'judais-lobi[critic]'"
+            f"pip install 'judais-lobi[mission]'"
         ) from exc
     return yaml
 

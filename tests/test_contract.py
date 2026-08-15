@@ -20,6 +20,7 @@ the module a program imports.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import signal
@@ -80,9 +81,75 @@ def _run(replies, *, gated=(), tools=("catalog_search_assets",), max_steps=4,
 
 
 def _faults(records):
-    """Every problem across a whole stream, said with the record that had it."""
-    return [f"{record.get('event')}: {problem}"
-            for record in records for problem in c.conforms(record)]
+    """Every problem across a whole stream, said with the record that had it.
+
+    Two checks, and the second is deliberately stricter than the first.
+    :func:`~core.runtime.contract.conforms` is what a *consumer* runs, and
+    it tolerates a key it has never heard of on purpose: an added optional
+    field is a minor change by the rule at the top of that module, and a
+    checker that failed on one would make every additive release breaking.
+
+    This repo's own emitters are held tighter than its consumers, in both
+    directions.  ``FIELDS`` is the floor — ``conforms`` covers that half —
+    and ``FIELDS | OPTIONAL`` is the ceiling, which is the half nothing
+    checked.  A field an event does not declare is a field a consumer will
+    meet and have no sentence for, and it is also what a *removal* from
+    ``FIELDS`` looks like from here: drop ``reason`` from
+    ``GATE_REQUESTED`` and the record that still carries it fails on this
+    line, rather than only where ``CONTRACT.md`` is compared with the
+    module.
+    """
+    problems = []
+    for record in records:
+        event = record.get("event")
+        problems += [f"{event}: {problem}" for problem in c.conforms(record)]
+        if event not in c.FIELDS:
+            continue
+        declared = set(c.FIELDS[event]) | set(c.OPTIONAL.get(event, ()))
+        for name in sorted(set(record) - {"event"} - declared):
+            problems.append(f"{event}: undeclared field {name!r}")
+    return problems
+
+
+def _staged(validator=None):
+    """A two-step staged mission over a real bus, and what it emitted.
+
+    Factored out because the staged path is a second emitter and drifted
+    once already, so it is exercised twice from here: once as it runs for
+    a caller with no grounding grammar, and once with one — the branch
+    that emits a ``grounding`` record at all, and therefore the only
+    branch in which its shape is a fact rather than a hope.
+    """
+    from core.contracts.schemas import PolicyPack
+    from core.runtime.swarm import SwarmRunner
+    from core.tools.bus import ToolBus
+    from core.tools.capability import CapabilityEngine
+    from core.tools.descriptors import ToolDescriptor
+
+    bus = ToolBus(capability_engine=CapabilityEngine(
+        PolicyPack(allowed_scopes=["*"])))
+    bus.register(
+        ToolDescriptor(tool_name="catalog.search",
+                       description="search tool. Second sentence."),
+        lambda **kw: (0, "corpus abc123", ""))
+
+    seen = []
+    plain = _replies(
+        json.dumps({"route": "staged"}),
+        json.dumps({"steps": [
+            {"id": "s1", "goal": "search", "rung": "tool"},
+            {"id": "s2", "goal": "search again", "rung": "tool",
+             "needs": ["s1"]}]}),
+        "the synthesized answer, which names abc123")
+    executor = _replies(
+        json.dumps({"tool": "catalog.search", "arguments": {"q": "x"}}),
+        json.dumps({"answer": "abc123"}),
+        json.dumps({"tool": "catalog.search", "arguments": {"q": "y"}}),
+        json.dumps({"answer": "abc123 again"}))
+    SwarmRunner(executor, bus, ["catalog.search"],
+                system_message="You are Tai.", plain_chat_fn=plain,
+                validator=validator, observer=seen.append).run("search twice")
+    return seen
 
 
 # ── the events a real loop emits are the events the contract declares ────────
@@ -154,37 +221,33 @@ class TestAMissionConformsToItsOwnContract:
     def test_a_staged_swarm_speaks_the_same_vocabulary(self):
         """The staged path is a second emitter and drifted once already. Same
         contract or it is not one contract."""
-        from core.contracts.schemas import PolicyPack
-        from core.runtime.swarm import SwarmRunner
-        from core.tools.bus import ToolBus
-        from core.tools.capability import CapabilityEngine
-        from core.tools.descriptors import ToolDescriptor
-
-        bus = ToolBus(capability_engine=CapabilityEngine(
-            PolicyPack(allowed_scopes=["*"])))
-        bus.register(
-            ToolDescriptor(tool_name="catalog.search",
-                           description="search tool. Second sentence."),
-            lambda **kw: (0, "corpus abc123", ""))
-
-        seen = []
-        plain = _replies(
-            json.dumps({"route": "staged"}),
-            json.dumps({"steps": [
-                {"id": "s1", "goal": "search", "rung": "tool"},
-                {"id": "s2", "goal": "search again", "rung": "tool",
-                 "needs": ["s1"]}]}),
-            "the synthesized answer")
-        executor = _replies(
-            json.dumps({"tool": "catalog.search", "arguments": {"q": "x"}}),
-            json.dumps({"answer": "abc123"}),
-            json.dumps({"tool": "catalog.search", "arguments": {"q": "y"}}),
-            json.dumps({"answer": "abc123 again"}))
-        SwarmRunner(executor, bus, ["catalog.search"],
-                    system_message="You are Tai.", plain_chat_fn=plain,
-                    observer=seen.append).run("search twice")
+        seen = _staged()
         assert [r["event"] for r in seen][0] == ms.MISSION_STARTED
         assert _faults(seen) == []
+
+    def test_a_staged_swarms_grounding_record_is_the_whole_record(self):
+        """The drift itself, pinned where it happened.
+
+        A staged mission emits ``grounding`` only when a validator was
+        configured, so until one was configured here the shape of that
+        record was never exercised on this path — which is exactly how it
+        came to carry six of the ten fields the direct path's does, hand
+        listed at the emit. Ten fields through the same renderer, checked
+        as a key SET rather than by picking out the ones somebody
+        remembered: a consumer switching on ``event`` gets one shape per
+        event, or it does not have a vocabulary.
+        """
+        from core.runtime.grounding import GroundingConfig, GroundingValidator
+
+        seen = _staged(GroundingValidator.from_config(
+            GroundingConfig.from_mapping(
+                {"identifier_pattern": r"\babc[0-9a-z]{3,}\b"})))
+        assert _faults(seen) == []
+        grounding = [r for r in seen if r["event"] == ms.GROUNDING]
+        assert len(grounding) == 1, "a validator ran and said nothing"
+        assert set(grounding[0]) - {"event"} == (
+            set(c.FIELDS[ms.GROUNDING])
+            | set(c.OPTIONAL.get(ms.GROUNDING, ())))
 
 
 class TestTheTwoAdditiveFields:
@@ -351,10 +414,38 @@ class TestTheSpawningSurface:
             assert getattr(args, flag.lstrip("-").replace("-", "_")) is not None
 
     def test_every_published_env_var_is_one_something_reads(self):
-        source = "\n".join(path.read_text()
-                           for path in sorted((REPO / "core").rglob("*.py")))
+        """Not a substring grep. That version passed on a name that appeared
+        only in a comment, or only in the tuple two screens up that publishes
+        it — a claim satisfying itself.
+
+        So: the name has to be a string literal *whose whole value is the
+        name*, parsed out of the syntax tree, in a module that reads the
+        environment at all. A comment never becomes a node; a docstring or
+        a ``help=`` sentence that mentions the name becomes one node
+        holding the whole sentence, not the name. And ``contract.py``
+        itself is excluded by construction — it publishes the list and
+        imports nothing outside the standard library, so it can no longer
+        satisfy its own claim.
+
+        It deliberately does not insist on ``os.getenv("NAME")``
+        adjacency. This repo reads an env var through ``_env_path(name)``
+        and through ``os.environ.get(CLIENT_NAME_ENV)`` as often as
+        directly, and a rule that recognised only one spelling would push
+        the next author towards the spelling the test likes rather than
+        the one the code wants.
+        """
+        readers = {}
+        for path in sorted((REPO / "core").rglob("*.py")):
+            source = path.read_text()
+            if "os.getenv" not in source and "os.environ" not in source:
+                continue
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    readers.setdefault(node.value, set()).add(path.name)
+
         for name in c.ENV_VARS:
-            assert name in source, f"{name} is published and nothing reads it"
+            assert name in readers, (
+                f"{name} is published and nothing under core/ reads it")
 
 
 # ── the human rendering says the same thing as the machine one ───────────────

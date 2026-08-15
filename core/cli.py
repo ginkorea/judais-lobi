@@ -35,8 +35,9 @@ def _build_agent(AgentClass, args):
 
     ``--personality`` swaps the ``PersonalityConfig`` and nothing else:
     the same ``Agent`` class, the same memory, the same tools.  JudAIs
-    and Lobi are untouched — with no flag and no ``ELF_PERSONALITY``,
-    this is the line that was here before.
+    and Lobi are untouched — with no flag and neither personality
+    variable set (see :func:`_personality_default`), this is the line
+    that was here before.
     """
     if not getattr(args, "personality", None):
         return AgentClass(model=args.model, provider=args.provider), AgentClass.__name__
@@ -94,6 +95,53 @@ def _load_skill(args):
         return load_skill(args.skill)
     except SkillManifestError as exc:
         raise SystemExit(f"--skill: {exc}")
+
+
+def _resolve_gates(wanted, offered):
+    """``--gate-tool`` names as the bus dispatches them, or a refusal.
+
+    One question, one answer.  :func:`~core.tools.descriptors.same_tool`
+    is this harness's rule for *"are these the same tool"*, already
+    shared by :meth:`SkillManifest.resolve`, ``MissionRunner._near_miss``
+    and the grounding ignore rule.  A gate was the last surface still
+    asking it with ``in``, and exact membership is a rule the consumer
+    cannot satisfy: TAIPAN passes the wire spelling off its own tool
+    table (``compute_cancel_job``) while the bridge namespaces what it
+    discovers (``mcp.compute_cancel_job``).  So every gate matched
+    nothing, the ``🔒 gated:`` line never printed, and the call somebody
+    was meant to approve was dispatched like any other.
+
+    An unresolvable gate is a **refusal**, at the door, like a manifest
+    naming a tool the server does not have.  Dropping it quietly is how
+    the bug above stayed quiet for as long as it did: an operator who
+    asked for a gate and got a mission without one has been told the
+    opposite of what happened, by a run that looks perfectly normal.
+    """
+    from core.tools.descriptors import same_tool
+
+    offered = list(offered)
+    resolved, problems = [], []
+    for name in wanted:
+        matches = [candidate for candidate in offered
+                   if same_tool(candidate, name)]
+        if len(matches) == 1:
+            if matches[0] not in resolved:
+                resolved.append(matches[0])
+        elif matches:
+            problems.append(
+                f"{name!r} matches {len(matches)} offered tools "
+                f"({', '.join(sorted(matches))}); name it with its namespace "
+                f"so the mission gates the intended one")
+        else:
+            problems.append(f"{name!r} is not a tool this mission offers")
+    if problems:
+        raise SystemExit(
+            "--gate-tool: " + "; ".join(problems)
+            + ".\nOffered: " + (", ".join(offered) or "(none)")
+            + "\n\nA gate that names nothing is refused rather than ignored: "
+              "a mission that runs without the gate you asked for is the one "
+              "outcome you did not ask for.")
+    return resolved
 
 
 def _load_history(args):
@@ -357,8 +405,8 @@ def _run_mission(elf, args, name, style):
                     + ("" if validator else "  (no grounding grammar)"),
                     style=style,
                 )
-            gated = [name for name in (getattr(args, "gate_tool", None) or [])
-                     if name in tool_names]
+            gated = _resolve_gates(getattr(args, "gate_tool", None) or [],
+                                   tool_names)
             if gated:
                 console.print(
                     f"🔒 gated: {', '.join(gated)} — offered and not called; "
@@ -469,11 +517,13 @@ def _main(AgentClass):
                         help="Force provider backend "
                              "('local' = an OpenAI-compatible endpoint at "
                              "LOCAL_API_BASE serving LOCAL_MODEL)")
+    # Both published names, in the published order — see
+    # `_personality_default` and `TAI_PERSONALITY_ENV` below.
     parser.add_argument("--personality", type=Path,
-                        default=_env_path("ELF_PERSONALITY"),
+                        default=_personality_default(),
                         help="Load a PersonalityConfig from a TOML/JSON/YAML "
                              "file instead of the built-in one "
-                             "(env: ELF_PERSONALITY)")
+                             "(env: TAI_PERSONALITY, then ELF_PERSONALITY)")
 
     # mission mode: the model picks the tool, from a server's tools/list
     parser.add_argument("--mission", action="store_true",
@@ -764,6 +814,42 @@ def main_judais():
 #: nothing is invented: the third outcome is a refusal that names what was
 #: consulted.
 TAI_PERSONALITY_ENV = ("TAI_PERSONALITY", "ELF_PERSONALITY")
+
+
+def _personality_default():
+    """The persona file an environment set, or ``None`` — for any entry.
+
+    The order is :data:`TAI_PERSONALITY_ENV`: ``TAI_PERSONALITY`` first,
+    then ``ELF_PERSONALITY``, then nothing, which leaves whichever
+    built-in personality the typed entry point carries.  Two names
+    because :data:`core.runtime.contract.ENV_VARS` publishes two:
+    ``ELF_PERSONALITY`` is the historical one the reference deployment
+    exports into the agent's environment, and ``TAI_PERSONALITY`` is the
+    one the contract names.
+
+    Until this read both, only :func:`main_tai` honoured
+    ``TAI_PERSONALITY``.  The ``--personality`` default read
+    ``ELF_PERSONALITY`` alone, so a consumer that set the *published*
+    name and spawned ``judais --mission`` — the documented way to run a
+    mission — got the JudAIs persona, and nothing on any stream said so.
+
+    The published name wins where both are set.  Nothing regresses on
+    that choice: the reference deployment exports only the historical
+    one, so the two are never both set by anything that exists today,
+    and a process that sets both has named the specific one on purpose.
+
+    Unlike :func:`tai_personality_path` this does **not** require the
+    file to exist.  A path that points nowhere becomes
+    ``PersonalityConfig.from_file``'s "No personality file at ..." —
+    which names the typo — rather than a silent fall-through to a
+    built-in persona under an operator who believes they replaced it.
+    """
+    for var in TAI_PERSONALITY_ENV:
+        found = _env_path(var)
+        if found is not None:
+            return found
+    return None
+
 
 #: The deployment package whose installed resources are consulted, and the
 #: file inside it. Named in one place so the refusal cannot drift from the
