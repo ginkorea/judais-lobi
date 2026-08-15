@@ -1,11 +1,14 @@
 from setuptools import setup, find_packages
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 
 setup(
     name="judais-lobi",
     version=VERSION,
-    packages=find_packages(),
+    # tests/ is importable (it has an __init__.py) so a bare find_packages()
+    # would ship a top-level `tests` module into every site-packages. 0.8.0's
+    # wheel was caught doing exactly that at release time.
+    packages=find_packages(exclude=["tests", "tests.*"]),
     include_package_data=True,
     install_requires=[
         "openai>=1.0.0",
@@ -88,7 +91,7 @@ setup(
         ],
     },
     author="Josh Gompert",
-    description="JudAIs & Lobi v0.8.0 — Terminal agents and a governed mission runtime over a unified OpenAI/Mistral backend, with memory and tools",
+    description="JudAIs & Lobi v0.8.1 — Terminal agents and a governed mission runtime over a unified OpenAI/Mistral backend, with memory and tools",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/judais-lobi",

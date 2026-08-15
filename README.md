@@ -391,7 +391,7 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.8.0 — 1782 tests collected.** Mission mode, skill manifests, the grounding
+**v0.8.1 — 1782 tests collected.** Mission mode, skill manifests, the grounding
 validator, `--swarm`, the NDJSON mission stream and the published contract are
 all in this release. `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
 how a platform deploys this framework as its own agent.

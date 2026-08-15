@@ -119,3 +119,21 @@ class TestRequirementsMirrorsSetupPy:
         hard requirements while omitting mcp entirely."""
         names = {re.split(r"[<>=;\[ ]", line)[0] for line in _requirements_lines()}
         assert not names & {"torch", "TTS", "torchaudio", "mcp", "pyyaml"}
+
+
+class TestTheWheelDoesNotShipTheTests:
+    """`tests/` has an `__init__.py`, so it is a package as far as
+    `find_packages()` is concerned — and 0.8.0's wheel was found carrying a
+    top-level `tests` module at release time, one `pip install` away from
+    shadowing every other project's `tests`. The exclusion is the fix; this
+    pins it in the same AST the other checks read."""
+
+    def test_find_packages_excludes_tests(self):
+        call = _setup_kwargs()["packages"]
+        assert isinstance(call, ast.Call) and call.func.id == "find_packages"
+        excluded = [ast.literal_eval(kw.value)
+                    for kw in call.keywords if kw.arg == "exclude"]
+        assert excluded, "find_packages() with no exclude ships tests/"
+        (names,) = excluded
+        assert "tests" in names and "tests.*" in names
+
