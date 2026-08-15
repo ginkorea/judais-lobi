@@ -48,13 +48,26 @@ Frontier models are expensive, rate-limited, and increasingly censored. If you w
 ## Quickstart
 
 1. Install:
-   `pip install judais-lobi`
+   `pip install judais-lobi` — or, from a checkout and with everything a mission
+   needs, `pip install -e '.[mission]'`.
 2. Set an API key (OpenAI is the default today):
    `export OPENAI_API_KEY=sk-...`
 3. Run a task:
    `lobi "summarize this repo"`
 4. Use tools explicitly:
    `lobi --shell "ls -la"`
+
+Three commands are installed, one per agent. They take the same flags; only the
+personality differs.
+
+| command | agent |
+| --- | --- |
+| `lobi` | 🧝 the mischievous one — a general assistant |
+| `judais` | 🧠 the sharp one — a general assistant |
+| `tai` | the mission-agent personality — governed tools over MCP, cites every claim, never sees source. Its personality file belongs to the deployment that operates it; `tai` finds that file or refuses, naming what it consulted |
+
+`python main.py [lobi|judais|tai] <message> [flags]` reaches the same three
+without installing anything, and `python main.py --help` lists them.
 
 ### Local inference
 
@@ -80,10 +93,16 @@ server whose tools are discovered at runtime, so `--mission` puts the catalogue
 in front of the model instead:
 
 ```bash
-pip install 'judais-lobi[mcp]'
+pip install 'judais-lobi[mission]'
 lobi --mission --mcp-stdio 'python -m some_mcp_server' "what governed datasets exist?"
 lobi --mission --mcp-url https://host/mcp   "..."   # bearer token in MCP_TOKEN
 ```
+
+`[mission]`, not `[mcp]`. The narrower extra installs a *runnable* mission and a
+silently **ungoverned** one: `--skill` reads YAML frontmatter, so with no
+`pyyaml` the manifest never loads, the closed tool set is never applied and the
+grounding check never runs — while the transcript looks exactly like a governed
+one. Both halves, or neither.
 
 Each tool a server advertises is registered into the existing `ToolBus` as a
 `ToolDescriptor` whose executor dispatches `tools/call`, namespaced `mcp.<name>`
@@ -92,6 +111,38 @@ the audit log apply to it exactly as to `fs` or `git`. The tool's JSON Schema is
 carried whole on the descriptor, so the catalogue the model reads says
 `type (string: dataset|model|service)` and not just `type` — types, `required`
 and enums are what decide whether a first call to a faceted search works.
+
+#### The mission-mode surface
+
+These flags are a **contract**, not a convenience: `core/runtime/contract.py`
+publishes them as `CLI_FLAGS`, a test asserts the parser takes every one, and a
+program that spawns this harness may rely on them. The rest of `--help` is a
+person's surface and may move.
+
+| flag | env | what it does |
+| --- | --- | --- |
+| `--mission` | — | run as a mission rather than a chat turn |
+| `--mcp-url` | `MCP_URL` | the tool plane, over streamable HTTP |
+| `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. One of the two, never both |
+| `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps` |
+| `--mission-steps` | — | hard cap on tool turns. Default **8**, and it counts parse-error turns too |
+| `--provider` | — | `openai`, `mistral` or `local` |
+| `--model` | — | which model on it |
+| `--skill` | `MISSION_SKILL` | a `SKILL.md` manifest, or a directory holding one |
+| `--swarm` | `MISSION_SWARM` | stage the mission when it needs staging |
+| `--events` | `MISSION_EVENTS` | where the NDJSON account goes: `-`, `fd:N`, or a path |
+| `--history` | `MISSION_HISTORY` | a JSON file of prior conversation turns |
+| `--gate-tool` | — | a tool to offer and refuse to call. Repeatable |
+| `--temperature` | — | sampling. Unset sends **nothing** and the server's own default applies |
+| `--top-p` | — | nucleus sampling. Unset sends nothing |
+| `--seed` | — | a seed where the server honours one. Not a determinism guarantee |
+
+The rest of the published environment: `MCP_CLIENT_NAME` is what this client
+calls itself in the MCP `initialize` handshake — set it to the agent's name, or a
+server that governs by principal records every call as an anonymous one, and
+anything scoring the agent from the audit trail measures it as having called
+nothing. `ELF_PERSONALITY` and `TAI_PERSONALITY` point at persona files;
+`LOCAL_API_BASE` and `LOCAL_MODEL` aim the local backend.
 
 ### A skill manifest — `--skill`
 
@@ -200,11 +251,134 @@ drafting a finding declares one, and an answer with nothing in it fails. A
 load: a requirement that never binds is the original hole wearing the name of
 the fix for it.
 
+### Gates — a tool offered, and not called
+
+`--gate-tool NAME` (repeatable) names a tool this deployment offers **and
+gates**. It is shown in the catalogue, marked. If the model names it, the call is
+not made: the mission emits `gate_requested` carrying the proposed arguments
+**verbatim** — what a person approves has to be the bytes that would run — and
+ends at outcome `awaiting_approval`.
+
+**There is deliberately no flag that answers a gate.** A harness that could
+approve its own proposal has a gate that is a formality. Whoever is driving the
+mission resumes by spawning a new one with that tool dropped from its
+`--gate-tool` list, which widens the closed set by exactly one tool, for exactly
+one turn, after exactly one person said so.
+
+Name a gated tool the way the resolved catalogue names it: unlike
+`allowed_tools`, gate names are matched by exact membership in the resolved set,
+and bridged tools are namespaced (`mcp.cancel_job`, not `cancel_job`).
+
+### `--swarm` — staged decomposition, when it is needed
+
+A 20B model at 59 tok/s drowns in one long transcript. By step six of a single
+mission the catalogue lookups that told it what its numbers mean have been pushed
+out of attention by three governed views, and the answer is written from the part
+it can still see. The fix is not a longer prompt; it is *shorter ones*.
+
+`--swarm` (or `MISSION_SWARM`) puts five small roles over **the same backend and
+the same tool bus**: triage, plan, execute, gate, synthesize. Triage is one cheap
+call and is biased to running the ordinary loop — a swarm that makes "what's
+trending" slower is a regression, so every failure of the router falls back to
+DIRECT. Each executed step is its own small mission with a tight budget; earlier
+steps arrive as short summaries, never as raw output. The closed tool set, the
+gating, the audit and the events vocabulary are all exactly the direct path's, so
+a watcher sees one mission with more steps.
+
+Each planned step is tagged with a **rung** — `tool`, `code`, or `code+sdk`. The
+last one is offered only when the skill manifest declares `sdk_import`, because
+"import the platform SDK" with no SDK named is an invitation to invent a module
+and a 20B accepts it.
+
+### The mission stream — `--events`
+
+`MissionRunner.run` returns a transcript when the mission is over. That is the
+right shape for a terminal and the wrong shape for anything that has to *show* a
+mission to somebody while it runs — a mission on a local 20B is minutes long, and
+a caller holding only `run()` has nothing to render for all of them.
+
+So the loop takes an observer, and `--events` writes what it sees as NDJSON: one
+JSON object per line, flushed as it happens, UTF-8 and unescaped.
+
+```
+--events -        stdout, for a person with jq
+--events fd:N     an inherited descriptor — what a harness uses
+--events PATH     a file, opened for append
+```
+
+**stdout is prose for a person and must not be parsed.** The event sink is the
+only machine channel, which is why a consumer uses `fd:` or a path and never `-`:
+the console rendering and the record stream never share bytes.
+
+The vocabulary — nine event types, their required and optional fields, the five
+outcome words, the exit contract, and the rule for what is a breaking change —
+is **[`CONTRACT.md`](CONTRACT.md)**, and its authority is
+`core/runtime/contract.py`. A consumer pins it:
+
+```python
+from core.runtime import contract
+assert contract.SCHEMA_VERSION == 1     # fails at import, which is cheap
+problems = contract.conforms(record)    # [] when the record is fine
+```
+
+`conforms` is pure and standard-library only and imports nothing this repo owns,
+so a consumer that cannot import an agent framework can vendor that one file and
+have the whole seam.
+
+### `--history` — a conversation, not a paragraph
+
+`--history FILE` seeds prior turns into the model's message list as **real
+role-tagged chat turns**, ahead of the objective. The file is a JSON array of
+`{"role": "user"|"assistant", "content": "..."}`, oldest first; `system` is
+refused, because system text belongs to the harness and tool turns are this
+mission's own to make. Caps are 100 turns and 262,144 characters, and a malformed
+history is a refusal at the door rather than a silent drop — a dropped history is
+the bug this flag fixes wearing a different hat.
+
+A file rather than an argument, for the same reason `--mcp-token` prefers the
+environment: a conversation is many kilobytes and argv is world-readable in
+`/proc/<pid>/cmdline`.
+
+**A caller passing this must not also fold the history into the message.** A
+chat-tuned model attends to role-tagged turns and skims past the same text pasted
+into the objective: measured 12 August 2026, "tell me more about #2"
+web-searched `#2` literally while the list sat two lines up in the prompt.
+
+### Sampling — stated, or the server's own
+
+`--temperature`, `--top-p` and `--seed` are unset by default, and unset means
+**unsent**: the request carries no sampling parameters and the server's own
+default applies. That is deliberate. Pinning `temperature=0` would make the agent
+easier to measure by making it a different agent — it collapses the noise instead
+of measuring it, and a noise floor taken at a temperature nobody ships is not a
+floor. What was missing was never a temperature but the *ability to state one and
+see what went out*; "server default" is a setting nobody chose, and an upgrade
+can move it with nothing in any log. When one is passed, the CLI says so on the
+console and the value is on the wire.
+
+`--seed` is not a determinism guarantee. A batching server can still vary.
+
 ### A personality from a file
 
 `--personality <path>` (or `ELF_PERSONALITY`) loads a `PersonalityConfig` from
 TOML, JSON or YAML. The keys are that model's fields and nothing else — an
 unknown key is refused by name. JudAIs and Lobi are unaffected.
+
+`tai` resolves its own file instead of being handed one: `$TAI_PERSONALITY`, then
+`$ELF_PERSONALITY`, then the installed deployment package's own resource. Nothing
+else is consulted and nothing is invented — the third outcome is a refusal naming
+what was checked. A guess that lands on the wrong checkout is worse than no
+guess, because it starts an agent whose stated rules are not the rules it loaded.
+
+### For platforms
+
+If you are wiring this framework into a platform — giving it a personality,
+giving it capabilities as MCP tools and a skill manifest, driving it as a
+subprocess and pinning a release — that is its own guide:
+**[`PLATFORMS.md`](PLATFORMS.md)**. It covers the personality format and how to
+add a new named agent, the `SKILL.md` fields including `sdk_import`, the exact
+spawn shape, the release-and-pin loop, and the list of things that must never
+enter this repository. TAIPAN is the worked example throughout.
 
 ## Extensibility
 
@@ -217,9 +391,18 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-See: `ROADMAP.md` 
+**v0.8.0 — 1782 tests collected.** Mission mode, skill manifests, the grounding
+validator, `--swarm`, the NDJSON mission stream and the published contract are
+all in this release. `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
+how a platform deploys this framework as its own agent.
+
+`ROADMAP.md` and `PHASE_8.md` are historical (Feb 2026): they describe the plan,
+not the code that is here now.
 
 ### Completed
+
+The counts below are the suite totals **at the time each phase landed**, kept as
+a record of how it grew. The current total is the one above.
 
 * ✅ Phase 0 — Dependency Injection & Test Harness (73 tests)
 * ✅ Phase 1 — Runtime extraction (provider separation, 107 tests)
@@ -299,13 +482,21 @@ Tools are dumb executors behind a capability-gated bus. The kernel decides every
 
 # 🧭 Where To Look
 
-If you want to understand the **future**, read:
+If you are **running this from another program**, read:
 
-* 📜 `ROADMAP.md` — architectural blueprint 
+* 📄 `CONTRACT.md` — the mission stream, its events and the exit contract
+* 📄 `PLATFORMS.md` — deploying judais-lobi as a platform's agent
+
+If you want to understand the **plan it grew from**, read:
+
+* 📜 `ROADMAP.md` — the Feb 2026 architectural blueprint. Historical
 
 If you want to understand the **current implementation**, inspect:
 
 * `core/agent.py` — concrete Agent class (replaced `elf.py` in Phase 3)
+* `core/runtime/contract.py` — the seam a consumer pins, as data
+* `core/runtime/mission.py`, `mission_stream.py`, `swarm.py` — the mission loop, its NDJSON account, and staged decomposition
+* `core/runtime/skills.py` — the `SKILL.md` loader: closed tool set, prompt, grounding grammar, `sdk_import`
 * `core/contracts/` — Pydantic v2 contract models for all session data
 * `core/sessions/` — SessionManager for disk artifact persistence
 * `core/kernel/` — state machine, budgets, orchestrator, workflow templates (`workflows.py`)
@@ -455,16 +646,31 @@ lobi "sing" --voice
 # 🧪 Install
 
 ```bash
-pip install judais-lobi
+pip install judais-lobi                 # the base install
+pip install -e '.[mission]'             # from a checkout, with everything a mission needs
 ```
 
 Requires:
 
-* Python 3.10+
-* OpenAI API key (for now)
+* Python 3.10+ (`setup.py`'s floor; a TOML personality on 3.10 also needs `tomli`)
+* A model to talk to: an API key for a hosted provider, or an OpenAI-compatible
+  endpoint for `--provider local`
 * Linux recommended
 
-Set API key:
+Every optional stack is an **extra**, not a requirement — a plain install stays
+small enough that `judais --help` works without any of them, and the SDK an extra
+pulls in is imported lazily.
+
+| extra | what it adds |
+| --- | --- |
+| `mission` | `mcp` + `pyyaml` — what a governed mission actually needs. **This is the one a platform installs** |
+| `mcp` | the MCP client alone. Enough to run a mission, not enough to govern one |
+| `critic` | the external frontier-model critic, and `pyyaml` |
+| `treesitter` | multi-language symbol extraction for the repo map |
+| `voice` | TTS |
+| `dev` | pytest and coverage |
+
+Set an API key:
 
 ```bash
 export OPENAI_API_KEY=sk-...

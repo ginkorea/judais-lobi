@@ -1,3 +1,5 @@
+> Historical (Feb 2026). For current behaviour see README.md, CONTRACT.md, PLATFORMS.md.
+
 # ROADMAP.md
 **Project:** judais-lobi
 **Objective:** Transform judais-lobi into a local-first, contract-driven, autonomous execution kernel — starting with software development, generalizable to any structured task domain.
