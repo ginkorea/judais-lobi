@@ -150,7 +150,7 @@ class TestPlan:
         assert transcript.answer == "found"
         assert plain.calls == 2          # triage + plan; no gate, no synth
 
-    def test_a_bad_rung_is_reprompted_with_the_problem_named(self, bus):
+    def _bad_rung_repair(self, bus, **kw):
         plain = ScriptedModel(
             STAGED,
             plan({"id": "s1", "goal": "search", "rung": "magic"},
@@ -162,9 +162,21 @@ class TestPlan:
         executor = ScriptedModel(
             tool_call("catalog.search", q="x"), '{"answer": "abc123"}',
             tool_call("run_code", code="print(1)"), '{"answer": "counted 1"}')
-        transcript = swarm(plain, executor, bus).run("search then count")
+        transcript = swarm(plain, executor, bus, **kw).run("search then count")
         assert transcript.completed
-        repair = plain.seen[2][-1]["content"]
+        return plain.seen[2][-1]["content"]
+
+    def test_a_bad_rung_is_reprompted_with_the_problem_named(self, bus):
+        """The repair lists the rungs this run OFFERS, not every rung that
+        exists: with no SDK declared, `code+sdk` is not one of them, and
+        naming it here would send the planner back down a route the same
+        validator would refuse again."""
+        repair = self._bad_rung_repair(bus)
+        assert "'magic'" in repair and "tool, code." in repair
+        assert "code+sdk" not in repair
+
+    def test_the_repair_names_the_sdk_rung_once_one_is_declared(self, bus):
+        repair = self._bad_rung_repair(bus, sdk_import="acme")
         assert "'magic'" in repair and "tool, code, code+sdk" in repair
 
     def test_needs_may_only_name_earlier_steps(self, bus):
@@ -261,23 +273,87 @@ class TestStagedHappyPath:
 
 
 class TestRungSdk:
-    def test_a_code_sdk_step_is_told_to_import_taipan(self, bus):
-        plain = ScriptedModel(
-            STAGED,
-            plan({"id": "s1", "goal": "fetch run numbers and plot them",
-                  "rung": "code+sdk"},
-                 {"id": "s2", "goal": "report", "rung": "tool",
-                  "needs": ["s1"]}),
-            "final")
+    """The `code+sdk` rung names the platform, so the platform names it.
+
+    This rung used to carry a constant reading `import taipan` — one
+    deployment's module name, in the framework that is supposed to drive
+    any of them, and the module docstring two screens above promising that
+    a role never names a platform's particulars. The name now arrives from
+    the skill manifest's `sdk_import`, and where no manifest declares one
+    the rung is withheld rather than offered with a blank in it: a step
+    told to "import the platform SDK" with no SDK named is an invitation
+    to invent a module, and a 20B accepts it.
+    """
+
+    SDK_PLAN = staticmethod(lambda: plan(
+        {"id": "s1", "goal": "fetch run numbers and plot them",
+         "rung": "code+sdk"},
+        {"id": "s2", "goal": "report", "rung": "tool", "needs": ["s1"]},
+    ))
+
+    def _run_sdk_plan(self, bus, **kw):
+        plain = ScriptedModel(STAGED, self.SDK_PLAN(), "final")
         executor = ScriptedModel(
-            tool_call("run_code", code="import taipan"),
+            tool_call("run_code", code="import acme"),
             '{"answer": "plotted"}',
             tool_call("catalog.search", q="x"),
             '{"answer": "reported"}')
-        swarm(plain, executor, bus).run("plot a run")
+        swarm(plain, executor, bus, **kw).run("plot a run")
+        return plain, executor
+
+    def test_a_declared_sdk_is_the_name_the_executor_is_given(self, bus):
+        _plain, executor = self._run_sdk_plan(bus, sdk_import="acme")
         step1 = executor.seen[0][-1]["content"]
-        assert "import taipan" in step1
+        assert "import acme" in step1
         assert "credential is already in the execution environment" in step1
+
+    def test_the_declared_name_is_the_only_one_that_appears(self, bus):
+        """No deployment's module name survives in the framework."""
+        _plain, executor = self._run_sdk_plan(bus, sdk_import="acme")
+        assert "taipan" not in executor.seen[0][-1]["content"]
+
+    def test_a_declared_sdk_is_offered_to_the_planner_by_name(self, bus):
+        plain, _executor = self._run_sdk_plan(bus, sdk_import="acme")
+        planner_prompt = plain.seen[1][0]["content"]
+        assert '"code+sdk"' in planner_prompt
+        assert "import acme" in planner_prompt
+
+    def test_no_declared_sdk_withholds_the_rung_from_the_planner(self, bus):
+        plain = ScriptedModel(STAGED, self.SDK_PLAN(), plan(
+            {"id": "s1", "goal": "count", "rung": "code"}), "final")
+        executor = ScriptedModel(tool_call("run_code", code="c"),
+                                 '{"answer": "counted"}')
+        swarm(plain, executor, bus).run("plot a run")
+        planner_prompt = plain.seen[1][0]["content"]
+        assert '"code+sdk"' not in planner_prompt
+        assert '"tool"' in planner_prompt and '"code"' in planner_prompt
+
+    def test_no_declared_sdk_never_says_taipan_anywhere(self, bus):
+        """The literal that was in the source, gone from every surface."""
+        plain = ScriptedModel(STAGED, plan(
+            {"id": "s1", "goal": "count", "rung": "code"}), "final")
+        executor = ScriptedModel(tool_call("run_code", code="c"),
+                                 '{"answer": "counted"}')
+        swarm(plain, executor, bus).run("count things")
+        shown = [m["content"] for seen in (*plain.seen, *executor.seen)
+                 for m in seen]
+        assert not any("taipan" in text.lower() for text in shown)
+
+    def test_a_plan_using_the_withheld_rung_is_refused_by_name(self, bus):
+        """The planner is corrected with the rungs it may actually use."""
+        plain = ScriptedModel(STAGED, self.SDK_PLAN(), plan(
+            {"id": "s1", "goal": "count", "rung": "code"}), "final")
+        executor = ScriptedModel(tool_call("run_code", code="c"),
+                                 '{"answer": "counted"}')
+        swarm(plain, executor, bus).run("plot a run")
+        correction = plain.seen[2][-1]["content"]
+        assert "code+sdk" in correction
+        assert "tool, code" in correction
+
+    def test_the_rung_set_shrinks_by_exactly_the_sdk_rung(self):
+        from core.runtime.swarm import RUNGS, RUNGS_WITHOUT_SDK, SDK_RUNG
+
+        assert set(RUNGS) - set(RUNGS_WITHOUT_SDK) == {SDK_RUNG}
 
 
 # ── GATE and ITERATE: mechanical first, bounded retries, one re-plan ─────

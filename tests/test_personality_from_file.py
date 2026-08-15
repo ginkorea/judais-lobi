@@ -131,6 +131,202 @@ class TestTheBuiltInsAreUntouched:
         assert len(LOBI_CONFIG.examples) == 4
 
 
+class TestTaiPersonalityResolution:
+    """Two sources and a refusal — and nothing that guesses at a path.
+
+    The resolution used to search `~/data/workspace/TAIPAN`,
+    `~/workspace/TAIPAN` and `../TAIPAN`, with the deployment's own source
+    layout frozen into a relative-path constant. That is one developer's
+    laptop shipped to every machine that installs this package, and a
+    guess landing on the *wrong* checkout is worse than no guess: it
+    starts an agent whose stated governance rules are not the rules it
+    loaded, and the banner says Tai either way.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_env(self, monkeypatch):
+        """Neither alias set, so a developer's shell cannot green these."""
+        from core.cli import TAI_PERSONALITY_ENV
+
+        for var in TAI_PERSONALITY_ENV:
+            monkeypatch.delenv(var, raising=False)
+
+    @pytest.fixture
+    def no_installed_package(self, monkeypatch):
+        """No deployment package importable here — the standalone case."""
+        import importlib.resources
+
+        def absent(_name):
+            raise ModuleNotFoundError("no such package")
+
+        monkeypatch.setattr(importlib.resources, "files", absent)
+
+    def test_tai_personality_wins(self, toml_file, monkeypatch):
+        from core.cli import tai_personality_path
+
+        monkeypatch.setenv("TAI_PERSONALITY", str(toml_file))
+        assert tai_personality_path() == toml_file
+
+    def test_elf_personality_is_the_alias_taipan_sets(self, toml_file, monkeypatch):
+        """TAIPAN exports `ELF_PERSONALITY` into the agent's environment;
+        dropping this alias would break the one deployment there is."""
+        from core.cli import tai_personality_path
+
+        monkeypatch.setenv("ELF_PERSONALITY", str(toml_file))
+        assert tai_personality_path() == toml_file
+
+    def test_the_first_alias_wins_when_both_are_set(self, toml_file, tmp_path,
+                                                    monkeypatch):
+        from core.cli import tai_personality_path
+
+        other = tmp_path / "other.toml"
+        other.write_text(TOML, encoding="utf-8")
+        monkeypatch.setenv("TAI_PERSONALITY", str(toml_file))
+        monkeypatch.setenv("ELF_PERSONALITY", str(other))
+        assert tai_personality_path() == toml_file
+
+    def test_an_env_var_pointing_nowhere_is_not_a_path(
+            self, tmp_path, monkeypatch, no_installed_package):
+        from core.cli import tai_personality_path
+
+        monkeypatch.setenv("TAI_PERSONALITY", str(tmp_path / "gone.toml"))
+        assert tai_personality_path() is None
+
+    def test_nothing_configured_is_none_and_not_a_default(
+            self, monkeypatch, no_installed_package):
+        from core.cli import tai_personality_path
+
+        assert tai_personality_path() is None
+
+    def test_a_checkout_lying_around_is_not_consulted(
+            self, tmp_path, monkeypatch, no_installed_package):
+        """THE regression. Build every layout the old search would have
+        hit — under `$HOME` and beside the cwd — and resolve to nothing."""
+        import os
+        from pathlib import Path
+
+        from core.cli import tai_personality_path
+
+        home = tmp_path / "home"
+        relpath = Path("src/taipan/agent/personalities/tai.toml")
+        for root in (home / "data" / "workspace" / "TAIPAN",
+                     home / "workspace" / "TAIPAN",
+                     tmp_path / "cwd" / ".." / "TAIPAN"):
+            planted = (root / relpath).resolve()
+            planted.parent.mkdir(parents=True, exist_ok=True)
+            planted.write_text(TOML, encoding="utf-8")
+
+        (tmp_path / "cwd").mkdir(exist_ok=True)
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        monkeypatch.setenv("TAIPAN_HOME", str(home / "data" / "workspace" / "TAIPAN"))
+        monkeypatch.chdir(tmp_path / "cwd")
+
+        assert tai_personality_path() is None
+        assert os.getenv("TAIPAN_HOME")   # set, and deliberately ignored
+
+    def test_an_installed_package_resource_is_used(self, toml_file, monkeypatch):
+        """The one source that is right by construction: if the deployment
+        imports, its `tai.toml` matches the code in that environment."""
+        import importlib.resources
+
+        from core.cli import (
+            TAI_PERSONALITY_PACKAGE, TAI_PERSONALITY_RESOURCE,
+            tai_personality_path,
+        )
+
+        asked = {}
+
+        def fake_files(name):
+            asked["package"] = name
+            return toml_file.parent
+
+        monkeypatch.setattr(importlib.resources, "files", fake_files)
+        found = tai_personality_path()
+        assert asked["package"] == TAI_PERSONALITY_PACKAGE
+        assert found == toml_file.parent / TAI_PERSONALITY_RESOURCE
+
+    def test_an_absent_package_is_a_normal_none_not_an_error(
+            self, monkeypatch, no_installed_package):
+        """This framework is installable and runnable on its own. A
+        deployment that simply is not here is the common case."""
+        from core.cli import tai_personality_path
+
+        assert tai_personality_path() is None
+
+
+class TestTheRefusalNamesWhatWasConsulted:
+    """A refusal that does not say where it looked teaches nothing."""
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_env(self, monkeypatch):
+        from core.cli import TAI_PERSONALITY_ENV
+
+        for var in TAI_PERSONALITY_ENV:
+            monkeypatch.delenv(var, raising=False)
+
+    def test_it_names_both_env_aliases_and_the_package(self):
+        from core.cli import (
+            TAI_PERSONALITY_ENV, TAI_PERSONALITY_PACKAGE, _personality_refusal,
+        )
+
+        message = _personality_refusal()
+        for var in TAI_PERSONALITY_ENV:
+            assert f"${var}" in message
+        assert TAI_PERSONALITY_PACKAGE in message
+
+    def test_it_says_how_to_point_at_a_file(self):
+        from core.cli import _personality_refusal
+
+        message = _personality_refusal()
+        assert "export TAI_PERSONALITY=/path/to/tai.toml" in message
+        assert "--personality /path/to/tai.toml" in message
+
+    def test_it_names_no_directory_it_did_not_consult(self):
+        """It used to advertise `TAIPAN_HOME` and a laptop's checkouts."""
+        from core.cli import _personality_refusal
+
+        message = _personality_refusal()
+        assert "TAIPAN_HOME" not in message
+        assert "workspace" not in message
+
+    def test_an_env_var_set_to_nothing_reads_differently_from_an_unset_one(
+            self, tmp_path, monkeypatch):
+        """A typo and a missing export are not the same repair."""
+        from core.cli import _personality_refusal
+
+        monkeypatch.setenv("TAI_PERSONALITY", str(tmp_path / "typo.toml"))
+        message = _personality_refusal()
+        assert "typo.toml" in message and "not a file" in message
+        assert "$ELF_PERSONALITY — unset" in message
+
+    def test_main_tai_exits_2_with_that_sentence(self, monkeypatch, capsys):
+        import sys
+
+        import core.cli as cli
+
+        monkeypatch.setattr(cli, "tai_personality_path", lambda: None)
+        monkeypatch.setattr(sys, "argv", ["tai", "hello"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main_tai()
+        assert exc.value.code == 2
+        assert "Cannot find Tai's personality file" in capsys.readouterr().err
+
+    def test_an_explicit_personality_flag_skips_resolution_entirely(
+            self, monkeypatch):
+        import sys
+
+        import core.cli as cli
+
+        def refuse():
+            raise AssertionError("resolution ran despite --personality")
+
+        monkeypatch.setattr(cli, "tai_personality_path", refuse)
+        monkeypatch.setattr(cli, "_main", lambda _agent: "ran")
+        monkeypatch.setattr(sys, "argv",
+                            ["tai", "hi", "--personality", "/some/tai.toml"])
+        cli.main_tai()
+
+
 class TestCliWiring:
     def test_no_flag_builds_the_built_in_personality(self, monkeypatch):
         from argparse import Namespace

@@ -9,6 +9,7 @@ that answers from the model's memory of the platform — and the
 transcript looks like every other transcript.
 """
 
+import os
 import textwrap
 from pathlib import Path
 
@@ -352,16 +353,106 @@ class TestGroundingBlock:
         assert load_skill(path).grounding is None
 
 
+class TestSdkImport:
+    """What the platform is called to `import`, said by the platform.
+
+    The framework drives whatever platform it is pointed at, so it cannot
+    know this name — and it used to, as a constant in
+    `core.runtime.swarm` reading `import taipan`. Here it is content, like
+    the tool names and the grounding grammar beside it.
+    """
+
+    def test_a_declared_name_is_carried(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: with-sdk
+            allowed_tools: [alpha]
+            sdk_import: acme
+            when_to_use: Something.
+            ---
+            Body.
+            """)
+        assert load_skill(path).sdk_import == "acme"
+
+    def test_absence_is_empty_and_not_a_guess(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: no-sdk
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            ---
+            Body.
+            """)
+        assert load_skill(path).sdk_import == ""
+
+    def test_it_is_structural_and_not_repeated_as_prose(self, tmp_path):
+        """It reaches the model through the rung sentence, once. Rendered
+        as prose as well, a manifest would be telling the model to import
+        something in a paragraph that is not the instruction to do so."""
+        path = write(tmp_path, """\
+            ---
+            name: with-sdk
+            allowed_tools: [alpha]
+            sdk_import: acme
+            when_to_use: Something.
+            ---
+            Body.
+            """)
+        assert "sdk_import" not in load_skill(path).prompt
+
+    def test_it_travels_in_a_skill_block_too(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: with-sdk
+            skill:
+              allowed_tools: [alpha]
+              sdk_import: acme
+              when_to_use: Something.
+            ---
+            Body.
+            """)
+        assert load_skill(path).sdk_import == "acme"
+
+    def test_a_non_string_is_refused_and_not_coerced(self, tmp_path):
+        """`import ['acme']` is a line a model will write if it is shown."""
+        path = write(tmp_path, """\
+            ---
+            name: bad-sdk
+            allowed_tools: [alpha]
+            sdk_import: [acme]
+            when_to_use: Something.
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        assert "sdk_import" in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # Against the real files this format was read off
 # ---------------------------------------------------------------------------
 
-TAIPAN_SKILLS = Path("/home/gompert/data/workspace/TAIPAN/src/taipan/skills")
+#: A directory of ``<name>/SKILL.md`` manifests written by a real
+#: deployment, named by the operator who has one. It used to be one
+#: developer's absolute path, which made the check silently machine-shaped:
+#: green on that laptop, skipped everywhere else, and nothing in the skip
+#: reason told anyone what to install or export to change that.
+SKILLS_DIR_ENV = "TAIPAN_SKILLS_DIR"
+
+_configured = (os.getenv(SKILLS_DIR_ENV) or "").strip()
+TAIPAN_SKILLS = Path(_configured).expanduser() if _configured else None
 
 real_skills = pytest.mark.skipif(
-    not TAIPAN_SKILLS.is_dir(),
-    reason="the TAIPAN checkout this format was read off is not on this host",
+    TAIPAN_SKILLS is None or not TAIPAN_SKILLS.is_dir(),
+    reason=f"set {SKILLS_DIR_ENV} to a directory of <name>/SKILL.md manifests "
+           f"a real deployment ships; there is no default path",
 )
+
+
+def _real_manifests():
+    """Every manifest under the configured directory, or none at all."""
+    return sorted(TAIPAN_SKILLS.glob("*/SKILL.md")) if TAIPAN_SKILLS else []
 
 
 @real_skills
@@ -373,7 +464,7 @@ class TestAgainstRealManifests:
     only reads its own fixture is a parser that has agreed with itself.
     """
 
-    @pytest.mark.parametrize("path", sorted(TAIPAN_SKILLS.glob("*/SKILL.md")),
+    @pytest.mark.parametrize("path", _real_manifests(),
                              ids=lambda p: p.parent.name)
     def test_it_loads_with_a_closed_set_and_a_prompt(self, path):
         manifest = SkillManifest.from_file(path)
@@ -381,7 +472,7 @@ class TestAgainstRealManifests:
         assert manifest.allowed_tools
         assert len(manifest.prompt) > 1000
 
-    @pytest.mark.parametrize("path", sorted(TAIPAN_SKILLS.glob("*/SKILL.md")),
+    @pytest.mark.parametrize("path", _real_manifests(),
                              ids=lambda p: p.parent.name)
     def test_the_densest_rules_survive_the_round_trip(self, path):
         """The point of loading these at all: the operational knowledge
