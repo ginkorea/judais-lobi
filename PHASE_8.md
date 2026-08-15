@@ -1,3 +1,5 @@
+> Historical (Feb 2026). For current behaviour see README.md, CONTRACT.md, PLATFORMS.md.
+
 # Phase 8 Plan — Retrieval, Context Discipline & Local Inference
 
 **Status:** Planned (no GPU available for local inference testing).
