@@ -173,7 +173,7 @@ def _run_mission(elf, args, name, style):
     """
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
-    from core.runtime.mission_stream import open_sink
+    from core.runtime.mission_stream import close_on_sigterm, open_sink
     from core.runtime.results import RESULT_TOOL
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
@@ -320,6 +320,9 @@ def _run_mission(elf, args, name, style):
         sink = open_sink(getattr(args, "events", "") or "")
     except (ValueError, OSError) as exc:
         raise SystemExit(f"--events: {exc}")
+    # A consumer stopping a turn sends SIGTERM and expects what was already
+    # written to survive. Nothing made that true until this line.
+    close_on_sigterm(sink)
 
     try:
         with McpClient(transport) as client:

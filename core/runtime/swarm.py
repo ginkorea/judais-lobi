@@ -56,9 +56,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
-    AWAITING_APPROVAL, MissionRunner, MissionTranscript, validate_history,
+    AWAITING_APPROVAL, MissionRunner, MissionTranscript, _grounding_record,
+    validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -463,7 +465,8 @@ class SwarmRunner:
         offered = [*self._tool_names, RESULT_TOOL]
         transcript = MissionTranscript(objective=objective,
                                        catalogue=list(offered))
-        self._emit(MISSION_STARTED, objective=objective, catalogue=offered,
+        self._emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
+                   objective=objective, catalogue=offered,
                    gated=list(self._gated), max_steps=self._max_steps,
                    history=len(self._history),
                    plan=[{"id": s.id, "goal": s.goal, "rung": s.rung}
@@ -473,7 +476,8 @@ class SwarmRunner:
             outcome = self._work_through(objective, plan, transcript, stage)
         finally:
             self._emit(MISSION_FINISHED, outcome=transcript.outcome,
-                       steps=len(transcript.steps))
+                       steps=len(transcript.steps),
+                       max_steps=self._max_steps)
         return outcome
 
     def _work_through(self, objective: str, plan: List[PlanStep],
@@ -698,10 +702,12 @@ class SwarmRunner:
         else:
             transcript.outcome = "answered_with_caveat" if failed else "answered"
         if report is not None:
-            self._emit(GROUNDING, ran=report.ran, grounded=report.grounded,
-                       verified=report.verified, repairs=report.repairs,
-                       caveat=report.caveat or "",
-                       unsupported=list(report.unsupported or ()))
+            # Through the SAME renderer the direct path uses. Hand-listing the
+            # fields here is how this record came to be six of the ten the
+            # contract requires: a consumer switching on `event` gets one shape
+            # per event or it is not a vocabulary.
+            self._emit(GROUNDING, **_grounding_record(
+                report, repairs=report.repairs, caveat=report.caveat or ""))
         self._emit(ANSWER, text=transcript.answer, outcome=transcript.outcome)
         return transcript
 

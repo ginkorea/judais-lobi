@@ -45,6 +45,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -493,7 +494,11 @@ class MissionRunner:
         # `history` is a count, not the turns: a watcher needs to tell a
         # seeded conversation from a cold start, and the turns themselves
         # already travelled once — TAIPAN holds the thread it sent.
-        self._emit(MISSION_STARTED, objective=objective, catalogue=list(offered),
+        # `schema_version` first and on the FIRST record, so a consumer that
+        # is going to refuse this stream refuses it before it has rendered
+        # anything from it. See `core.runtime.contract`.
+        self._emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
+                   objective=objective, catalogue=list(offered),
                    gated=self.gated, max_steps=self._max_steps,
                    history=len(self._history))
         try:
@@ -505,8 +510,13 @@ class MissionRunner:
             # the watcher the mission is over. A stream that just stops is
             # indistinguishable from an agent that is thinking, and a pane
             # showing a spinner forever is the state an analyst cannot leave.
+            # `max_steps` beside `steps` because the two are only meaningful
+            # against each other. Six of a stated twenty-four is not an agent
+            # that ran out of room, and a consumer holding only the six has no
+            # way to stop a reader reading it as one.
             self._emit(MISSION_FINISHED, outcome=transcript.outcome,
-                       steps=len(transcript.steps))
+                       steps=len(transcript.steps),
+                       max_steps=self._max_steps)
 
     def _register_store(self) -> str:
         """Put the result store on the bus for the length of this run.
