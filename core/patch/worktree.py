@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, Tuple
 
+from core.durable import atomic_write_json
 from core.tools.executor import run_subprocess
 
 
@@ -48,7 +49,7 @@ class PatchWorktree:
             "branch_name": self._branch_name,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
-        state_file.write_text(json.dumps(data), encoding="utf-8")
+        atomic_write_json(state_file, data)
 
     def _delete_state(self) -> None:
         """Remove active.json."""

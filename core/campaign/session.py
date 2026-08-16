@@ -10,6 +10,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from core.durable import atomic_write_json, atomic_write_text
 from core.sessions.manager import load_context_warnings, write_context_warning
 
 
@@ -43,13 +44,11 @@ class CampaignSession:
 
     def write_campaign_file(self, name: str, data: BaseModel) -> Path:
         path = self._campaign_dir / name
-        path.write_text(data.model_dump_json(indent=2))
-        return path
+        return atomic_write_text(path, data.model_dump_json(indent=2))
 
     def write_campaign_json(self, name: str, data: dict) -> Path:
         path = self._campaign_dir / name
-        path.write_text(json.dumps(data, indent=2))
-        return path
+        return atomic_write_json(path, data, indent=2)
 
     def step_dir(self, step_id: str) -> Path:
         if not _is_safe_id(step_id):
@@ -88,8 +87,7 @@ class StepSessionManager:
         schema_name = type(artifact).__name__
         filename = f"{sequence:03d}_{phase_name}_{schema_name}.json"
         path = self._artifacts_dir / filename
-        path.write_text(artifact.model_dump_json(indent=2))
-        return path
+        return atomic_write_text(path, artifact.model_dump_json(indent=2))
 
     def load_latest_artifact(self, phase_name: str):
         matches = sorted(self._artifacts_dir.glob(f"*_{phase_name}_*.json"))
@@ -123,7 +121,7 @@ class StepSessionManager:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         for src in self._artifacts_dir.glob("*.json"):
             dst = checkpoint_dir / src.name
-            dst.write_text(src.read_text())
+            atomic_write_text(dst, src.read_text())
         return checkpoint_dir.parent
 
     def rollback(self, label: str) -> None:
@@ -134,7 +132,7 @@ class StepSessionManager:
             item.unlink()
         for src in checkpoint_dir.glob("*.json"):
             dst = self._artifacts_dir / src.name
-            dst.write_text(src.read_text())
+            atomic_write_text(dst, src.read_text())
 
 
 def _is_safe_id(value: str) -> bool:

@@ -1,6 +1,7 @@
 # tests/test_patch_worktree.py — Tests for core/patch/worktree.py
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -134,6 +135,57 @@ class TestStateFile:
         wt2 = PatchWorktree(str(tmp_path), subprocess_runner=runner)
         assert wt2.active is True
         assert wt2.branch == "patch-recover"
+
+
+class TestStateIsReplacedNeverTruncated:
+    """active.json exists for the crash, so it has to survive one.
+
+    It is read by the *next process* and by nothing else, which makes the
+    truncate-then-fill it used to be exactly backwards: the one moment the
+    file was half written was the one moment somebody would come looking for
+    it, and a worktree whose record will not parse is a branch and a
+    directory nothing will ever clean up.
+    """
+
+    def _state(self, tmp_path):
+        return tmp_path / ".judais-lobi" / "worktrees" / "active.json"
+
+    def _explode(self, monkeypatch):
+        def boom(src, dst):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(os, "replace", boom)
+
+    def test_a_failed_state_write_leaves_the_recoverable_one(self, tmp_path,
+                                                             monkeypatch):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="first")
+        self._explode(monkeypatch)
+        wt._worktree_path = str(tmp_path / "second")
+        wt._branch_name = "patch-second"
+        with pytest.raises(OSError):
+            wt._write_state()
+        assert PatchWorktree(str(tmp_path),
+                             subprocess_runner=runner).branch == "patch-first"
+
+    def test_a_failed_state_write_leaves_no_staging_file(self, tmp_path,
+                                                         monkeypatch):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        self._explode(monkeypatch)
+        with pytest.raises(OSError):
+            wt.create(name="orphan")
+        worktrees = self._state(tmp_path).parent
+        assert list(worktrees.iterdir()) == []
+
+    def test_the_state_that_lands_is_the_whole_state(self, tmp_path):
+        runner = make_runner(0, "", "")
+        wt = PatchWorktree(str(tmp_path), subprocess_runner=runner)
+        wt.create(name="whole")
+        data = json.loads(self._state(tmp_path).read_text(encoding="utf-8"))
+        assert data["branch_name"] == "patch-whole"
+        assert data["timestamp"]
 
 
 @pytest.mark.integration

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.critic.models import AggregatedCriticReport
+from core.durable import atomic_write_text
 
 
 class CriticCache:
@@ -31,8 +32,7 @@ class CriticCache:
     def put(self, payload_hash: str, report: AggregatedCriticReport) -> Path:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         path = self._cache_dir / f"{payload_hash}.json"
-        path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-        return path
+        return atomic_write_text(path, report.model_dump_json(indent=2))
 
     def clear(self) -> int:
         if not self._cache_dir.exists():
