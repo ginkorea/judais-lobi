@@ -1949,3 +1949,174 @@ class TestTheStagedRunIsCheckpointed:
             '{"answer": "chart.png written"}')
         assert swarm(plain, executor, bus, run_store=Broken(),
                      run_id="run_abcd1234").run("find it").completed
+
+
+# ── the roles that must return an object are given the grammar ───────────
+
+
+class RecordingPlain:
+    """A plain chat function that also records the keyword extras it got."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.seen = []
+        self.extras = []
+
+    def __call__(self, messages, **extra):
+        self.seen.append([dict(m) for m in messages])
+        self.extras.append(dict(extra))
+        return self.replies.pop(0) if self.replies else '{"answer": "done"}'
+
+    @property
+    def calls(self):
+        return len(self.seen)
+
+
+JSON_OBJECT = {"response_format": {"type": "json_object"}}
+
+
+def _staged(plain, bus, **kw):
+    """One staged turn: triage, plan, one gate, synthesis."""
+    executor = ScriptedModel(
+        tool_call("catalog.search", q="corpus"),
+        '{"answer": "found corpus.abc123"}',
+        tool_call("run_code", code="plot()"),
+        '{"answer": "chart.png written"}')
+    return swarm(plain, executor, bus, **kw).run("find it and chart it")
+
+
+class TestTheRolesThatMustReturnAnObject:
+    """`{"route": "direct"}` asked for in prose, answered in prose.
+
+    The router, the planner and the gates are told to reply with exactly
+    one JSON object and nothing else, and a 20B obeys that most of the
+    time — which is the problem.  When it wraps the object in a sentence
+    the parse fails and the caller falls open, so every questionable
+    decision on this path has two possible explanations and no way to tell
+    them apart.  `response_format` removes one of them for free: the
+    decoder cannot emit anything but a valid object.
+
+    It is not expected to improve anybody's judgement, and the A/B in
+    ROADMAP §2.5 — the router staging a `[quick web]` request — is not
+    expected to change.  Routing heuristics are untouched here.
+    """
+
+    def test_the_router_the_planner_and_the_gate_are_given_the_grammar(
+            self, bus):
+        plain = RecordingPlain(STAGED, TWO_STEP_PLAN, '{"pass": true}',
+                               "Final: done")
+        assert _staged(plain, bus, json_mode=True).completed
+        assert plain.extras[:3] == [JSON_OBJECT, JSON_OBJECT, JSON_OBJECT]
+
+    def test_the_synthesizer_is_never_given_a_grammar_that_forbids_prose(
+            self, bus):
+        """It writes the answer. A JSON grammar would forbid the answer."""
+        plain = RecordingPlain(STAGED, TWO_STEP_PLAN, '{"pass": true}',
+                               "Final: done")
+        _staged(plain, bus, json_mode=True)
+        assert plain.extras[-1] == {}
+
+    def test_a_backend_without_the_grammar_is_called_exactly_as_before(
+            self, bus):
+        plain = RecordingPlain(STAGED, TWO_STEP_PLAN, '{"pass": true}',
+                               "Final: done")
+        assert _staged(plain, bus).completed
+        assert all(extra == {} for extra in plain.extras)
+
+    def test_the_grammar_changes_nothing_about_what_the_roles_are_asked(
+            self, bus):
+        """A decode constraint, not a prompt change."""
+        constrained = RecordingPlain(STAGED, TWO_STEP_PLAN, '{"pass": true}',
+                                     "Final: done")
+        plain = RecordingPlain(STAGED, TWO_STEP_PLAN, '{"pass": true}',
+                               "Final: done")
+        _staged(constrained, bus, json_mode=True)
+        _staged(plain, bus)
+        assert json.dumps(constrained.seen) == json.dumps(plain.seen)
+
+    def test_a_runner_holding_only_a_chat_function_is_never_given_the_keyword(
+            self, bus):
+        """`json_mode` is the caller's statement about a function IT built.
+
+        A `SwarmRunner` given no `plain_chat_fn` falls back to `chat_fn`,
+        which belongs to somebody else and was never promised a keyword —
+        and a `TypeError` there would be swallowed by `_json_reply` and
+        read as an unparseable reply, which is the exact fall-open this
+        change exists to remove.
+        """
+        got = []
+
+        def chat(messages, **extra):
+            got.append(dict(extra))
+            return DIRECT if len(got) == 1 else '{"answer": "done"}'
+
+        SwarmRunner(chat, bus, ["catalog.search"],
+                    system_message="You are Tai.",
+                    json_mode=True).run("what is trending?")
+        assert got
+        assert all(extra == {} for extra in got)
+
+
+# ── one persona, one prefix, whichever role is speaking ──────────────────
+
+
+class TestEveryRoleOpensWithTheSameBytes:
+    """Five roles, one endpoint, one prefix cache.
+
+    Every role's system turn is assembled by `core.runtime.mission.stacked`
+    and leads with the same persona string, so a staged turn's planner,
+    executor and synthesizer all begin with bytes the endpoint has already
+    seen.  Each role's own instruction is a CONSTANT, and everything that
+    varies per call — the objective, what already succeeded, what failed —
+    is in the user turn.
+    """
+
+    def _run(self, plain, bus):
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        swarm(plain, executor, bus).run("find it and chart it")
+        return executor
+
+    def test_the_persona_is_the_first_section_of_every_role_that_has_one(
+            self, bus):
+        """The router and the gate are deliberately personaless — they are
+        mechanical questions, not the agent talking."""
+        plain = RecordingPlain(STAGED, TWO_STEP_PLAN, '{"pass": true}',
+                               "Final: done")
+        executor = self._run(plain, bus)
+        for messages in (plain.seen[1], plain.seen[-1]):
+            assert messages[0]["content"].split("\n\n")[0] == "You are Tai."
+        for messages in executor.seen:
+            assert messages[0]["content"].split("\n\n")[0] == "You are Tai."
+
+    def test_the_planners_system_turn_is_the_same_bytes_on_the_retry(
+            self, bus):
+        """Two plan attempts, one prefix. What differs is appended."""
+        plain = RecordingPlain(STAGED, "no json here", TWO_STEP_PLAN,
+                               '{"pass": true}', "Final: done")
+        self._run(plain, bus)
+        first, retry = plain.seen[1], plain.seen[2]
+        assert first[0] == retry[0]
+        assert retry[:len(first)] == first
+
+    def test_the_routers_system_turn_is_constant_across_two_turns(self, bus):
+        """The tool set is this run's, and it comes after the instruction."""
+        seen = []
+        for _ in range(2):
+            plain = RecordingPlain(DIRECT)
+            swarm(plain, ScriptedModel('{"answer": "x"}'), bus).run("q")
+            seen.append(plain.seen[0][0]["content"])
+        assert seen[0] == seen[1]
+        assert seen[0].startswith("You are a router")
+
+    def test_a_section_is_never_glued_on_without_a_blank_line(self):
+        """`stacked` is the one assembler, so no role invents its own
+        separator: two ways of joining is two prefixes where a deployment
+        was paying for one."""
+        from core.runtime.mission import stacked
+
+        assert stacked("a", "", "  b  ", None) == "a\n\nb"
+        assert stacked("a\n", "\nb") == "a\n\nb"

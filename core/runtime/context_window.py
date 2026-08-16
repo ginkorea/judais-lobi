@@ -272,10 +272,28 @@ def _summarize_messages(messages: List[Dict[str, str]], max_chars: int) -> Dict[
 #: level down.
 MISSION_MIN_TAIL = 2
 
-#: Dropped from the oldest end in whole round trips — a model decision and the
-#: tool result it produced — because half a round trip is a result whose call
-#: is gone, or a call whose result is.
-DROP_STRIDE = 2
+#: Every notice this module leaves in place of what it dropped begins with
+#: this.  A second compaction recognises the first one's notice by it and
+#: *replaces* it, rather than leaving the model a stack of notices about
+#: notices — see :func:`default_compaction_note` and, in
+#: :mod:`core.kernel.roles`, ``role_compaction_note``.
+COMPACTION_MARK = "[context]"
+
+#: The order eviction considers round trips in, lowest first.  This is the
+#: whole of the drop policy, said once as data.
+#:
+#: * ``note`` — a notice an EARLIER compaction left.  It is about to be
+#:   rewritten with this compaction's numbers, so keeping the stale one costs
+#:   tokens to say something less true.
+#: * ``orphan`` — a message no model turn of its own precedes: half a round
+#:   trip, which reads to the model as an answer to a question it never asked.
+#: * ``tool`` — a model decision and the tool output that answered it.  These
+#:   go BEFORE conversation because the output is already in the mission's
+#:   result store under a handle the model can still read, and because they
+#:   are the bulk: one governed listing outweighs every user turn in the run.
+#: * ``chat`` — a turn somebody actually said.  Cheap, and the thing
+#:   coreference needs ("headline #2", "the second one"), so it is last.
+EVICTION_ORDER = ("note", "orphan", "tool", "chat")
 
 
 @dataclass(frozen=True)
@@ -299,6 +317,14 @@ class Compaction:
     tokens_after: int
     limit_tokens: int
     profile_source: str
+    #: How many of the dropped turns were TOOL round trips — a decision and
+    #: the output that answered it.  Last and defaulted so that every
+    #: existing construction of this class keeps working; on the record
+    #: because "eleven turns went" and "eleven tool results went" are
+    #: different sentences to a person reading a shortened mission, and
+    #: because it is the number that says the policy did what it says it
+    #: does.  Additive, so no ``SCHEMA_VERSION`` bump — see ``CONTRACT.md``.
+    dropped_results: int = 0
 
     def as_record(self) -> Dict[str, Any]:
         """The mission stream's ``compacted`` field.  See ``CONTRACT.md``."""
@@ -310,10 +336,12 @@ class Compaction:
             "tokens_after": self.tokens_after,
             "limit_tokens": self.limit_tokens,
             "profile": self.profile_source,
+            "dropped_results": self.dropped_results,
         }
 
 
-def default_compaction_note(dropped_turns: int, freed_chars: int) -> str:
+def default_compaction_note(dropped_turns: int, freed_chars: int,
+                            dropped_results: int = 0) -> str:
     """What the model is told in place of the round trips that were dropped.
 
     Said out loud for the reason the truncation marker is: a silently
@@ -321,14 +349,24 @@ def default_compaction_note(dropped_turns: int, freed_chars: int) -> str:
     cannot see that anything is missing and re-runs a tool it already
     called — spending a step out of a budget of eight to rediscover
     something it was told and then had taken away.
+
+    *dropped_results* is how many of those turns were tool round trips.
+    Named separately because it is the actionable half: a tool result is
+    still addressable in the mission's store, and a caller that knows the
+    store's name says so on top of this — see
+    :meth:`~core.runtime.mission.MissionRunner._compaction_note`.  A note
+    callable given to :meth:`MissionWindow.fit` is called with all three
+    arguments positionally.
     """
+    kinds = (f", {dropped_results} of them tool result(s)"
+             if dropped_results else "")
     return (
-        f"[context] Earlier steps of this mission were removed from this "
-        f"conversation so that it fits the model's context window: "
-        f"{dropped_turns} model turn(s), {freed_chars} characters. Those "
-        f"calls were made and their results have not changed — what is gone "
-        f"is the paste of them, not the work. Do not repeat a call merely "
-        f"because its output is no longer above."
+        f"{COMPACTION_MARK} Earlier steps of this mission were removed from "
+        f"this conversation so that it fits the model's context window: "
+        f"{dropped_turns} model turn(s), {freed_chars} characters{kinds}. "
+        f"Those calls were made and their results have not changed — what "
+        f"is gone is the paste of them, not the work. Do not repeat a call "
+        f"merely because its output is no longer above."
     )
 
 
@@ -417,10 +455,22 @@ class MissionWindow:
         what it was asked, which is a worse failure than the one being
         fixed.
 
-        Everything after them is dropped oldest-first, in whole round
-        trips, until the list fits or only :data:`MISSION_MIN_TAIL`
-        messages are left.  A *note* goes where they were, so the model is
-        told rather than quietly given a shorter conversation.
+        Everything after them is grouped into whole round trips — see
+        :func:`round_trips` — and evicted in :data:`EVICTION_ORDER`:
+        a stale notice, then a stranded half round trip, then TOOL round
+        trips oldest-first, and only then the oldest turns somebody
+        actually said.  Dropping stops as soon as the list fits, and the
+        newest round trip is never dropped whatever the numbers say.  A
+        *note* goes where they were, so the model is told rather than
+        quietly given a shorter conversation.
+
+        **Tool output goes before conversation, and that is the policy.**
+        Both are "the oldest thing here", so a stride that took whichever
+        came first took a user's question — the cheapest message in the
+        list and the one coreference needs — as readily as a 33,000
+        character listing that is still sitting in the result store under
+        a handle the model can read.  One of those is recoverable and one
+        is not.
 
         A list that cannot be made to fit — a pinned prefix larger than
         the window — is returned as short as this can make it, with the
@@ -437,32 +487,58 @@ class MissionWindow:
         head, tail = kept[:pinned], kept[pinned:]
         note_fn = note or default_compaction_note
         dropped: List[Dict[str, str]] = []
+        results = 0
 
         def assembled() -> List[Dict[str, str]]:
             if not dropped:
                 return head + tail
             return head + [{"role": "user", "content": note_fn(
-                _turns(dropped), _chars(dropped))}] + tail
+                _turns(dropped), _chars(dropped), results)}] + tail
 
         total = _estimate_messages_tokens(assembled())
         before = total
         if total <= limit:
             return kept, None
 
-        while total > limit and len(tail) > self._min_tail:
-            for _ in range(DROP_STRIDE):
-                if len(tail) <= self._min_tail:
-                    break
-                dropped.append(tail.pop(0))
+        groups = round_trips(tail)
+        alive = list(range(len(groups)))
+        # The newest round trip is not in the running at all: see
+        # `MISSION_MIN_TAIL`. Held by index rather than by identity so that
+        # two byte-identical round trips cannot be confused for each other.
+        newest = len(groups) - 1
+        order = sorted(
+            range(len(groups)),
+            key=lambda i: (EVICTION_ORDER.index(round_trip_kind(groups[i])), i),
+        )
+
+        def evict(index: int) -> None:
+            nonlocal tail, total, results
+            alive.remove(index)
+            dropped.extend(groups[index])
+            if round_trip_kind(groups[index]) == "tool":
+                results += 1
+            tail = [message for i in alive for message in groups[i]]
             total = _estimate_messages_tokens(assembled())
+
+        for index in order:
+            if total <= limit:
+                break
+            if index == newest:
+                continue
+            if len(tail) - len(groups[index]) < self._min_tail:
+                continue
+            evict(index)
 
         # A tail that starts with anything but the model's own turn starts
         # with a result whose call was dropped — a half round trip, which
         # reads to the model as an answer to a question it never asked.
-        while (len(tail) > self._min_tail
-               and tail[0].get("role") != "assistant"):
-            dropped.append(tail.pop(0))
-            total = _estimate_messages_tokens(assembled())
+        # Structurally impossible after the loop above, which evicts those
+        # first; kept as the invariant rather than as an assumption about
+        # the loop's ordering.
+        while (alive and alive[0] != newest
+               and round_trip_kind(groups[alive[0]]) in ("note", "orphan")
+               and len(tail) - len(groups[alive[0]]) >= self._min_tail):
+            evict(alive[0])
 
         if not dropped:
             return kept, None
@@ -475,7 +551,81 @@ class MissionWindow:
             tokens_after=total,
             limit_tokens=limit,
             profile_source=self.profile.source,
+            dropped_results=results,
         )
+
+
+def round_trips(
+    messages: Sequence[Dict[str, Any]],
+) -> List[List[Dict[str, Any]]]:
+    """*messages* grouped into round trips, oldest first, nothing lost.
+
+    A round trip is **one model turn plus the messages that answer it**,
+    and there are two shapes of answer because there are two protocols:
+
+    * the JSON protocol the mission loop reads — one ``user`` message
+      carrying the rendered tool result, or the harness's refusal of the
+      reply;
+    * the native tool-call protocol — an ``assistant`` turn carrying
+      ``tool_calls`` followed by **N** ``{"role": "tool"}`` messages, one
+      per call it made in that single turn.
+
+    So the unit is not a fixed number of messages, and that is the whole
+    reason this exists: a stride of two split a parallel native round trip
+    down the middle and left the model tool output for a call it could no
+    longer see it had made.
+
+    Anything the walk cannot attach to a model turn — a stale notice, a
+    result whose call an earlier compaction already took — becomes a group
+    of its own rather than being appended to somebody else's, so that
+    :meth:`MissionWindow.fit` can drop it *first* instead of stranding it.
+    """
+    groups: List[List[Dict[str, Any]]] = []
+    index, total = 0, len(messages)
+    while index < total:
+        group = [messages[index]]
+        index += 1
+        if group[0].get("role") == "assistant":
+            while index < total and messages[index].get("role") == "tool":
+                group.append(messages[index])
+                index += 1
+            # One `user` answer, and only when no tool message already
+            # answered: the two protocols do not mix inside one turn, and
+            # a `user` message after a native round trip is a new turn.
+            if (len(group) == 1 and index < total
+                    and messages[index].get("role") == "user"):
+                group.append(messages[index])
+                index += 1
+        groups.append(group)
+    return groups
+
+
+def round_trip_kind(group: Sequence[Dict[str, Any]]) -> str:
+    """Which bucket of :data:`EVICTION_ORDER` one round trip is in.
+
+    A round trip counts as ``tool`` on any of the three signals a tool
+    call leaves, because a mission may be running either protocol and a
+    reply may be wrapped in prose the harness later refused:
+
+    * a ``{"role": "tool"}`` message answered it (native);
+    * the model turn carries ``tool_calls`` (native, before the answers
+      arrive);
+    * the model turn's text names a ``"tool"`` (the JSON protocol —
+      substring rather than a parse, so a fenced or prose-wrapped reply
+      is still recognised for what it was).
+
+    Ordering, not correctness: the worst a misread does is drop a chat
+    turn one place earlier than it deserved.
+    """
+    lead = group[0] if group else {}
+    if lead.get("role") != "assistant":
+        content = str(lead.get("content") or "")
+        return "note" if content.startswith(COMPACTION_MARK) else "orphan"
+    if any(message.get("role") == "tool" for message in group[1:]):
+        return "tool"
+    if lead.get("tool_calls"):
+        return "tool"
+    return "tool" if '"tool"' in str(lead.get("content") or "") else "chat"
 
 
 def _turns(messages: Sequence[Dict[str, str]]) -> int:
