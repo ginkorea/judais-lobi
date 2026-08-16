@@ -21,11 +21,20 @@ from core.tools.sandbox import NoneSandbox
 # ---------------------------------------------------------------------------
 
 class FakeUnifiedClient:
-    """Drop-in replacement for UnifiedClient. Returns canned responses."""
+    """Drop-in replacement for UnifiedClient. Returns canned responses.
 
-    def __init__(self, canned="Hello from fake client", provider="openai"):
+    ``usage`` is the side channel the real client has: whatever is passed
+    is what ``last_usage`` reports after every call, and the default
+    ``None`` is a provider that reported nothing — which is what a fake
+    should be unless a test says otherwise, because "nothing reported" is
+    the state a ledger has to keep distinct from "nothing spent".
+    """
+
+    def __init__(self, canned="Hello from fake client", provider="openai",
+                 usage=None):
         self.canned = canned
         self.provider = provider
+        self.last_usage = usage
 
     def chat(self, model, messages, stream=False):
         if stream:

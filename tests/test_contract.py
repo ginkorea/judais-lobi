@@ -77,11 +77,12 @@ def _replies(*texts):
 
 
 def _run(replies, *, gated=(), tools=("catalog_search_assets",), max_steps=4,
-         validator=None):
+         validator=None, usage_fn=None):
     seen = []
     runner = MissionRunner(
         _replies(*replies), _Bus(), list(tools), max_steps=max_steps,
         gated=gated, validator=validator, observer=seen.append, store_tool="",
+        usage_fn=usage_fn,
     )
     return runner.run("what do we hold"), seen
 
@@ -360,6 +361,73 @@ class TestTheTwoAdditiveFields:
 
 
 # ── the contract is internally whole ─────────────────────────────────────────
+
+
+class TestTheLedgerIsAFieldAndNotATenthEvent:
+    """The decision, written where the decision is enforced.
+
+    A run's token spend wants a record type of its own — it is a fact
+    about the run rather than about any one step — and it does not get
+    one. A new event is the single additive change a consumer cannot
+    absorb quietly: the reference consumer asserts its read-set EQUALS
+    `EVENTS`, so a tenth name is a lockstep release on both sides for a
+    number that fits in frames that already exist. An optional field is
+    read with a default by a consumer that meters and ignored by one that
+    does not, which is the route `compacted` and `plan` took.
+    """
+
+    def _usage(self, prompt, completion):
+        from core.runtime.backends.base import Usage
+
+        return lambda: Usage(prompt_tokens=prompt, completion_tokens=completion,
+                             total_tokens=prompt + completion)
+
+    def test_the_vocabulary_did_not_grow(self):
+        assert len(c.EVENTS) == 9
+        assert not any("usage" in event or "ledger" in event
+                       for event in c.EVENTS)
+
+    def test_it_is_declared_optional_on_the_four_records_that_carry_it(self):
+        for event in (ms.TOOL_CALL, ms.ANSWER, ms.REPLY_REJECTED,
+                      ms.MISSION_FINISHED):
+            assert "usage" in c.OPTIONAL[event], event
+
+    def test_it_is_optional_and_never_required(self):
+        for event in c.EVENTS:
+            assert "usage" not in c.FIELDS[event], event
+
+    def test_a_metered_stream_declares_every_field_it_carries(self):
+        """`_faults` is the ceiling check: a field an event does not
+        declare is a field a consumer meets with no sentence for it."""
+        _, seen = _run([json.dumps({"tool": "catalog_search_assets",
+                                    "arguments": {"q": "x"}}),
+                        "not json at all",
+                        json.dumps({"answer": "done"})],
+                       usage_fn=self._usage(50, 5))
+        assert _faults(seen) == []
+        carrying = {r["event"] for r in seen if "usage" in r}
+        assert carrying == {ms.TOOL_CALL, ms.REPLY_REJECTED, ms.ANSWER,
+                            ms.MISSION_FINISHED}
+
+    def test_an_unmetered_stream_carries_none_of_it(self):
+        """Absent, not zero — and absent for every record when no provider
+        reported. A consumer from before this field must read the stream
+        unchanged."""
+        _, seen = _run([json.dumps({"answer": "done"})])
+        assert _faults(seen) == []
+        assert all("usage" not in record for record in seen)
+
+    def test_the_last_record_carries_totals_and_the_others_carry_one_call(self):
+        _, seen = _run([json.dumps({"tool": "catalog_search_assets",
+                                    "arguments": {"q": "x"}}),
+                        json.dumps({"answer": "done"})],
+                       usage_fn=self._usage(50, 5))
+        per_call = [r for r in seen if r["event"] == ms.TOOL_CALL][0]["usage"]
+        totals = [r for r in seen
+                  if r["event"] == ms.MISSION_FINISHED][0]["usage"]
+        assert "calls" not in per_call
+        assert totals["calls"] == 2
+        assert totals["total_tokens"] == 110
 
 
 class TestTheContractIsWhole:

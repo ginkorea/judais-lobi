@@ -288,6 +288,7 @@ def _mission(elf, args, name, style):
     from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
     from core.runtime.mission_stream import close_on_sigterm, open_sink
     from core.runtime.results import RESULT_TOOL
+    from core.runtime.usage import PricingTable
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
     manifest = _load_skill(args)
@@ -443,6 +444,28 @@ def _mission(elf, args, name, style):
         return elf.client.chat(model=elf.model, messages=messages,
                                stream=False, **dict(sampling))
 
+    def usage_fn():
+        # The side channel beside `chat`. Read straight after each of the
+        # two functions above returns, by whichever runner made the call —
+        # `chat` returns a string and cannot also return a number without
+        # breaking every caller of it. `getattr` with a default because a
+        # library caller may hand `Agent` a client that never heard of
+        # usage, and a mission must not need one to run.
+        return getattr(elf.client, "last_usage", None)
+
+    # Read once, here, where a deployment's provider and model are already
+    # in hand. There is no price list in this repository and there must not
+    # be one — prices move and differ per account — so this is `None` for
+    # every deployment that did not write a `pricing:` block, and the
+    # ledger then carries tokens and no cost.
+    #
+    # The provider is read off the CLIENT and not off the agent: the client
+    # is the object that made the calls and reported the counts, and it is
+    # what the banner above already names. Two readings of "which provider
+    # ran" is how a bill gets computed against the wrong price list.
+    rate = PricingTable.from_project().rate_for(
+        str(getattr(elf.client, "provider", "") or ""), elf.model)
+
     # Opened BEFORE the connection, so that a harness watching this mission is
     # told about a server it could not reach. A stream that never produces a
     # byte and a mission that failed to start look identical from the far end
@@ -573,6 +596,8 @@ def _mission(elf, args, name, style):
                     # planner is not offered the code+sdk rung at all.
                     sdk_import=manifest.sdk_import if manifest else "",
                     window=window,
+                    usage_fn=usage_fn,
+                    rate=rate,
                 )
             else:
                 runner = MissionRunner(
@@ -584,6 +609,8 @@ def _mission(elf, args, name, style):
                     history=history,
                     observer=sink,
                     window=window,
+                    usage_fn=usage_fn,
+                    rate=rate,
                 )
             transcript = runner.run(args.message)
     except (McpUnavailable, McpConnectionError) as exc:
@@ -656,6 +683,14 @@ def _mission(elf, args, name, style):
             f"⏹️  Mission ended without an answer: {transcript.outcome}",
             style="yellow",
         )
+
+    # Last, and only when a provider actually reported: an empty line here
+    # would be a run claiming to have spent nothing, and "nothing reported"
+    # is not "nothing spent". Rendered by the ledger itself so the console
+    # and `mission_finished.usage` cannot disagree about the arithmetic.
+    spent = transcript.usage.console_line(rate)
+    if spent:
+        console.print(spent, style=style)
 
 
 def _main(AgentClass):

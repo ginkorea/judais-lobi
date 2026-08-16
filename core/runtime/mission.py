@@ -63,6 +63,7 @@ from core.runtime.mission_stream import (
     REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT, Observer,
 )
 from core.runtime.results import RESULT_TOOL, MissionResultStore
+from core.runtime.usage import Ledger, Rate
 from core.tools.descriptors import same_tool, summarize_input_schema
 
 
@@ -301,6 +302,11 @@ class MissionTranscript:
     #: The gated call this mission stopped at, as ``{tool, arguments}``, when
     #: :attr:`outcome` is :data:`AWAITING_APPROVAL`.
     awaiting: Optional[Dict[str, Any]] = None
+    #: What the providers said this run cost, accumulated across every
+    #: model call.  Empty — ``calls == 0`` — when nothing reported, which
+    #: is a different fact from a run that cost zero tokens and is kept
+    #: different all the way to the wire.
+    usage: Ledger = field(default_factory=Ledger)
 
     @property
     def completed(self) -> bool:
@@ -382,6 +388,34 @@ class MissionRunner:
         "headline #2" — the headlines were in the prompt and the model
         never looked.  The default ``()`` is a mission that starts cold,
         exactly as every mission started before this parameter existed.
+    usage_fn:
+        ``() -> Usage | None``, read after every ``chat_fn`` call: what
+        the provider said *that* call cost.  ``None`` — the default — is
+        a loop that accumulates nothing and emits no ``usage`` field
+        anywhere, which is exactly how this loop behaved before there
+        was a ledger.
+
+        A nullary callable rather than a client, and rather than a
+        second return value from ``chat_fn``.  ``chat_fn`` returns the
+        reply and half a dozen callers depend on that; handing the
+        runner the whole client instead would give a loop that is
+        deliberately confined to one injected function a model client it
+        could ask anything.  The CLI passes
+        ``lambda: elf.client.last_usage`` and the seam stays one
+        function wide.
+    rate:
+        A :class:`~core.runtime.usage.Rate` for the provider and model
+        that will run, or ``None``.  Only used to put ``cost`` beside the
+        totals on ``mission_finished``; resolved by the caller, because
+        the loop does not know which provider it is talking to and must
+        not learn.
+    ledger:
+        An existing :class:`~core.runtime.usage.Ledger` to accumulate
+        into, instead of one per run.  This is how a staged ``--swarm``
+        turn keeps ONE ledger: the swarm's own router and planner calls
+        and every sub-mission's steps fold into the same object, so the
+        total is the turn's rather than the last sub-mission's.  A
+        caller passing one owns it, including when it is reset.
     observer:
         ``dict -> None``, called with one record per thing that happens.
         See :mod:`core.runtime.mission_stream` for the vocabulary; it is
@@ -436,6 +470,9 @@ class MissionRunner:
         history: Sequence[Dict[str, str]] = (),
         observer: Optional[Observer] = None,
         window: Optional[MissionWindow] = None,
+        usage_fn: Optional[Callable[[], Any]] = None,
+        rate: Optional[Rate] = None,
+        ledger: Optional[Ledger] = None,
     ):
         self._chat = chat_fn
         self._bus = bus
@@ -454,6 +491,13 @@ class MissionRunner:
         self._history = validate_history(history)
         self._observer = observer
         self._window = window
+        self._usage_fn = usage_fn
+        self._rate = rate
+        # Kept as "the caller's, or none": `run` makes a fresh one per run
+        # when it is none, and leaves a shared one alone. A run that reset
+        # a ledger it did not own would silently discard the swarm's
+        # router and planner calls on the first sub-mission.
+        self._shared_ledger = ledger
 
     @property
     def store(self) -> MissionResultStore:
@@ -498,6 +542,28 @@ class MissionRunner:
             self._observer(scrub_record({"event": event, **fields}))
         except Exception:                       # pragma: no cover - defensive
             pass
+
+    # ── what the last call cost ─────────────────────────────────────────
+
+    def _spent(self, transcript: MissionTranscript) -> Dict[str, Any]:
+        """Fold the last model call into the ledger; render its own field.
+
+        Called once per step, immediately after ``chat_fn`` returns, and
+        the ``{"usage": …}`` it hands back is spread into whichever record
+        that step goes on to emit — ``tool_call``, ``answer`` or
+        ``reply_rejected``, the three records that follow a model call.
+
+        ``{}`` when the provider reported nothing, so the field is
+        **absent** rather than zero.  Never raises: a usage source that
+        throws must not be able to end a mission, for the same reason an
+        observer that throws cannot.
+        """
+        try:
+            usage = self._usage_fn() if self._usage_fn is not None else None
+        except Exception:                       # pragma: no cover - defensive
+            usage = None
+        recorded = transcript.usage.add(usage)
+        return {"usage": recorded.as_record()} if recorded is not None else {}
 
     # ── the catalogue ───────────────────────────────────────────────────
 
@@ -616,7 +682,15 @@ class MissionRunner:
     def run(self, objective: str) -> MissionTranscript:
         self._store.clear()
         offered = self.offered
-        transcript = MissionTranscript(objective=objective, catalogue=list(offered))
+        transcript = MissionTranscript(
+            objective=objective, catalogue=list(offered),
+            # A ledger the caller handed in is shared and must not be
+            # reset here; without one, a fresh ledger per run, so a second
+            # `run` on the same runner does not report the first one's
+            # tokens.
+            usage=self._shared_ledger if self._shared_ledger is not None
+            else Ledger(),
+        )
         registered = self._register_store()
         # `history` is a count, not the turns: a watcher needs to tell a
         # seeded conversation from a cold start, and the turns themselves
@@ -661,9 +735,15 @@ class MissionRunner:
             # against each other. Six of a stated twenty-four is not an agent
             # that ran out of room, and a consumer holding only the six has no
             # way to stop a reader reading it as one.
+            # `usage` is the run's totals and is ABSENT when no provider
+            # reported anything — not three zeros. A consumer metering on
+            # this has to be able to tell "nothing was said" from "nothing
+            # was spent", and only one of those is a number.
+            spent = transcript.usage.as_record(self._rate)
             self._emit(MISSION_FINISHED, outcome=transcript.outcome,
                        steps=len(transcript.steps),
-                       max_steps=self._max_steps)
+                       max_steps=self._max_steps,
+                       **({"usage": spent} if spent is not None else {}))
 
     def _register_store(self) -> str:
         """Put the result store on the bus for the length of this run.
@@ -693,6 +773,11 @@ class MissionRunner:
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
             reply = str(self._chat(messages) or "")
+            # Read here and used below: whichever record this step emits
+            # carries the cost of the call that produced it. One read per
+            # call, because `last_usage` is a side channel that the NEXT
+            # call clears.
+            spent = self._spent(transcript)
             step = MissionStep(index=index, raw_reply=reply)
             messages.append({"role": "assistant", "content": reply})
 
@@ -700,7 +785,8 @@ class MissionRunner:
             if problem:
                 step.error = problem
                 transcript.steps.append(step)
-                self._emit(REPLY_REJECTED, index=index, problem=problem)
+                self._emit(REPLY_REJECTED, index=index, problem=problem,
+                           **spent)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -741,7 +827,7 @@ class MissionRunner:
                     self._emit(GROUNDING, **_grounding_record(
                         marked, repairs=repairs, caveat=caveat))
                     self._emit(ANSWER, text=transcript.answer,
-                               outcome=transcript.outcome)
+                               outcome=transcript.outcome, **spent)
                     return transcript
 
                 if report is not None:
@@ -753,7 +839,8 @@ class MissionRunner:
                 transcript.answer = answer
                 transcript.outcome = "answered"
                 transcript.steps.append(step)
-                self._emit(ANSWER, text=answer, outcome=transcript.outcome)
+                self._emit(ANSWER, text=answer, outcome=transcript.outcome,
+                           **spent)
                 return transcript
 
             name = str(decision.get("tool") or "")
@@ -766,7 +853,7 @@ class MissionRunner:
                 step.tool, step.error = name, problem
                 transcript.steps.append(step)
                 self._emit(REPLY_REJECTED, index=index, tool=name,
-                           problem=problem)
+                           problem=problem, **spent)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -777,7 +864,7 @@ class MissionRunner:
                 step.error = problem
                 transcript.steps.append(step)
                 self._emit(REPLY_REJECTED, index=index, tool=name,
-                           problem=problem)
+                           problem=problem, **spent)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -801,7 +888,7 @@ class MissionRunner:
                 return transcript
 
             self._emit(TOOL_CALL, index=index, tool=name,
-                       arguments=dict(arguments))
+                       arguments=dict(arguments), **spent)
             # The bus has no idea what a step is and should not learn: it
             # serves chat turns, kernel roles and missions alike. So the
             # mission leaves its index where the audit entry is built,

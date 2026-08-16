@@ -22,3 +22,26 @@ def load_project_config(project_root: Optional[Path] = None) -> dict:
             except Exception:
                 return {}
     return {}
+
+
+def load_pricing(project_root: Optional[Path] = None) -> dict:
+    """The ``pricing:`` block of the project config, or ``{}``.
+
+    ``{provider: {model: {prompt_per_1k, completion_per_1k, currency}}}``.
+    It is what turns a run's token ledger into a cost on
+    ``mission_finished``; without it the ledger carries tokens and no
+    ``cost`` key at all.
+
+    Deliberately read from configuration and never shipped: prices move,
+    they differ per account, and a framework carrying a price list would
+    be quoting a figure it cannot know. A block that is not a mapping —
+    a stray string, a list — is ``{}`` here rather than an error, for the
+    same reason the loader above swallows a malformed file: cost is
+    optional decoration on an agent framework and a typo in it must not
+    cost anybody a mission.
+
+    See :class:`core.runtime.usage.PricingTable`, which is what reads the
+    shape of the entries; this function only finds the block.
+    """
+    block = load_project_config(project_root).get("pricing")
+    return block if isinstance(block, dict) else {}

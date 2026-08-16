@@ -1527,3 +1527,239 @@ class TestTheAuditKnowsWhichStepCalled:
         with pytest.raises(RuntimeError):
             MissionRunner(explode, b, ["catalog.search"], store_tool="").run("go")
         assert "step" not in b.audit_context
+
+
+# ── what the run cost ────────────────────────────────────────────────────────
+
+
+class Meter:
+    """A usage source that hands back one report per model call.
+
+    Shaped like the real side channel: a nullary callable, read once after
+    each ``chat_fn`` returns.  ``None`` in the script is a call the
+    provider said nothing about, which is the case a zero would silently
+    replace.
+    """
+
+    def __init__(self, *reports):
+        self.reports = list(reports)
+        self.reads = 0
+
+    def __call__(self):
+        self.reads += 1
+        if not self.reports:
+            return None
+        return self.reports.pop(0)
+
+
+def usage(prompt, completion, **extra):
+    from core.runtime.backends.base import Usage
+
+    return Usage(prompt_tokens=prompt, completion_tokens=completion,
+                 total_tokens=prompt + completion, extra=extra)
+
+
+def _metered(bus, *replies, meter=None, rate=None, max_steps=8):
+    """A mission with a usage source, and everything it emitted."""
+    events = []
+    runner = MissionRunner(
+        ScriptedModel(*replies), bus, ["catalog.search"],
+        max_steps=max_steps, observer=events.append,
+        usage_fn=meter, rate=rate,
+    )
+    return runner.run("find things"), events
+
+
+def _of(events, name):
+    return [r for r in events if r["event"] == name]
+
+
+class TestThePerCallUsageRidesTheRecordItPaidFor:
+    def test_the_tool_call_carries_the_call_that_chose_the_tool(self, bus):
+        _, events = _metered(
+            bus, tool_call("catalog.search", q="x"), '{"answer": "done"}',
+            meter=Meter(usage(100, 10), usage(200, 20)),
+        )
+        assert _of(events, "tool_call")[0]["usage"] == {
+            "prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
+
+    def test_the_answer_carries_the_call_that_wrote_it(self, bus):
+        _, events = _metered(
+            bus, tool_call("catalog.search", q="x"), '{"answer": "done"}',
+            meter=Meter(usage(100, 10), usage(200, 20)),
+        )
+        assert _of(events, "answer")[0]["usage"] == {
+            "prompt_tokens": 200, "completion_tokens": 20, "total_tokens": 220}
+
+    def test_a_rejected_reply_is_still_a_billed_reply(self, bus):
+        """A ledger that counted only the calls that worked would
+        under-report exactly the runs that went badly."""
+        _, events = _metered(
+            bus, "not json at all", '{"answer": "done"}',
+            meter=Meter(usage(50, 5), usage(60, 6)),
+        )
+        assert _of(events, "reply_rejected")[0]["usage"]["prompt_tokens"] == 50
+
+    def test_a_provider_extra_reaches_the_stream_verbatim(self, bus):
+        _, events = _metered(
+            bus, '{"answer": "done"}',
+            meter=Meter(usage(10, 1, prompt_tokens_details={"cached_tokens": 8})),
+        )
+        assert _of(events, "answer")[0]["usage"]["prompt_tokens_details"] == {
+            "cached_tokens": 8}
+
+    def test_nothing_reported_means_no_field_at_all(self, bus):
+        """Absent, not zero. Three zeros are a claim about a call."""
+        _, events = _metered(bus, '{"answer": "done"}', meter=Meter(None))
+        assert "usage" not in _of(events, "answer")[0]
+        assert "usage" not in _of(events, "mission_finished")[0]
+
+    def test_no_usage_source_leaves_the_stream_exactly_as_it_was(self, bus):
+        """The default. Every record this loop emitted before there was a
+        ledger is byte-identical."""
+        _, events = _metered(bus, tool_call("catalog.search", q="x"),
+                             '{"answer": "done"}')
+        assert all("usage" not in record for record in events)
+
+    def test_a_usage_source_that_throws_does_not_end_the_mission(self, bus):
+        def boom():
+            raise RuntimeError("the meter broke")
+
+        transcript, events = _metered(bus, '{"answer": "done"}', meter=boom)
+        assert transcript.outcome == "answered"
+        assert "usage" not in _of(events, "answer")[0]
+
+    def test_it_is_read_once_per_model_call(self, bus):
+        """`last_usage` is a side channel the NEXT call clears, so reading
+        it twice for one call would count it twice."""
+        meter = Meter(usage(1, 1), usage(1, 1), usage(1, 1))
+        _metered(bus, tool_call("catalog.search", q="x"), '{"answer": "done"}',
+                 meter=meter)
+        assert meter.reads == 2
+
+    def test_every_record_still_conforms(self, bus):
+        _, events = _metered(
+            bus, "not json", tool_call("catalog.search", q="x"),
+            '{"answer": "done"}',
+            meter=Meter(usage(1, 1), usage(2, 2), usage(3, 3)),
+        )
+        for record in events:
+            assert conforms(record) == [], record
+
+    def test_usage_is_declared_optional_on_every_record_that_carries_it(self):
+        for event in ("tool_call", "answer", "reply_rejected",
+                      "mission_finished"):
+            assert "usage" in contract.OPTIONAL[event], event
+
+
+class TestTheRunsTotalsRideTheLastRecord:
+    def test_the_totals_are_the_sum_of_the_calls(self, bus):
+        _, events = _metered(
+            bus, tool_call("catalog.search", q="x"), '{"answer": "done"}',
+            meter=Meter(usage(100, 10), usage(200, 20)),
+        )
+        assert _of(events, "mission_finished")[0]["usage"] == {
+            "prompt_tokens": 300, "completion_tokens": 30,
+            "total_tokens": 330, "calls": 2}
+
+    def test_calls_counts_the_ones_that_REPORTED(self, bus):
+        """Not the calls that were made. A run against a provider that
+        answers sometimes must not be reported as a run of fewer calls
+        with made-up totals."""
+        _, events = _metered(
+            bus, tool_call("catalog.search", q="x"), '{"answer": "done"}',
+            meter=Meter(usage(100, 10), None),
+        )
+        assert _of(events, "mission_finished")[0]["usage"]["calls"] == 1
+
+    def test_the_transcript_holds_the_same_ledger(self, bus):
+        transcript, events = _metered(
+            bus, '{"answer": "done"}', meter=Meter(usage(7, 3)))
+        assert (transcript.usage.prompt, transcript.usage.completion,
+                transcript.usage.calls) == (7, 3, 1)
+
+    def test_a_second_run_does_not_report_the_first_ones_tokens(self, bus):
+        runner = MissionRunner(
+            ScriptedModel('{"answer": "one"}', '{"answer": "two"}'),
+            bus, ["catalog.search"], usage_fn=Meter(usage(5, 5), usage(9, 9)),
+        )
+        runner.run("first")
+        second = runner.run("second")
+        assert second.usage.calls == 1
+        assert second.usage.prompt == 9
+
+    def test_a_mission_that_raised_still_reports_what_it_spent(self):
+        """`mission_finished` comes out of a `finally`, and so does this."""
+        class _Exploding:
+            def dispatch(self, *a, **kw):
+                raise RuntimeError("the bus died")
+
+            def register(self, *a, **kw):
+                return None
+
+            def unregister(self, *a, **kw):
+                return None
+
+            def describe_tool(self, name):
+                return {"name": name, "description": "A tool."}
+
+            def list_tools(self):
+                return ["catalog.search"]
+
+        events = []
+        runner = MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="x")), _Exploding(),
+            ["catalog.search"], observer=events.append, store_tool="",
+            usage_fn=Meter(usage(11, 1)),
+        )
+        with pytest.raises(RuntimeError):
+            runner.run("x")
+        finished = _of(events, "mission_finished")[0]
+        assert finished["usage"]["total_tokens"] == 12
+
+
+class TestCostIsConfigurationAndNeverAConstant:
+    def _rate(self, **kw):
+        from core.runtime.usage import Rate
+
+        return Rate(**kw)
+
+    def test_a_configured_rate_puts_a_cost_beside_the_tokens(self, bus):
+        _, events = _metered(
+            bus, '{"answer": "done"}', meter=Meter(usage(1000, 500)),
+            rate=self._rate(prompt_per_1k=0.5, completion_per_1k=1.5),
+        )
+        assert _of(events, "mission_finished")[0]["usage"]["cost"] == {
+            "amount": 1.25, "currency": "USD"}
+
+    def test_the_currency_is_carried_and_never_assumed(self, bus):
+        _, events = _metered(
+            bus, '{"answer": "done"}', meter=Meter(usage(1000, 0)),
+            rate=self._rate(prompt_per_1k=2.0, currency="EUR"),
+        )
+        assert _of(events, "mission_finished")[0]["usage"]["cost"][
+            "currency"] == "EUR"
+
+    def test_no_rate_means_no_cost_key(self, bus):
+        _, events = _metered(bus, '{"answer": "done"}',
+                             meter=Meter(usage(1000, 500)))
+        assert "cost" not in _of(events, "mission_finished")[0]["usage"]
+
+    def test_a_rate_with_nothing_to_price_writes_nothing(self, bus):
+        """No provider reported, so there is no usage field to hang a cost
+        off — and inventing one would be billing for a run nobody counted."""
+        _, events = _metered(
+            bus, '{"answer": "done"}', meter=Meter(None),
+            rate=self._rate(prompt_per_1k=1.0),
+        )
+        assert "usage" not in _of(events, "mission_finished")[0]
+
+    def test_a_small_run_does_not_round_to_free(self, bus):
+        """Cents would make every cheap call cost nothing at the point of
+        measurement, which is the point at which it still can be summed."""
+        _, events = _metered(
+            bus, '{"answer": "done"}', meter=Meter(usage(30, 0)),
+            rate=self._rate(prompt_per_1k=0.001),
+        )
+        assert _of(events, "mission_finished")[0]["usage"]["cost"][
+            "amount"] == 3e-05

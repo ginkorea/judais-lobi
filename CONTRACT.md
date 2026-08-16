@@ -53,7 +53,8 @@ Optional, and therefore to be read with a default: `audit_ref` on
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
 only when the model got as far as naming one), `compacted` on
-`step_started`, and `sandbox` and `profile` on `mission_started`. `plan` rode
+`step_started`, `sandbox` and `profile` on `mission_started`, and `usage` on
+`tool_call`, `answer`, `reply_rejected` and `mission_finished`. `plan` rode
 `mission_started` until 0.8.x: that record is now emitted before triage —
 which is itself a call to the model — so at the time it is written there is no
 plan and there may never be one.
@@ -97,6 +98,56 @@ exactly like an agent that had it all along. Nothing is lost to the run —
 `tool_result` already carried the whole of every result, the mission's result
 store still holds them, and the grounding verdict is computed from that store
 rather than from the conversation.
+
+`usage` is **what the provider said a model call cost**, and it appears in
+two forms.
+
+On `tool_call`, `answer` and `reply_rejected` — the three records that follow
+a call to the model — it is *that one call*:
+`{prompt_tokens, completion_tokens, total_tokens}`, plus verbatim whatever else
+that provider's own `usage` object carried (`prompt_tokens_details` with its
+cached-token breakdown, say). On `answer` after a grounding repair it is the
+repair turn's call, not the draft's: the per-call field is always the cost of
+the call that produced the record it rides on.
+
+On `mission_finished` it is the **run's ledger**:
+`{prompt_tokens, completion_tokens, total_tokens, calls}`, where `calls` counts
+the model calls that *reported* usage rather than the calls that were made. On
+`--swarm` that is one number for the whole turn — the router, the planner,
+every gate, the synthesizer and every sub-mission's own steps — and not the
+last sub-mission's.
+
+**It is absent, never zero, when the provider reported nothing.** Local
+endpoints frequently report nothing, and three zeros would be a claim about a
+call rather than the absence of one. Read it with a default and do not treat a
+missing field as free. Nothing in it is estimated: the harness's other token
+number is a characters-over-four estimate used to keep a prompt inside a
+context window, and it deliberately never reaches this stream.
+
+`cost` — `{amount, currency}` — appears inside the `mission_finished` form only
+when the deployment configured a price for the provider and model that ran, in
+a `pricing:` block of `.judais-lobi.yml`:
+
+```yaml
+pricing:
+  openai:
+    gpt-4o-mini: {prompt_per_1k: 0.15, completion_per_1k: 0.6}
+    "*":         {prompt_per_1k: 1.0,  completion_per_1k: 2.0, currency: USD}
+```
+
+This repo ships no price list and must not: prices move, they differ per
+account, and a framework that quoted one would be quoting a figure it cannot
+know. Absent is the normal case, and a `local` endpoint has no cost unless
+somebody priced it.
+
+A **field and not an event**, which was a decision rather than an oversight. A
+ledger is exactly the kind of thing that wants a record type of its own, and a
+new record type is the one additive change a consumer cannot absorb quietly:
+TAIPAN's `bridge.READS` is asserted *equal* to `contract.EVENTS`, so a tenth
+event is a lockstep release on both sides for a number that fits in frames that
+already exist. An optional field is read with a default by a consumer that
+wants it and ignored by one that does not — the same route `compacted` and
+`plan` took.
 
 Five of these carry more meaning than their names suggest:
 

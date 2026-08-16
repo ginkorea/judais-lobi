@@ -34,6 +34,12 @@ class _StubState:
         self.models_status = 200
         self.last_body = None
         self.last_headers = None
+        #: What the stub puts in `usage`, on both paths. ``None`` is a
+        #: server that reports nothing — which many local servers are, and
+        #: which the ledger has to keep distinct from a server that
+        #: reported zeros.
+        self.usage = {"prompt_tokens": 12, "completion_tokens": 3,
+                      "total_tokens": 15}
 
 
 def _make_handler(state: _StubState):
@@ -71,7 +77,7 @@ def _make_handler(state: _StubState):
             if body.get("stream"):
                 self._stream(body)
                 return
-            self._send(200, json.dumps({
+            payload = {
                 "id": "cmpl-1",
                 "model": body.get("model"),
                 "choices": [{
@@ -79,7 +85,10 @@ def _make_handler(state: _StubState):
                     "message": {"role": "assistant", "content": "hello from local"},
                     "finish_reason": "stop",
                 }],
-            }).encode())
+            }
+            if state.usage is not None:
+                payload["usage"] = state.usage
+            self._send(200, json.dumps(payload).encode())
 
         def _stream(self, body):
             frames = []
@@ -90,6 +99,18 @@ def _make_handler(state: _StubState):
                     "choices": [{"index": 0, "delta": {"content": piece}}],
                 }) + "\n\n")
             frames.append(": a comment nobody should parse\n\n")
+            # The OpenAI convention, which vLLM and llama.cpp follow: a
+            # usage frame arrives LAST, carries no choices, and only when
+            # the request asked for it with `stream_options`.
+            wants_usage = bool(
+                (body.get("stream_options") or {}).get("include_usage"))
+            if wants_usage and state.usage is not None:
+                frames.append("data: " + json.dumps({
+                    "id": "cmpl-1",
+                    "model": body.get("model"),
+                    "choices": [],
+                    "usage": state.usage,
+                }) + "\n\n")
             frames.append("data: [DONE]\n\n")
             payload = "".join(frames).encode()
             self.send_response(200)
@@ -275,6 +296,88 @@ class TestChat:
         backend = LocalBackend(endpoint=stub.base.replace("/v1", "/v9"))
         with pytest.raises(Exception):
             backend.chat("m", [{"role": "user", "content": "x"}])
+
+
+class TestWhatTheCallCost:
+    """Reported by the server, or reported as nothing.
+
+    A local endpoint is the one this repo runs most and the one most
+    likely to say nothing at all, which makes it the place where the
+    difference between "no usage" and "zero usage" is easiest to lose.
+    """
+
+    def test_the_non_streaming_usage_is_read(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "hi"}])
+        assert backend.last_usage.as_record() == {
+            "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+
+    def test_a_server_that_reports_nothing_reports_nothing(self, stub):
+        stub.usage = None
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "hi"}])
+        assert backend.last_usage is None
+
+    def test_streaming_asks_for_the_counts(self, stub):
+        """An OpenAI-compatible server sends NO usage on a stream unless
+        this is set, so a streamed ledger would otherwise always be empty."""
+        backend = LocalBackend(endpoint=stub.base)
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert stub.last_body["stream_options"] == {"include_usage": True}
+
+    def test_a_caller_can_still_override_stream_options(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True,
+                          stream_options={"include_usage": False}))
+        assert stub.last_body["stream_options"] == {"include_usage": False}
+        assert backend.last_usage is None
+
+    def test_the_final_usage_frame_is_read(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        assert backend.last_usage is None, "nothing honest to say yet"
+        list(stream)
+        assert backend.last_usage.total_tokens == 15
+
+    def test_the_usage_frame_is_not_yielded_as_a_delta(self, stub):
+        """It carries no choices. `core.cli` walks `choices[0]` and would
+        raise on a frame that has none — and it was never a delta anyway."""
+        backend = LocalBackend(endpoint=stub.base)
+        chunks = list(backend.chat("m", [{"role": "user", "content": "x"}],
+                                   stream=True))
+        assert [c.choices[0].delta.content for c in chunks] == ["he", "llo"]
+
+    def test_an_abandoned_stream_leaves_what_was_reported(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        next(stream)
+        stream.close()
+        # Nothing had been reported by the first frame, and the honest
+        # answer to "what did it cost" is still nothing.
+        assert backend.last_usage is None
+
+    def test_a_failed_call_does_not_leave_the_last_ones_numbers(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage is not None
+        dead = LocalBackend(endpoint=stub.base.replace("/v1", "/v9"))
+        dead.last_usage = backend.last_usage
+        with pytest.raises(Exception):
+            dead.chat("m", [{"role": "user", "content": "x"}])
+        assert dead.last_usage is None
+
+    def test_the_client_surfaces_it(self, stub, monkeypatch):
+        """`UnifiedClient.last_usage` is what a mission reads; the backend
+        attribute is not something a caller should have to reach for."""
+        monkeypatch.setenv("LOCAL_API_BASE", stub.base)
+        from core.unified_client import UnifiedClient
+
+        client = UnifiedClient(provider_override="local")
+        assert client.last_usage is None
+        client.chat("m", [{"role": "user", "content": "x"}])
+        assert client.last_usage.total_tokens == 15
 
 
 class TestUnifiedClientWiring:

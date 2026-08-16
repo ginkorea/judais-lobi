@@ -65,6 +65,11 @@ def elf():
     agent.model = "gpt-oss-20b"
     agent.text_color = "cyan"
     agent.client.provider = "local"
+    # Stated rather than left to the mock: a bare `MagicMock` attribute is
+    # truthy and arithmetic-capable, so an unset `last_usage` would be
+    # accumulated as if it were a provider's report. `None` is what a
+    # backend that reported nothing hands back.
+    agent.client.last_usage = None
     agent.system_message = "You are Tai."
     # An explicitly unisolated bus: this fixture predates the sandbox
     # being on by default, and the tests below that reason about "a host
@@ -842,3 +847,69 @@ class TestTheAuditIsAnnounced:
         assert "No space left on device" in captured.err
         # And the mission still answered.
         assert "asset.5f21" in captured.out
+
+
+class TestTheUsageLineOnTheConsole:
+    """One line, last, and only when a provider actually reported.
+
+    stdout is prose for a person and not a machine channel — the numbers a
+    platform meters on ride `mission_finished.usage`. This is the line the
+    person running the command sees, and it is rendered by the ledger
+    itself so the two cannot disagree about the arithmetic.
+    """
+
+    def _usage(self, prompt, completion):
+        from core.runtime.backends.base import Usage
+
+        return Usage(prompt_tokens=prompt, completion_tokens=completion,
+                     total_tokens=prompt + completion)
+
+    def test_it_says_what_the_run_spent(self, elf, skill_file, capsys):
+        MockClass, agent = elf
+        agent.client.last_usage = self._usage(400, 30)
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out
+        assert "🧮 usage: 800 prompt + 60 completion tokens over 2 calls" in out
+
+    def test_it_is_silent_when_the_provider_reported_nothing(
+            self, elf, skill_file, capsys):
+        """A line here would be a run claiming to have spent nothing, and
+        "nothing reported" is not "nothing spent"."""
+        MockClass, agent = elf
+        agent.client.last_usage = None
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert "🧮" not in capsys.readouterr().out
+
+    def test_a_client_that_never_heard_of_usage_still_runs(
+            self, elf, skill_file, capsys):
+        MockClass, agent = elf
+        del agent.client.last_usage
+        agent.client.mock_add_spec(["chat", "provider"])
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out
+        assert "asset.5f21" in out
+        assert "🧮" not in out
+
+    def test_the_cost_appears_when_the_project_priced_the_model(
+            self, elf, skill_file, capsys, tmp_path, monkeypatch):
+        """`.judais-lobi.yml` in the working directory is where a price may
+        come from; nothing is hard-coded and nothing is guessed."""
+        (tmp_path / ".judais-lobi.yml").write_text(
+            'pricing:\n  local:\n    gpt-oss-20b:\n'
+            '      prompt_per_1k: 1.0\n      completion_per_1k: 2.0\n')
+        monkeypatch.chdir(tmp_path)
+        MockClass, agent = elf
+        agent.client.last_usage = self._usage(1000, 500)
+        run_cli(MockClass, "--skill", str(skill_file))
+        # 2000 prompt + 1000 completion across the two calls.
+        assert "— 4.0 USD" in capsys.readouterr().out
+
+    def test_an_unpriced_model_gets_tokens_and_no_money(
+            self, elf, skill_file, capsys, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        MockClass, agent = elf
+        agent.client.last_usage = self._usage(10, 1)
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out
+        assert "🧮 usage:" in out
+        assert "USD" not in out

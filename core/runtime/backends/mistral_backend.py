@@ -38,7 +38,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
-from core.runtime.backends.base import Backend, BackendCapabilities
+from core.runtime.backends.base import Backend, BackendCapabilities, Usage
 from core.runtime.backends.local_backend import CHAT_TIMEOUT, LocalBackend
 
 CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -74,6 +74,7 @@ class MistralBackend(Backend):
         if not self.api_key:
             raise RuntimeError("Missing MISTRAL_API_KEY")
         self._client = client if client is not None else httpx
+        self.last_usage = None
 
     # ── request ──────────────────────────────────────────────────────────
 
@@ -98,6 +99,10 @@ class MistralBackend(Backend):
         has, because ``core.cli`` walks ``chunk.choices[0].delta.content``
         without knowing which backend filled it.
         """
+        # Cleared before anything is sent: a call that raises must not
+        # leave the previous call's numbers standing for a ledger to count
+        # a second time.
+        self.last_usage = None
         body: Dict[str, Any] = {
             "model": model or DEFAULT_MISTRAL_MODEL,
             "messages": messages,
@@ -187,6 +192,10 @@ class MistralBackend(Backend):
         res = self._post(body)
         self._raise_for_status(res)
         payload = res.json() or {}
+        # Before the empty-choices return, not after it: a completion that
+        # produced no content still cost tokens, and a reply nobody could
+        # use is exactly the call an operator wants to find billed.
+        self.last_usage = Usage.from_payload(payload.get("usage"))
         choices = payload.get("choices") or []
         if not choices:
             return ""
@@ -203,6 +212,7 @@ class MistralBackend(Backend):
         cleanup was the case that never ran it.
         """
         ctx, res = self._open_stream(body)
+        seen: Optional[Usage] = None
         try:
             self._raise_for_status(res)
             for line in res.iter_lines():
@@ -220,10 +230,21 @@ class MistralBackend(Backend):
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                # Mistral puts `usage` on the last content frame rather
+                # than on a frame of its own, so every chunk is read and
+                # the last one to carry counts wins. Read BEFORE the
+                # yield: a consumer that stops on the frame that happened
+                # to carry the counts still leaves them behind.
+                found = Usage.from_payload(chunk.get("usage"))
+                if found is not None:
+                    seen = found
                 content = self._delta_content(chunk)
                 if content:
                     yield self._as_delta(content)
         finally:
+            # In the same `finally` that releases the connection, for the
+            # same reason: abandonment is the case that has to work.
+            self.last_usage = seen
             ctx.__exit__(None, None, None)
 
     @staticmethod
