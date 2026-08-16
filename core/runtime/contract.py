@@ -276,8 +276,8 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: reading it as optional.
     #:
     #: ``compacted`` — ``{dropped_turns, dropped_messages, freed_chars,
-    #: tokens_before, tokens_after, limit_tokens, profile}``, present only on
-    #: the steps where older tool round-trips had to be dropped from the
+    #: tokens_before, tokens_after, limit_tokens, profile, dropped_results}``,
+    #: present only on the steps where older tool round-trips had to be dropped from the
     #: conversation to keep it inside the model's context window.  Absent on
     #: every other step, and absent for the whole run when the caller
     #: supplied no window.
