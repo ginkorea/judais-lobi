@@ -56,6 +56,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -347,7 +348,8 @@ CANCELLED = "cancelled"
 def _finished_record(*, outcome: str, steps: int, max_steps: int,
                      budget: Optional[BudgetExhausted] = None,
                      reason: str = "",
-                     usage: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                     usage: Optional[Dict[str, Any]] = None,
+                     started_at: Optional[float] = None) -> Dict[str, Any]:
     """The ``mission_finished`` fields, for **both** paths that emit them.
 
     One function because there are two emitters — the direct loop's
@@ -376,6 +378,13 @@ def _finished_record(*, outcome: str, steps: int, max_steps: int,
     # anything — not three zeros; see the ledger.
     if usage is not None:
         record["usage"] = usage
+    # `elapsed_s` — wall time from the run's first record to this one, on
+    # the harness's own monotonic clock (the same one `--mission-seconds`
+    # runs against). Present whenever the run knew when it started, which is
+    # every run this module or the swarm starts; NOT inside `usage`, whose
+    # absence means "the provider reported nothing" and must stay a statement.
+    if started_at is not None:
+        record["elapsed_s"] = round(max(0.0, time.monotonic() - started_at), 3)
     return record
 
 
@@ -709,6 +718,7 @@ class MissionRunner:
         ledger: Optional[Ledger] = None,
         deadline: Optional[Deadline] = None,
         cancel: Any = None,
+        started_at: Optional[float] = None,
     ):
         self._chat = chat_fn
         self._bus = bus
@@ -752,6 +762,11 @@ class MissionRunner:
 
         self._deadline = deadline
         self._cancel = cancel
+        # The instant the MISSION began, on `time.monotonic`. A staged run
+        # hands its own down so a sub-mission's `mission_finished` counts
+        # from triage, not from the sub-mission; `None` means "this run's
+        # own start", set in `run`.
+        self._started_at = started_at
         # Asked once, of this bus, at construction — not per dispatch, and
         # not by declaring a flag a caller has to remember to set. See
         # `_deadline_ceiling` for why a mission may not simply pass one.
@@ -981,6 +996,8 @@ class MissionRunner:
         # rewind the clock its parent already wound. See `Deadline.start`.
         if self._deadline is not None:
             self._deadline.start()
+        if self._started_at is None:
+            self._started_at = time.monotonic()
         offered = self.offered
         transcript = MissionTranscript(
             objective=objective, catalogue=list(offered),
@@ -1054,7 +1071,8 @@ class MissionRunner:
                 max_steps=self._max_steps,
                 budget=transcript.budget,
                 reason=transcript.reason,
-                usage=transcript.usage.as_record(self._rate)))
+                usage=transcript.usage.as_record(self._rate),
+                started_at=self._started_at))
 
     def _register_store(self) -> str:
         """Put the result store on the bus for the length of this run.

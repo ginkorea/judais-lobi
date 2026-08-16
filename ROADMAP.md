@@ -16,7 +16,7 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v0.9.0**, 15 Aug 2026. 2,338 tests collected; ~23.2k non-test lines in
+**v0.10.0**, 16 Aug 2026. 2,853 tests collected; ~23.2k non-test lines in
 `core/`+`judais/`+`lobi/`, ~26k lines of tests.
 
 For two weeks this framework ran in production as **Tai**, the mission agent
@@ -29,7 +29,8 @@ validator, the mission stream and its contract, the MCP client, the skill
 manifest as the only content channel, the swarm's failure containment — and it
 is recorded in §5.9. What it also exposed is that a framework can make *one*
 deployment truthful while its *default* deployment is still not one you would
-run unattended. 0.9.0 closed the first half of that gap. The rest is §2.
+run unattended. 0.9.0 closed the first half of that gap (safe by default) and 0.10.0 the
+second (durable and bounded). The rest is §2.
 
 ### 1.1 The six properties
 
@@ -60,9 +61,9 @@ Re-verify before acting on any of it.
 | ~~**No sandbox by default.**~~ Closed 0.9.0: `select_sandbox` picks bwrap wherever it exists, the child env is an allow-list, and the choice rides `mission_started.sandbox`. **Still open:** the `fs` tool is in-process pathlib and no sandbox bounds it. | `core/tools/sandbox.py`, `core/tools/fs_tools.py` | 1 |
 | ~~**Allow-everything policy by default.**~~ Closed 0.9.0: `Tools()` builds `SAFE`, `--profile`/`JUDAIS_LOBI_PROFILE` opt up, refusals name the scope and the profile that grants it, and `AuditLogger` is on every default bus (`audit_ref`). **Still open:** god-mode and the preflight hook are constructor parameters nothing passes; the kernel path governs through `set_scope_constraints`, a second surface. | `core/tools/__init__.py`, `core/policy/`, `core/kernel/orchestrator.py` | 1 |
 | ~~**Tracebacks leak absolute paths.**~~ Closed 0.9.0: one redactor at the emitter. **Still open:** it covers the mission stream and mission-mode stderr, not the kernel/campaign/chat error prints. | `core/redact.py`, `core/cli.py` | 1 |
-| **The real agent path persists nothing.** A CLI mission writes only the optional NDJSON; `SessionManager` (non-atomic `write_text`) serves only the kernel path the CLI does not reach. The audit file is append-only but never fsync'd. | `core/sessions/manager.py`, `core/policy/audit.py` | 2 |
-| **No wall-clock bound, no cancellation.** Step count and per-tool timeouts only; a contended local model can hang a turn forever. | `core/runtime/mission.py` (`max_steps`) | 3 |
-| **No usage or cost accounting.** Only char/4 estimates for compaction — `prompt_tokens`/`completion_tokens` appear nowhere in `core/`. | grep | 3, 4 |
+| ~~**The real agent path persists nothing.**~~ Closed 0.10.0: `core/durable.py` `RunStore` is the mission's transcript store (fsync'd, monotonic `seq`, atomic meta), `--resume` replays it, orphans are reconciled, every `core/` store write is atomic (guard test), audit is fsync'd. **Still open:** staged-run resume; the kernel path's `SessionManager` is atomic but still its own layout. | `core/durable.py`, `core/runtime/resume.py` | 2 |
+| ~~**No wall-clock bound, no cancellation.**~~ Closed 0.10.0: `--mission-seconds`, one clock per mission shared by every stage, `budget` names which budget, cooperative cancel + SIGTERM winds up cleanly. **Still open:** `bytes`/`tokens` budgets declared, not enforced. | `core/budgets.py` | 3 |
+| ~~**No usage or cost accounting.**~~ Closed 0.10.0: `Backend.last_usage` on every backend, one `Ledger`, `usage` per call and per run on the stream, `cost` from a `pricing:` table, `elapsed_s` on `mission_finished`. | `core/runtime/usage.py` | 3, 4 |
 | **No reproducible eval.** The Aug 2026 measurements live in docstrings; in-repo there is one recorded-fabrication fixture and an MCP stub. | `tests/fixtures/`, `tests/mcp_stub_server.py` | 4 |
 | **Two agent runtimes.** `MissionRunner`/`SwarmRunner` (JSON protocol, MCP, CLI) and the kernel `Orchestrator`+roles (state machine, sessions, judge, patch) do not share sessions, budgets or governance. 0.8.2 gave result bounding one owner (`core/bounding.py`) and windowed the mission's conversation; 0.9.0 put the kernel's role prompts through the same window owner. The *runtimes* are still two. | `core/runtime/mission.py` vs `core/kernel/` | 5 |
 | **No token streaming or constrained decoding in agentic runs.** Missions call `chat(stream=False)`; the probed grammar/tool-choice path is deliberately unwired. | `core/cli.py` | 4, 6 |
@@ -100,7 +101,7 @@ merges. Version bump every phase.
 | — | *Release 0.8.2 — the honest stream* | ✅ swarm silence, mission window, one bounder, httpx Mistral, a bwrap that runs |
 | — | *Release 0.9.0 — safe by default* | ✅ property 1, less its residuals (§1.2) |
 | ~~9~~ | ~~Performance optimisation (TRT-LLM / vLLM tuning)~~ | **Retired** — §2.3 |
-| 9 | Durable and bounded (0.10) | properties 2 and 3 |
+| 9 | Durable and bounded (0.10) | ✅ 0.10.0 — properties 2 and 3, less the residuals in §2.4 |
 | 10 | Measurable (0.11) | property 4; absorbs February's Phase 10 |
 | 11 | One runtime (0.12) | property 5 |
 | 12 | Providers and streaming (0.13) | properties 4 and 6 |
@@ -173,9 +174,16 @@ after all, because the client is what observes it; it becomes the usage/telemetr
 history in §5.11, where the reference-profile notes are kept verbatim for
 whoever stands the serving layer up.
 
-### 2.4 Phase 9 — durable and bounded (0.10)
+### 2.4 Phase 9 — durable and bounded (0.10) — done 15–16 Aug 2026 (0.10.0)
 
-Properties 2 and 3.
+Properties 2 and 3. Every bullet below shipped in 0.10.0 (lanes O/O2/P/Q/R/S).
+What it did *not* close, carried forward: a **staged** (`--swarm`) run
+checkpoints its plan and steps but `--resume` refuses it today (the refusal
+names the steps done) — resuming the staged queue is a follow-up; the `bytes`
+and `tokens` budgets are declared in `core/budgets.WHICH` and not yet enforced
+(the ledger exposes `transcript.usage.total` for a `tokens` budget to read);
+`Cancellation` is process-local (a control channel that can *deliver* one
+mid-turn is Phase 12); `elapsed_s` rides `mission_finished` top-level.
 
 - **A thread durability primitive.** Monotonic per-thread `seq`, fsync'd
   append-only JSONL, atomic `os.replace` for metadata, `since(cursor)` +

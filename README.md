@@ -531,9 +531,17 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.9.0 — 2341 tests collected.** Mission mode, skill manifests, the grounding
+**v0.10.0 — 2853 tests collected.** Mission mode, skill manifests, the grounding
 validator, `--swarm`, the NDJSON mission stream and the published contract are
-all in this release. 0.9.0 is **safe by default**: tool subprocesses run under
+all in this release. 0.10.0 is **durable and bounded**: every mission leaves a
+numbered, fsync'd log behind (`core/durable.py`, `run_id` on `mission_started`)
+and `--resume <run-id>` picks a killed one back up from it; `--mission-seconds`
+bounds the wall clock and `budget_exhausted` names which budget ran out;
+SIGTERM lets the run write its own `mission_finished` (`reason: cancelled`);
+every model call's `usage` and the run's totals plus `elapsed_s` ride the
+stream; a gate writes a durable approval (`approval_id`) that a later run
+carries with `--approval <id>` — one tool, one run, nothing defaults to yes;
+and every store `core/` writes is atomic. 0.9.0 was **safe by default**: tool subprocesses run under
 `bwrap` wherever bubblewrap exists (opt out with `--unsandboxed`, announced as
 `sandbox` on `mission_started`), the capability profile is deny-by-default
 `safe` (`--profile dev|ops|god` opts up and every refusal names the scope and
@@ -544,7 +552,7 @@ reaches the stream. The kernel's role prompts are bounded by the same context
 window the mission uses, and Phase 8 is closed. `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
 how a platform deploys this framework as its own agent.
 
-`ROADMAP.md` is the one roadmap: §1 is where the framework stands at 0.9.0
+`ROADMAP.md` is the one roadmap: §1 is where the framework stands at 0.10.0
 and what is still missing, §2 is Phases 9–13, and §5 is the history — the
 Feb 2026 blueprint, the Phase 8 disposition, and what two weeks in production
 taught. `NEXT_STEPS.md` and `PHASE_8.md` were folded into it on 15 Aug 2026.
@@ -570,8 +578,8 @@ a record of how it grew. The current total is the one above.
 
 Phase 8 closed at 0.9.0, and the numbering continues in `ROADMAP.md` §2:
 
-* ⏳ Phase 9 — durable and bounded: a fsync'd append-only transcript, resume,
-  a wall-clock budget, a usage ledger, approvals as durable records
+* ✅ Phase 9 — durable and bounded (0.10.0): a fsync'd append-only transcript,
+  `--resume`, a wall-clock budget, a usage ledger, approvals as durable records
 * ⏳ Phase 10 — measurable: an in-repo eval harness scored from recorded runs
 * ⏳ Phase 11 — one runtime: the mission loop and the kernel become one `Run`
 * ⏳ Phase 12 — providers and streaming: `answer_delta` at the source
@@ -647,7 +655,7 @@ If you are **running this from another program**, read:
 
 If you want to understand **where this is going**, read:
 
-* 🗺️ `ROADMAP.md` — the only roadmap: where 0.9.0 stands (§1), Phases 9–13
+* 🗺️ `ROADMAP.md` — the only roadmap: where 0.10.0 stands (§1), Phases 9–13
   (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 
 If you want to understand the **current implementation**, inspect:

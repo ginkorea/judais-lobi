@@ -438,6 +438,24 @@ class TestTheWallClock:
         assert seen[-1]["outcome"] == "answered"
         assert "budget" not in seen[-1]
 
+    def test_every_finished_record_says_how_long_the_run_took(self, bus, monkeypatch):
+        """`elapsed_s` rides `mission_finished` on every outcome, on the
+        harness's own monotonic clock — and OUTSIDE `usage`, whose absence
+        is a statement about the provider that elapsed time must not
+        disturb."""
+        import itertools
+        import core.runtime.mission as mission_module
+        ticks = itertools.count(100.0, 2.5)          # 100.0, 102.5, 105.0 …
+        monkeypatch.setattr(mission_module.time, "monotonic", lambda: next(ticks))
+        seen = []
+        MissionRunner(ScriptedModel('{"answer": "done"}'), bus,
+                      ["catalog.search"], observer=seen.append).run("go")
+        finished = seen[-1]
+        assert finished["event"] == "mission_finished"
+        assert finished["elapsed_s"] == 2.5
+        assert "usage" not in finished          # nothing reported → absent
+        assert "elapsed_s" in seen[-1] and finished["outcome"] == "answered"
+
     def test_no_deadline_is_the_loop_as_it_ran_before(self, bus):
         """Unbounded is the default, and unbounded means the clock is not
         consulted at all — including by a fake bus that would choke on a

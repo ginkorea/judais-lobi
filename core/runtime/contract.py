@@ -388,7 +388,15 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: ``incomplete`` has always meant, and what it was missing is the
     #: reason.  A consumer that ignores this field renders a cancelled run
     #: exactly as it rendered one before the field existed.
-    MISSION_FINISHED: ("usage", "budget", "reason"),
+    #:
+    #: ``elapsed_s`` — wall-clock seconds from the mission's first record to
+    #: this one, on the harness's own clock (the one ``--mission-seconds``
+    #: runs against).  Present on every ``mission_finished`` a run this
+    #: harness started emits, direct and staged alike; a consumer prints it
+    #: beside ``usage.total_tokens`` and reads both with a default.  Kept
+    #: OUT of ``usage`` on purpose: that field is absent when the provider
+    #: reported nothing, and elapsed time is known regardless.
+    MISSION_FINISHED: ("usage", "budget", "reason", "elapsed_s"),
     #: ``approval_id`` — the id of the durable record this request was
     #: written to, when the deployment keeps them (it does by default;
     #: ``JUDAIS_LOBI_APPROVALS=none`` turns them off, and then this field is

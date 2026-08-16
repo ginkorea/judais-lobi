@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -505,6 +506,7 @@ class SwarmRunner:
         # why seconds are shared where steps are portioned.
         self._deadline = deadline
         self._cancel = cancel
+        self._started_at: Optional[float] = None
         self._max_plan_steps = max(1, int(max_plan_steps))
         self._step_budget = max(1, int(step_budget))
         self._retries = max(0, int(retries_per_step))
@@ -629,6 +631,7 @@ class SwarmRunner:
         # rewinding it.
         if self._deadline is not None:
             self._deadline.start()
+        self._started_at = time.monotonic()
         self._emit(MISSION_STARTED, **self._opening(objective))
         stop = self._stop()
         if stop is not None:
@@ -650,6 +653,7 @@ class SwarmRunner:
             # planner both ran before this. What they cost is on the
             # record even though nothing was accomplished with it.
             self._emit(MISSION_FINISHED, **_finished_record(
+                started_at=self._started_at,
                 outcome="incomplete", steps=0, max_steps=self._max_steps,
                 **self._usage_kw()))
             raise
@@ -706,6 +710,7 @@ class SwarmRunner:
                                        catalogue=list(self._offered))
         transcript.outcome, transcript.budget, transcript.reason = stop
         self._emit(MISSION_FINISHED, **_finished_record(
+            started_at=self._started_at,
             outcome=transcript.outcome, steps=0, max_steps=self._max_steps,
             budget=transcript.budget, reason=transcript.reason))
         return transcript
@@ -778,6 +783,7 @@ class SwarmRunner:
             # fit inside a one-minute budget.
             deadline=self._deadline,
             cancel=self._cancel,
+            started_at=self._started_at,
         )
 
     def _direct(self, objective: str) -> MissionTranscript:
@@ -804,6 +810,7 @@ class SwarmRunner:
             ledger=self._ledger,
             deadline=self._deadline,
             cancel=self._cancel,
+            started_at=self._started_at,
         )
         return runner.run(objective)
 
@@ -1006,6 +1013,7 @@ class SwarmRunner:
             # The direct path's own renderer, not a second hand-listing of
             # the same record.
             self._emit(MISSION_FINISHED, **_finished_record(
+                started_at=self._started_at,
                 outcome=transcript.outcome,
                 steps=len(transcript.steps),
                 max_steps=self._max_steps,

@@ -55,7 +55,7 @@ on the first step of a redrawn one), `tool` on `reply_rejected` (present
 only when the model got as far as naming one), `compacted` and `resumed` on
 `step_started`, `approval_id` on `gate_requested`, `sandbox` and `profile` on
 `mission_started`, `usage` on `tool_call`, `answer`, `reply_rejected` and
-`mission_finished`, and `budget` and `reason` on `mission_finished`. `plan`
+`mission_finished`, and `budget`, `reason` and `elapsed_s` on `mission_finished`. `plan`
 rode `mission_started` until 0.8.x: that record is now emitted before triage —
 which is itself a call to the model — so at the time it is written there is no
 plan and there may never be one.
@@ -227,6 +227,13 @@ event is a lockstep release on both sides for a number that fits in frames that
 already exist. An optional field is read with a default by a consumer that
 wants it and ignored by one that does not — the same route `compacted` and
 `plan` took.
+
+`elapsed_s` is wall-clock seconds from the mission's first record to its
+`mission_finished`, on the harness's own clock — the one `--mission-seconds`
+runs against. It is on every `mission_finished` this harness emits, direct and
+staged alike, and it is deliberately **not** inside `usage`: `usage` is absent
+when the provider reported nothing, and elapsed time is known regardless. Print
+it beside `usage.total_tokens`; read both with a default.
 
 Six of these carry more meaning than their names suggest:
 

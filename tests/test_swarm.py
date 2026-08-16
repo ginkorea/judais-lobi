@@ -1653,7 +1653,7 @@ class TestOneClockForTheWholeTurn:
         finished = [r for r in seen if r["event"] == "mission_finished"]
         assert len(finished) == 1
         assert set(finished[0]) == {"event", "outcome", "steps", "max_steps",
-                                    "budget"}
+                                    "budget", "elapsed_s"}
         assert swarm_module._finished_record.__module__ == \
             "core.runtime.mission"
 
