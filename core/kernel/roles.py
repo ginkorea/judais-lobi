@@ -66,6 +66,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
+from core.bounding import bound_result
 from core.kernel.budgets import BudgetConfig
 from core.kernel.orchestrator import PhaseResult
 from core.kernel.state import SessionState
@@ -163,9 +164,16 @@ class RoleContext:
         return self.tool_bus.dispatch(tool, *args, **kwargs)
 
     def remember(self, line: str) -> None:
-        cap = self.budget.max_tool_output_bytes_in_context
-        if len(line) > cap:
-            line = line[:cap] + f"\n[...truncated at {cap} bytes]"
+        """One trace line, bounded to the tool-output budget.
+
+        Head *and* tail, through :func:`core.bounding.bound_result`, and
+        not the head-only cut this used to do.  A trace line is a tool
+        result rendered for a later phase to read, and a tool result puts
+        its totals at the end — a head-only cut kept the invocation and
+        threw away the counts, which is the half the FIX and CRITIQUE
+        phases are looking for.
+        """
+        line, _ = bound_result(line, self.budget.max_tool_output_bytes_in_context)
         self.trace.append(line)
 
     def recent(self, n: int = 6) -> str:

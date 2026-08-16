@@ -45,6 +45,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from core.bounding import MAX_RESULT_BYTES, bound_result
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission_stream import (
@@ -75,33 +76,13 @@ instead of asserting it.
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
-#: How much of one tool result reaches the transcript, in UTF-8 bytes.
-#: The kernel path has carried ``max_tool_output_bytes_in_context =
-#: 32_768`` in ``core/kernel/budgets.py`` since it existed; the mission
-#: path pasted results uncapped, which is the same defect with a larger
-#: blast radius — one governed view can evict the catalogue lookups that
-#: told the model what its numbers mean, or exceed ``max_model_len``
-#: outright, and neither leaves a trace in the answer.
-#:
-#: The number is the kernel's and is written here rather than imported:
-#: the review's conclusion was not to route the mission through the
-#: kernel, and importing a budget object for one integer is the first
-#: step of doing it anyway.
-MAX_RESULT_BYTES = 32_768
-
-#: How the bounded portion is split. Head carries the shape of the
-#: result — the schema, the first rows, the field names — and the tail
-#: carries totals and trailing summaries, which is where a governed view
-#: puts the counts.
-HEAD_FRACTION = 0.6
-
 #: Bounds on a seeded conversation history, chosen as a safety net and not
 #: a working limit.  The one caller that seeds history today (TAIPAN's
 #: Mission Pane) already caps what it sends at 12 turns of ≤4,000
 #: characters — ~48 KB worst case — so anything near these numbers is a
 #: caller that lost its own cap, and the honest response is a refusal at
 #: the door rather than a silent trim.  An oversized history has the same
-#: defect as an unbounded tool result (see MAX_RESULT_BYTES): it can push
+#: defect as an unbounded tool result (see :mod:`core.bounding`): it can push
 #: the catalogue and the protocol out of a small model's window with
 #: nothing in the answer saying so.
 HISTORY_MAX_TURNS = 100
@@ -834,34 +815,21 @@ class MissionRunner:
         )
 
     def _bound(self, body: str, handle: str = ""):
-        """Head and tail of *body*, with a marker saying so.
+        """Head and tail of *body*, with a marker naming the store.
 
-        The marker is not decoration.  A silently truncated result is
-        worse than an oversized one: the model cannot see that anything
-        is missing, so it answers from the part it can see or from
-        memory, and no rule about restating figures can help because
-        nothing told it the figure was cut off.  The marker says how
-        much went, and — when there is a store — the handle to read the
-        rest of it from.
+        The cut itself belongs to :func:`core.bounding.bound_result`,
+        which every path that bounds a tool result now shares.  What is
+        the mission's own is the clause the marker ends with: when this
+        run has a store, a truncated result is not a loss but a
+        redirection, and the sentence that says so spells out the call —
+        the recorded lesson is that a refusal at the turn it binds
+        teaches a small model a rule that the same rule 2,000 tokens
+        upstream in a persona does not.
         """
-        limit = self._max_result_bytes
-        data = body.encode("utf-8")
-        if limit <= 0 or len(data) <= limit:
-            return body, False
-
-        head_n = max(1, int(limit * HEAD_FRACTION))
-        tail_n = max(1, limit - head_n)
-        head = data[:head_n].decode("utf-8", "ignore")
-        tail = data[-tail_n:].decode("utf-8", "ignore")
         where = (
             f" The whole result is stored as {handle}: call "
             f'{self._store_tool}(handle="{handle}", path="...") for one field.'
             if handle and self._store_tool else
             " The rest is not retrievable in this mission."
         )
-        marker = (
-            f"\n… [truncated: {head_n} head + {tail_n} tail bytes of "
-            f"{len(data)}. The middle is NOT shown and must not be guessed at."
-            f"{where}]\n"
-        )
-        return head + marker + tail, True
+        return bound_result(body, self._max_result_bytes, where=where)

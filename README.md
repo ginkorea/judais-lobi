@@ -173,11 +173,14 @@ Three things come out of it, and nothing else does:
 
 ### Bounded results, and a store to read the rest from
 
-A tool result is capped at 32 KB (`MAX_RESULT_BYTES`, the kernel's own
-`max_tool_output_bytes_in_context`) before it enters the transcript — head and
-tail with an explicit marker. Uncapped, one large governed view evicts the
-earlier steps the model needs to know what its numbers mean, or exceeds
-`max_model_len` outright, and neither leaves a trace in the answer.
+A tool result is capped at 32 KB before it enters the transcript — head and
+tail with an explicit marker. The cap and the cut have one owner,
+`core/bounding.py` (`MAX_RESULT_BYTES`, `bound_result`); the kernel's
+`max_tool_output_bytes_in_context` and the chat path's are configuration knobs
+that default to it, and every path that bounds a tool result calls the same
+function. Uncapped, one large governed view evicts the earlier steps the model
+needs to know what its numbers mean, or exceeds `max_model_len` outright, and
+neither leaves a trace in the answer.
 
 The whole result — including the `structuredContent` that `as_tuple()` drops
 whenever there is text — stays in a per-mission store, and the marker names the

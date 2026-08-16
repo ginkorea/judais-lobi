@@ -310,8 +310,9 @@ frontmatter and with no `pyyaml` the manifest never loads. Install `[mission]`.
 
 ### The results store
 
-A tool result is capped at 32 KB (`MAX_RESULT_BYTES`) before it enters the
-transcript — head and tail with an explicit marker. The **whole** result stays in
+A tool result is capped at 32 KB (`MAX_RESULT_BYTES` in `core/bounding.py`, the
+one owner of both the number and the cut) before it enters the transcript — head
+and tail with an explicit marker. The **whole** result stays in
 a per-mission store under a short handle, and the model can ask for one field:
 
 ```

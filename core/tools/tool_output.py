@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from core.bounding import MAX_RESULT_BYTES, bound_result
+
 
 @dataclass(frozen=True)
 class ToolOutputRecord:
@@ -18,21 +20,37 @@ class ToolOutputRecord:
 def build_tool_output_record(
     tool_name: str,
     result: Any,
-    max_bytes: int,
+    max_bytes: int = MAX_RESULT_BYTES,
     log_root: Optional[Path] = None,
 ) -> ToolOutputRecord:
+    """A tool's output as one history entry, bounded and never silent.
+
+    Over budget, the whole output is spilled to a log file *and* the
+    model is still shown head and tail through
+    :func:`core.bounding.bound_result`.  Showing it nothing — which is
+    what this did — was the worst of the three bounding behaviours this
+    repo carried: an agent handed a path and no bytes has to spend a
+    turn grepping a file to learn whether the command even worked, and
+    a model that cannot see the exit output frequently invents it.
+    """
     rc, stdout, stderr = _normalize_result(result)
     output = _combine_output(stdout, stderr)
     size = len(output.encode("utf-8", errors="ignore"))
 
     if size > max_bytes:
         path = _write_log(output, tool_name, log_root)
+        shown, _ = bound_result(
+            output,
+            max_bytes,
+            where=f" The whole output is at {path}.",
+        )
         summary = (
             f"(Tool used: {tool_name})\n"
             f"Exit code: {rc}\n"
             f"Output exceeded budget ({size} bytes).\n"
             f"Full log at: {path}\n"
-            "Use targeted retrieval (grep, tail, symbol lookup) to inspect details."
+            "Use targeted retrieval (grep, tail, symbol lookup) to inspect details.\n"
+            f"Output (head and tail):\n{shown}"
         )
         return ToolOutputRecord(summary=summary, output_bytes=size, stored_path=path)
 

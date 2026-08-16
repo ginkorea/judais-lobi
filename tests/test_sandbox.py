@@ -62,6 +62,102 @@ class TestNoneSandbox:
         assert rc == 0
 
 
+class TestTheCallerOwnsShellMode:
+    """``ToolBus`` hands the sandbox what the tool decided; it used not to.
+
+    ``_build_sandbox_runner`` accepted ``shell=`` and ``executable=`` from
+    ``executor.run_subprocess`` and discarded both, so every sandbox
+    re-derived shell mode from ``isinstance(cmd, str)`` and hard-coded
+    ``/bin/bash``. A tool configured with another interpreter got bash
+    without being told, and an explicit ``shell=False`` meant nothing.
+    Sandboxing a command must not change which command it is.
+    """
+
+    def test_shell_is_inferred_when_nobody_says(self):
+        """A direct caller that never had an opinion keeps the old one."""
+        rc, out, err = NoneSandbox().execute("echo inferred")
+        assert rc == 0
+        assert "inferred" in out
+
+    def test_an_explicit_shell_false_is_honoured(self):
+        """A string with shell=False is a program name, not a script."""
+        rc, out, err = NoneSandbox().execute("echo not-a-shell", shell=False)
+        assert rc == -1
+        assert "not-a-shell" not in out
+
+    def test_an_argv_stays_an_argv_whatever_the_flag_says(self):
+        """Re-joining a split command into a script hands the quoting
+        back to the shell, which is the bug, not the fix."""
+        rc, out, err = NoneSandbox().execute(
+            ["echo", "one two", "three"], shell=True,
+        )
+        assert rc == 0
+        assert out == "one two three"
+
+    def test_the_callers_interpreter_is_used(self):
+        rc, out, err = NoneSandbox().execute(
+            "echo $0", shell=True, executable="/bin/sh",
+        )
+        assert rc == 0
+        assert out.strip() == "/bin/sh"
+
+    def test_bash_is_only_the_fallback(self):
+        rc, out, err = NoneSandbox().execute("echo $0", shell=True)
+        assert out.strip() == "/bin/bash"
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    @patch("core.tools.sandbox.subprocess.run")
+    def test_bwrap_wraps_with_the_callers_interpreter(self, mock_run, mock_which):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        BwrapSandbox().execute("echo hi", shell=True, executable="/bin/sh")
+        argv = mock_run.call_args[0][0]
+        assert argv[-3:] == ["/bin/sh", "-c", "echo hi"]
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    @patch("core.tools.sandbox.subprocess.run")
+    def test_bwrap_does_not_invent_a_shell_for_an_argv(self, mock_run, mock_which):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        BwrapSandbox().execute(["echo", "hi"], shell=True)
+        argv = mock_run.call_args[0][0]
+        assert argv[-2:] == ["echo", "hi"]
+        assert "-c" not in argv
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    @patch("core.tools.sandbox.subprocess.run")
+    def test_bwrap_runs_a_string_as_a_program_when_told_not_to_shell(
+        self, mock_run, mock_which,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        BwrapSandbox().execute("/usr/bin/true", shell=False)
+        argv = mock_run.call_args[0][0]
+        assert argv[-1] == "/usr/bin/true"
+        assert "-c" not in argv
+
+
+class TestTheBusForwardsWhatTheToolDecided:
+    def test_the_sandbox_runner_passes_shell_and_executable_through(self):
+        from core.tools.bus import ToolBus
+        from core.tools.descriptors import SandboxProfile as _Profile
+
+        seen = {}
+
+        class RecordingSandbox:
+            def execute(self, cmd, *, profile=None, timeout=None, env=None,
+                        shell=None, executable=None):
+                seen.update(cmd=cmd, shell=shell, executable=executable,
+                            timeout=timeout, profile=profile)
+                return 0, "ok", ""
+
+        profile = _Profile()
+        bus = ToolBus(sandbox=RecordingSandbox())
+        runner = bus._build_sandbox_runner(profile)
+        runner("pytest -q", shell=True, timeout=30, executable="/bin/zsh")
+        assert seen == {
+            "cmd": "pytest -q", "shell": True, "executable": "/bin/zsh",
+            "timeout": 30, "profile": profile,
+        }
+
+
 class TestBwrapSandboxArgBuilding:
     @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
     def test_basic_args(self, mock_which):
