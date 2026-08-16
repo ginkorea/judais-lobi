@@ -69,7 +69,7 @@ from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
     AWAITING_APPROVAL, MissionRunner, MissionTranscript, _grounding_record,
-    validate_history,
+    audit_ref_of, validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -490,6 +490,12 @@ class SwarmRunner:
             "gated": [name for name in offered if name in self._gated],
             "max_steps": self._max_steps,
             "history": len(self._history),
+            # Through the direct path's own helper, not a second reading of
+            # the same bus. This dict is a hand-written copy of a record
+            # another module emits, which is precisely the arrangement that
+            # let the swarm ship six grounding fields where the direct path
+            # emitted ten.
+            "audit_ref": audit_ref_of(self._bus),
         }
 
     # ── DIRECT: the path that already worked, untouched ─────────────────

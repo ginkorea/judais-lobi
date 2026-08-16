@@ -159,6 +159,27 @@ def validate_history(turns: Any) -> List[Dict[str, str]]:
     return cleaned
 
 
+def audit_ref_of(bus: Any) -> Optional[str]:
+    """The audit file *bus* is recording this run's dispatches in, or ``None``.
+
+    One function rather than a line in each runner, and it reads the value
+    off the **bus** rather than resolving a path of its own.  Both matter.
+    A second resolver would be a second owner of "where the audit log is",
+    and the day the two disagree the stream names a file nothing wrote to —
+    which is worse than no ``audit_ref`` at all, because a consumer would
+    believe it.  A second copy of even this one expression is the same
+    hazard in miniature: the swarm hand-listed six grounding fields where
+    the direct path emitted ten, and that is exactly how.
+
+    ``getattr`` and not an attribute access: a caller may hand either
+    runner any object with ``dispatch`` and ``describe_tool`` on it, and a
+    fake bus in somebody's test suite is not obliged to know what an audit
+    is.  Nothing here is a reason for a mission to fail to start.
+    """
+    ref = getattr(bus, "audit_ref", None)
+    return str(ref) if ref else None
+
+
 def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
                       repairing: bool = False, caveat: str = "") -> Dict[str, Any]:
     """A :class:`GroundingReport` as the observer's ``grounding`` fields.
@@ -560,15 +581,28 @@ class MissionRunner:
         # `schema_version` first and on the FIRST record, so a consumer that
         # is going to refuse this stream refuses it before it has rendered
         # anything from it. See `core.runtime.contract`.
+        # `audit_ref` names the file every dispatch below is being written
+        # to, and `None` says there is no such file because somebody turned
+        # auditing off in as many words. A consumer that finds no audit log
+        # and no field cannot tell that from a harness that failed to open
+        # one.
         self._emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
                    objective=objective, catalogue=list(offered),
                    gated=self.gated, max_steps=self._max_steps,
-                   history=len(self._history))
+                   history=len(self._history),
+                   audit_ref=audit_ref_of(self._bus))
         try:
             return self._loop(objective, offered, transcript)
         finally:
             if registered:
                 self._bus.unregister(registered)
+            # Withdrawn for the same reason the store descriptor is: the bus
+            # outlives this run, and a `step` left behind would stamp the
+            # next chat turn's audit entry with the last mission's index —
+            # a column that is wrong rather than absent, which is worse.
+            context = getattr(self._bus, "audit_context", None)
+            if isinstance(context, dict):
+                context.pop("step", None)
             # In `finally` so that a mission killed by an exception still tells
             # the watcher the mission is over. A stream that just stops is
             # indistinguishable from an agent that is thinking, and a pane
@@ -718,6 +752,15 @@ class MissionRunner:
 
             self._emit(TOOL_CALL, index=index, tool=name,
                        arguments=dict(arguments))
+            # The bus has no idea what a step is and should not learn: it
+            # serves chat turns, kernel roles and missions alike. So the
+            # mission leaves its index where the audit entry is built,
+            # rather than the bus growing a mission-shaped parameter.
+            # Guarded by `isinstance`, because a caller's fake bus has no
+            # such dict and a missing audit column is not worth a crash.
+            context = getattr(self._bus, "audit_context", None)
+            if isinstance(context, dict):
+                context["step"] = index
             result = self._bus.dispatch(name, **arguments)
             step.exit_code = result.exit_code
             step.output = result.stdout

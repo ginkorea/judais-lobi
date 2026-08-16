@@ -234,6 +234,24 @@ def _run_mission(elf, args, name, style):
     transport = _build_mcp_transport(args)
     bus = elf.tools.bus
 
+    # Said out loud, both ways round. A path tells an operator where to look
+    # when somebody asks what this mission called; the absence of one is the
+    # more important announcement, because an unaudited run is a decision
+    # (JUDAIS_LOBI_AUDIT=off) and it should never be discovered afterwards by
+    # finding an empty directory. The same fact rides the machine channel as
+    # `mission_started.audit_ref`.
+    from core.policy.audit import AUDIT_ENV
+
+    if bus.audit_ref:
+        console.print(f"🧾 audit: {bus.audit_ref}", style=style)
+    else:
+        console.print(
+            f"🧾 audit: DISABLED — nothing this mission calls will be "
+            f"recorded. Unset {AUDIT_ENV} (or point it at a path) to restore "
+            f"the default",
+            style="yellow",
+        )
+
     # Parsed BEFORE the connection, so an unusable regex or an unknown key is
     # a refusal at the door rather than at the end of an 11,000-second
     # mission. The validator itself is built twice: once here so `--skill`
@@ -488,6 +506,19 @@ def _run_mission(elf, args, name, style):
     finally:
         if sink is not None:
             sink.close()
+        # In the `finally` for the same reason `mission_finished` is: a run
+        # that ended badly is exactly the run whose audit gaps matter. The
+        # bus already said the FIRST failure on stderr with its exception;
+        # this is the count, and it is the line an operator sees whether the
+        # mission answered, was killed, or never reached a server.
+        failures = getattr(bus, "audit_failures", 0)
+        if failures:
+            console.print(
+                f"⚠️  audit: {failures} entr{'y' if failures == 1 else 'ies'} "
+                f"could NOT be written (see stderr) — this run is not fully "
+                f"recorded",
+                style="red",
+            )
 
     for step in transcript.steps:
         if step.tool:

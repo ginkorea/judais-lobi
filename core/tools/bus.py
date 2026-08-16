@@ -1,9 +1,12 @@
 # core/tools/bus.py — ToolBus registry and dispatch
 
 import json as _json
+import sys
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Any
 
+from core.bounding import bound_result
 from core.tools.descriptors import (
     ToolDescriptor,
     SandboxProfile,
@@ -60,6 +63,14 @@ class ToolBus:
         self._preflight_hook = preflight_hook
         self._god_mode = god_mode
         self._audit = audit
+        #: How many audit writes have failed on this bus.  Counted rather
+        #: than swallowed: see :meth:`_log_audit`.
+        self.audit_failures = 0
+        #: Whatever the caller running this bus wants on every audit entry
+        #: — the mission puts its step index here before each dispatch.
+        #: A plain dict because the bus has no business knowing what a
+        #: step is, and because a caller that never sets one costs nothing.
+        self.audit_context: Dict[str, Any] = {}
 
     @property
     def capability_engine(self) -> CapabilityEngine:
@@ -68,6 +79,18 @@ class ToolBus:
     @property
     def sandbox(self) -> SandboxRunner:
         return self._sandbox
+
+    @property
+    def audit_ref(self) -> Optional[str]:
+        """The audit file this bus is writing to, or ``None`` for no audit.
+
+        The single owner of that string.  A mission carries it on
+        ``mission_started.audit_ref`` and both runners read it from here
+        rather than each resolving a path of its own — two resolutions of
+        one fact is how a stream comes to name a file nothing wrote to.
+        """
+        path = getattr(self._audit, "path", None)
+        return str(path) if path else None
 
     def register(self, descriptor: ToolDescriptor, executor: Callable) -> None:
         """Register a tool with its descriptor and executor."""
@@ -110,14 +133,25 @@ class ToolBus:
             Forwarded to the executor.  When *action* is given the executor
             receives ``(action, *args, **kwargs)``.
         """
+        arguments = {"args": list(args), "kwargs": dict(kwargs)}
+
         if tool_name not in self._descriptors:
+            message = f"Unknown tool: {tool_name}"
+            # Audited like every other dispatch. A model naming a tool that
+            # does not exist is a fact about the run worth keeping — it is
+            # the shape of a mission spending its budget on protocol — and
+            # an audit that only records the calls that got as far as the
+            # capability check cannot show it.
+            self._log_audit(tool_name, action, [], "unknown_tool",
+                            arguments=arguments, reason=message,
+                            exit_code=-1)
             return ToolResult(
                 exit_code=-1,
                 stdout="",
                 stderr=_json.dumps({
                     "error": "unknown_tool",
                     "tool": tool_name,
-                    "message": f"Unknown tool: {tool_name}",
+                    "message": message,
                 }),
                 tool_name=tool_name,
             )
@@ -158,7 +192,9 @@ class ToolBus:
                 tool_name=tool_name,
                 evidence=_json.dumps(panic_err),
             )
-            self._log_audit(tool_name, action, scopes_to_check, "panic_revoked")
+            self._log_audit(tool_name, action, scopes_to_check,
+                            "panic_revoked", arguments=arguments,
+                            reason=panic_err["message"], exit_code=-1)
             return result
 
         # Preflight announcement for high-risk actions
@@ -188,7 +224,9 @@ class ToolBus:
                 tool_name=tool_name,
                 evidence=_json.dumps(denial),
             )
-            self._log_audit(tool_name, action, scopes_to_check, "denied")
+            self._log_audit(tool_name, action, scopes_to_check, "denied",
+                            arguments=arguments, reason=verdict.reason,
+                            exit_code=-1)
             return result
 
         # Network check
@@ -213,11 +251,14 @@ class ToolBus:
                     tool_name=tool_name,
                     evidence=_json.dumps(denial),
                 )
-                self._log_audit(tool_name, action, scopes_to_check, "denied")
+                self._log_audit(tool_name, action, scopes_to_check, "denied",
+                                arguments=arguments,
+                                reason=network_verdict.reason, exit_code=-1)
                 return result
 
         # Execute
         saved_runners = []
+        started = time.perf_counter()
         try:
             if self._should_use_sandbox(tool_name, action, descriptor):
                 runner = self._build_sandbox_runner(descriptor.sandbox_profile)
@@ -255,10 +296,23 @@ class ToolBus:
                     granted_scopes=list(scopes_to_check),
                 )
 
-            self._log_audit(tool_name, action, scopes_to_check, "allowed")
+            self._log_audit(
+                tool_name, action, scopes_to_check, "allowed",
+                arguments=arguments,
+                exit_code=tool_result.exit_code,
+                duration_s=time.perf_counter() - started,
+                bytes_out=(len(tool_result.stdout.encode("utf-8"))
+                           + len(tool_result.stderr.encode("utf-8"))),
+            )
             return tool_result
         except Exception as ex:
-            self._log_audit(tool_name, action, scopes_to_check, "error")
+            self._log_audit(
+                tool_name, action, scopes_to_check, "error",
+                arguments=arguments,
+                reason=f"{type(ex).__name__}: {ex}",
+                exit_code=-1,
+                duration_s=time.perf_counter() - started,
+            )
             return ToolResult(
                 exit_code=-1,
                 stdout="",
@@ -369,18 +423,73 @@ class ToolBus:
         action: Optional[str],
         scopes: List[str],
         verdict: str,
+        *,
+        arguments: Optional[Dict[str, Any]] = None,
+        reason: str = "",
+        exit_code: Optional[int] = None,
+        duration_s: Optional[float] = None,
+        bytes_out: Optional[int] = None,
     ) -> None:
-        """Log a dispatch event to the audit logger if present."""
+        """Log a dispatch event to the audit logger if present.
+
+        Everything beyond the four positional facts travels in
+        :attr:`AuditEntry.detail` as one JSON object, rather than as new
+        fields on the entry, and that is deliberate: ``detail`` is the
+        field :meth:`core.policy.audit.AuditLogger._redact` runs over, so
+        a credential passed as a tool *argument* is covered by the same
+        pass that covers one pasted into a message.  A second field would
+        be a second thing to remember to redact, and the one that got
+        forgotten would be the one carrying the argument.
+
+        ``arguments`` is bounded by :func:`core.bounding.bound_result` at
+        the repository's one cap — an audit line is a record, not a
+        transcript, and a tool handed a megabyte should not put a megabyte
+        on every line of the log.
+
+        :attr:`audit_context` is merged in first, so the caller's keys
+        (the mission's ``step``) are there and the bus's own facts win any
+        collision.
+        """
         if self._audit is None:
             return
         try:
             from core.contracts.schemas import AuditEntry
+            rendered, truncated = bound_result(
+                _json.dumps(arguments or {}, default=str, sort_keys=True))
+            detail: Dict[str, Any] = dict(self.audit_context)
+            detail["arguments"] = rendered
+            if truncated:
+                detail["arguments_truncated"] = True
+            if reason:
+                detail["reason"] = reason
+            if exit_code is not None:
+                detail["exit_code"] = exit_code
+            if duration_s is not None:
+                detail["duration_ms"] = round(duration_s * 1000, 3)
+            if bytes_out is not None:
+                detail["bytes_out"] = bytes_out
             self._audit.log(AuditEntry(
                 event_type="tool_dispatch",
                 tool_name=tool_name,
                 action=action or "",
                 scopes=list(scopes),
                 verdict=verdict,
+                detail=_json.dumps(detail, default=str, sort_keys=True),
             ))
-        except Exception:
-            pass  # Audit logging must never break dispatch
+        except Exception as ex:
+            # Dispatch survives — an audit disk filling up must not kill a
+            # tool call — but the failure is COUNTED and SAID. This was a
+            # bare `pass` for four phases, which meant a bus whose logger
+            # had been throwing since the first call looked exactly like a
+            # bus whose tools nobody had used. Once to stderr, because the
+            # second thousand copies of a full-disk message are what stop
+            # anybody reading the first; the counter carries the rest, and
+            # the CLI prints it when the mission ends.
+            self.audit_failures += 1
+            if self.audit_failures == 1:
+                print(
+                    f"⚠️  audit write FAILED ({type(ex).__name__}: {ex}); "
+                    f"tool dispatch continues and this run is no longer "
+                    f"fully recorded",
+                    file=sys.stderr,
+                )

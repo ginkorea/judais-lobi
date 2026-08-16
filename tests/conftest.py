@@ -107,6 +107,27 @@ def isolate_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_audit(monkeypatch, tmp_path):
+    """Point the default audit log at this test's tmp dir.
+
+    Auditing is on by default from 0.8.x — every ``Tools()`` gets an
+    ``AuditLogger`` writing to ``.judais-lobi/audit/<run-id>.jsonl`` under
+    the *working directory*, which during a test run is the repository.
+    Without this, the first suite that builds a default registry starts
+    scattering audit files through the checkout.
+
+    Autouse and env-based rather than a fixture each test opts into: the
+    litter comes from tests that never mention auditing at all, so an
+    opt-in guard would be absent from exactly the tests that need it. A
+    test that wants the real default path sets ``JUDAIS_LOBI_AUDIT``
+    itself with ``monkeypatch``, and one that wants no logger at all
+    passes ``Tools(audit=None)``.
+    """
+    from core.policy.audit import AUDIT_ENV
+    monkeypatch.setenv(AUDIT_ENV, str(tmp_path / "audit" / "default.jsonl"))
+
+
 
 
 # ---------------------------------------------------------------------------

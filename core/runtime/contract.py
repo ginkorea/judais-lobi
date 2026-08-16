@@ -191,6 +191,18 @@ FIELDS: dict[str, tuple[str, ...]] = {
 #: default.  Listed rather than left to be discovered, so that "optional" is a
 #: statement this repo made and not an accident of which path happened to run.
 OPTIONAL: dict[str, tuple[str, ...]] = {
+    #: ``audit_ref`` — the path of the append-only JSONL file this run's
+    #: tool dispatches are being recorded in, or ``null`` when auditing was
+    #: turned off explicitly (``JUDAIS_LOBI_AUDIT=off``).  A **string or
+    #: null**, and the null is the point: a consumer that finds no audit
+    #: file has to guess whether the harness failed to write one or was
+    #: told not to, and only one of those is somebody's decision.
+    #:
+    #: A path on the host that spawned us and not a URL: what a consumer
+    #: does with it — fetch it, show it to an operator, ignore it — is the
+    #: consumer's business.  It names the file for the whole process, so
+    #: the same string arrives on every mission that process runs.
+    MISSION_STARTED: ("audit_ref",),
     #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
     #: first ``step_started`` that plan produces.  Absent on a direct
     #: mission, which has no plan to show, and absent on every later step.

@@ -48,13 +48,24 @@ direct loop and from `--swarm` alike. Index them without a default.
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` |
 | `mission_finished` | `outcome`, `steps`, `max_steps` |
 
-Optional, and therefore to be read with a default: `plan` on `step_started`
+Optional, and therefore to be read with a default: `audit_ref` on
+`mission_started`, `plan` on `step_started`
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
 only when the model got as far as naming one), and `compacted` on
 `step_started`. `plan` rode `mission_started` until 0.8.x: that record is now
 emitted before triage — which is itself a call to the model — so at the time
 it is written there is no plan and there may never be one.
+
+`audit_ref` is a **string or `null`**: the path of the append-only JSONL file
+this run's tool dispatches are being recorded in, or `null` when auditing was
+turned off explicitly with `JUDAIS_LOBI_AUDIT=none|off`. The default is
+`.judais-lobi/audit/<run-id>.jsonl` under the harness's working directory, one
+file per process, and `JUDAIS_LOBI_AUDIT=<path>` moves it. The null matters as
+much as the path: a consumer that simply finds no audit file cannot tell a
+harness that failed to write one from a harness that was told not to, and only
+one of those is a decision somebody made. It is a path on the spawning host,
+not a URL, and the same string arrives on every mission that process runs.
 
 `compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,
 tokens_after, limit_tokens, profile}` and is present only on the steps where
