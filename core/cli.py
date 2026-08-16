@@ -19,6 +19,30 @@ def _env_path(name: str):
     return Path(value) if value else None
 
 
+def _env_seconds(name: str):
+    """A positive float from an env var, or None. An argparse default.
+
+    ``None`` for unset, for a blank string, for something that is not a
+    number, and for zero or less — every one of which means "nobody asked
+    for a wall clock", and none of which is worth refusing a mission over.
+    A typo'd ``MISSION_SECONDS=thirty`` running unbounded is the behaviour
+    the variable's absence would have given; the same typo taken as a
+    budget of nothing would kill the run before its first step, which is
+    the failure that looks like a broken harness.
+
+    The flag still wins where both are set, because this is the flag's
+    default — the same arrangement every other ``MISSION_*`` pair has.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
+
+
 def strip_markdown(md: str) -> str:
     """Convert Markdown to plain text for optional TTS."""
     from io import StringIO
@@ -375,14 +399,17 @@ def _mission(elf, args, name, style):
     are doing — and supplies neither.
     """
     from core.durable import RUNS_ENV, open_run_store
+    from core.budgets import Budgets, Cancellation, Deadline
     from core.redact import scrub
     from core.runtime.approvals import (
         APPROVALS_ENV, ApprovalError, default_approval_store, resolve,
     )
     from core.runtime.context_window import MissionWindow
     from core.runtime.grounding import GroundingConfig, GroundingValidator
-    from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
-    from core.runtime.mission_stream import close_on_sigterm, open_sink
+    from core.runtime.mission import AWAITING_APPROVAL, CANCELLED, MissionRunner
+    from core.runtime.mission_stream import (
+        close_on_sigterm, exit_as_signalled, open_sink,
+    )
     from core.runtime.results import RESULT_TOOL
     from core.runtime.usage import PricingTable
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
@@ -614,9 +641,21 @@ def _mission(elf, args, name, style):
         sink = open_sink(getattr(args, "events", "") or "")
     except (ValueError, OSError) as exc:
         raise SystemExit(f"--events: {exc}")
+    # One switch and one clock for this whole turn, built before the sink's
+    # handler is installed because the handler throws the switch.
+    #
     # A consumer stopping a turn sends SIGTERM and expects what was already
-    # written to survive. Nothing made that true until this line.
-    close_on_sigterm(sink)
+    # written to survive. Nothing made that true until there was a handler,
+    # and the handler alone was not enough: closing the stream ON the signal
+    # saved every record except the one that says the run is over. So the
+    # first SIGTERM cancels, the loop winds up and writes its own
+    # `mission_finished`, the `finally` below closes the sink, and
+    # `exit_as_signalled` then makes the exit status the signal's.
+    cancel = Cancellation()
+    budgets = Budgets(max_steps=args.mission_steps,
+                      max_seconds=getattr(args, "mission_seconds", None))
+    deadline = Deadline.of(budgets)
+    close_on_sigterm(sink, cancel)
 
     try:
         with McpClient(transport) as client:
@@ -735,6 +774,18 @@ def _mission(elf, args, name, style):
                 f"every result stays in the mission store",
                 style=style,
             )
+            # Both bounds on one line, from the object the run is actually
+            # held to, so the console cannot say "8 steps" while the loop
+            # runs to 24. "no wall clock" is printed as such rather than
+            # omitted: an operator who meant to pass --mission-seconds and
+            # mistyped the variable should see that nothing is bounding the
+            # waiting, at the top of a run that may last hours.
+            console.print(
+                f"⏱  budget: {budgets.describe()} — steps bound the work, "
+                f"seconds bound the waiting; a mission that runs out says "
+                f"which on its last record",
+                style=style,
+            )
             # The same word `mission_started` carries on the stream, printed
             # here for the person watching the console. `bwrap` means tool
             # subprocesses run write-isolated with the network denied unless a
@@ -785,6 +836,8 @@ def _mission(elf, args, name, style):
                     run_id=run_id,
                     usage_fn=usage_fn,
                     rate=rate,
+                    deadline=deadline,
+                    cancel=cancel,
                 )
             else:
                 runner = MissionRunner(
@@ -802,6 +855,8 @@ def _mission(elf, args, name, style):
                     run_id=run_id,
                     usage_fn=usage_fn,
                     rate=rate,
+                    deadline=deadline,
+                    cancel=cancel,
                 )
             transcript = runner.run(args.message)
     except (McpUnavailable, McpConnectionError) as exc:
@@ -887,11 +942,34 @@ def _mission(elf, args, name, style):
                 "   No durable record was written, so there is no id to "
                 "decide against. See the reason above.",
                 style="red")
+    elif transcript.reason == CANCELLED:
+        # Not a failure, and it must not read like one. Somebody asked, and
+        # the run wound up rather than being killed between records — which
+        # is why there is a transcript above this line to read at all.
+        console.print(
+            f"🛑 Mission cancelled after {len(transcript.steps)} step(s). "
+            f"It wound up on request: the transcript above is complete as far "
+            f"as it goes, and the stream closed itself.",
+            style="yellow",
+        )
+    elif transcript.budget is not None:
+        # WHICH budget, with the numbers. "budget_exhausted" alone sent an
+        # operator to lengthen a step cap that was not the thing that ran out.
+        spent = transcript.budget
+        console.print(
+            f"⏹️  Mission ran out of {spent.which}: {spent.spent} of "
+            f"{spent.limit}. Nothing failed — the run hit a bound you set.",
+            style="yellow",
+        )
     else:
         console.print(
             f"⏹️  Mission ended without an answer: {transcript.outcome}",
             style="yellow",
         )
+    # Last, after everything a person or a consumer reads: a run that was
+    # SIGTERM'd has now done all of a clean exit's work and owes only the
+    # exit status, which must still be the signal's.
+    exit_as_signalled(cancel)
 
     # Last, and only when a provider actually reported: an empty line here
     # would be a run claiming to have spent nothing, and "nothing reported"
@@ -953,6 +1031,19 @@ def _main(AgentClass):
                              "Prefer the env var; an argument is visible in ps")
     parser.add_argument("--mission-steps", type=int, default=8,
                         help="Hard cap on tool calls in a mission")
+    parser.add_argument("--mission-seconds", type=float,
+                        default=_env_seconds("MISSION_SECONDS"),
+                        help="Wall-clock budget for a mission, in seconds. "
+                             "UNSET MEANS UNBOUNDED, and that is deliberate: "
+                             "steps bound the work, seconds bound the "
+                             "waiting, and a default nobody chose would kill "
+                             "a slow local model mid-answer. Checked between "
+                             "steps and before each model call, and shared by "
+                             "every stage of a --swarm turn — one clock for "
+                             "the mission, not one per sub-mission. A model "
+                             "call already in flight is not interrupted, so "
+                             "the real bound is this plus one round trip "
+                             "(env: MISSION_SECONDS)")
     parser.add_argument("--swarm", action="store_true",
                         default=bool((os.getenv("MISSION_SWARM") or "").strip()),
                         help="Stage the mission when it needs staging: a "

@@ -174,7 +174,9 @@ GROUNDING = "grounding"
 #: only ``steps`` has no way to keep a reader from reading it as one.
 #:
 #: It may carry ``usage``: the run's ledger — every model call this turn made,
-#: summed — rather than one call's.  See :data:`OPTIONAL`.
+#: summed — rather than one call's; ``budget`` when the outcome is
+#: ``budget_exhausted``, naming which budget ran out; and ``reason`` when the
+#: run was cancelled.  See :data:`OPTIONAL`.
 MISSION_FINISHED = "mission_finished"
 
 #: The closed vocabulary, so a consumer can assert it knows all of them.
@@ -335,7 +337,36 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: framework that quoted one would be quoting a figure it cannot know.
     #: Absent is the normal case, and a local endpoint has no cost unless
     #: somebody priced it.
-    MISSION_FINISHED: ("usage",),
+    #:
+    #: ``budget`` — ``{which, limit, spent}``, present **exactly when**
+    #: ``outcome`` is ``budget_exhausted`` and absent on every other
+    #: outcome.  ``which`` is one of ``"steps"``, ``"seconds"``,
+    #: ``"bytes"``, ``"tokens"`` (:data:`core.budgets.WHICH`); ``limit`` is
+    #: what the run was held to and ``spent`` is what it actually used,
+    #: which are not always the same number — a wall clock is noticed a
+    #: little after it runs out, and reporting the limit as the spend would
+    #: hide by how much.
+    #:
+    #: The word alone was not enough.  ``budget_exhausted`` meant "out of
+    #: steps" for as long as steps were the only budget, and a consumer
+    #: reading it against ``max_steps`` was reading it correctly; the
+    #: moment a mission could also run out of *seconds*, the same word
+    #: covered two different problems with two different fixes — narrow the
+    #: question, or find a faster endpoint. ``bytes`` and ``tokens`` are
+    #: declared here and not yet emitted by anything: the vocabulary is
+    #: closed now so that the ledger and the run store fill in a field a
+    #: consumer was already told to expect.
+    #:
+    #: ``reason`` — why a run ended, when the outcome word does not say.
+    #: Today it carries exactly one value, ``"cancelled"``, beside
+    #: ``outcome: "incomplete"``: somebody asked this run to wind up and it
+    #: did, keeping its transcript and closing its own stream.  Cancellation
+    #: is not a sixth :data:`OUTCOMES` word on purpose — a cancelled run
+    #: *is* a run that stopped without an answer, which is what
+    #: ``incomplete`` has always meant, and what it was missing is the
+    #: reason.  A consumer that ignores this field renders a cancelled run
+    #: exactly as it rendered one before the field existed.
+    MISSION_FINISHED: ("usage", "budget", "reason"),
     #: ``approval_id`` — the id of the durable record this request was
     #: written to, when the deployment keeps them (it does by default;
     #: ``JUDAIS_LOBI_APPROVALS=none`` turns them off, and then this field is
@@ -367,6 +398,19 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
 #: ``finally``, so a crash still closes the stream, and it closes it holding the
 #: outcome nothing got round to setting.  A consumer treating ``incomplete`` as
 #: "stopped, and the reason is on stderr" is reading it correctly.
+#:
+#: It is also the word a **cancelled** run ends on — a caller threw the switch,
+#: or the process was sent ``SIGTERM`` — and there the reason is not on stderr
+#: but on the record, as ``reason: "cancelled"``.  See :data:`OPTIONAL` for why
+#: that is a field and not a sixth word here: a consumer's closed set of
+#: outcomes is the thing this tuple exists to let it assert, and widening it is
+#: a cost paid by every consumer, where an optional field is paid for by the
+#: ones that want the detail.
+#:
+#: ``budget_exhausted`` says the run hit a **hard bound** — it never means the
+#: model gave up.  Which bound is on the record, as ``budget``, and reading the
+#: word without it is reading half a sentence: ``steps`` and ``seconds`` are
+#: both this word, and only one of them is fixed by asking a smaller question.
 OUTCOMES: tuple[str, ...] = (
     "answered",
     "answered_with_caveat",
@@ -382,7 +426,8 @@ OUTCOMES: tuple[str, ...] = (
 #: accepted by the parser :func:`core.cli._main` builds and there is a test
 #: that says so; the rest of the CLI is a person's surface and may move.
 CLI_FLAGS: tuple[str, ...] = (
-    "--mission", "--mcp-url", "--mission-steps", "--provider", "--model",
+    "--mission", "--mcp-url", "--mission-steps", "--mission-seconds",
+    "--provider", "--model",
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
     "--history", "--gate-tool", "--approval", "--temperature", "--top-p",
     "--seed",
@@ -397,9 +442,13 @@ CLI_FLAGS: tuple[str, ...] = (
 #: ``TAI_PERSONALITY`` point at persona files, on **every** entry point and not
 #: only ``tai`` — ``TAI_PERSONALITY`` first where both are set;
 #: ``LOCAL_API_BASE`` and ``LOCAL_MODEL`` aim the local backend;
-#: ``MISSION_SKILL``, ``MISSION_SWARM``, ``MISSION_EVENTS`` and
-#: ``MISSION_HISTORY`` are the environment forms of ``--skill``, ``--swarm``,
-#: ``--events`` and ``--history``; ``JUDAIS_LOBI_PROFILE`` is the environment
+#: ``MISSION_SKILL``, ``MISSION_SWARM``, ``MISSION_EVENTS``,
+#: ``MISSION_HISTORY`` and ``MISSION_SECONDS`` are the environment forms of
+#: ``--skill``, ``--swarm``, ``--events``, ``--history`` and
+#: ``--mission-seconds`` — the last being the run's wall-clock budget, unset
+#: meaning **unbounded**, because a default nobody chose that killed a slow
+#: local model mid-answer would be a regression and not a safety net;
+#: ``JUDAIS_LOBI_PROFILE`` is the environment
 #: form of ``--profile`` — the capability profile the run is governed by, and
 #: since the default is now the deny-by-default ``safe`` profile, the variable
 #: a consumer sets when a hosted mission needs more than read-only;
@@ -427,6 +476,7 @@ ENV_VARS: tuple[str, ...] = (
     "LOCAL_API_BASE", "LOCAL_MODEL",
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
     "MISSION_APPROVAL",
+    "MISSION_SECONDS",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",
@@ -465,11 +515,17 @@ EXIT_CONTRACT: Mapping[str, str] = MappingProxyType({
         "stops is indistinguishable from an agent that is thinking, and a pane "
         "showing a spinner forever is the state an analyst cannot leave."),
     "sigterm": (
-        "On SIGTERM the sink is flushed and closed before the process dies, so "
-        "the events already written are on the transcript. The default "
-        "disposition is then restored and the signal re-raised, so the exit "
-        "status is still the signal's — a consumer that asked a turn to wind "
-        "up sees it wound up, not a spurious clean exit."),
+        "SIGTERM asks a run to WIND UP, and it gets to. The first signal "
+        "throws the mission's cancellation: the loop stops at its next step, "
+        "the transcript is kept, and the run writes its own `mission_finished` "
+        "— `outcome: \"incomplete\"` with `reason: \"cancelled\"` — before the "
+        "sink is flushed and closed. So a stopped turn closes its stream with "
+        "the record that says it is over, rather than with the record before "
+        "it. The default disposition is then restored and the signal re-raised, "
+        "so the exit status is still the signal's: a consumer that asked a turn "
+        "to wind up sees it wound up, not a spurious clean exit. A SECOND "
+        "SIGTERM does not wait — it flushes, closes and dies, so a run stuck in "
+        "a model call or a subprocess can still be stopped twice."),
     "diagnostic": (
         "stderr carries the diagnostic. Its tail is what a consumer shows when "
         "a mission produced no events, or produced events and then stopped "

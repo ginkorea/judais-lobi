@@ -130,6 +130,7 @@ person's surface and may move.
 | `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. One of the two, never both |
 | `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps` |
 | `--mission-steps` | — | hard cap on tool turns. Default **8**, and it counts parse-error turns too |
+| `--mission-seconds` | `MISSION_SECONDS` | wall-clock cap on the whole run, in seconds. **Unset means unbounded** — steps bound the work, seconds bound the waiting, and a default nobody chose would kill a slow local model mid-answer. Checked between steps and before each model call; one clock for the whole of a `--swarm` turn. A call already in flight is not interrupted, so the real bound is this plus one round trip |
 | `--provider` | — | `openai`, `mistral` or `local` |
 | `--model` | — | which model on it |
 | `--profile` | `JUDAIS_LOBI_PROFILE` | the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. A refusal names the scope and the profile that grants it |

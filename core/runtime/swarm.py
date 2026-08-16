@@ -73,18 +73,19 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.durable import RunStore
+from core.budgets import BudgetExhausted, Deadline, cancelled
 from core.redact import scrub_record
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
-    AWAITING_APPROVAL, MissionRunner, MissionTranscript, _grounding_record,
-    _profile_field, _run_field, audit_ref_of, persist_record, sandbox_of,
-    validate_history,
+    AWAITING_APPROVAL, CANCELLED, MissionRunner, MissionTranscript,
+    _finished_record, _grounding_record, _profile_field, _run_field,
+    audit_ref_of, persist_record, sandbox_of, validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -408,6 +409,24 @@ class SwarmRunner:
         one place the arithmetic happens: a second accumulator is how the
         opening frame once carried six of ten grounding fields, and
         numbers are the half nobody notices is wrong.
+    deadline:
+        The **mission's** wall clock, one
+        :class:`~core.budgets.Deadline` shared by triage, the planner,
+        every sub-mission, every gate and the synthesizer.  ``None`` is
+        an unbounded run, which is the default.
+
+        Shared and not divided, because a staged turn is one question:
+        an operator who allows a mission ninety seconds has allowed the
+        *mission* ninety seconds, and a clock handed out per stage would
+        give a five-step plan five times what was asked for.  This is the
+        opposite of how ``max_steps`` travels — the step budget is
+        deliberately *portioned*, a slice per sub-mission, because steps
+        are the thing staging exists to spend in small amounts.  Two
+        budgets, two behaviours, on purpose.
+    cancel:
+        The mission's stop switch, shared the same way and checked at the
+        same points: before triage, before a redraw, before the
+        synthesizer, and inside every sub-mission the runners below build.
     """
 
     def __init__(
@@ -435,6 +454,8 @@ class SwarmRunner:
         run_id: str = "",
         usage_fn: Optional[Callable[[], Any]] = None,
         rate: Optional[Rate] = None,
+        deadline: Optional[Deadline] = None,
+        cancel: Any = None,
     ):
         self._chat = chat_fn
         self._plain_chat = plain_chat_fn or chat_fn
@@ -479,6 +500,11 @@ class SwarmRunner:
         #: actually wrote it — which is the repair turn when there was
         #: one, not the draft it replaced.
         self._last_spent: Dict[str, Any] = {}
+        # One clock and one switch for the whole turn, handed to every
+        # runner `_runner` and `_direct` build. See the class docstring for
+        # why seconds are shared where steps are portioned.
+        self._deadline = deadline
+        self._cancel = cancel
         self._max_plan_steps = max(1, int(max_plan_steps))
         self._step_budget = max(1, int(step_budget))
         self._retries = max(0, int(retries_per_step))
@@ -562,6 +588,11 @@ class SwarmRunner:
                             if recorded is not None else {})
         return self._last_spent
 
+    def _usage_kw(self) -> Dict[str, Any]:
+        """``{"usage": totals}`` for :func:`_finished_record`, or ``{}``."""
+        spent = self._ledger.as_record(self._rate)
+        return {"usage": spent} if spent is not None else {}
+
     def _totals(self) -> Dict[str, Any]:
         """``{"usage": …}`` for ``mission_finished``, or ``{}``.
 
@@ -592,7 +623,19 @@ class SwarmRunner:
         # already part of what this turn spent, and every runner below is
         # handed this same object.
         self._ledger = Ledger()
+        # The first start wins, so this is where the mission's clock begins
+        # — before triage, which is a model call and part of the turn — and
+        # the sub-missions below inherit the same started clock rather than
+        # rewinding it.
+        if self._deadline is not None:
+            self._deadline.start()
         self._emit(MISSION_STARTED, **self._opening(objective))
+        stop = self._stop()
+        if stop is not None:
+            # Already over before the router was asked. It happens on a
+            # resumed switch and on a deadline of zero, and the honest run
+            # is one that opens, says why it is stopping, and closes.
+            return self._finish_early(objective, stop)
         try:
             plan = (self._plan(objective)
                     if self._route(objective) == "staged" else None)
@@ -605,11 +648,17 @@ class SwarmRunner:
             # silence before.
             # Zero steps and possibly two model calls: triage and the
             # planner both ran before this. What they cost is on the
-            # record even though nothing was accomplished with it, which
-            # is exactly the run an operator wants the number for.
-            self._emit(MISSION_FINISHED, outcome="incomplete", steps=0,
-                       max_steps=self._max_steps, **self._totals())
+            # record even though nothing was accomplished with it.
+            self._emit(MISSION_FINISHED, **_finished_record(
+                outcome="incomplete", steps=0, max_steps=self._max_steps,
+                **self._usage_kw()))
             raise
+        # Not asked again here, deliberately. Triage and planning are two
+        # model round trips and a small budget can be gone by now — but
+        # every route below opens a MissionRunner holding the same clock
+        # and the same switch, and that runner asks before its first step.
+        # A second check here would be a branch no test can make fail,
+        # which is the kind of code that rots into a wrong answer.
         if plan is None or len(plan) == 1:
             # A plan the planner could not state, or a plan of one step, IS
             # the direct path.  Falling back is the honest move: the direct
@@ -618,6 +667,48 @@ class SwarmRunner:
             # question the machinery exists to serve.
             return self._direct(objective)
         return self._staged(objective, plan)
+
+    # ── the clock and the switch, shared by every stage ─────────────────
+
+    def _stop(self) -> Optional[Tuple[str, Optional[BudgetExhausted], str]]:
+        """``(outcome, budget, reason)`` when this turn must stop, else ``None``.
+
+        The same question :meth:`MissionRunner._stop` asks, asked at the
+        three junctions a sub-mission's own check cannot see: before
+        triage, before a redraw, and before the synthesizer.  Each of
+        those is a model round trip this class makes itself.  Everywhere
+        else — between plan steps, inside a step's retries — the next
+        thing to happen is a runner holding this same clock, and asking
+        here as well would be a branch no test could make fail.
+
+        Same order and same words as the direct path's: a cancellation
+        outranks a clock, because the person who threw the switch is the
+        one who will read the sentence.
+        """
+        if cancelled(self._cancel):
+            return "incomplete", None, CANCELLED
+        exhausted = (self._deadline.exhausted()
+                     if self._deadline is not None else None)
+        if exhausted is not None:
+            return "budget_exhausted", exhausted, ""
+        return None
+
+    def _finish_early(self, objective: str,
+                      stop: Tuple[str, Optional[BudgetExhausted], str],
+                      ) -> MissionTranscript:
+        """Close a turn that stopped before it had any steps to report.
+
+        Through the same renderer both other finishes use.  A turn that
+        opened its stream owes it a ``mission_finished``, and one that never
+        reached a sub-mission has nobody else to write it.
+        """
+        transcript = MissionTranscript(objective=objective,
+                                       catalogue=list(self._offered))
+        transcript.outcome, transcript.budget, transcript.reason = stop
+        self._emit(MISSION_FINISHED, **_finished_record(
+            outcome=transcript.outcome, steps=0, max_steps=self._max_steps,
+            budget=transcript.budget, reason=transcript.reason))
+        return transcript
 
     @property
     def _offered(self) -> List[str]:
@@ -682,6 +773,11 @@ class SwarmRunner:
             usage_fn=self._usage_fn,
             rate=self._rate,
             ledger=self._ledger,
+            # The mission's clock and the mission's switch, not a fresh
+            # one per stage: five sub-missions of a minute each must not
+            # fit inside a one-minute budget.
+            deadline=self._deadline,
+            cancel=self._cancel,
         )
 
     def _direct(self, objective: str) -> MissionTranscript:
@@ -706,6 +802,8 @@ class SwarmRunner:
             # its own ledger would report a turn that cost one call less
             # than it did.
             ledger=self._ledger,
+            deadline=self._deadline,
+            cancel=self._cancel,
         )
         return runner.run(objective)
 
@@ -856,9 +954,15 @@ class SwarmRunner:
         try:
             outcome = self._work_through(objective, plan, transcript, stage)
         finally:
-            self._emit(MISSION_FINISHED, outcome=transcript.outcome,
-                       steps=len(transcript.steps),
-                       max_steps=self._max_steps, **self._totals())
+            # The direct path's own renderer, not a second hand-listing of
+            # the same record.
+            self._emit(MISSION_FINISHED, **_finished_record(
+                outcome=transcript.outcome,
+                steps=len(transcript.steps),
+                max_steps=self._max_steps,
+                budget=transcript.budget,
+                reason=transcript.reason,
+                **self._usage_kw()))
         return outcome
 
     def _work_through(self, objective: str, plan: List[PlanStep],
@@ -870,6 +974,12 @@ class SwarmRunner:
         replanned = False
         queue = list(plan)
 
+        # No check at the top of this loop either, for the reason `run` does
+        # not repeat one after planning: the next thing that happens is a
+        # sub-mission holding this clock, and it asks before its first step.
+        # The two junctions the sub-missions genuinely cannot cover are the
+        # replan and the synthesis — both model round trips this method makes
+        # itself — and those are where the checks are.
         while queue:
             step = queue.pop(0)
             outcome, attempts, gathered, spent = self._execute_step(
@@ -896,6 +1006,15 @@ class SwarmRunner:
             if outcome.ok:
                 continue
 
+            # A redraw is one or two more model round trips, and the step
+            # that just failed may have failed BECAUSE the clock ran out
+            # inside it — in which case replanning is the harness spending
+            # the budget it has already exceeded on planning work it cannot
+            # then do.
+            stop = self._stop()
+            if stop is not None:
+                return self._stopped(transcript, stop)
+
             if not replanned and budget > 0:
                 # One redraw around the failure, carrying what succeeded.
                 replanned = True
@@ -913,8 +1032,29 @@ class SwarmRunner:
             # against a hole — their `needs` may name the failed step.
             break
 
+        # Synthesis is one more round trip, and the last one. A turn whose
+        # clock ran out on the final step must not spend a further model
+        # call writing prose about it: the outcome IS the answer here, and
+        # the steps that did run are on the transcript either way.
+        stop = self._stop()
+        if stop is not None:
+            return self._stopped(transcript, stop)
         return self._synthesize(objective, plan, results, evidence,
                                 transcript)
+
+    @staticmethod
+    def _stopped(transcript: MissionTranscript,
+                 stop: Tuple[str, Optional[BudgetExhausted], str],
+                 ) -> MissionTranscript:
+        """Write a :meth:`_stop` verdict onto the transcript and hand it back.
+
+        No ``answer`` record follows, and that is the direct path's
+        behaviour too: a run that stopped did not answer, and emitting the
+        step summaries as one would be the harness writing the conclusion
+        it was stopped before reaching.
+        """
+        transcript.outcome, transcript.budget, transcript.reason = stop
+        return transcript
 
     def _execute_step(self, objective: str, step: PlanStep,
                       results: Dict[str, _StepOutcome],

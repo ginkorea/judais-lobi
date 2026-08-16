@@ -158,3 +158,35 @@ class TestCLISmoke:
             _main(MockClass)
         assert "a message is required" in str(exc.value)
         MockClass.assert_not_called()
+
+
+
+class TestTheWallClockDefault:
+    """``MISSION_SECONDS`` is the flag's argparse default, so the flag wins.
+
+    And every unusable value means *unbounded*, which is the same behaviour
+    the variable's absence gives. A mistyped budget taken as a budget of
+    nothing would kill a run before its first step, which is the failure that
+    looks like a broken harness rather than like a typo.
+    """
+
+    def test_unset_is_unbounded(self, monkeypatch):
+        from core.cli import _env_seconds
+
+        monkeypatch.delenv("MISSION_SECONDS", raising=False)
+        assert _env_seconds("MISSION_SECONDS") is None
+
+    @pytest.mark.parametrize("value", ["", "   ", "thirty", "90s", "0", "-5"])
+    def test_an_unusable_value_is_unbounded_and_not_a_refusal(
+            self, monkeypatch, value):
+        from core.cli import _env_seconds
+
+        monkeypatch.setenv("MISSION_SECONDS", value)
+        assert _env_seconds("MISSION_SECONDS") is None
+
+    @pytest.mark.parametrize("value,expected", [("90", 90.0), ("2.5", 2.5)])
+    def test_a_number_is_the_budget(self, monkeypatch, value, expected):
+        from core.cli import _env_seconds
+
+        monkeypatch.setenv("MISSION_SECONDS", value)
+        assert _env_seconds("MISSION_SECONDS") == expected

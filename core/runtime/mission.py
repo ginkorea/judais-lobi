@@ -23,8 +23,15 @@ The loop is deliberately small and its refusals are deliberately loud:
   rather than guessed at;
 * a tool the model invented is a refused step with the real catalogue
   repeated, not a crash;
-* the step budget is a hard stop.  Running out is a recorded outcome
-  (``budget_exhausted``) and not a silent truncation;
+* the budgets are hard stops.  Steps, and — when a caller supplies a
+  :class:`~core.budgets.Deadline` — wall-clock seconds.  Running out of
+  either is a recorded outcome (``budget_exhausted``) that **names which
+  one**, and not a silent truncation;
+* a caller may ask a running mission to wind up, with a
+  :class:`~core.budgets.Cancellation` checked at the same points the
+  deadline is.  A cancelled run ends ``incomplete`` with ``reason``, and
+  it ends by *finishing*: the transcript is intact and the stream gets
+  its own ``mission_finished`` rather than stopping mid-record;
 * a tool result is **bounded** before it enters the transcript, and the
   whole of it stays in a per-mission store the model can read one field
   of.  See :mod:`core.runtime.results` for why an unbounded paste is a
@@ -46,6 +53,7 @@ loop supplies the mechanism and nothing else.
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from dataclasses import dataclass, field
@@ -53,6 +61,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.bounding import MAX_RESULT_BYTES, bound_result
 from core.durable import RunStore
+from core.budgets import BudgetExhausted, Deadline, cancelled
 from core.redact import scrub_record
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.context_window import (
@@ -254,6 +263,34 @@ def audit_ref_of(bus: Any) -> Optional[str]:
     return str(ref) if ref else None
 
 
+def _takes_deadline(bus: Any) -> bool:
+    """Whether *bus*'s ``dispatch`` accepts a ``deadline_s`` ceiling.
+
+    Asked of the signature rather than assumed, and rather than answered by
+    a flag somebody has to set.  ``ToolBus.dispatch`` forwards every keyword
+    it does not name straight to the tool's executor — which for an MCP tool
+    means straight to a remote server as a **tool argument**.  So a mission
+    that simply passed ``timeout=`` down would be inventing an argument for
+    somebody else's schema, and on a server that happened to declare a
+    ``timeout`` of its own (in milliseconds, say, for a query) it would be
+    inventing a *wrong* one.  The named parameter is the bus's own, it is
+    consumed there, and a bus that does not have it is a bus this loop does
+    not hand seconds to.
+
+    ``getattr`` and a swallowed failure for the same reason
+    :func:`audit_ref_of` uses one: a caller may hand this runner any object
+    with ``dispatch`` and ``describe_tool``, and a fake bus whose signature
+    cannot be read is not a reason for a mission to fail to start.
+    """
+    dispatch = getattr(bus, "dispatch", None)
+    if dispatch is None:
+        return False
+    try:
+        return "deadline_s" in inspect.signature(dispatch).parameters
+    except (TypeError, ValueError):             # pragma: no cover - defensive
+        return False
+
+
 def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
                       repairing: bool = False, caveat: str = "") -> Dict[str, Any]:
     """A :class:`GroundingReport` as the observer's ``grounding`` fields.
@@ -294,6 +331,52 @@ def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
             for row in (getattr(report, "results", ()) or ())
         ],
     }
+
+
+#: The word ``mission_finished.reason`` carries when a run was asked to stop.
+#:
+#: Cancellation is deliberately **not** a new ``outcome``.  A cancelled run
+#: stopped without an answer, which is exactly what ``incomplete`` has always
+#: meant; what ``incomplete`` was missing is *why*, and a consumer reading it
+#: was told to go and look at stderr.  So the fact arrives as an OPTIONAL field
+#: beside the outcome a consumer already has a sentence for, rather than as a
+#: sixth word every consumer's closed set has to grow to know.
+CANCELLED = "cancelled"
+
+
+def _finished_record(*, outcome: str, steps: int, max_steps: int,
+                     budget: Optional[BudgetExhausted] = None,
+                     reason: str = "",
+                     usage: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The ``mission_finished`` fields, for **both** paths that emit them.
+
+    One function because there are two emitters — the direct loop's
+    ``finally`` and the staged path's — and a hand-listed second copy of a
+    record is not a hypothetical failure here: the swarm shipped six of
+    ``grounding``'s ten fields that way.  A consumer switching on ``event``
+    gets one shape per event or it does not have a vocabulary.
+
+    ``max_steps`` travels beside ``steps`` because the two are only
+    meaningful against each other.  ``budget`` is present **exactly when**
+    the outcome is ``budget_exhausted``, which is the promise
+    :data:`core.runtime.contract.OPTIONAL` makes: a consumer may branch on
+    the outcome and index the field, and a consumer that sees the field
+    knows the run ran out rather than inferring it from a step count that
+    happens to equal its cap.  ``reason`` is present only when there is one
+    — today, only for a cancelled run.
+    """
+    record: Dict[str, Any] = {
+        "outcome": outcome, "steps": steps, "max_steps": max_steps,
+    }
+    if outcome == "budget_exhausted" and budget is not None:
+        record["budget"] = budget.as_record()
+    if reason:
+        record["reason"] = reason
+    # `usage` is the run's totals and is ABSENT when no provider reported
+    # anything — not three zeros; see the ledger.
+    if usage is not None:
+        record["usage"] = usage
+    return record
 
 
 @dataclass
@@ -347,6 +430,15 @@ class MissionTranscript:
     #: is a different fact from a run that cost zero tokens and is kept
     #: different all the way to the wire.
     usage: Ledger = field(default_factory=Ledger)
+    #: **Which** budget ran out, when :attr:`outcome` is
+    #: ``"budget_exhausted"``.  ``None`` otherwise, and never ``None`` when
+    #: the outcome is that word: a run that says it ran out of budget and
+    #: cannot say of what leaves a consumer guessing between a step cap and
+    #: a wall clock, which are different problems with different fixes.
+    budget: Optional[BudgetExhausted] = None
+    #: Why the run ended, when the outcome word does not say.  Today that is
+    #: :data:`CANCELLED` and nothing else; ``""`` means the word was enough.
+    reason: str = ""
 
     @property
     def completed(self) -> bool:
@@ -545,6 +637,47 @@ class MissionRunner:
         run that closed; a log without one is an orphan, and that is a
         fact about the disk rather than about whoever was watching.
 
+    deadline:
+        A :class:`~core.budgets.Deadline`, or ``None`` for a mission
+        nobody put a wall clock on — which is the default, and which is
+        how every mission ran before this parameter existed.
+
+        Unbounded by default on purpose.  ``max_steps`` bounds the work;
+        seconds bound the *waiting*, and the two are not the same bound
+        — a 20B at 59 tok/s can spend eight honest steps over several
+        minutes, and a framework that killed it at some number nobody
+        chose would be a regression for every operator running a slow
+        local model.  The reference deployment bounds a turn at its own
+        layer today.  A deadline is a thing an operator asks for.
+
+        Checked **between steps and before each model call**, which in
+        this loop is the same point, and again before a tool is
+        dispatched.  A model call already in flight is not interrupted:
+        the bound this gives is "the deadline plus at most one round
+        trip", and the honest way to tighten it is a timeout on the
+        client, not a thread that abandons a request the server is still
+        serving.  A tool call is bounded further where the bus takes a
+        ceiling — see :meth:`_deadline_ceiling`.
+
+        Started, not constructed: :meth:`run` calls
+        :meth:`~core.budgets.Deadline.start`, and the first start wins.
+        That is what lets a staged mission hand one clock to triage, the
+        planner and every sub-mission without five sub-missions of a
+        minute each fitting inside a one-minute budget.
+    cancel:
+        A :class:`~core.budgets.Cancellation` — or any object with
+        ``is_set()``, so a bare :class:`threading.Event` works — that a
+        caller may throw to ask a running mission to wind up.  ``None``
+        is a mission nobody can stop, which is what this loop was.
+
+        Cooperative, and that is the point.  A run that is killed
+        between records leaves a consumer holding a stream that opened
+        and never closed, which is the spinner-forever state
+        ``mission_finished`` exists to prevent.  A run that is *asked*
+        stops at its next check, keeps its transcript, and emits its own
+        ``mission_finished`` saying ``incomplete`` with ``reason:
+        "cancelled"``.
+
     The store tool is offered **in addition to** ``tool_names``, and
     that is not a hole in a closed set: it reaches nothing outside the
     mission.  Every byte it can return already arrived through a gated,
@@ -574,6 +707,8 @@ class MissionRunner:
         usage_fn: Optional[Callable[[], Any]] = None,
         rate: Optional[Rate] = None,
         ledger: Optional[Ledger] = None,
+        deadline: Optional[Deadline] = None,
+        cancel: Any = None,
     ):
         self._chat = chat_fn
         self._bus = bus
@@ -614,6 +749,13 @@ class MissionRunner:
         # a ledger it did not own would silently discard the swarm's
         # router and planner calls on the first sub-mission.
         self._shared_ledger = ledger
+
+        self._deadline = deadline
+        self._cancel = cancel
+        # Asked once, of this bus, at construction — not per dispatch, and
+        # not by declaring a flag a caller has to remember to set. See
+        # `_deadline_ceiling` for why a mission may not simply pass one.
+        self._bus_takes_deadline = _takes_deadline(bus)
 
     @property
     def run_id(self) -> str:
@@ -816,6 +958,10 @@ class MissionRunner:
 
     def run(self, objective: str) -> MissionTranscript:
         self._store.clear()
+        # The first start wins, so a sub-mission of a staged run does not
+        # rewind the clock its parent already wound. See `Deadline.start`.
+        if self._deadline is not None:
+            self._deadline.start()
         offered = self.offered
         transcript = MissionTranscript(
             objective=objective, catalogue=list(offered),
@@ -867,19 +1013,18 @@ class MissionRunner:
             # the watcher the mission is over. A stream that just stops is
             # indistinguishable from an agent that is thinking, and a pane
             # showing a spinner forever is the state an analyst cannot leave.
-            # `max_steps` beside `steps` because the two are only meaningful
-            # against each other. Six of a stated twenty-four is not an agent
-            # that ran out of room, and a consumer holding only the six has no
-            # way to stop a reader reading it as one.
+            # Through `_finished_record` and not by hand, because the staged
+            # path emits this record too and a second hand-listing is how the
+            # swarm's `grounding` came to carry six of ten fields.
             # `usage` is the run's totals and is ABSENT when no provider
-            # reported anything — not three zeros. A consumer metering on
-            # this has to be able to tell "nothing was said" from "nothing
-            # was spent", and only one of those is a number.
-            spent = transcript.usage.as_record(self._rate)
-            self._emit(MISSION_FINISHED, outcome=transcript.outcome,
-                       steps=len(transcript.steps),
-                       max_steps=self._max_steps,
-                       **({"usage": spent} if spent is not None else {}))
+            # reported anything — not three zeros.
+            self._emit(MISSION_FINISHED, **_finished_record(
+                outcome=transcript.outcome,
+                steps=len(transcript.steps),
+                max_steps=self._max_steps,
+                budget=transcript.budget,
+                reason=transcript.reason,
+                usage=transcript.usage.as_record(self._rate)))
 
     def _register_store(self) -> str:
         """Put the result store on the bus for the length of this run.
@@ -901,6 +1046,13 @@ class MissionRunner:
         repairs = 0
 
         for index in range(self._max_steps):
+            # Between steps AND before the model call, which in this loop
+            # is one point: every path that continues — a parse error, a
+            # refused tool, a grounding repair — comes back through here,
+            # so a run cannot spend a repair turn past its deadline.
+            stop = self._stop()
+            if stop is not None:
+                return self._stopped(transcript, stop)
             # Before the ask, not after the reply: what is compacted is
             # what this step is about to send, and a watcher told about it
             # afterwards has already rendered the turn it applied to.
@@ -1035,6 +1187,18 @@ class MissionRunner:
                            **carried)
                 return transcript
 
+            # Checked again here, after the model call this step spent: the
+            # clock may have run out while the endpoint was answering, and
+            # `tool_call` is emitted BEFORE the dispatch, so a watcher told
+            # a call was about to happen must not then be told the mission
+            # ended without it. The proposal is recorded as a step that did
+            # not run, in the model's own words about what it wanted.
+            stop = self._stop()
+            if stop is not None:
+                step.error = self._no_time_to_call(name, stop)
+                transcript.steps.append(step)
+                return self._stopped(transcript, stop)
+
             self._emit(TOOL_CALL, index=index, tool=name,
                        arguments=dict(arguments), **spent)
             # The bus has no idea what a step is and should not learn: it
@@ -1057,7 +1221,12 @@ class MissionRunner:
                 # allowed to end the mission: failing closed is the only
                 # direction this may fail in.
                 self._approval.spend()
-            result = self._bus.dispatch(name, **arguments)
+            # The remaining wall clock rides down as a ceiling on the call,
+            # where the bus takes one, so a tool cannot run past the
+            # deadline by more than its own bounded slack.
+            call = dict(arguments)
+            call.update(self._deadline_ceiling())
+            result = self._bus.dispatch(name, **call)
             step.exit_code = result.exit_code
             step.output = result.stdout
             step.error = result.stderr
@@ -1086,6 +1255,13 @@ class MissionRunner:
             messages.append({"role": "user", "content": rendered})
 
         transcript.outcome = "budget_exhausted"
+        # Which budget, with the numbers. `steps` and not `seconds`: the
+        # `for` ran to its end, so the clock — if there was one — still had
+        # room, and a consumer told "budget_exhausted" and nothing else
+        # cannot tell a mission that needed more turns from one that needed
+        # a faster endpoint.
+        transcript.budget = BudgetExhausted(
+            "steps", self._max_steps, len(transcript.steps))
         return transcript
 
     def _request_approval(
@@ -1121,6 +1297,75 @@ class MissionRunner:
                 f"({exc}), so there is nothing for anybody to decide "
                 f"against — the call is still not made, and asking again "
                 f"will not help until the approvals directory is writable.")
+
+    # ── being asked to stop, and running out of clock ───────────────────
+
+    def _stop(self) -> Optional[Tuple[str, Optional[BudgetExhausted], str]]:
+        """``(outcome, budget, reason)`` when the run must stop, else ``None``.
+
+        Returned rather than raised.  The loop wants to *end* — recorded
+        outcome, intact transcript, its own ``mission_finished`` — and a
+        loop that unwinds through an exception to do that is one stray
+        ``except`` away from ending on somebody else's.
+
+        Cancellation is asked about first, and that is a decision.  When a
+        clock and a person both say stop at the same moment, the person is
+        the one who is going to be shown a sentence about it, and
+        "somebody stopped this" is the truer thing to show them than
+        "it ran out of seconds" — which would also be true, and useless.
+        """
+        if cancelled(self._cancel):
+            return "incomplete", None, CANCELLED
+        exhausted = (self._deadline.exhausted()
+                     if self._deadline is not None else None)
+        if exhausted is not None:
+            return "budget_exhausted", exhausted, ""
+        return None
+
+    @staticmethod
+    def _stopped(transcript: MissionTranscript,
+                 stop: Tuple[str, Optional[BudgetExhausted], str],
+                 ) -> MissionTranscript:
+        """Write a :meth:`_stop` verdict onto the transcript and hand it back."""
+        transcript.outcome, transcript.budget, transcript.reason = stop
+        return transcript
+
+    @staticmethod
+    def _no_time_to_call(
+            name: str, stop: Tuple[str, Optional[BudgetExhausted], str]) -> str:
+        """What a step that proposed a tool and never ran it says about itself.
+
+        On the step rather than only in the outcome, because the step is
+        what a transcript prints and what an operator reads: a proposal
+        with no result beside it looks like a tool that failed silently,
+        and this is the sentence that says it was never called at all.
+        """
+        why = (f"the mission was cancelled" if stop[2] == CANCELLED else
+               f"the mission's {stop[1].which} budget ran out")
+        return (f"{name} was proposed and NOT called: {why} before the "
+                f"call could be dispatched.")
+
+    def _deadline_ceiling(self) -> Dict[str, Any]:
+        """``{"deadline_s": …}`` when there is a clock and the bus takes one.
+
+        Empty otherwise, and empty is the ordinary case: a mission with no
+        wall clock passes nothing, so a run that behaved one way before
+        this parameter existed behaves that way still — including a
+        caller's fake bus, which never sees a keyword it did not expect
+        unless that caller asked for a deadline.
+
+        The floor is zero and not the true remaining figure: a negative
+        ceiling is a caller telling a subprocess layer to run for minus
+        two seconds, and what that means is the subprocess layer's guess.
+        This loop's own check has already refused to get here with nothing
+        left; zero is the honest way to say "and not a second more".
+        """
+        if self._deadline is None or not self._bus_takes_deadline:
+            return {}
+        remaining = self._deadline.remaining()
+        if remaining is None:
+            return {}
+        return {"deadline_s": max(0.0, remaining)}
 
     def _ground(self, answer: str, repairs: int) -> Optional[GroundingReport]:
         """Validate the answer, or ``None`` when nothing is configured."""

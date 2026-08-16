@@ -147,6 +147,61 @@ class TestTheHappyPath:
         run_cli(MockClass, "--skill", str(skill_file))
         assert "grounded" in capsys.readouterr().out
 
+    def test_both_budgets_are_said_out_loud_at_the_start(
+            self, elf, skill_file, capsys, monkeypatch):
+        """Beside `🪟 context:`, and for the same reason: the line an
+        operator reads BEFORE an 11,000-second mission rather than after
+        it. "no wall clock" is printed as such and not omitted — somebody
+        who meant to pass --mission-seconds and mistyped the variable
+        should see that nothing is bounding the waiting."""
+        MockClass, _agent = elf
+        monkeypatch.delenv("MISSION_SECONDS", raising=False)
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out
+        assert "budget: 8 steps, no wall clock" in out
+
+        run_cli(MockClass, "--skill", str(skill_file), "--mission-seconds", "45")
+        assert "budget: 8 steps, 45 s" in capsys.readouterr().out
+
+    def test_the_end_of_a_run_that_ran_out_says_which_budget(
+            self, elf, skill_file, capsys):
+        """`Mission ended without an answer: budget_exhausted` sent an
+        operator to lengthen a step cap that may not be the thing that ran
+        out. The console says which, with the numbers, like the record."""
+        MockClass, agent = elf
+        agent.replies = [json.dumps(
+            {"tool": "mcp.governed_read",
+             "arguments": {"asset_id": "asset.5f21"}})] * 4
+        run_cli(MockClass, "--skill", str(skill_file), "--mission-steps", "2")
+        out = capsys.readouterr().out
+        assert "ran out of steps: 2 of 2" in out
+
+    def test_the_end_of_a_cancelled_run_does_not_read_like_a_failure(
+            self, elf, skill_file, capsys, monkeypatch):
+        """Somebody asked, and the run wound up rather than being killed
+        between records — which is why there is a transcript to read at
+        all. `Mission ended without an answer: incomplete` would report
+        that as the harness giving up."""
+        import core.runtime.mission as mission_module
+
+        MockClass, agent = elf
+        agent.replies = [json.dumps(
+            {"tool": "mcp.governed_read",
+             "arguments": {"asset_id": "asset.5f21"}})] * 4
+
+        real = mission_module.MissionRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                kwargs["cancel"].cancel()
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(mission_module, "MissionRunner", Spy)
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out
+        assert "Mission cancelled after 0 step(s)" in out
+        assert "wound up on request" in out
+
     def test_the_bus_is_left_without_the_store_tool(self, elf, skill_file):
         MockClass, agent = elf
         run_cli(MockClass, "--skill", str(skill_file))
@@ -597,20 +652,30 @@ class TestTheMissionWiring:
         that* what was already written survives. Without this call the
         default disposition kills the process outright: no `finally`
         runs, the `fd:` sink is never closed, and the reader on the far
-        end of the pipe waits on a descriptor nobody will shut."""
+        end of the pipe waits on a descriptor nobody will shut.
+
+        The handler is handed the mission's cancellation as well as its
+        sink, and that is the half that makes the *last* record survive
+        too: a handler holding only the sink can close a stream but
+        cannot ask the loop to finish first, so the record that says the
+        run is over is the one a stopped turn used to lose."""
         import core.runtime.mission_stream as stream
 
         MockClass, _agent = elf
         sink, handed = RecordingSink(), []
         monkeypatch.setattr(stream, "open_sink", lambda spec: sink)
-        monkeypatch.setattr(stream, "close_on_sigterm", handed.append)
+        monkeypatch.setattr(stream, "close_on_sigterm",
+                            lambda s, c=None: handed.append((s, c)))
 
         run_cli(MockClass, "--skill", str(skill_file))
 
-        assert handed == [sink]
+        assert len(handed) == 1
         # The same object, not merely one of the same kind: what the
         # handler flushes has to be what the mission was writing to.
+        assert handed[0][0] is sink
         assert sink.records and sink.closed == 1
+        # And a switch it can actually throw, not None.
+        assert handed[0][1] is not None and not handed[0][1].is_set()
 
     def test_the_runner_is_given_the_endpoints_own_context_window(
             self, elf, skill_file, monkeypatch):
@@ -644,6 +709,73 @@ class TestTheMissionWiring:
         window = captured["window"]
         assert window.profile.source == "backend"
         assert window.limit_tokens == 8192 - 512
+
+    def test_the_runner_is_given_the_wall_clock_the_operator_asked_for(
+            self, elf, skill_file, monkeypatch):
+        """`--mission-seconds` is inert unless it reaches the loop, and a
+        budget that silently does nothing is worse than none: an operator
+        who set one believes the run is bounded."""
+        import core.runtime.mission as mission_module
+
+        MockClass, _agent = elf
+        captured = {}
+        real = mission_module.MissionRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(mission_module, "MissionRunner", Spy)
+        run_cli(MockClass, "--skill", str(skill_file), "--mission-seconds", "45")
+
+        assert captured["deadline"].seconds == 45.0
+        assert captured["cancel"] is not None
+
+    def test_without_the_flag_the_clock_is_unbounded(
+            self, elf, skill_file, monkeypatch):
+        """Unset means unbounded, all the way down. Steps bound the work;
+        a default nobody chose would kill a slow local model mid-answer."""
+        import core.runtime.mission as mission_module
+
+        MockClass, _agent = elf
+        monkeypatch.delenv("MISSION_SECONDS", raising=False)
+        captured = {}
+        real = mission_module.MissionRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(mission_module, "MissionRunner", Spy)
+        run_cli(MockClass, "--skill", str(skill_file))
+
+        assert captured["deadline"].seconds is None
+        assert captured["deadline"].unbounded is True
+
+    def test_the_staged_runner_is_given_the_same_clock_and_switch(
+            self, elf, monkeypatch):
+        """One clock for the whole turn. A swarm handed none while the
+        direct path was bounded would make the budget depend on which way
+        the router went."""
+        import core.runtime.swarm as swarm_module
+
+        MockClass, agent = elf
+        agent.replies = ['{"route": "direct"}', '{"answer": "no tools needed"}']
+        captured = {}
+        real = swarm_module.SwarmRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        run_cli(MockClass, "--swarm", "--mission-seconds", "45")
+
+        assert captured["deadline"].seconds == 45.0
+        assert captured["cancel"] is not None
 
     def test_the_staged_runner_is_given_it_too(self, elf, monkeypatch):
         """A staged mission runs more steps than a direct one, not fewer."""
