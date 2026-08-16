@@ -5,7 +5,13 @@ from typing import Any, Dict, Iterator, List
 
 from openai import OpenAI
 
-from core.runtime.backends.base import Backend, BackendCapabilities, Usage
+from core.runtime.backends.base import (
+    Backend,
+    BackendCapabilities,
+    ToolCallAccumulator,
+    Usage,
+    tool_calls_from,
+)
 
 
 class OpenAIBackend(Backend):
@@ -18,18 +24,38 @@ class OpenAIBackend(Backend):
                 raise RuntimeError("Missing OPENAI_API_KEY")
             self.client = OpenAI(api_key=key)
         self.last_usage = None
+        self.last_tool_calls = []
 
-    def chat(self, model: str, messages: List[Dict], stream: bool = False):
+    def chat(self, model: str, messages: List[Dict], stream: bool = False,
+             **extra: Any):
+        """Create a chat completion, returning content or a stream of chunks.
+
+        ``**extra`` reaches ``chat.completions.create`` verbatim — it is
+        where ``tools``, ``tool_choice``, ``parallel_tool_calls`` and
+        ``response_format`` travel, all of them ordinary parameters of
+        that call.  Nothing is added when the caller passes nothing: the
+        request this backend has always sent is still the request it sends.
+
+        Native tool calls come back on :attr:`last_tool_calls` rather than
+        in the return value, which stays a ``str`` (or an iterator) for
+        every caller that has ever read it.
+        """
         # Cleared FIRST: a call that raises must not leave the previous
-        # call's numbers standing, or a ledger counts them twice.
+        # call's numbers — or its decisions — standing, or a ledger counts
+        # them twice and a runner dispatches a tool nobody asked for.
         self.last_usage = None
+        self.last_tool_calls = []
         if stream:
             return self._track(self.client.chat.completions.create(
-                model=model, messages=messages, stream=True
+                model=model, messages=messages, stream=True, **extra
             ))
-        result = self.client.chat.completions.create(model=model, messages=messages)
+        result = self.client.chat.completions.create(
+            model=model, messages=messages, **extra)
         self.last_usage = Usage.from_payload(getattr(result, "usage", None))
-        return result.choices[0].message.content
+        message = result.choices[0].message
+        self.last_tool_calls = tool_calls_from(
+            getattr(message, "tool_calls", None))
+        return message.content
 
     def _track(self, chunks: Any) -> Iterator[Any]:
         """Pass every chunk through, keeping the last usage any of them carried.
@@ -47,23 +73,45 @@ class OpenAIBackend(Backend):
         change the request this backend has always sent.  The local
         backend, which serves this repo's own endpoints, does ask; see
         :meth:`~core.runtime.backends.local_backend.LocalBackend.chat`.
+
+        A streamed tool call is read the same way and on the same
+        schedule.  Its arguments arrive as a JSON string in pieces across
+        many frames, so there is nothing to publish until the last one:
+        the accumulator folds each frame's ``delta.tool_calls`` in, and
+        the ``finally`` puts the reassembled calls on
+        ``last_tool_calls`` — including for a consumer that walks away,
+        who then sees exactly the calls that had fully arrived.
         """
         seen = None
+        calls = ToolCallAccumulator()
         try:
             for chunk in chunks:
                 found = Usage.from_payload(getattr(chunk, "usage", None))
                 if found is not None:
                     seen = found
+                for choice in getattr(chunk, "choices", None) or []:
+                    delta = getattr(choice, "delta", None)
+                    calls.add(getattr(delta, "tool_calls", None))
                 yield chunk
         finally:
             self.last_usage = seen
+            self.last_tool_calls = calls.result()
 
     @property
     def capabilities(self) -> BackendCapabilities:
+        """What the OpenAI API does, which is all of it.
+
+        ``parallel_tool_calls`` and ``tool_choice="required"`` are both
+        documented parameters of ``chat.completions.create`` and both are
+        honoured by the models this backend is pointed at, so they are
+        declared here rather than probed — there is no endpoint to ask.
+        """
         return BackendCapabilities(
             supports_streaming=True,
             supports_json_mode=True,
             supports_tool_calls=True,
+            supports_parallel_tool_calls=True,
+            supports_tool_choice_required=True,
             max_context_tokens=None,
             max_output_tokens=None,
         )

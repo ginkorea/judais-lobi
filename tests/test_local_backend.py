@@ -40,6 +40,15 @@ class _StubState:
         #: reported zeros.
         self.usage = {"prompt_tokens": 12, "completion_tokens": 3,
                       "total_tokens": 15}
+        #: The assistant message to answer with, or ``None`` for the
+        #: plain ``"hello from local"`` reply.  Set it to serve a native
+        #: ``tool_calls`` reply — the shape a model returns when the
+        #: request declared ``tools``.
+        self.message = None
+        #: The ``delta`` objects to stream, or ``None`` for the two
+        #: content pieces.  A streamed tool call arrives as fragments of
+        #: a JSON string spread over several of these.
+        self.deltas = None
 
 
 def _make_handler(state: _StubState):
@@ -82,7 +91,8 @@ def _make_handler(state: _StubState):
                 "model": body.get("model"),
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": "hello from local"},
+                    "message": state.message if state.message is not None else {
+                        "role": "assistant", "content": "hello from local"},
                     "finish_reason": "stop",
                 }],
             }
@@ -92,11 +102,13 @@ def _make_handler(state: _StubState):
 
         def _stream(self, body):
             frames = []
-            for piece in ("he", "llo"):
+            deltas = (state.deltas if state.deltas is not None
+                      else [{"content": piece} for piece in ("he", "llo")])
+            for delta in deltas:
                 frames.append("data: " + json.dumps({
                     "id": "cmpl-1",
                     "model": body.get("model"),
-                    "choices": [{"index": 0, "delta": {"content": piece}}],
+                    "choices": [{"index": 0, "delta": delta}],
                 }) + "\n\n")
             frames.append(": a comment nobody should parse\n\n")
             # The OpenAI convention, which vLLM and llama.cpp follow: a
@@ -226,6 +238,22 @@ class TestCapabilities:
     def test_tool_calls_can_be_declared_false(self, stub):
         backend = LocalBackend(endpoint=stub.base, supports_tool_calls=False)
         assert backend.capabilities.supports_tool_calls is False
+
+    def test_the_constrained_decode_flags_are_true(self, stub):
+        """`tool_choice="required"` was exercised against vLLM 0.14.1 on
+        10 Aug 2026; `parallel_tool_calls` is declared on the same grounds
+        as `tools` itself. See `capabilities`."""
+        caps = LocalBackend(endpoint=stub.base).capabilities
+        assert caps.supports_parallel_tool_calls is True
+        assert caps.supports_tool_choice_required is True
+
+    def test_they_cannot_outrun_the_tool_call_declaration(self, stub):
+        """A server told it does not speak `tools` must not be reported as
+        speaking a constrained form of them."""
+        caps = LocalBackend(endpoint=stub.base,
+                            supports_tool_calls=False).capabilities
+        assert caps.supports_parallel_tool_calls is False
+        assert caps.supports_tool_choice_required is False
 
     def test_streaming_is_true(self, stub):
         assert LocalBackend(endpoint=stub.base).capabilities.supports_streaming is True
@@ -378,6 +406,215 @@ class TestWhatTheCallCost:
         assert client.last_usage is None
         client.chat("m", [{"role": "user", "content": "x"}])
         assert client.last_usage.total_tokens == 15
+
+
+class TestWhatTheCallDecided:
+    """Native tool calls, and the one rule about who gets to see them.
+
+    Every call the model made is on ``last_tool_calls`` whatever the
+    request asked for.  What the request decides is the ``str`` that comes
+    back: the mission protocol's one JSON object by default — which is
+    what every deployed run has received and still receives — or the
+    content untouched for a caller **speaking native**, meaning it sent
+    ``tool_choice="required"`` or ``parallel_tool_calls=True``.
+    """
+
+    #: A reply with no text and two native calls: what a served model
+    #: returns when the request declared `tools`.
+    TWO_CALLS = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "catalog_search_assets",
+                          "arguments": '{"text": "assets we hold"}'}},
+            {"id": "call_2", "type": "function",
+             "function": {"name": "list_files", "arguments": '{"path": "/"}'}},
+        ],
+    }
+
+    def test_the_default_still_synthesizes_mission_json(self, stub):
+        """The kernel reads one JSON object, and this is the adapter that
+        keeps it able to. Nothing about that has changed."""
+        stub.message = self.TWO_CALLS
+        backend = LocalBackend(endpoint=stub.base)
+        out = backend.chat("m", [{"role": "user", "content": "x"}],
+                           tools=[{"type": "function"}], tool_choice="auto")
+        decision = json.loads(out)
+        assert decision["tool"] == "catalog_search_assets"
+        assert decision["arguments"] == {"text": "assets we hold"}
+        assert "2 tool calls were offered" in decision["note"]
+
+    def test_the_calls_are_reported_even_in_the_default_mode(self, stub):
+        """The rendering drops the second call; the side channel does not."""
+        stub.message = self.TWO_CALLS
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}],
+                     tool_choice="auto")
+        assert backend.last_tool_calls == [
+            {"id": "call_1", "name": "catalog_search_assets",
+             "arguments": {"text": "assets we hold"}},
+            {"id": "call_2", "name": "list_files",
+             "arguments": {"path": "/"}}]
+
+    def test_tool_choice_required_gets_the_content_unsynthesized(self, stub):
+        """A caller that constrained the decoder is reading the calls
+        itself, and a manufactured JSON object would be a second copy of
+        the same decision, free to disagree with it."""
+        stub.message = self.TWO_CALLS
+        backend = LocalBackend(endpoint=stub.base)
+        out = backend.chat("m", [{"role": "user", "content": "x"}],
+                           tool_choice="required")
+        assert out == ""
+        assert [c["name"] for c in backend.last_tool_calls] == [
+            "catalog_search_assets", "list_files"]
+
+    def test_parallel_tool_calls_is_native_speech_too(self, stub):
+        """Asking for more calls than a one-per-turn protocol can dispatch
+        is telling this backend you are not speaking that protocol."""
+        stub.message = self.TWO_CALLS
+        backend = LocalBackend(endpoint=stub.base)
+        assert backend.chat("m", [{"role": "user", "content": "x"}],
+                            parallel_tool_calls=True) == ""
+
+    def test_tool_choice_auto_is_not_native_speech(self, stub):
+        """`auto` beside `tools` is what every deployed mission sends —
+        it is there to stop vLLM 500ing on its own harmony output — and
+        those runs must keep getting mission JSON back."""
+        stub.message = self.TWO_CALLS
+        backend = LocalBackend(endpoint=stub.base)
+        out = backend.chat("m", [{"role": "user", "content": "x"}],
+                           tool_choice="auto")
+        assert json.loads(out)["tool"] == "catalog_search_assets"
+
+    def test_a_native_reply_that_had_text_keeps_its_text(self, stub):
+        stub.message = {"role": "assistant", "content": "thinking out loud",
+                        "tool_calls": self.TWO_CALLS["tool_calls"]}
+        backend = LocalBackend(endpoint=stub.base)
+        assert backend.chat("m", [{"role": "user", "content": "x"}],
+                            tool_choice="required") == "thinking out loud"
+
+    def test_the_harmony_scrub_still_runs_in_native_mode(self, stub):
+        """It repairs a server's own parser bug and has nothing to do with
+        which protocol is being spoken."""
+        stub.message = {
+            "role": "assistant",
+            "content": "<|start|>assistant<|channel|>final<|message|>done"}
+        backend = LocalBackend(endpoint=stub.base)
+        assert backend.chat("m", [{"role": "user", "content": "x"}],
+                            tool_choice="required") == "done"
+
+    def test_unreadable_arguments_survive_as_the_text_that_arrived(self, stub):
+        stub.message = {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_1", "function": {"name": "f",
+                                          "arguments": '{"path": "/tm'}}]}
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}],
+                     tool_choice="required")
+        assert backend.last_tool_calls == [
+            {"id": "call_1", "name": "f", "arguments": {},
+             "arguments_raw": '{"path": "/tm'}]
+
+    def test_a_reply_with_no_calls_reports_none(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls == []
+
+    def test_the_previous_turns_decision_is_gone_by_the_next_call(self, stub):
+        """Or the loop dispatches a tool nobody asked for, twice."""
+        stub.message = self.TWO_CALLS
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls
+        stub.message = None
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls == []
+
+    def test_a_failed_call_leaves_no_decision_behind(self, stub):
+        dead = LocalBackend(endpoint=stub.base.replace("/v1", "/v9"))
+        dead.last_tool_calls = [{"id": "stale", "name": "f", "arguments": {}}]
+        with pytest.raises(Exception):
+            dead.chat("m", [{"role": "user", "content": "x"}])
+        assert dead.last_tool_calls == []
+
+    def test_a_streamed_call_is_assembled_from_its_fragments(self, stub):
+        stub.deltas = [
+            {"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                             "function": {"name": "list_files",
+                                          "arguments": '{"path":'}}]},
+            {"tool_calls": [{"index": 0,
+                             "function": {"arguments": ' "/tmp"}'}}]},
+        ]
+        backend = LocalBackend(endpoint=stub.base)
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        assert backend.last_tool_calls == [], "nothing has fully arrived yet"
+        chunks = list(stream)
+        assert backend.last_tool_calls == [
+            {"id": "call_1", "name": "list_files",
+             "arguments": {"path": "/tmp"}}]
+        assert [c.choices[0].delta.tool_calls is not None
+                for c in chunks] == [True, True], "the frames still arrive"
+
+    def test_two_streamed_calls_are_kept_apart_by_index(self, stub):
+        stub.deltas = [
+            {"tool_calls": [
+                {"index": 0, "id": "a", "function": {"name": "f",
+                                                     "arguments": '{"n":'}},
+                {"index": 1, "id": "b", "function": {"name": "g",
+                                                     "arguments": '{"n":'}}]},
+            {"tool_calls": [{"index": 1, "function": {"arguments": " 2}"}},
+                            {"index": 0, "function": {"arguments": " 1}"}}]},
+        ]
+        backend = LocalBackend(endpoint=stub.base)
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert backend.last_tool_calls == [
+            {"id": "a", "name": "f", "arguments": {"n": 1}},
+            {"id": "b", "name": "g", "arguments": {"n": 2}}]
+
+    def test_an_abandoned_stream_leaves_only_what_fully_arrived(self, stub):
+        stub.deltas = [
+            {"tool_calls": [{"index": 0, "id": "call_1",
+                             "function": {"name": "f",
+                                          "arguments": '{"path":'}}]},
+            {"tool_calls": [{"index": 0,
+                             "function": {"arguments": ' "/tmp"}'}}]},
+        ]
+        backend = LocalBackend(endpoint=stub.base)
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        next(stream)
+        stream.close()
+        assert backend.last_tool_calls == [
+            {"id": "call_1", "name": "f", "arguments": {},
+             "arguments_raw": '{"path":'}]
+
+    def test_a_content_only_stream_decided_nothing(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert backend.last_tool_calls == []
+
+    def test_the_native_kwargs_reach_the_body_verbatim(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}],
+                     tool_choice="required", parallel_tool_calls=True,
+                     response_format={"type": "json_object"})
+        assert stub.last_body["tool_choice"] == "required"
+        assert stub.last_body["parallel_tool_calls"] is True
+        assert stub.last_body["response_format"] == {"type": "json_object"}
+
+    def test_the_client_surfaces_the_calls(self, stub, monkeypatch):
+        """`UnifiedClient.last_tool_calls` is what a runner reads."""
+        stub.message = self.TWO_CALLS
+        monkeypatch.setenv("LOCAL_API_BASE", stub.base)
+        from core.unified_client import UnifiedClient
+
+        client = UnifiedClient(provider_override="local")
+        assert client.last_tool_calls == []
+        client.chat("m", [{"role": "user", "content": "x"}],
+                    tool_choice="required")
+        assert [c["name"] for c in client.last_tool_calls] == [
+            "catalog_search_assets", "list_files"]
 
 
 class TestUnifiedClientWiring:

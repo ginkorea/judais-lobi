@@ -38,7 +38,13 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
-from core.runtime.backends.base import Backend, BackendCapabilities, Usage
+from core.runtime.backends.base import (
+    Backend,
+    BackendCapabilities,
+    ToolCallAccumulator,
+    Usage,
+    tool_calls_from,
+)
 from core.runtime.backends.local_backend import CHAT_TIMEOUT, LocalBackend
 
 CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -75,6 +81,7 @@ class MistralBackend(Backend):
             raise RuntimeError("Missing MISTRAL_API_KEY")
         self._client = client if client is not None else httpx
         self.last_usage = None
+        self.last_tool_calls = []
 
     # ── request ──────────────────────────────────────────────────────────
 
@@ -100,9 +107,10 @@ class MistralBackend(Backend):
         without knowing which backend filled it.
         """
         # Cleared before anything is sent: a call that raises must not
-        # leave the previous call's numbers standing for a ledger to count
-        # a second time.
+        # leave the previous call's numbers — or its tool calls — standing
+        # for a ledger to count, or a runner to dispatch, a second time.
         self.last_usage = None
+        self.last_tool_calls = []
         body: Dict[str, Any] = {
             "model": model or DEFAULT_MISTRAL_MODEL,
             "messages": messages,
@@ -199,7 +207,15 @@ class MistralBackend(Backend):
         choices = payload.get("choices") or []
         if not choices:
             return ""
-        return (choices[0].get("message") or {}).get("content") or ""
+        message = choices[0].get("message") or {}
+        # Read even though `capabilities` declares no tool-call support:
+        # `**extra` has always reached the body, so a caller CAN send
+        # `tools` here, and a reply this backend refused to look at would
+        # be silently thrown away. Reporting what arrived costs nothing
+        # and claims nothing — see `capabilities` for why the flag stays
+        # False regardless.
+        self.last_tool_calls = tool_calls_from(message.get("tool_calls"))
+        return message.get("content") or ""
 
     def _stream(self, body: Dict[str, Any]) -> Iterator[SimpleNamespace]:
         """Yield one delta per SSE frame that carries content.
@@ -213,6 +229,7 @@ class MistralBackend(Backend):
         """
         ctx, res = self._open_stream(body)
         seen: Optional[Usage] = None
+        calls = ToolCallAccumulator()
         try:
             self._raise_for_status(res)
             for line in res.iter_lines():
@@ -238,6 +255,9 @@ class MistralBackend(Backend):
                 found = Usage.from_payload(chunk.get("usage"))
                 if found is not None:
                     seen = found
+                for choice in chunk.get("choices") or []:
+                    calls.add(((choice or {}).get("delta") or {}).get(
+                        "tool_calls"))
                 content = self._delta_content(chunk)
                 if content:
                     yield self._as_delta(content)
@@ -245,6 +265,7 @@ class MistralBackend(Backend):
             # In the same `finally` that releases the connection, for the
             # same reason: abandonment is the case that has to work.
             self.last_usage = seen
+            self.last_tool_calls = calls.result()
             ctx.__exit__(None, None, None)
 
     @staticmethod
@@ -272,10 +293,31 @@ class MistralBackend(Backend):
 
     @property
     def capabilities(self) -> BackendCapabilities:
+        """What this backend will stand behind, which is less than the API does.
+
+        All three tool-call flags are ``False``, and that is a statement
+        about this repository rather than about Mistral. Their API does
+        document ``tools`` and a ``tool_choice``, and ``**extra`` already
+        forwards both — a caller who sends them will get whatever the
+        provider does, and :attr:`last_tool_calls` will report it. What is
+        missing is a verified round trip: nothing here has been run against
+        the live endpoint with tools declared, and their ``tool_choice``
+        vocabulary is not the OpenAI one this repo's ``"required"`` rule is
+        written against.
+
+        A capability flag is a promise a caller plans against — the runtime
+        reads these to decide whether a native protocol may run at all — and
+        a promise made from documentation alone is how a mission refuses at
+        step six instead of at the door. Flipping any of these is a
+        one-line change for whoever runs that round trip and can say what
+        came back.
+        """
         return BackendCapabilities(
             supports_streaming=True,
             supports_json_mode=True,
             supports_tool_calls=False,
+            supports_parallel_tool_calls=False,
+            supports_tool_choice_required=False,
             max_context_tokens=None,
             max_output_tokens=None,
         )

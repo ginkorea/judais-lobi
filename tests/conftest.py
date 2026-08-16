@@ -28,15 +28,31 @@ class FakeUnifiedClient:
     ``None`` is a provider that reported nothing — which is what a fake
     should be unless a test says otherwise, because "nothing reported" is
     the state a ledger has to keep distinct from "nothing spent".
+
+    ``tool_calls`` is the other side channel, and works the same way: a
+    scripted list of ``{"id", "name", "arguments"}`` dicts that
+    ``last_tool_calls`` reports, defaulting to none. Scripted rather than
+    derived from ``canned`` on purpose — a real backend's tool calls do
+    not appear in the text it returns, and a fake whose two channels
+    agreed by construction could not catch a caller that read the wrong
+    one.
     """
 
     def __init__(self, canned="Hello from fake client", provider="openai",
-                 usage=None):
+                 usage=None, tool_calls=None):
         self.canned = canned
         self.provider = provider
         self.last_usage = usage
+        self.last_tool_calls = list(tool_calls or [])
+        self.last_request = None
 
-    def chat(self, model, messages, stream=False):
+    def chat(self, model, messages, stream=False, **kwargs):
+        # `**kwargs` swallows what a real request carries — `tools`,
+        # `tool_choice`, `response_format`, sampling — because a caller
+        # under test decides what to send and a fake must not be the
+        # reason a request shape cannot be tried.
+        self.last_request = {"model": model, "messages": messages,
+                             "stream": stream, **kwargs}
         if stream:
             return self._stream()
         return self.canned

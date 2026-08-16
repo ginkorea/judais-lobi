@@ -2,10 +2,21 @@
 
 """What every backend is, and what every backend reports.
 
-Two things live here.  :class:`BackendCapabilities` is what a backend can
-do, asked before a call.  :class:`Usage` is what one call **cost**, read
-after it — the provider's own count of the tokens it billed, and never
-this repo's guess at them.
+Three things live here.  :class:`BackendCapabilities` is what a backend
+can do, asked before a call.  :class:`Usage` is what one call **cost**,
+read after it — the provider's own count of the tokens it billed, and
+never this repo's guess at them.  :func:`tool_calls_from` and
+:class:`ToolCallAccumulator` are what one call **decided**, read after it
+off :attr:`Backend.last_tool_calls`: the native tool calls a provider
+returned, as plain dicts.
+
+Both post-call facts are side channels for the same reason.  ``chat``
+returns a ``str`` or an iterator of deltas and every caller in this tree
+branches on exactly those two shapes, so a third return shape would be a
+breaking change to all of them for the sake of something most of them
+ignore.  The tool calls stay **plain dicts** rather than a class of their
+own so that the runtime never has to import a backend type to read a
+decision — the seam between the two halves of this repo is data.
 
 That distinction is the whole design of :class:`Usage`.  The only token
 number in this tree before it was ``core.context.formatter.estimate_tokens``
@@ -16,9 +27,10 @@ absent.  So ``last_usage`` is ``None`` when nothing was reported, and a
 zero is never manufactured to stand in for silence.  A zero is a claim.
 """
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 #: The three counts an OpenAI-shaped ``usage`` object always names, and the
 #: three this dataclass gives fields to.  Everything else the provider sent
@@ -131,11 +143,161 @@ class Usage:
         }
 
 
+def _attr_or_key(payload: Any, name: str) -> Any:
+    """One field of a provider object, whether it is a dict or an SDK model.
+
+    A JSON backend hands over nested ``dict``s; the OpenAI SDK hands over
+    pydantic models.  Reading both here is the same bargain
+    :func:`_as_mapping` strikes for usage: one owner, rather than the
+    same ``isinstance`` at three call sites that will drift.
+    """
+    if isinstance(payload, Mapping):
+        return payload.get(name)
+    return getattr(payload, name, None)
+
+
+def _as_arguments(value: Any) -> Tuple[Dict[str, Any], Optional[str]]:
+    """A tool call's arguments as an object, and what could not be read.
+
+    Providers send arguments as a **JSON string**, which is the one place
+    in a native reply a model can still be wrong: an unterminated brace, a
+    trailing comma, a bare list where an object belongs.  A caller needs a
+    dict to dispatch with, so an unreadable one becomes ``{}`` — but the
+    text is returned alongside rather than dropped, because "the model
+    asked for something and we could not parse it" is a different fact
+    from "the model asked for nothing", and only the first is worth
+    putting back in front of the model.
+
+    ``None`` as the second element means nothing was lost: the arguments
+    round-tripped, or there were none to begin with.  An empty string is
+    the common no-argument call and loses nothing either.
+    """
+    if isinstance(value, Mapping):
+        return dict(value), None
+    if value is None:
+        return {}, None
+    text = value if isinstance(value, str) else str(value)
+    if not text.strip():
+        return {}, None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return {}, text
+    if isinstance(parsed, Mapping):
+        return dict(parsed), None
+    # Valid JSON that is not an object — `[1, 2]`, `"hi"`, `7`.  There is
+    # nothing to dispatch with and the text is the only evidence left.
+    return {}, text
+
+
+def tool_calls_from(payload: Any) -> List[Dict[str, Any]]:
+    """Every native tool call in a provider's message, as plain dicts.
+
+    ``[{"id": …, "name": …, "arguments": {…}}]`` in the order the
+    provider returned them, and **all** of them.  A protocol that runs one
+    tool per turn is free to use only the first — see
+    :meth:`~core.runtime.backends.local_backend.LocalBackend._as_mission_json`
+    — but that is the protocol's decision to make and it cannot make it
+    about calls it was never shown.
+    """
+    if not isinstance(payload, (list, tuple)):
+        # No calls, or a field of a shape no provider sends.  Not an
+        # error to raise in the middle of somebody's turn: a message
+        # without a readable `tool_calls` list simply made no calls.
+        return []
+    calls: List[Dict[str, Any]] = []
+    for raw in payload:
+        if raw is None:
+            continue
+        function = _attr_or_key(raw, "function")
+        arguments, unread = _as_arguments(_attr_or_key(function, "arguments"))
+        call: Dict[str, Any] = {
+            "id": str(_attr_or_key(raw, "id") or ""),
+            "name": str(_attr_or_key(function, "name") or ""),
+            "arguments": arguments,
+        }
+        if unread is not None:
+            call["arguments_raw"] = unread
+        calls.append(call)
+    return calls
+
+
+class ToolCallAccumulator:
+    """Streamed tool-call fragments, reassembled by index.
+
+    A streamed native call does not arrive whole.  The first frame carries
+    the id and the function name with the opening brace of the arguments;
+    every frame after it carries a few more characters of that JSON
+    string, keyed only by ``index``.  Concatenating by index is the whole
+    algorithm, and it is written once here because every streaming
+    backend in this tree needs it and two copies of it would disagree
+    about the awkward frame.
+
+    ``index`` is what the provider says, and a fragment without one falls
+    back to its position in the frame.  Order out is first-appearance
+    order, which for every provider seen so far is index order.
+    """
+
+    def __init__(self) -> None:
+        self._by_index: Dict[Any, Dict[str, Any]] = {}
+
+    def add(self, fragments: Any) -> None:
+        """Fold one frame's ``delta.tool_calls`` in.  ``None`` is a no-op."""
+        if not isinstance(fragments, (list, tuple)):
+            return
+        for position, fragment in enumerate(fragments):
+            if fragment is None:
+                continue
+            index = _attr_or_key(fragment, "index")
+            if not isinstance(index, int) or isinstance(index, bool):
+                index = f"position-{position}"
+            slot = self._by_index.setdefault(
+                index, {"id": "", "name": "", "arguments": ""})
+            call_id = _attr_or_key(fragment, "id")
+            if call_id:
+                slot["id"] = str(call_id)
+            function = _attr_or_key(fragment, "function")
+            name = _attr_or_key(function, "name")
+            if name:
+                slot["name"] = str(name)
+            arguments = _attr_or_key(function, "arguments")
+            if isinstance(arguments, str):
+                slot["arguments"] += arguments
+            elif arguments is not None:
+                # A server that sends the object whole rather than in
+                # pieces. Nothing to concatenate; take it as it stands.
+                slot["arguments"] = arguments
+
+    def result(self) -> List[Dict[str, Any]]:
+        """The reassembled calls, in the shape :func:`tool_calls_from` makes.
+
+        Through the same function, deliberately: a streamed call and a
+        non-streamed one must not be two dialects of the same dict, and
+        the unparseable-arguments rule has one owner.
+        """
+        return tool_calls_from([
+            {"id": slot["id"], "function": {"name": slot["name"],
+                                            "arguments": slot["arguments"]}}
+            for slot in self._by_index.values()
+        ])
+
+
 @dataclass(frozen=True)
 class BackendCapabilities:
     supports_streaming: bool = True
     supports_json_mode: bool = False
     supports_tool_calls: bool = False
+    #: Whether the provider honours ``parallel_tool_calls`` — more than one
+    #: native call in a single reply.  Separate from
+    #: :attr:`supports_tool_calls` because a server can speak ``tools`` and
+    #: still answer one call at a time, and a caller that must fan out
+    #: needs to know which it is holding before it asks.
+    supports_parallel_tool_calls: bool = False
+    #: Whether the provider honours ``tool_choice="required"`` — the
+    #: constrained decode that makes an unparseable or out-of-namespace
+    #: tool name unrepresentable rather than merely unlikely.  Probed, not
+    #: assumed; see each backend's ``capabilities``.
+    supports_tool_choice_required: bool = False
     max_context_tokens: int | None = None
     max_output_tokens: int | None = None
 
@@ -153,6 +315,24 @@ class Backend(ABC):
     #: the iterator is exhausted or closed: usage arrives in the last
     #: frame, and there is nothing honest to say before it does.
     last_usage: Optional[Usage] = None
+
+    #: The native tool calls the **last** completion carried, as plain
+    #: dicts — ``{"id": str, "name": str, "arguments": dict}``, with
+    #: ``arguments_raw`` added when the provider's argument text could not
+    #: be read.  Every call the provider returned, in its order, whatever
+    #: the caller's protocol then chooses to do with them.
+    #:
+    #: The same lifecycle as :attr:`last_usage`, for the same reasons:
+    #: rebound to ``[]`` at the start of every call so a raised call
+    #: cannot leave the previous turn's decision standing to be dispatched
+    #: twice, and filled on a streamed call only when the iterator is
+    #: exhausted or closed, because a half-arrived tool call is a
+    #: fragment of a JSON string and not yet a decision.
+    #:
+    #: Always **rebound**, never mutated in place — the class default is a
+    #: shared list and an ``append`` on it would leak one backend's calls
+    #: into every other.
+    last_tool_calls: List[Dict[str, Any]] = []
 
     @property
     @abstractmethod
