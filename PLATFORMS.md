@@ -215,7 +215,12 @@ Each discovered tool is registered as a `ToolDescriptor` whose executor
 dispatches `tools/call`, namespaced **`mcp.<name>`** so a server discovered at
 runtime cannot shadow `fs`, `git` or `run_shell_command` by choosing their names.
 Capability gating, the panic switch and the audit log apply to it exactly as to a
-compiled-in tool. The tool's JSON Schema is carried whole on the descriptor, so
+compiled-in tool. Its `SandboxProfile` follows the transport: a tool reached over
+HTTP is registered with `allow_network=True`, a stdio server's tools are not, so
+a sandbox that denies the network by default cannot cut a bridged tool off from
+the server it *is*. A platform registering its own `ToolDescriptor` owes the same
+declaration — a tool that reaches the network says so in its profile, or the
+sandbox will take it away without saying anything. The tool's JSON Schema is carried whole on the descriptor, so
 the catalogue the model reads says `type (string: dataset|model|service)` and not
 just `type` — types, `required` and enums are what decide whether a *first* call
 to a faceted search works.

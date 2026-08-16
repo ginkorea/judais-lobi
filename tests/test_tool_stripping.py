@@ -1,7 +1,9 @@
 # tests/test_tool_stripping.py
 # Verify stripped tools return (rc, out, err), no retry, no repair, no sudo.
 
+import os
 import subprocess
+import tempfile
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -113,6 +115,38 @@ class TestRunPythonToolStripped:
         )
         assert tool._detect_missing_dependency("No module named 'numpy'") == "numpy"
         assert tool._detect_missing_dependency("all good") is None
+
+    def test_no_temp_file_machinery(self):
+        """The script used to be written to a host temp file whose path
+        was handed to the interpreter — a path that does not exist inside
+        a sandbox with a tmpfs ``/tmp``.  The code goes in argv now, and
+        there is nothing left to clean up."""
+        tool = RunPythonTool(
+            elfenv=Path("/tmp/fake_elfenv"),
+            skip_venv_setup=True,
+            subprocess_runner=make_fake_subprocess_runner(),
+        )
+        assert not hasattr(tool, "_cleanup_temp")
+        assert not hasattr(tool, "_last_temp_path")
+
+    def test_the_run_writes_nothing_to_the_temp_directory(self):
+        seen = {}
+
+        def capturing_runner(cmd, *, shell=False, timeout=None, executable=None):
+            seen["cmd"] = cmd
+            seen["during"] = set(os.listdir(tempfile.gettempdir()))
+            return 0, "", ""
+
+        tool = RunPythonTool(
+            elfenv=Path("/tmp/fake_elfenv"),
+            skip_venv_setup=True,
+            subprocess_runner=capturing_runner,
+        )
+        before = set(os.listdir(tempfile.gettempdir()))
+        tool("print('no file for this')")
+        assert seen["cmd"][1] == "-c"
+        assert seen["cmd"][2] == "print('no file for this')"
+        assert seen["during"] - before == set()
 
     def test_no_elf_parameter_required(self):
         """__call__ no longer requires elf parameter."""

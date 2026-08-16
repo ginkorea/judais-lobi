@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 import re
 from pathlib import Path
 from typing import Tuple, Optional
@@ -24,22 +22,29 @@ class RunPythonTool(RunSubprocessTool):
             self._ensure_elfenv()
         super().__init__(**kwargs)
         self.name = "run_python_code"
-        self._last_temp_path: Optional[str] = None
 
     def __call__(self, code: str, timeout=None, **kwargs) -> Tuple[int, str, str]:
-        """Write code to a temp file and run with elfenv python."""
-        with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".py") as f:
-            f.write(str(code))
-            self._last_temp_path = f.name
+        """Run *code* with the elfenv python. Returns (rc, out, err).
 
-        try:
-            rc, out, err = self.run(
-                [str(self.python_bin), self._last_temp_path],
-                timeout=timeout or self.timeout,
-            )
-            return rc, out, err
-        finally:
-            self._cleanup_temp()
+        The code travels **in the argument list**, not through a file on
+        disk. It used to be written to a host ``NamedTemporaryFile`` and
+        the path passed as ``argv[1]``, which is correct for exactly one
+        executor: the one that shares a filesystem with this process.
+        Under ``BwrapSandbox`` — the executor this framework is switching
+        on by default — ``/tmp`` is a private tmpfs, so the path handed
+        over named nothing at all inside the namespace and the tool
+        answered ``can't open file '/tmp/tmpXXXX.py'`` for every program
+        it was ever given. A temp file also outlives a hard kill; ``-c``
+        has nothing to clean up because it never created anything.
+
+        The cost is the argument-list ceiling (``ARG_MAX``, a couple of
+        megabytes) and a traceback that says ``<string>`` where it used to
+        say a filename — neither of which any caller of this tool reads.
+        """
+        return self.run(
+            [str(self.python_bin), "-c", str(code)],
+            timeout=timeout or self.timeout,
+        )
 
     def _detect_missing_dependency(self, err: str) -> Optional[str]:
         """Kept — kernel uses this to decide if a pip install tool call is needed."""
@@ -50,11 +55,3 @@ class RunPythonTool(RunSubprocessTool):
         from venv import create
         if not self.python_bin.exists():
             create(str(self.elfenv), with_pip=True)
-
-    def _cleanup_temp(self):
-        if self._last_temp_path and os.path.exists(self._last_temp_path):
-            try:
-                os.remove(self._last_temp_path)
-            except Exception:
-                pass
-        self._last_temp_path = None

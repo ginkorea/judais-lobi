@@ -43,7 +43,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from core.tools.descriptors import ToolDescriptor
+from core.tools.descriptors import SandboxProfile, ToolDescriptor
 
 _IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 _SCHEMES = frozenset({"stdio", "http"})
@@ -743,11 +743,18 @@ class McpToolBridge:
         # the three things that decide whether a model's first call to a
         # faceted search is a valid one. Renderers summarise it
         # (`summarize_input_schema`); the descriptor keeps it.
+        # The profile agrees with `requires_network` rather than
+        # restating it: a bridged tool over an HTTP transport that ran
+        # inside a sandbox with the network unshared would fail as
+        # `mcp_unreachable` — a refusal naming the server, for a fault
+        # that was entirely ours.
+        uses_network = self._client.transport.uses_network
         return ToolDescriptor(
             tool_name=name,
             required_scopes=list(self._scopes),
-            requires_network=self._client.transport.uses_network,
+            requires_network=uses_network,
             network_scopes=list(self._scopes),
+            sandbox_profile=SandboxProfile(allow_network=uses_network),
             description=spec.description or f"MCP tool {spec.name}.",
             input_schema=dict(spec.input_schema or {}),
         )

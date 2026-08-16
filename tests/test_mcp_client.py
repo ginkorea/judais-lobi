@@ -264,6 +264,11 @@ class TestBridge:
         McpToolBridge(client, bus).sync()
         assert bus.get_descriptor("mcp.echo").requires_network is False
 
+    def test_a_stdio_tools_sandbox_keeps_the_network_shut(self, client, bus):
+        McpToolBridge(client, bus).sync()
+        profile = bus.get_descriptor("mcp.echo").sandbox_profile
+        assert profile.allow_network is False
+
     def test_http_tools_would_be_network_tools(self, bus):
         """requires_network follows the transport, not the tool."""
         class _Fake(McpClient):
@@ -276,6 +281,22 @@ class TestBridge:
 
         McpToolBridge(_Fake(), bus).sync()
         assert bus.get_descriptor("mcp.t").requires_network is True
+
+    def test_an_http_tools_sandbox_lets_it_reach_the_server(self, bus):
+        """The bus gate and the sandbox have to agree. A bridged tool
+        allowed through the network check and then run inside an unshared
+        namespace comes back ``mcp_unreachable`` — a refusal naming the
+        server for a fault that was entirely ours."""
+        class _Fake(McpClient):
+            def __init__(self):
+                self._transport = StreamableHttpTransport(url="https://x.invalid/mcp")
+                self._tools = [McpToolSpec(name="t", description="d")]
+
+            def list_tools(self, refresh=False):
+                return list(self._tools)
+
+        McpToolBridge(_Fake(), bus).sync()
+        assert bus.get_descriptor("mcp.t").sandbox_profile.allow_network is True
 
     def test_the_description_is_the_servers_own(self, client, bus):
         """It used to be "Add two integers. Arguments: a, b." — the names
