@@ -162,9 +162,19 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
   survives, and the exit status is still the signal's rather than a spurious
   clean exit.
 - **stderr carries the diagnostic**, and its tail is what to show when a mission
-  produced no events or stopped without an answer. It is a traceback and it
-  **carries absolute paths from this host**. Scrub it before anyone but an
-  operator sees it.
+  produced no events or stopped without an answer. It is a traceback, and it is
+  **scrubbed before it is written** — home directories, this host's name,
+  credentials held in the harness's environment and absolute frame paths become
+  `<home>`, `<host>`, `<cwd>`, `<site-packages>`, `<stdlib>` and
+  `<redacted:NAME>`. You may show it to somebody who is not an operator. It is
+  still prose for a person, never a machine channel.
+- **Free text on the stream is scrubbed by the same redactor.** `error`,
+  `problem`, `reason`, `text`, `caveat`, `detail` and `unsupported` pass through
+  `core.redact` at the emitter. `output`, `arguments`, `objective`, `catalogue`,
+  `gated`, `tool`, `handle`, `outcome` and `plan` do **not**: they are the
+  evidence, the call and the request, and the mission store holds the same bytes
+  as `output`. A pane that diffed the two would find them equal, which is the
+  point.
 
 ## Compatibility
 

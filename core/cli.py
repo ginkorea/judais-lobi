@@ -208,6 +208,36 @@ def _mission_tools(manifest, discovered, style):
 
 
 def _run_mission(elf, args, name, style):
+    """:func:`_mission`, with its last traceback scrubbed on the way out.
+
+    A mission is spawned by another program.  When it dies of something
+    nobody handled, the only thing that program has to show a person is
+    stderr — ``EXIT_CONTRACT["diagnostic"]`` says so — and the interpreter's
+    own default writes that traceback with every absolute path on this host
+    in it.  That is the leak that had TAIPAN's location sweep deferred rather
+    than written.
+
+    So the outermost frame of mission mode catches, renders the traceback
+    through the same redactor the stream uses
+    (:func:`core.redact.scrub`), writes it to stderr itself, and exits
+    non-zero.  ``SystemExit`` and ``KeyboardInterrupt`` are **not** caught:
+    the first is a refusal that already said what was wrong, and the second
+    is a person, not a defect.
+    """
+    import sys
+    import traceback
+
+    from core.redact import scrub
+
+    try:
+        return _mission(elf, args, name, style)
+    except Exception:
+        sys.stderr.write(scrub(traceback.format_exc()))
+        sys.stderr.flush()
+        raise SystemExit(1)
+
+
+def _mission(elf, args, name, style):
     """Discover tools over MCP, bridge them, and let the model choose.
 
     Everything the agent can reach in a mission arrives through
@@ -219,6 +249,7 @@ def _run_mission(elf, args, name, style):
     This function joins them in that order — who you are, then what you
     are doing — and supplies neither.
     """
+    from core.redact import scrub
     from core.runtime.context_window import MissionWindow
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
@@ -483,7 +514,10 @@ def _run_mission(elf, args, name, style):
                 )
             transcript = runner.run(args.message)
     except (McpUnavailable, McpConnectionError) as exc:
-        console.print(f"❌ {exc}", style="red")
+        # Scrubbed like everything else a mission says about a failure: this
+        # message names the transport, and a transport is a URL, a socket path
+        # or a command line on this host.
+        console.print(f"❌ {scrub(str(exc))}", style="red")
         return
     finally:
         if sink is not None:
@@ -495,7 +529,7 @@ def _run_mission(elf, args, name, style):
             cut = f" [truncated → {step.handle}]" if step.truncated else ""
             console.print(f"{mark} {step.tool}({step.arguments}){cut}", style=style)
         if step.error:
-            console.print(f"   {step.error}", style="yellow")
+            console.print(f"   {scrub(step.error)}", style="yellow")
 
     report = transcript.grounding
     if report is not None and report.ran:
@@ -516,7 +550,10 @@ def _run_mission(elf, args, name, style):
         )
 
     if transcript.completed:
-        console.print(Markdown(f"🧞 **{name}:** {transcript.answer}"), style=style)
+        # The same text the stream carried on `answer`, scrubbed the same way,
+        # so the console and the record a pane renders say the same thing.
+        console.print(Markdown(f"🧞 **{name}:** {scrub(transcript.answer)}"),
+                      style=style)
     elif transcript.outcome == AWAITING_APPROVAL:
         # Distinguished from every other unfinished outcome, because it is the
         # only one where the right next move belongs to a person rather than

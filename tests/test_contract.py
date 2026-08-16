@@ -639,3 +639,78 @@ class TestSigtermClosesTheStream:
         stream = io.StringIO()
         stream.close()
         ms.NdjsonSink(stream).flush()
+
+
+# ── the diagnostic clause, which used to be a warning ────────────────────────
+
+
+class TestTheDiagnosticIsScrubbedBeforeItIsWritten:
+    """``EXIT_CONTRACT["diagnostic"]`` told a consumer that stderr carries
+    absolute paths from this host and that it had to scrub them itself.  It
+    was the sentence TAIPAN's location sweep was deferred on.  Mission mode's
+    outermost frame is what makes it false: the traceback is rendered through
+    the same redactor the stream uses and written by the harness, not by the
+    interpreter's default handler.
+    """
+
+    LEAK = "/home/testuser/data/mission.log"
+
+    def _blow_up(self, monkeypatch):
+        from core import cli
+
+        def explode(*_args, **_kwargs):
+            raise RuntimeError(f"cannot open {self.LEAK}")
+
+        monkeypatch.setattr(cli, "_mission", explode)
+        return cli
+
+    def test_the_traceback_reaches_stderr_scrubbed(self, monkeypatch, capsys):
+        cli = self._blow_up(monkeypatch)
+        with pytest.raises(SystemExit) as exit_info:
+            cli._run_mission(object(), object(), "Tai", "cyan")
+        assert exit_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "RuntimeError: cannot open <home>/data/mission.log" in err
+        assert self.LEAK not in err
+        # Still a traceback: a scrubbed location is no use if the frame it
+        # belonged to went with it.
+        assert "Traceback (most recent call last):" in err
+        assert "_run_mission" in err
+
+    def test_a_refusal_is_not_turned_into_a_traceback(self, monkeypatch, capsys):
+        """``SystemExit`` is how this CLI refuses — ``--skill: no such tool``
+        and the rest. Catching it here would bury a sentence somebody wrote
+        for an operator under a stack this code produced."""
+        from core import cli
+
+        def refuse(*_args, **_kwargs):
+            raise SystemExit("--events: fd: needs a number")
+
+        monkeypatch.setattr(cli, "_mission", refuse)
+        with pytest.raises(SystemExit) as exit_info:
+            cli._run_mission(object(), object(), "Tai", "cyan")
+        assert exit_info.value.code == "--events: fd: needs a number"
+        assert "Traceback" not in capsys.readouterr().err
+
+    def test_a_person_pressing_control_c_is_not_a_defect(self, monkeypatch, capsys):
+        from core import cli
+
+        def interrupt(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "_mission", interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            cli._run_mission(object(), object(), "Tai", "cyan")
+        assert capsys.readouterr().err == ""
+
+    def test_the_clause_no_longer_tells_a_consumer_to_scrub_it_itself(self):
+        """The contract is data, and this is the datum that changed."""
+        clause = c.EXIT_CONTRACT["diagnostic"]
+        assert "SCRUBBED BEFORE IT IS WRITTEN" in clause
+        assert "<home>" in clause and "<redacted:NAME>" in clause
+        assert "CARRIES ABSOLUTE PATHS" not in clause
+
+    def test_the_page_a_person_reads_says_the_same(self):
+        text = CONTRACT_MD.read_text()
+        assert "scrubbed before it is written" in text
+        assert "carries absolute paths from this host" not in text

@@ -482,9 +482,14 @@ web-searched `#2` literally while the list sat two lines up in the prompt.
   and the exit status is still the signal's rather than a spurious clean exit. A
   consumer that asked a turn to wind up sees it wound up.
 * **stderr carries the diagnostic**, and its tail is what to show when a mission
-  produced no events or stopped without an answer. It is a traceback and it
-  **carries absolute paths from that host**. Scrub it before anybody but an
-  operator sees it.
+  produced no events or stopped without an answer. It is a traceback, and the
+  harness **scrubs it before writing it** — home directories, that host's name,
+  credentials held in its environment and absolute frame paths become `<home>`,
+  `<host>`, `<cwd>`, `<site-packages>`, `<stdlib>` and `<redacted:NAME>`, by the
+  same `core.redact` pass that every free-text field on the stream goes through.
+  A platform may show it to somebody who is not an operator, and does not need a
+  location sweep of its own. `tool_result.output` and `arguments` are
+  deliberately left alone: they are the evidence and the call.
 
 ---
 

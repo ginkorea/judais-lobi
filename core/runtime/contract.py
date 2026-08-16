@@ -317,9 +317,18 @@ EXIT_CONTRACT: Mapping[str, str] = MappingProxyType({
     "diagnostic": (
         "stderr carries the diagnostic. Its tail is what a consumer shows when "
         "a mission produced no events, or produced events and then stopped "
-        "without an answer. It is a traceback and it CARRIES ABSOLUTE PATHS "
-        "FROM THIS HOST; a consumer that shows it to anybody but an operator "
-        "must scrub it first."),
+        "without an answer. It is a traceback, and it is SCRUBBED BEFORE IT IS "
+        "WRITTEN: home directories, this host's name, credentials held in this "
+        "process's environment and absolute frame paths are replaced with "
+        "stable tokens — `<home>`, `<host>`, `<cwd>`, `<site-packages>`, "
+        "`<stdlib>`, `<redacted:NAME>` — by `core.redact`, the same redactor "
+        "every free-text field on the event stream (`error`, `problem`, "
+        "`reason`, `text`, `caveat`, `detail`, `unsupported`) passes through. "
+        "So a consumer may show it to somebody who is not an operator. It is "
+        "still a traceback: prose for a person, never a machine channel. "
+        "`tool_result.output` and `arguments` are deliberately NOT scrubbed — "
+        "they are the evidence and the call, and the mission store holds the "
+        "same bytes."),
 })
 
 

@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from core import redact
 from core.contracts.schemas import PolicyPack
 from core.runtime import contract
 from core.runtime.context_window import ContextConfig, MissionWindow
@@ -1133,3 +1134,234 @@ class TestGroundingStillSeesEveryResult:
         )
         runner.run("go")
         assert len(runner.store.evidence_texts()) == 6
+
+
+# ---------------------------------------------------------------------------
+# What a mission says about the host it ran on
+# ---------------------------------------------------------------------------
+
+LEAK_PATH = "/home/testuser/data/mission.log"
+LEAK_TOKEN = "hunter2-hunter2-hunter2"
+
+
+@pytest.fixture
+def leaky_env(monkeypatch):
+    """A credential this process holds, so the redactor can name it."""
+    monkeypatch.setenv("MISSION_API_KEY", LEAK_TOKEN)
+    return "MISSION_API_KEY"
+
+
+@pytest.fixture
+def leaky_bus():
+    """A tool that succeeds, cites an identifier, and warns in a leaky way.
+
+    Both halves on one result on purpose: the warning is the free text that
+    must be scrubbed and the output is the evidence that must not be, and a
+    fixture that separated them could not show that the two are decided
+    differently on the same record.
+    """
+    b = ToolBus(capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])))
+    b.register(
+        ToolDescriptor(tool_name="catalog.search", description="Search."),
+        lambda **_kw: (0, "asset.5f21c9 — Taiwan narrative corpus",
+                       f"warn: cache {LEAK_PATH} unreadable, key {LEAK_TOKEN}"),
+    )
+    return b
+
+
+@pytest.fixture
+def raising_bus():
+    """A tool that throws.  ``ToolBus.dispatch`` renders the exception into
+    ``stderr`` and the loop puts that on ``tool_result.error`` — the shortest
+    path there is from an exception to somebody's browser."""
+    b = ToolBus(capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])))
+
+    def explode(**_kw):
+        raise RuntimeError(f"cannot open {LEAK_PATH} with key {LEAK_TOKEN}")
+
+    b.register(ToolDescriptor(tool_name="catalog.search", description="Search."),
+               explode)
+    return b
+
+
+class TestTheStreamDoesNotNameTheHost:
+    """``EXIT_CONTRACT["diagnostic"]`` used to warn a consumer that what this
+    harness writes carries absolute paths from this host, and TAIPAN's
+    location sweep was deferred on the strength of that sentence.  The
+    redactor at ``_emit`` is what makes it false.
+    """
+
+    def test_a_tools_error_reaches_the_stream_scrubbed(self, leaky_bus, leaky_env):
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search"),
+                          '{"answer": "The corpus is asset.5f21c9."}'),
+            leaky_bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        error = next(r for r in events if r["event"] == "tool_result")["error"]
+        assert "<home>/data/mission.log" in error
+        assert f"<redacted:{leaky_env}>" in error
+
+    def test_neither_raw_value_appears_anywhere_on_the_stream(
+            self, leaky_bus, leaky_env):
+        """Anywhere: the point of scrubbing at the emitter rather than at the
+        one field somebody remembered is that there is no second copy."""
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search"),
+                          '{"answer": "The corpus is asset.5f21c9."}'),
+            leaky_bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        whole = json.dumps(events)
+        assert LEAK_PATH not in whole
+        assert LEAK_TOKEN not in whole
+
+    def test_the_evidence_on_the_stream_is_still_the_evidence(
+            self, leaky_bus, leaky_env, strict):
+        """``output`` is what the grounding validator checked the answer
+        against, out of the store.  A scrubbed stream copy would put a pane
+        and the store into disagreement about the bytes a mission was given,
+        so the answer's identifier survives on the record a watcher reads.
+        """
+        events = []
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.search"),
+                          '{"answer": "The corpus is asset.5f21c9."}'),
+            leaky_bus, ["catalog.search"], validator=strict,
+            observer=events.append,
+        ).run("go")
+        assert transcript.outcome == "answered"
+        assert transcript.grounding.grounded
+        result = next(r for r in events if r["event"] == "tool_result")
+        assert result["output"] == "asset.5f21c9 — Taiwan narrative corpus"
+        assert "asset.5f21c9" in next(
+            r for r in events if r["event"] == "answer")["text"]
+
+    def test_an_exception_rendered_into_a_result_is_scrubbed_too(
+            self, raising_bus, leaky_env):
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search"), '{"answer": "gave up"}'),
+            raising_bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        error = next(r for r in events if r["event"] == "tool_result")["error"]
+        assert error.startswith("Tool execution error: RuntimeError:")
+        assert "<home>/data/mission.log" in error
+        assert LEAK_TOKEN not in error
+
+    def test_an_answer_that_is_really_an_error_is_scrubbed(self, bus, leaky_env):
+        """Nothing stops a model putting what it was shown into ``answer``,
+        and on the failure path what it was shown is an error."""
+        events = []
+        MissionRunner(
+            ScriptedModel(json.dumps(
+                {"answer": f"the run failed: {LEAK_PATH} ({LEAK_TOKEN})"})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        text = next(r for r in events if r["event"] == "answer")["text"]
+        assert text == (
+            f"the run failed: <home>/data/mission.log (<redacted:{leaky_env}>)")
+
+    def test_a_refusal_quoting_the_model_is_scrubbed(self, bus, leaky_env):
+        """``reply_rejected`` quotes back the tool name the model wrote, and
+        the name a model writes is model prose — a path-shaped one goes
+        straight onto the stream on both ``problem`` and ``tool``.  That is
+        why ``tool`` is scrubbed as well: on every other event it is a name
+        the bus resolved and scrubbing is a no-op, and on this one it was
+        never validated at all."""
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call(LEAK_PATH), '{"answer": "sorry"}'),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        rejected = next(r for r in events if r["event"] == "reply_rejected")
+        assert "<home>/data/mission.log" in rejected["problem"]
+        assert rejected["tool"] == "<home>/data/mission.log"
+        assert LEAK_PATH not in json.dumps(events)
+
+    def test_a_resolved_tool_name_is_unchanged_by_being_scrubbed(self, bus):
+        """The other side of that decision: a real catalogue name has no path,
+        no host and no credential in it, so a consumer still matches ``tool``
+        against ``catalogue``."""
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search"), '{"answer": "done"}'),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        assert next(r for r in events
+                    if r["event"] == "tool_call")["tool"] == "catalog.search"
+        assert "catalog.search" in next(
+            r for r in events if r["event"] == "mission_started")["catalogue"]
+
+    def test_the_transcript_the_caller_holds_is_not_rewritten(
+            self, leaky_bus, leaky_env):
+        """Redaction is about what leaves the process, not about what the
+        mission knows.  A library caller in the same trust domain as the
+        harness still gets the real message off ``MissionStep.error``."""
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.search"), '{"answer": "done"}'),
+            leaky_bus, ["catalog.search"],
+        ).run("go")
+        assert LEAK_PATH in transcript.steps[0].error
+
+
+class TestEveryStringOnTheStreamIsClassified:
+    """The scrubbed/verbatim split is a decision per field, and a field on
+    neither list is scrubbed by nobody — silently, and only until somebody
+    puts an exception in it.  Read off a real run rather than off the two
+    frozensets, so a field added to an emitter and to neither list fails here.
+    """
+
+    #: The one string a record carries that is neither error text nor
+    #: evidence: the record type itself, which is the contract's vocabulary.
+    ALLOWED = {"event"}
+
+    def _stream(self, leaky_bus, strict):
+        """Two runs, because one cannot reach every record: the gate ends the
+        mission where it fires, so a run that is gated never answers and a run
+        that answers was never gated."""
+        events = []
+        MissionRunner(
+            ScriptedModel("not json",
+                          tool_call("catalog.search"),
+                          tool_call("nosuchtool"),
+                          '{"answer": "asset.5f21c9 is unsupported by 3.14159"}'),
+            leaky_bus, ["catalog.search"], validator=strict,
+            observer=events.append, max_steps=6,
+        ).run("go")
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.gated")),
+            leaky_bus, ["catalog.search", "catalog.gated"],
+            gated=["catalog.gated"], observer=events.append, max_steps=6,
+        ).run("go")
+        return events
+
+    def _unclassified(self, value, key=None):
+        if isinstance(value, str):
+            if key in redact.SCRUBBED_FIELDS or key in redact.VERBATIM_FIELDS:
+                return []
+            return [] if key in self.ALLOWED else [key]
+        if isinstance(value, dict):
+            found = []
+            for name, item in value.items():
+                if name in redact.VERBATIM_FIELDS:
+                    continue
+                found += self._unclassified(item, name)
+            return found
+        if isinstance(value, list):
+            found = []
+            for item in value:
+                found += self._unclassified(item, key)
+            return found
+        return []
+
+    def test_a_rich_run_carries_no_unclassified_string(self, leaky_bus, strict):
+        events = self._stream(leaky_bus, strict)
+        kinds = {r["event"] for r in events}
+        # The run has to actually reach the interesting records, or this
+        # passes by not looking at anything.
+        assert {"reply_rejected", "tool_result", "gate_requested",
+                "grounding"} <= kinds
+        unclassified = sorted(set(sum(
+            (self._unclassified(r) for r in events), [])))
+        assert unclassified == [], unclassified
