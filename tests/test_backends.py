@@ -58,7 +58,119 @@ class TestOpenAIBackend:
         assert caps.supports_tool_calls is True
 
 
+class _StubResponse:
+    """The parts of ``httpx.Response`` this backend touches.
+
+    ``closed`` is the interesting field: a streamed response that nobody
+    closes is the leak this stub exists to catch.
+    """
+
+    def __init__(self, status_code=200, payload=None, lines=(), text=""):
+        self.status_code = status_code
+        self._payload = payload
+        self._lines = list(lines)
+        self.text = text
+        self.closed = False
+        self.reads = 0
+        self.request = None
+
+    def read(self):
+        self.reads += 1
+        return b""
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
+
+    def iter_lines(self):
+        yield from self._lines
+
+
+class _StubStream:
+    """What ``client.stream(...)`` returns: a context manager, entered once."""
+
+    def __init__(self, response):
+        self.response = response
+        self.entered = False
+
+    def __enter__(self):
+        self.entered = True
+        return self.response
+
+    def __exit__(self, *exc_info):
+        self.response.closed = True
+        return False
+
+
+class _RecordingClient:
+    """An httpx-shaped stub that records how it was called.
+
+    Every keyword the backend sends is kept, because the point of most of
+    these tests is *what was in the request* — the header, the timeout —
+    not what came back.
+    """
+
+    def __init__(self, response=None, stream_response=None):
+        self.response = response
+        self.stream_response = stream_response
+        self.calls = []
+        self.streams = []
+
+    def post(self, url, *, headers, json, timeout):
+        self.calls.append({"url": url, "headers": headers, "json": json,
+                           "timeout": timeout})
+        return self.response
+
+    def stream(self, method, url, *, headers, json, timeout):
+        self.calls.append({"method": method, "url": url, "headers": headers,
+                           "json": json, "timeout": timeout})
+        stream = _StubStream(self.stream_response)
+        self.streams.append(stream)
+        return stream
+
+
+def _sse(*pieces):
+    """SSE frames carrying one content delta each, then ``[DONE]``."""
+    import json as _json
+
+    lines = ["data: " + _json.dumps({"choices": [{"delta": {"content": p}}]})
+             for p in pieces]
+    return [*lines, "", "data: [DONE]"]
+
+
+@pytest.fixture
+def no_subprocess(monkeypatch):
+    """Record any attempt to spawn a process, and refuse it.
+
+    The backend used to run ``curl -H "Authorization: Bearer <key>"``, which
+    put the key in ``ps`` for every user on the host. Recording the argv
+    rather than only blocking it lets a test assert the stronger thing: not
+    just that nothing was spawned, but that the key is in no argument list
+    anywhere.
+    """
+    import subprocess
+
+    attempts = []
+
+    def refuse(cmd, *a, **kw):
+        attempts.append(cmd)
+        raise AssertionError(f"a process was spawned: {cmd!r}")
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    monkeypatch.setattr(subprocess, "call", refuse)
+    monkeypatch.setattr(subprocess, "check_output", refuse)
+    return attempts
+
+
 class TestMistralBackend:
+    KEY = "test-key"
+
+    def _backend(self, monkeypatch, client):
+        monkeypatch.setenv("MISTRAL_API_KEY", self.KEY)
+        return MistralBackend(client=client)
+
     def test_missing_key_raises(self):
         with pytest.raises(RuntimeError, match="Missing MISTRAL_API_KEY"):
             MistralBackend()
@@ -70,6 +182,220 @@ class TestMistralBackend:
         assert caps.supports_streaming is True
         assert caps.supports_json_mode is True
         assert caps.supports_tool_calls is False
+
+    def test_construction_contacts_nothing(self, monkeypatch):
+        """No socket at construction: a CLI must start with the net down."""
+        client = _RecordingClient()
+        self._backend(monkeypatch, client)
+        assert client.calls == []
+
+    # ── the key is not an argument ───────────────────────────────────────
+
+    def test_no_process_is_spawned(self, monkeypatch, no_subprocess):
+        """Neither path shells out — the curl wrapper is gone."""
+        client = _RecordingClient(
+            response=_StubResponse(payload={
+                "choices": [{"message": {"content": "hi"}}]}),
+            stream_response=_StubResponse(lines=_sse("a")),
+        )
+        backend = self._backend(monkeypatch, client)
+        backend.chat("codestral-latest", [{"role": "user", "content": "x"}])
+        list(backend.chat("codestral-latest", [{"role": "user", "content": "x"}],
+                          stream=True))
+        assert no_subprocess == []
+
+    def test_key_rides_a_header_and_no_argv(self, monkeypatch, no_subprocess):
+        client = _RecordingClient(
+            response=_StubResponse(payload={
+                "choices": [{"message": {"content": "hi"}}]}))
+        backend = self._backend(monkeypatch, client)
+        backend.chat("codestral-latest", [{"role": "user", "content": "x"}])
+
+        headers = client.calls[0]["headers"]
+        assert headers["Authorization"] == f"Bearer {self.KEY}"
+        # ...and nowhere else. Every argv the process tried to build (none)
+        # is searched for the key, so this fails the moment one appears.
+        flattened = " ".join(str(a) for a in no_subprocess)
+        assert self.KEY not in flattened
+
+    def test_no_temp_file_is_written(self, monkeypatch):
+        """The prompt never lands on disk; the body goes from memory."""
+        import tempfile
+
+        def refuse(*a, **kw):
+            raise AssertionError("a temp file was created")
+
+        monkeypatch.setattr(tempfile, "NamedTemporaryFile", refuse)
+        monkeypatch.setattr(tempfile, "mkstemp", refuse)
+        client = _RecordingClient(
+            response=_StubResponse(payload={
+                "choices": [{"message": {"content": "hi"}}]}),
+            stream_response=_StubResponse(lines=_sse("a")),
+        )
+        backend = self._backend(monkeypatch, client)
+        assert backend.chat("m", [{"role": "user", "content": "x"}]) == "hi"
+        assert len(list(backend.chat("m", [{"role": "user", "content": "x"}],
+                                     stream=True))) == 1
+
+    # ── the request is bounded ───────────────────────────────────────────
+
+    def test_a_timeout_is_sent_on_both_paths(self, monkeypatch):
+        from core.runtime.backends.mistral_backend import CHAT_TIMEOUT
+
+        client = _RecordingClient(
+            response=_StubResponse(payload={"choices": []}),
+            stream_response=_StubResponse(lines=_sse("a")),
+        )
+        backend = self._backend(monkeypatch, client)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+
+        assert [c["timeout"] for c in client.calls] == [CHAT_TIMEOUT, CHAT_TIMEOUT]
+        assert 0 < CHAT_TIMEOUT < float("inf")
+
+    def test_timeout_is_the_local_backend_policy(self):
+        """One owner: the two HTTP backends do not drift on how long to wait."""
+        from core.runtime.backends import local_backend, mistral_backend
+
+        assert mistral_backend.CHAT_TIMEOUT is local_backend.CHAT_TIMEOUT
+        assert mistral_backend.CONNECT_RETRIES is LocalBackend.CONNECT_RETRIES
+
+    # ── non-streaming ────────────────────────────────────────────────────
+
+    def test_non_streaming_returns_content(self, monkeypatch):
+        client = _RecordingClient(response=_StubResponse(payload={
+            "choices": [{"message": {"content": "hello from mistral"}}]}))
+        backend = self._backend(monkeypatch, client)
+        out = backend.chat("m", [{"role": "user", "content": "x"}])
+        assert out == "hello from mistral"
+        assert client.calls[0]["json"]["stream"] is False
+
+    def test_empty_model_defaults_to_codestral(self, monkeypatch):
+        client = _RecordingClient(response=_StubResponse(payload={"choices": []}))
+        backend = self._backend(monkeypatch, client)
+        backend.chat("", [{"role": "user", "content": "x"}])
+        assert client.calls[0]["json"]["model"] == "codestral-latest"
+
+    def test_extra_kwargs_reach_the_body(self, monkeypatch):
+        """`UnifiedClient.chat` forwards **kwargs; the curl version had none."""
+        client = _RecordingClient(response=_StubResponse(payload={"choices": []}))
+        backend = self._backend(monkeypatch, client)
+        backend.chat("m", [{"role": "user", "content": "x"}], max_tokens=7)
+        assert client.calls[0]["json"]["max_tokens"] == 7
+
+    def test_non_2xx_raises_with_the_body(self, monkeypatch):
+        import httpx
+
+        client = _RecordingClient(response=_StubResponse(
+            status_code=401, payload={"message": "Unauthorized"}))
+        backend = self._backend(monkeypatch, client)
+        with pytest.raises(httpx.HTTPStatusError) as exc:
+            backend.chat("m", [{"role": "user", "content": "x"}])
+        # The curl version returned this string AS THE ASSISTANT'S REPLY.
+        assert "401" in str(exc.value)
+        assert "Unauthorized" in str(exc.value)
+
+    def test_non_2xx_raises_in_stream_mode_too(self, monkeypatch):
+        import httpx
+
+        response = _StubResponse(status_code=429, payload={"message": "slow down"})
+        client = _RecordingClient(stream_response=response)
+        backend = self._backend(monkeypatch, client)
+        with pytest.raises(httpx.HTTPStatusError, match="slow down"):
+            list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert response.closed is True
+
+    # ── streaming ────────────────────────────────────────────────────────
+
+    def test_stream_yields_deltas(self, monkeypatch):
+        response = _StubResponse(lines=_sse("he", "llo"))
+        client = _RecordingClient(stream_response=response)
+        backend = self._backend(monkeypatch, client)
+        chunks = list(backend.chat("m", [{"role": "user", "content": "x"}],
+                                   stream=True))
+        assert [c.choices[0].delta.content for c in chunks] == ["he", "llo"]
+        assert client.calls[0]["method"] == "POST"
+        assert client.calls[0]["json"]["stream"] is True
+
+    def test_stream_closes_when_exhausted(self, monkeypatch):
+        response = _StubResponse(lines=_sse("a"))
+        client = _RecordingClient(stream_response=response)
+        backend = self._backend(monkeypatch, client)
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert response.closed is True
+
+    def test_stream_closes_when_the_consumer_walks_away(self, monkeypatch):
+        """The defect this rewrite exists for.
+
+        The old generator released its temp file *after* the loop, so a
+        consumer that stopped early — a ``break``, an exception in the render
+        loop, a dropped reference — leaked the file holding the whole prompt.
+        Whatever the resource is, abandonment must release it.
+        """
+        response = _StubResponse(lines=_sse("a", "b", "c"))
+        client = _RecordingClient(stream_response=response)
+        backend = self._backend(monkeypatch, client)
+
+        chunks = backend.chat("m", [{"role": "user", "content": "x"}], stream=True)
+        assert next(chunks).choices[0].delta.content == "a"
+        assert response.closed is False
+        chunks.close()
+        assert response.closed is True
+
+    def test_stream_closes_when_the_consumer_is_garbage_collected(self, monkeypatch):
+        import gc
+
+        response = _StubResponse(lines=_sse("a", "b"))
+        client = _RecordingClient(stream_response=response)
+        backend = self._backend(monkeypatch, client)
+
+        chunks = backend.chat("m", [{"role": "user", "content": "x"}], stream=True)
+        next(chunks)
+        del chunks
+        gc.collect()
+        assert response.closed is True
+
+    def test_nothing_is_sent_until_the_stream_is_iterated(self, monkeypatch):
+        """Lazy, as the curl generator was: `chat()` alone opens nothing."""
+        client = _RecordingClient(stream_response=_StubResponse(lines=_sse("a")))
+        backend = self._backend(monkeypatch, client)
+        backend.chat("m", [{"role": "user", "content": "x"}], stream=True)
+        assert client.calls == []
+
+    # ── connect retry ────────────────────────────────────────────────────
+
+    def test_a_refused_connect_is_retried_then_succeeds(self, monkeypatch):
+        import httpx
+        from core.runtime.backends.mistral_backend import CONNECT_RETRIES
+
+        waits = []
+        monkeypatch.setattr(
+            "core.runtime.backends.mistral_backend.time.sleep", waits.append)
+        client = _RecordingClient()
+        backend = self._backend(monkeypatch, client)
+        attempts = []
+
+        def post(url, **kw):
+            attempts.append(url)
+            if len(attempts) < 3:
+                raise httpx.ConnectError("refused")
+            return _StubResponse(payload={"choices": [{"message": {"content": "ok"}}]})
+
+        monkeypatch.setattr(client, "post", post)
+        assert backend.chat("m", [{"role": "user", "content": "x"}]) == "ok"
+        assert len(attempts) == 3
+        assert waits == list(CONNECT_RETRIES[:2])
+
+    def test_a_status_error_is_never_resent(self, monkeypatch):
+        """The provider ANSWERED — resending would bill for it twice."""
+        import httpx
+
+        client = _RecordingClient(response=_StubResponse(
+            status_code=500, payload={"message": "boom"}))
+        backend = self._backend(monkeypatch, client)
+        with pytest.raises(httpx.HTTPStatusError):
+            backend.chat("m", [{"role": "user", "content": "x"}])
+        assert len(client.calls) == 1
 
 
 class TestLocalBackend:
