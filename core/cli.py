@@ -293,6 +293,32 @@ def _load_history(args):
         raise SystemExit(f"--history: {path}: {exc}")
 
 
+def _mission_protocol(args) -> str:
+    """``"json"`` or ``"native"``, or a refusal naming the two words.
+
+    Empty — the flag's default, and what an unset ``MISSION_PROTOCOL``
+    leaves — means ``json``, and it means it *here* rather than in the
+    parser on purpose: ``--resume`` has to tell "nobody said" from
+    "somebody said json", because a resumed run takes its protocol off its
+    own record and a flag defaulting to a word would refuse every native
+    resume that did not restate it.
+
+    A word that is neither is a :class:`SystemExit` and not a fallback. A
+    typo silently read as the default would run the protocol the operator
+    did not ask for and file the result under the one they did.
+    """
+    from core.runtime.mission import JSON_PROTOCOL, PROTOCOLS
+
+    wanted = (getattr(args, "protocol", "") or "").strip().lower()
+    if not wanted:
+        return JSON_PROTOCOL
+    if wanted not in PROTOCOLS:
+        raise SystemExit(
+            f"--protocol: {wanted!r} is not a protocol this harness speaks. "
+            f"Choose one of: {', '.join(PROTOCOLS)}.")
+    return wanted
+
+
 def _mission_tools(manifest, discovered, style, bus=None):
     """The mission's tool subset: the skill's closed set, or everything.
 
@@ -416,7 +442,10 @@ def _mission(elf, args, name, style):
     )
     from core.runtime.context_window import MissionWindow
     from core.runtime.grounding import GroundingConfig, GroundingValidator
-    from core.runtime.mission import AWAITING_APPROVAL, CANCELLED, MissionRunner
+    from core.runtime.mission import (
+        ANSWER_FUNCTION, AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL,
+        NATIVE_PROTOCOL, MissionRunner,
+    )
     from core.runtime.mission_stream import (
         close_on_sigterm, exit_as_signalled, open_sink,
     )
@@ -429,6 +458,10 @@ def _mission(elf, args, name, style):
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
     manifest = _load_skill(args)
+    # The word, validated at the door; whether this run may speak it is
+    # settled below, once `--resume` has had its say about which protocol
+    # the run actually is.
+    protocol = _mission_protocol(args)
     # Read and validated BEFORE the connection, like the grounding grammar
     # below: a malformed history is a refusal at the door, not a mission
     # that runs to completion answering questions nobody quite asked.
@@ -495,13 +528,21 @@ def _mission(elf, args, name, style):
         # is the objective mismatch: a resume of the wrong run looks
         # exactly like a run continuing.
         try:
-            recorded = open_for_resume(run_store, resume_id,
-                                       objective=args.message)
+            recorded = open_for_resume(
+                run_store, resume_id, objective=args.message,
+                # What was TYPED, not what `_mission_protocol` resolved: an
+                # unstated protocol takes the run's own, and the door
+                # refuses only a stated one that disagrees with the record.
+                protocol=(getattr(args, "protocol", "") or "").strip().lower())
         except ResumeRefused as exc:
             raise SystemExit(f"--resume: {exc}")
         run_id = recorded.run_id
         objective = recorded.objective
         max_steps = recorded.total_steps(args.mission_steps)
+        # The run's, not this command line's. The replay rebuilds the
+        # model's own turns in the shape they were made in, and the loop
+        # about to send them has to be reading that shape back.
+        protocol = recorded.protocol
         console.print(
             f"⏩ resume: {run_id} — {recorded.spent_steps} step(s) already "
             f"recorded, {max_steps} total for this run"
@@ -527,6 +568,42 @@ def _mission(elf, args, name, style):
             f"transcript and cannot be replayed or resumed. Unset "
             f"{RUNS_ENV} (or point it at a path) to restore the default",
             style="yellow",
+        )
+
+    # WHETHER THIS BACKEND CAN SPEAK IT, before anything is dialled and
+    # before the model is asked. The native protocol is nothing but two
+    # capabilities — the tools declared as functions, and a decoder
+    # constrained to them — so a backend that does not have them cannot
+    # run it, and a mission that asked for the constrained decoder and
+    # silently got prose would be MEASURED as the protocol it was not
+    # running. That is the one outcome an experiment must not produce, so
+    # this is a refusal naming both the capability and the way out, and
+    # never a downgrade. Read through `getattr` with False defaults, like
+    # every other capability question here: a library caller may hand
+    # `Agent` any client, and one that never heard of capabilities has not
+    # declared these.
+    native = protocol == NATIVE_PROTOCOL
+    if native:
+        capabilities = getattr(elf.client, "capabilities", None)
+        missing = [capability for capability in ("supports_tool_calls",
+                                                 "supports_tool_choice_required")
+                   if not getattr(capabilities, capability, False)]
+        if missing:
+            raise SystemExit(
+                f"--protocol {NATIVE_PROTOCOL}: this backend "
+                f"({getattr(elf.client, 'provider', '?')} / {elf.model}) "
+                f"does not declare {' and '.join(missing)}. Run with "
+                f"--protocol {JSON_PROTOCOL} — the default, and what every "
+                f"mission ran under until now — or point --provider at a "
+                f"backend that declares them.")
+        console.print(
+            f"🔤 protocol: {NATIVE_PROTOCOL} — the tools are declared as "
+            f"functions and every reply is a call to one of them; finishing "
+            f"is a call to mission_answer. A reply that does not parse and a "
+            f"tool name nobody offers are unrepresentable rather than "
+            f"caught, and arguments are checked against each tool's own "
+            f"schema before it is dispatched",
+            style=style,
         )
 
     # Every mission closes the logs of the runs nobody else will. A run
@@ -659,7 +736,25 @@ def _mission(elf, args, name, style):
         # backend renders any native tool_call back into that shape. So this
         # changes what the SERVER is told, not what the kernel understands.
         extra = dict(sampling)
-        if declared and getattr(elf.client, "supports_tool_calls", True):
+        if native:
+            # THE OTHER PROTOCOL, and it is entirely a property of this
+            # request. `tool_choice="required"` is what makes a reply that
+            # does not parse and a tool name nobody offers unrepresentable
+            # rather than caught; `mission_answer` is declared beside the
+            # real tools because under `required` the model has no other
+            # way to say it is finished. The store's read tool is picked up
+            # from the bus the same way everything else is — it registers
+            # itself for the length of the run, so `_function_schemas`
+            # returns it while the loop is running and nothing here has to
+            # know when.
+            extra.update({
+                "tools": [*declared,
+                          *_function_schemas([RESULT_TOOL]),
+                          ANSWER_FUNCTION],
+                "tool_choice": "required",
+                "parallel_tool_calls": True,
+            })
+        elif declared and getattr(elf.client, "supports_tool_calls", True):
             extra.update({"tools": declared, "tool_choice": "auto"})
         return elf.client.chat(model=elf.model, messages=messages,
                                stream=False, **extra)
@@ -680,6 +775,16 @@ def _mission(elf, args, name, style):
         # library caller may hand `Agent` a client that never heard of
         # usage, and a mission must not need one to run.
         return getattr(elf.client, "last_usage", None)
+
+    def tool_calls_fn():
+        # The second side channel beside `chat`, read the same way and for
+        # the same reason: under the native protocol the decision is not in
+        # the string `chat` returns, it is in the provider's `tool_calls`,
+        # and `chat` cannot also return a list without breaking every
+        # caller of it. Copied out rather than handed over — the backend
+        # clears its own on the next call, and the loop is entitled to a
+        # list that does not change underneath it.
+        return list(getattr(elf.client, "last_tool_calls", []) or [])
 
     # Read once, here, where a deployment's provider and model are already
     # in hand. There is no price list in this repository and there must not
@@ -911,6 +1016,8 @@ def _mission(elf, args, name, style):
                     run_store=run_store,
                     run_id=run_id,
                     usage_fn=usage_fn,
+                    tool_calls_fn=tool_calls_fn,
+                    protocol=protocol,
                     rate=rate,
                     deadline=deadline,
                     cancel=cancel,
@@ -930,6 +1037,8 @@ def _mission(elf, args, name, style):
                     run_store=run_store,
                     run_id=run_id,
                     usage_fn=usage_fn,
+                    tool_calls_fn=tool_calls_fn,
+                    protocol=protocol,
                     rate=rate,
                     deadline=deadline,
                     cancel=cancel,
@@ -982,10 +1091,19 @@ def _mission(elf, args, name, style):
             )
 
     for step in transcript.steps:
-        if step.tool:
-            mark = "⚠️" if step.refused else "🔧"
-            cut = f" [truncated → {step.handle}]" if step.truncated else ""
-            console.print(f"{mark} {step.tool}({step.arguments}){cut}", style=style)
+        # A turn's calls, and a JSON-protocol turn IS its call — so the
+        # step stands in for a one-element list of itself and the two
+        # protocols print through one loop. `step.calls` is empty on every
+        # JSON run, which is why this line changes nothing about what an
+        # operator has always seen; a native turn that dispatched three
+        # tools prints three lines instead of hiding two of them.
+        for call in step.calls or ([step] if step.tool else []):
+            mark = "⚠️" if call.refused else "🔧"
+            cut = f" [truncated → {call.handle}]" if call.truncated else ""
+            console.print(f"{mark} {call.tool}({call.arguments}){cut}",
+                          style=style)
+            if call is not step and call.error:
+                console.print(f"   {scrub(call.error)}", style="yellow")
         if step.error:
             console.print(f"   {scrub(step.error)}", style="yellow")
 
@@ -1199,6 +1317,25 @@ def _main(AgentClass):
                         help="Sampling seed for a mission, where the server "
                              "honours one. Unset sends none. NOT a determinism "
                              "guarantee: a batching server can still vary")
+    # Default "" and not "json", deliberately: `--resume` has to be able to
+    # tell "nobody said" from "somebody said json". See `_mission_protocol`.
+    parser.add_argument("--protocol", type=str,
+                        default=os.getenv("MISSION_PROTOCOL", ""),
+                        metavar="json|native",
+                        help="How the model is asked to decide. 'json' (the "
+                             "default) is one JSON object per reply, parsed "
+                             "here. 'native' declares the mission's tools as "
+                             "functions, declares a mission_answer function "
+                             "beside them, and asks the server for "
+                             "tool_choice=required — so a reply that does not "
+                             "parse and a tool name nobody offers become "
+                             "unrepresentable rather than caught, and one "
+                             "turn may call several tools. Refused at the "
+                             "door on a backend that does not declare "
+                             "supports_tool_calls and "
+                             "supports_tool_choice_required. Off by default "
+                             "until the eval harness has scored it "
+                             "(env: MISSION_PROTOCOL)")
     parser.add_argument("--skill", type=Path, default=_env_path("MISSION_SKILL"),
                         help="A SKILL.md manifest (or a directory holding one) "
                              "supplying the mission's closed tool set, its "

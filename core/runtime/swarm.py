@@ -84,9 +84,10 @@ from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
-    AWAITING_APPROVAL, CANCELLED, MissionRunner, MissionTranscript,
-    _finished_record, _grounding_record, _profile_field, _run_field,
-    audit_ref_of, persist_record, sandbox_of, validate_history,
+    AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL, MissionRunner,
+    MissionTranscript, _finished_record, _grounding_record, _profile_field,
+    _protocol_field, _run_field, audit_ref_of, persist_record, sandbox_of,
+    validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -410,6 +411,20 @@ class SwarmRunner:
         one place the arithmetic happens: a second accumulator is how the
         opening frame once carried six of ten grounding fields, and
         numbers are the half nobody notices is wrong.
+    protocol, tool_calls_fn:
+        As :class:`MissionRunner`'s, and handed down to every sub-mission
+        this builds: a rung's execution is an ordinary mission loop, and a
+        staged turn that spoke one protocol at the top and another
+        underneath would be a turn whose opening frame is false of most of
+        its records.
+
+        This runner's **own** calls do not use them.  The router, the
+        planner, each gate and the synthesizer go through
+        ``plain_chat_fn``, which deliberately declares no tools at all —
+        a harmony model handed a function namespace answers a yes/no
+        question with a tool call, which is the failure that function
+        exists to prevent, and ``tool_choice="required"`` would make it
+        compulsory.
     deadline:
         The **mission's** wall clock, one
         :class:`~core.budgets.Deadline` shared by triage, the planner,
@@ -454,6 +469,8 @@ class SwarmRunner:
         run_store: Optional[RunStore] = None,
         run_id: str = "",
         usage_fn: Optional[Callable[[], Any]] = None,
+        tool_calls_fn: Optional[Callable[[], Any]] = None,
+        protocol: str = JSON_PROTOCOL,
         rate: Optional[Rate] = None,
         deadline: Optional[Deadline] = None,
         cancel: Any = None,
@@ -492,6 +509,15 @@ class SwarmRunner:
         # is nothing there for a window to bound.
         self._window = window
         self._usage_fn = usage_fn
+        # Handed down to every MissionRunner this builds and used by
+        # nothing here. A rung's execution is an ordinary mission loop and
+        # speaks whichever protocol the turn was started with; this
+        # runner's OWN calls — the router, the planner, each gate, the
+        # synthesizer — go through `plain_chat_fn`, which declares no
+        # tools at all, because a yes/no question answered with a tool
+        # call is the failure that function exists to prevent.
+        self._tool_calls_fn = tool_calls_fn
+        self._protocol = protocol
         self._rate = rate
         # Replaced at the top of every `run`, so a runner used twice does
         # not report the first turn's tokens on the second.
@@ -746,6 +772,11 @@ class SwarmRunner:
             # same reason as `profile` below it: the route this turn took
             # must not be readable off the opening frame.
             **_run_field(self._run_id),
+            # Same OPTIONAL `protocol` field, from the same owner: absent
+            # on an ordinary run, `native` on one that declared its tools as
+            # functions. A staged turn's sub-missions speak whatever this
+            # says, so the opening frame is true of every step under it.
+            **_protocol_field(self._protocol),
             # Same OPTIONAL `profile` field the direct path's MissionRunner
             # emits, from the same owner — a consumer must not be able to tell
             # which route ran from the opening frame.
@@ -776,6 +807,8 @@ class SwarmRunner:
             observer=observer,
             window=self._window,
             usage_fn=self._usage_fn,
+            tool_calls_fn=self._tool_calls_fn,
+            protocol=self._protocol,
             rate=self._rate,
             ledger=self._ledger,
             # The mission's clock and the mission's switch, not a fresh
@@ -801,6 +834,8 @@ class SwarmRunner:
                       if self._recording else None),
             window=self._window,
             usage_fn=self._usage_fn,
+            tool_calls_fn=self._tool_calls_fn,
+            protocol=self._protocol,
             rate=self._rate,
             # THE SAME ledger, not a fresh one. The direct path's runner
             # emits this turn's `mission_finished` itself, and the router

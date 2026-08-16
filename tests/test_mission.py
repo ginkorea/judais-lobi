@@ -10,7 +10,10 @@ from core.runtime import contract
 from core.runtime.context_window import ContextConfig, MissionWindow
 from core.runtime.contract import conforms
 from core.runtime.grounding import GroundingConfig, GroundingValidator
-from core.runtime.mission import MissionRunner, MissionTranscript
+from core.runtime.mission import (
+    ANSWER_FUNCTION, ANSWER_TOOL, JSON_PROTOCOL, NATIVE_PROTOCOL, MissionCall,
+    MissionRunner, MissionTranscript,
+)
 from core.runtime.results import RESULT_TOOL
 from core.runtime.skills import SkillManifest
 from core.tools.bus import ToolBus
@@ -2720,3 +2723,625 @@ class TestTheRunIsResumed:
         ).run("go", self._resumption())
         assert [r["event"] for r in store.records(run_id)] == \
             ["mission_started", "step_started", "answer", "mission_finished"]
+
+
+# ---------------------------------------------------------------------------
+# The native protocol: the model calls a function instead of writing one
+# ---------------------------------------------------------------------------
+#
+# Everything above this line is the JSON protocol and stays exactly as it
+# was — which is itself asserted, near the bottom, because "byte for byte
+# the loop that has always run" is the promise `--protocol` is allowed to
+# exist on.
+
+
+def native_call(name, _id=None, **arguments):
+    """One entry of the side channel a backend fills, as it fills it."""
+    return {"id": _id or f"c_{name}", "name": name, "arguments": arguments}
+
+
+def answer_call(text, _id=None):
+    return native_call(ANSWER_TOOL, _id, text=text)
+
+
+class NativeModel:
+    """A server whose decoder was constrained: the reply IS the call.
+
+    Two channels, like the real one — ``chat`` returns whatever ``content``
+    the model wrote (usually nothing) and the calls arrive on the side
+    channel the backend clears per request.  Scripted as ``(content,
+    [calls])`` turns, or as one call, so a test says what a turn *was*
+    rather than what a string happened to parse into.
+    """
+
+    def __init__(self, *turns):
+        self.turns = [self._turn(turn) for turn in turns]
+        self.seen = []
+        self.last_tool_calls = []
+
+    @staticmethod
+    def _turn(turn):
+        if isinstance(turn, tuple):
+            return turn
+        if isinstance(turn, list):
+            return "", turn
+        return "", [turn]
+
+    def __call__(self, messages):
+        self.seen.append([dict(m) for m in messages])
+        content, calls = (self.turns.pop(0) if self.turns
+                          else ("", [answer_call("done")]))
+        self.last_tool_calls = list(calls)
+        return content
+
+    def tool_calls(self):
+        return list(self.last_tool_calls)
+
+
+def native_runner(bus, model, tools=("catalog.search", "catalog.get"),
+                  events=None, **kw):
+    kw.setdefault("store_tool", "")
+    return MissionRunner(
+        model, bus, list(tools), protocol=NATIVE_PROTOCOL,
+        tool_calls_fn=model.tool_calls,
+        observer=(events.append if events is not None else None), **kw)
+
+
+class TestTheNativeProtocolIsRefusedBeforeItCanMisbehave:
+    def test_a_word_that_is_neither_protocol_is_refused_at_construction(
+            self, bus):
+        with pytest.raises(ValueError) as exc:
+            MissionRunner(ScriptedModel(), bus, ["catalog.search"],
+                          protocol="functions")
+        assert "json" in str(exc.value) and "native" in str(exc.value)
+
+    def test_a_bus_tool_named_like_the_answer_function_is_refused(self):
+        """Under `tool_choice=required` finishing IS a call, so a tool of
+        that name would make finishing and calling it the same act."""
+        b = ToolBus(capability_engine=CapabilityEngine(
+            PolicyPack(allowed_scopes=["*"])))
+        b.register(ToolDescriptor(tool_name=ANSWER_TOOL, description="x"),
+                   lambda **kw: (0, "", ""))
+        with pytest.raises(ValueError) as exc:
+            MissionRunner(ScriptedModel(), b, [ANSWER_TOOL],
+                          protocol=NATIVE_PROTOCOL)
+        assert ANSWER_TOOL in str(exc.value)
+        assert f"--protocol {JSON_PROTOCOL}" in str(exc.value)
+
+    def test_the_same_tool_name_is_fine_under_the_json_protocol(self):
+        b = ToolBus(capability_engine=CapabilityEngine(
+            PolicyPack(allowed_scopes=["*"])))
+        b.register(ToolDescriptor(tool_name=ANSWER_TOOL, description="x"),
+                   lambda **kw: (0, "", ""))
+        assert MissionRunner(ScriptedModel(), b, [ANSWER_TOOL],
+                             store_tool="").offered == [ANSWER_TOOL]
+
+
+class TestTheNativeProtocolAnswers:
+    def test_one_answer_call_alone_is_the_answer(self, bus):
+        events = []
+        model = NativeModel(answer_call("the cable was cut"))
+        transcript = native_runner(bus, model, events=events).run("what?")
+        assert transcript.answer == "the cable was cut"
+        assert transcript.outcome == "answered"
+        assert [r["text"] for r in events if r["event"] == "answer"] == \
+            ["the cable was cut"]
+
+    def test_the_answer_goes_through_the_same_grounding_as_the_json_one(
+            self, asset_bus, strict):
+        """One owner for what an answer is worth. A native run whose caveat
+        path drifted from the JSON one would be two agents in one name."""
+        model = NativeModel(
+            native_call("catalog.get", asset_id="asset.5f21"),
+            answer_call("the asset is asset.9999"),
+            answer_call("the asset is asset.9999"))
+        transcript = native_runner(
+            asset_bus, model, tools=("catalog.get",), validator=strict,
+        ).run("go")
+        assert transcript.outcome == "answered_with_caveat"
+        assert transcript.grounding.repairs == 1
+
+    def test_a_repair_prompt_goes_back_as_a_tool_message(self, asset_bus,
+                                                         strict):
+        """An assistant turn that declared tool_calls followed by a `user`
+        message is a 400. Every declared call is answered — including the
+        answer call the validator refused."""
+        model = NativeModel(
+            native_call("catalog.get", asset_id="asset.5f21"),
+            answer_call("the asset is asset.9999", "ans-1"),
+            answer_call("the asset is asset.5f21"))
+        native_runner(asset_bus, model, tools=("catalog.get",),
+                      validator=strict).run("go")
+        repaired = model.seen[-1]
+        assert repaired[-1]["role"] == "tool"
+        assert repaired[-1]["tool_call_id"] == "ans-1"
+
+    def test_an_answer_call_with_no_text_is_rejected_naming_the_field(
+            self, bus):
+        events = []
+        model = NativeModel(native_call(ANSWER_TOOL, "a1"),
+                            answer_call("done"))
+        transcript = native_runner(bus, model, events=events).run("go")
+        rejected = [r for r in events if r["event"] == "reply_rejected"]
+        assert len(rejected) == 1
+        assert "'text'" in rejected[0]["problem"]
+        assert rejected[0]["tool"] == ANSWER_TOOL
+        assert transcript.answer == "done"
+
+    def test_two_answer_calls_are_refused_rather_than_the_first_one_taken(
+            self, bus):
+        events = []
+        model = NativeModel([answer_call("a", "x"), answer_call("b", "y")],
+                            answer_call("the real one"))
+        transcript = native_runner(bus, model, events=events).run("go")
+        problem = [r for r in events if r["event"] == "reply_rejected"][0]
+        assert "once, alone" in problem["problem"]
+        assert transcript.answer == "the real one"
+
+    def test_content_with_no_calls_at_all_is_read_as_the_answer(self, bus):
+        """Some servers answer in prose despite `required`, and prose that
+        says something is an answer: asking again spends a turn on text
+        already written."""
+        model = NativeModel(("the strait is quiet", []))
+        transcript = native_runner(bus, model).run("go")
+        assert transcript.answer == "the strait is quiet"
+        assert transcript.outcome == "answered"
+
+    def test_neither_calls_nor_content_is_a_rejection_that_says_what_to_do(
+            self, bus):
+        events = []
+        model = NativeModel(("", []), answer_call("ok"))
+        native_runner(bus, model, events=events).run("go")
+        problem = [r for r in events if r["event"] == "reply_rejected"][0]
+        assert ANSWER_TOOL in problem["problem"]
+        assert conforms(problem) == []
+
+
+class TestSeveralCallsInOneTurn:
+    def _two(self, bus, events, **kw):
+        model = NativeModel(
+            [native_call("catalog.search", "c0", q="cables"),
+             native_call("catalog.get", "c1", asset_id="a1")],
+            answer_call("both"))
+        return native_runner(bus, model, events=events, **kw).run("go"), model
+
+    def test_both_calls_are_dispatched_in_the_order_the_model_gave_them(
+            self, bus):
+        events = []
+        self._two(bus, events)
+        assert [r["tool"] for r in events if r["event"] == "tool_result"] == \
+            ["catalog.search", "catalog.get"]
+
+    def test_each_call_gets_its_own_pair_of_records(self, bus):
+        events = []
+        self._two(bus, events)
+        assert len([r for r in events if r["event"] == "tool_call"]) == 2
+        assert len([r for r in events if r["event"] == "tool_result"]) == 2
+
+    def test_the_ordinal_is_absent_on_the_first_and_present_after_it(self, bus):
+        """Absent on the first so a consumer written before this reads the
+        stream it always read."""
+        events = []
+        self._two(bus, events)
+        for event in ("tool_call", "tool_result"):
+            records = [r for r in events if r["event"] == event]
+            assert "call" not in records[0]
+            assert records[1]["call"] == 1
+
+    def test_both_pairs_carry_the_same_index_because_a_step_is_a_model_turn(
+            self, bus):
+        events = []
+        self._two(bus, events)
+        assert {r["index"] for r in events
+                if r["event"] in ("tool_call", "tool_result")} == {0}
+
+    def test_two_calls_are_one_step_and_the_budget_counts_model_turns(
+            self, bus):
+        events = []
+        transcript, _model = self._two(bus, events)
+        assert len(transcript.steps) == 2          # the calls, then the answer
+        assert len([r for r in events if r["event"] == "step_started"]) == 2
+        assert transcript.steps[0].index == 0
+        assert [c.tool for c in transcript.steps[0].calls] == \
+            ["catalog.search", "catalog.get"]
+
+    def test_the_ordinals_on_the_transcript_number_from_zero(self, bus):
+        transcript, _model = self._two(bus, [])
+        assert [c.ordinal for c in transcript.steps[0].calls] == [0, 1]
+        assert isinstance(transcript.steps[0].calls[0], MissionCall)
+
+    def test_every_record_of_a_multi_call_turn_conforms(self, bus):
+        events = []
+        self._two(bus, events)
+        assert [p for r in events for p in conforms(r)] == []
+        for record in events:
+            declared = (set(contract.FIELDS.get(record["event"], ()))
+                        | set(contract.OPTIONAL.get(record["event"], ())))
+            assert set(record) - {"event"} <= declared, record
+
+    def test_the_usage_of_the_turn_rides_the_first_record_only(self, bus):
+        """One model call, one cost. A consumer summing the per-record field
+        over a turn that dispatched twice must not be told it paid twice."""
+        events = []
+        self._two(bus, events, usage_fn=Meter(usage(11, 5)))
+        calls = [r for r in events if r["event"] == "tool_call"]
+        assert "usage" in calls[0] and "usage" not in calls[1]
+        assert calls[0]["usage"]["total_tokens"] == 16
+
+
+class TestTheWireShapeOfANativeTurn:
+    def _ran(self, bus):
+        model = NativeModel(
+            [native_call("catalog.search", "c0", q="x"),
+             native_call("catalog.get", "c1", asset_id="a1")],
+            answer_call("done"))
+        native_runner(bus, model).run("go")
+        return model
+
+    def test_the_model_reads_its_own_turn_back_as_tool_calls(self, bus):
+        assistant = self._ran(bus).seen[1][2]
+        assert assistant["role"] == "assistant"
+        assert [c["id"] for c in assistant["tool_calls"]] == ["c0", "c1"]
+        assert assistant["tool_calls"][0]["type"] == "function"
+        assert assistant["tool_calls"][0]["function"]["name"] == \
+            "catalog.search"
+        assert json.loads(
+            assistant["tool_calls"][0]["function"]["arguments"]) == {"q": "x"}
+
+    def test_every_result_comes_back_quoting_the_call_it_answers(self, bus):
+        results = [m for m in self._ran(bus).seen[1] if m["role"] == "tool"]
+        assert [m["tool_call_id"] for m in results] == ["c0", "c1"]
+        assert "Result of catalog.search (ok)" in results[0]["content"]
+
+    def test_a_reply_with_no_calls_carries_no_tool_calls_key(self, bus):
+        """An empty list is a different thing to some servers, and a reply
+        with no calls in it is the shape it always was.
+
+        Read off the turn AFTER a rejected empty reply, because that is the
+        only way a call-less turn survives into a request: a call-less
+        reply with text in it is an answer and the mission ends there.
+        """
+        model = NativeModel(("", []), answer_call("ok"))
+        native_runner(bus, model).run("go")
+        assistant = [m for m in model.seen[-1] if m["role"] == "assistant"]
+        assert assistant and "tool_calls" not in assistant[0]
+
+    def test_the_arguments_go_back_verbatim_when_the_backend_kept_them(
+            self, bus):
+        """A re-serialization is a paraphrase of the model to itself."""
+        raw = '{"q":   "x"}'
+        call = native_call("catalog.search", "c0", q="x")
+        call["arguments_raw"] = raw
+        model = NativeModel([call], answer_call("done"))
+        native_runner(bus, model).run("go")
+        assert model.seen[1][2]["tool_calls"][0]["function"]["arguments"] == raw
+
+    def test_a_provider_that_gave_no_id_still_produces_a_matched_pair(
+            self, bus):
+        model = NativeModel(
+            [{"name": "catalog.search", "arguments": {"q": "x"}}],
+            answer_call("done"))
+        native_runner(bus, model).run("go")
+        minted = model.seen[1][2]["tool_calls"][0]["id"]
+        assert minted
+        results = [m for m in model.seen[1] if m["role"] == "tool"]
+        assert results[0]["tool_call_id"] == minted
+
+    def test_the_system_message_tells_the_model_how_to_finish(self, bus):
+        system = native_runner(bus, NativeModel()).seed("x")[0]["content"]
+        assert f"{ANSWER_TOOL}(text=" in system
+        assert "one JSON object" not in system
+
+
+class TestTheAnswerCountsOnlyWhenItIsAlone:
+    def _mixed(self, bus, events):
+        model = NativeModel(
+            [native_call("catalog.search", "c0", q="x"),
+             answer_call("I am done already", "ans")],
+            answer_call("the real answer"))
+        return native_runner(bus, model, events=events).run("go"), model
+
+    def test_the_tools_run(self, bus):
+        events = []
+        self._mixed(bus, events)
+        assert [r["tool"] for r in events if r["event"] == "tool_result"] == \
+            ["catalog.search"]
+
+    def test_the_answer_beside_them_is_not_the_missions_answer(self, bus):
+        events = []
+        transcript, _model = self._mixed(bus, events)
+        assert transcript.answer == "the real answer"
+        assert [r["text"] for r in events if r["event"] == "answer"] == \
+            ["the real answer"]
+
+    def test_the_model_is_told_the_answer_was_ignored_and_why(self, bus):
+        events = []
+        _transcript, model = self._mixed(bus, events)
+        note = [m for m in model.seen[1] if m.get("tool_call_id") == "ans"][0]
+        assert "IGNORED" in note["content"]
+        assert "alone" in note["content"]
+
+    def test_the_note_arrives_after_the_results_it_is_about(self, bus):
+        events = []
+        _transcript, model = self._mixed(bus, events)
+        assert [m["tool_call_id"] for m in model.seen[1]
+                if m["role"] == "tool"] == ["c0", "ans"]
+
+
+class TestAGateStopsOnItsOwnCall:
+    def _gated(self, bus, events, **kw):
+        model = NativeModel([
+            native_call("catalog.search", "c0", q="x"),
+            native_call("catalog.get", "c1", asset_id="a1"),
+            native_call("catalog.search", "c2", q="later"),
+        ])
+        return native_runner(bus, model, events=events,
+                             gated=["catalog.get"], **kw).run("go"), model
+
+    def test_the_call_before_it_ran(self, bus):
+        events = []
+        self._gated(bus, events)
+        assert [r["tool"] for r in events if r["event"] == "tool_result"] == \
+            ["catalog.search"]
+
+    def test_the_mission_ends_awaiting_approval_on_that_call(self, bus):
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        events = []
+        transcript, _model = self._gated(bus, events)
+        assert transcript.outcome == AWAITING_APPROVAL
+        assert transcript.awaiting["tool"] == "catalog.get"
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert gate["arguments"] == {"asset_id": "a1"}
+
+    def test_the_calls_after_it_are_not_dispatched(self, bus):
+        events = []
+        self._gated(bus, events)
+        assert {"q": "later"} not in [r["arguments"] for r in events
+                                      if r["event"] == "tool_call"]
+
+    def test_and_the_reason_says_how_many_were_dropped_with_it(self, bus):
+        events = []
+        self._gated(bus, events)
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert "1 later call" in gate["reason"]
+        assert "NOT dispatched" in gate["reason"]
+
+    def test_a_gate_on_the_only_call_says_what_it_always_said(self, bus):
+        events = []
+        model = NativeModel([native_call("catalog.get", "c0", asset_id="a1")])
+        native_runner(bus, model, events=events,
+                      gated=["catalog.get"]).run("go")
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert "later call" not in gate["reason"]
+
+    def test_the_turn_is_still_one_step(self, bus):
+        transcript, _model = self._gated(bus, [])
+        assert len(transcript.steps) == 1
+        assert [c.tool for c in transcript.steps[0].calls] == \
+            ["catalog.search", "catalog.get"]
+
+
+class TestTheArgumentsAreCheckedAgainstTheToolsOwnSchema:
+    """The half of the failure class constrained decoding does not close.
+
+    A decoder held to the declared namespace cannot emit a name nobody
+    offers nor JSON that does not parse.  What it can still emit is a
+    well-formed object with the wrong contents, and the tool already said
+    what it takes.
+    """
+
+    def _run(self, bus, arguments, events, protocol=NATIVE_PROTOCOL, **kw):
+        if protocol == NATIVE_PROTOCOL:
+            model = NativeModel(
+                [native_call("catalog.search", "c0", **arguments)],
+                answer_call("done"))
+            return (native_runner(bus, model, tools=("catalog.search",),
+                                  events=events, **kw).run("go"), model)
+        model = ScriptedModel(tool_call("catalog.search", **arguments),
+                              '{"answer": "done"}')
+        return (MissionRunner(model, bus, ["catalog.search"], store_tool="",
+                              observer=events.append, **kw).run("go"), model)
+
+    def test_a_missing_required_argument_is_refused_naming_the_field(
+            self, typed_bus):
+        events = []
+        self._run(typed_bus, {"limit": 3}, events)
+        problem = [r for r in events if r["event"] == "reply_rejected"][0]
+        assert "'q'" in problem["problem"]
+        assert problem["tool"] == "catalog.search"
+
+    def test_a_wrong_type_is_refused_naming_the_rule(self, typed_bus):
+        events = []
+        self._run(typed_bus, {"q": "x", "limit": "three"}, events)
+        problem = [r for r in events if r["event"] == "reply_rejected"][0]
+        assert "'limit'" in problem["problem"]
+        assert "integer" in problem["problem"]
+
+    def test_a_value_outside_an_enum_is_refused_listing_the_values(
+            self, typed_bus):
+        events = []
+        self._run(typed_bus, {"q": "x", "type": "corpus"}, events)
+        problem = [r for r in events if r["event"] == "reply_rejected"][0]
+        assert "dataset|model|service" in problem["problem"]
+
+    def test_the_call_is_not_made(self, typed_bus):
+        events = []
+        self._run(typed_bus, {"limit": 3}, events)
+        assert [r for r in events if r["event"] == "tool_call"] == []
+
+    def test_the_refusal_names_the_schema_so_the_next_call_can_be_right(
+            self, typed_bus):
+        events = []
+        self._run(typed_bus, {"limit": 3}, events)
+        problem = [r for r in events if r["event"] == "reply_rejected"][0]
+        assert "q (string, required)" in problem["problem"]
+
+    def test_it_goes_back_as_a_tool_message_under_the_native_protocol(
+            self, typed_bus):
+        events = []
+        _transcript, model = self._run(typed_bus, {"limit": 3}, events)
+        answered = [m for m in model.seen[1] if m["role"] == "tool"]
+        assert answered[0]["tool_call_id"] == "c0"
+        assert "'q'" in answered[0]["content"]
+
+    def test_the_json_protocol_gets_the_same_check_and_the_same_sentence(
+            self, typed_bus):
+        """It costs nothing there and catches the same class."""
+        events = []
+        self._run(typed_bus, {"limit": 3}, events, protocol=JSON_PROTOCOL)
+        problem = [r for r in events if r["event"] == "reply_rejected"][0]
+        assert "'q'" in problem["problem"]
+        assert [r for r in events if r["event"] == "tool_call"] == []
+
+    def test_a_gated_call_is_proposed_verbatim_even_if_it_would_not_pass(
+            self, typed_bus):
+        """What a person approves has to be the bytes the model wrote,
+        whatever the schema would have said about them."""
+        events = []
+        self._run(typed_bus, {"limit": 3}, events, gated=["catalog.search"])
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert gate["arguments"] == {"limit": 3}
+
+    def test_a_tool_that_published_no_schema_is_dispatched_as_before(
+            self, bus):
+        events = []
+        model = NativeModel([native_call("catalog.search", "c0", whatever=1)],
+                            answer_call("done"))
+        native_runner(bus, model, events=events).run("go")
+        assert [r["tool"] for r in events if r["event"] == "tool_result"] == \
+            ["catalog.search"]
+
+    def test_a_name_nobody_offers_is_still_refused_if_a_server_emits_one(
+            self, bus):
+        """Unrepresentable through a decoder that kept its promise — and the
+        promise is the server's, so a mission must not crash on a broken
+        one."""
+        events = []
+        model = NativeModel([native_call("catalog.invent", "c0", q="x")],
+                            answer_call("done"))
+        native_runner(bus, model, events=events).run("go")
+        problem = [r for r in events if r["event"] == "reply_rejected"][0]
+        assert "no tool named 'catalog.invent'" in problem["problem"]
+        assert [r for r in events if r["event"] == "tool_call"] == []
+
+
+class TestTheOpeningFrameSaysWhichProtocolRan:
+    def _started(self, runner, events):
+        runner.run("go")
+        return next(r for r in events if r["event"] == "mission_started")
+
+    def test_a_native_run_announces_it(self, bus):
+        events = []
+        started = self._started(
+            native_runner(bus, NativeModel(), events=events), events)
+        assert started["protocol"] == NATIVE_PROTOCOL
+        assert conforms(started) == []
+
+    def test_a_json_run_says_nothing_at_all(self, bus):
+        """Absent, not "json": that is what keeps every stream recorded
+        before this field existed byte-identical."""
+        events = []
+        started = self._started(MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            observer=events.append), events)
+        assert "protocol" not in started
+
+    def test_the_new_fields_are_declared_optional_on_the_contract(self):
+        assert "protocol" in contract.OPTIONAL[contract.MISSION_STARTED]
+        assert "call" in contract.OPTIONAL[contract.TOOL_CALL]
+        assert "call" in contract.OPTIONAL[contract.TOOL_RESULT]
+
+    def test_the_answer_function_is_declared_where_the_caller_can_find_it(
+            self):
+        """The loop reads a call to it and the caller declares it; two
+        copies of one function's schema is how an emitter drifts."""
+        assert ANSWER_FUNCTION["function"]["name"] == ANSWER_TOOL
+        assert ANSWER_FUNCTION["function"]["parameters"]["required"] == ["text"]
+
+
+class TestTheJsonProtocolIsUntouched:
+    """The promise the flag is allowed to exist on.
+
+    A default that changed one field of one record would break the consumer
+    this repo is pinned by, and break it silently: an added key is not an
+    error, it is a key nobody reads.
+    """
+
+    def _stream(self, bus, **kw):
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="cables"),
+                          '{"answer": "two"}'),
+            bus, ["catalog.search"], store_tool="", observer=events.append,
+            **kw).run("go")
+        return events
+
+    def test_the_records_are_the_same_records_in_the_same_order(self, bus):
+        assert [r["event"] for r in self._stream(bus)] == [
+            "mission_started", "step_started", "tool_call", "tool_result",
+            "step_started", "answer", "mission_finished"]
+
+    def test_no_record_grew_a_field(self, bus):
+        for record in self._stream(bus):
+            assert "protocol" not in record
+            assert "call" not in record
+
+    def test_the_conversation_is_still_plain_turns_and_nothing_else(self, bus):
+        model = ScriptedModel(tool_call("catalog.search", q="cables"),
+                              '{"answer": "two"}')
+        MissionRunner(model, bus, ["catalog.search"], store_tool="").run("go")
+        assert {m["role"] for m in model.seen[-1]} == {"system", "user",
+                                                       "assistant"}
+        assert all("tool_calls" not in m for m in model.seen[-1])
+
+    def test_the_step_carries_its_call_on_the_fields_it_always_did(self, bus):
+        model = ScriptedModel(tool_call("catalog.search", q="cables"),
+                              '{"answer": "two"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"],
+                                   store_tool="").run("go")
+        assert transcript.steps[0].tool == "catalog.search"
+        assert transcript.steps[0].calls == []
+
+
+class TestACompactedNativeConversationIsStillSendable:
+    """A `tool` message answering no call is a 400, not an oddity.
+
+    The window drops oldest-first and already refuses to leave a tail
+    starting with anything but the model's own turn; this is the last edge
+    of that rule, where the tail has been cut to its floor.
+    """
+
+    def test_an_orphaned_result_is_dropped(self):
+        healed = MissionRunner._heal_native([
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "objective"},
+            {"role": "tool", "tool_call_id": "gone", "content": "orphan"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "kept"},
+        ])
+        assert [m.get("tool_call_id") for m in healed
+                if m["role"] == "tool"] == ["c1"]
+        assert len(healed) == 4
+
+    def test_a_conversation_with_nothing_to_heal_is_unchanged(self):
+        messages = [{"role": "system", "content": "s"},
+                    {"role": "user", "content": "o"},
+                    {"role": "assistant", "content": "a"},
+                    {"role": "user", "content": "r"}]
+        assert MissionRunner._heal_native(messages) == messages
+
+    def test_a_user_turn_closes_the_calls_that_preceded_it(self):
+        """A compaction note lands between the two halves of a round trip,
+        and the result on the far side of it answers nothing the model can
+        still see."""
+        healed = MissionRunner._heal_native([
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "user", "content": "…older turns were dropped…"},
+            {"role": "tool", "tool_call_id": "c1", "content": "stranded"},
+        ])
+        assert [m["role"] for m in healed] == ["assistant", "user"]

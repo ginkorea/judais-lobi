@@ -145,6 +145,7 @@ person's surface and may move.
 | `--top-p` | — | nucleus sampling. Unset sends nothing |
 | `--seed` | — | a seed where the server honours one. Not a determinism guarantee |
 | `--resume` | `MISSION_RESUME` | carry on a recorded mission by its run id. The objective comes off the record, so the message may be omitted |
+| `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native`. `native` declares the mission's tools as **functions**, declares a `mission_answer(text)` beside them and asks the server for `tool_choice=required` — so an unparseable reply and a tool name nobody offers stop being possible instead of being caught a turn later, and one turn may call several tools. Refused at the door on a backend that does not declare `supports_tool_calls` and `supports_tool_choice_required`. **Off by default on purpose**: it is measured before it is anybody's default |
 
 The rest of the published environment: `MCP_CLIENT_NAME` is what this client
 calls itself in the MCP `initialize` handshake — set it to the agent's name, or a
@@ -160,7 +161,58 @@ to name. `JUDAIS_LOBI_APPROVALS` does the same
 for the durable approval records — a path moves the directory, `none`/`off`
 keeps none, and then a gate stops a mission and leaves nothing anybody can
 decide against, which the console says out loud. `MISSION_RESUME` is the environment form of
-`--resume`.
+`--resume`, and `MISSION_PROTOCOL` of `--protocol`.
+
+#### `--protocol native` — the model calls a function instead of writing one
+
+The default protocol asks for one JSON object per reply and parses it. That
+works, and it fails in a way that was measured: on the reference deployment's
+10 August suite a mission spent two turns of eight on a malformed tool name
+and two more on invalid JSON — a quarter of the budget on protocol rather
+than on the question.
+
+`--protocol native` removes the two mistakes rather than catching them. The
+request declares the mission's tools as OpenAI functions, declares a synthetic
+`mission_answer(text)` beside them (registered on nothing — it is how a model
+under `tool_choice=required` says it is finished), and asks for
+`tool_choice=required` with `parallel_tool_calls=true`. The decoder then
+cannot emit a name outside the namespace nor arguments that do not parse.
+
+What it changes, exactly:
+
+* **one turn, several calls.** `parallel_tool_calls` means a reply can ask for
+  two tools; both are dispatched in the order given, each with its own
+  `tool_call`/`tool_result` pair under the *same* `index` and a `call`
+  ordinal. A step is still a **model turn**, and `--mission-steps` still
+  counts model turns;
+* **`mission_answer` counts only when it is alone.** Called alongside tool
+  calls it is ignored, the tools run, and the model is asked again — an answer
+  written before its own evidence arrived is exactly the answer that should
+  not stand;
+* **a gated tool ends the turn on that call.** The calls before it have run;
+  the calls after it are not dispatched, and the reason says how many;
+* **a reply with no calls at all** — some servers answer in prose despite
+  `required` — is read as an answer when there is text and refused when there
+  is not;
+* `mission_started` carries `protocol: "native"`. It carries nothing at all on
+  a `json` run, so every stream recorded before this existed is unchanged.
+
+**Arguments are checked against each tool's own JSON Schema before dispatch**,
+in *both* protocols (`core/runtime/schema_check.py`; `jsonschema` when the
+`mission` extra is installed, a `required`/`type`/`enum` floor when it is
+not). A violation is a `reply_rejected` naming the tool, the field and the
+rule, and the call is not made. Be clear about what that can and cannot
+catch: it catches a shape the tool *declared* — a missing required argument, a
+string where an integer was declared, a value outside an enum. It does not
+catch a well-typed argument meant for a different tool, which is the other
+half of the measured waste (`uv pip install …` handed to the tool that runs
+**Python** is a string where a string was declared). That one is fixed by
+tool descriptions and tool sets, not by a validator.
+
+It is **off by default**, and that is the discipline: this and the grounding
+control were probed the same day, and a change switched on before the eval
+harness that scores it produces a delta nobody can attribute (`ROADMAP.md`
+§2.5).
 
 ### Resuming a mission — `--resume`
 
@@ -863,7 +915,7 @@ pulls in is imported lazily.
 
 | extra | what it adds |
 | --- | --- |
-| `mission` | `mcp` + `pyyaml` — what a governed mission actually needs. **This is the one a platform installs** |
+| `mission` | `mcp` + `pyyaml` + `jsonschema` — what a governed mission actually needs. **This is the one a platform installs.** Without `jsonschema` the pre-dispatch argument check falls back to a `required`/`type`/`enum` floor that says nothing about nested arguments |
 | `mcp` | the MCP client alone. Enough to run a mission, not enough to govern one |
 | `critic` | the external frontier-model critic, and `pyyaml` |
 | `treesitter` | multi-language symbol extraction for the repo map |

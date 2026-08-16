@@ -48,8 +48,9 @@ direct loop and from `--swarm` alike. Index them without a default.
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` |
 | `mission_finished` | `outcome`, `steps`, `max_steps` |
 
-Optional, and therefore to be read with a default: `audit_ref` and `run_id` on
-`mission_started`, `plan` on `step_started`
+Optional, and therefore to be read with a default: `audit_ref`, `run_id` and
+`protocol` on
+`mission_started`, `call` on `tool_call` and `tool_result`, `plan` on `step_started`
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
 only when the model got as far as naming one), `compacted` and `resumed` on
@@ -68,6 +69,39 @@ allow-list; `"none"` is no isolation, reached only by an explicit opt-out
 It describes the subprocess plane only — an in-process MCP tool dispatches
 inside the harness process and touches no sandbox whatever this says — and it
 rides both the direct and the staged path.
+
+`protocol` says how the model was asked to decide, and it is present **only
+when that is not the default**: `"native"` on a run started with
+`--protocol native`, and absent on every other run, which a consumer reads as
+`"json"`. The absence is the point — it is what keeps every stream recorded
+before this field existed byte-identical — and it is the same rule `reason`
+and `budget` follow: a field states a fact only when there is one to state.
+
+Under `json` the model writes one JSON object per reply and this harness
+parses it; a reply that does not parse is a `reply_rejected` and costs a
+turn. Under `native` the request declares the mission's tools as functions,
+declares a synthetic `mission_answer(text)` beside them, and asks for
+`tool_choice=required` with `parallel_tool_calls=true` — so an unparseable
+reply and a tool name nobody offers are *unrepresentable* rather than caught,
+and finishing is a call to `mission_answer`. What changes for a consumer:
+**one model turn may produce several `tool_call`/`tool_result` pairs under one
+`index`**, told apart by `call`.
+
+`call` is which call of the step this is, 0-based, in the order the model
+emitted them. **Absent on the first call of a turn and absent for every call
+of a `json` run**, so a consumer that never heard of it reads the stream it
+always read. `index` still numbers the *model turn* and is what
+`--mission-steps` counts, in both protocols: two records with the same `index`
+and different `call` are two dispatches asked for in one breath, not two
+steps. A call the harness refused before dispatching it — a schema violation,
+a name nobody offers — still uses up its ordinal, because the number describes
+what the model emitted rather than what ran. `usage` rides the **first** record
+of a turn only: it is the cost of one model call, and a turn that dispatched
+three tools did not pay for it three times.
+
+A gated tool under `native` ends the turn on **that** call: the calls before it
+have already run and are on the record, the calls after it are not dispatched,
+and `gate_requested.reason` says how many were dropped with it.
 
 `profile` is the capability profile the run is governed by — one of `safe`,
 `dev`, `ops`, `god`. Deny-by-default means `safe` unless `--profile` (or
@@ -347,6 +381,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--top-p` — likewise.
 - `--seed` — likewise, for a run somebody intends to reproduce.
 - `--resume` — carry on a recorded mission by its `run_id`. The objective comes off that run, so the positional message may be omitted; a different one is refused. A finished run is refused, except one that ended `awaiting_approval`.
+- `--protocol` — `json` (the default) or `native`. Arrives back as `protocol` on `mission_started`, and only when it is `native`. Refused at the door on a backend that does not declare `supports_tool_calls` and `supports_tool_choice_required`, because a run that asked for the constrained decoder and silently got prose would be measured as the protocol it was not running. On `--resume` it comes off the recorded run; stating one that disagrees with the record is refused, naming both.
 
 ## Environment
 
@@ -364,6 +399,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `MISSION_HISTORY` — the environment form of `--history`.
 - `MISSION_SECONDS` — the environment form of `--mission-seconds`; the flag wins. Unset, blank, unparseable or ≤ 0 all mean unbounded, because a mistyped budget that killed the run before its first step would look like a broken harness.
 - `MISSION_RESUME` — the environment form of `--resume`.
+- `MISSION_PROTOCOL` — the environment form of `--protocol`; the flag wins. Unset and blank both mean `json`, which is what every mission ran under until now.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.

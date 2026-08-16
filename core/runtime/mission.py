@@ -21,6 +21,17 @@ The loop is deliberately small and its refusals are deliberately loud:
 * the model replies with **one** JSON object and nothing else.  A reply
   that does not parse is handed back to the model as a parse error
   rather than guessed at;
+* …unless the caller asked for the **native protocol**
+  (:data:`NATIVE_PROTOCOL`), in which case the reply is not text at all
+  but a function call the decoder was constrained to produce, and the two
+  mistakes that class of failure is made of — invalid JSON, and a tool
+  name nobody offers — are unrepresentable rather than caught.  It is
+  off by default and measured before it is anybody's default; see the
+  ``protocol`` parameter;
+* the arguments of a call are checked against the tool's **own published
+  schema** before it is dispatched, in either protocol.  See
+  :mod:`core.runtime.schema_check`, and in particular what that check
+  cannot catch;
 * a tool the model invented is a refused step with the real catalogue
   repeated, not a crash;
 * the budgets are hard stops.  Steps, and — when a caller supplies a
@@ -75,6 +86,7 @@ from core.runtime.mission_stream import (
     REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT, Observer,
 )
 from core.runtime.results import RESULT_TOOL, MissionResultStore
+from core.runtime.schema_check import check as check_arguments
 from core.runtime.usage import Ledger, Rate
 from core.tools.descriptors import same_tool, summarize_input_schema
 
@@ -109,6 +121,25 @@ def _run_field(run_id: str) -> Dict[str, Any]:
     swarm's opening frame reads it from here too.
     """
     return {"run_id": run_id} if run_id else {}
+
+
+def _protocol_field(protocol: str) -> Dict[str, Any]:
+    """``{"protocol": word}`` for a run that is not speaking the default.
+
+    Absent — not ``"json"`` — on an ordinary run, which is the whole reason
+    the field can be added at all without bumping ``SCHEMA_VERSION``: every
+    stream a consumer has ever read stays byte-identical, and the field
+    appears exactly when something about the run it describes is different.
+    A consumer reads it with a default of :data:`JSON_PROTOCOL`, like every
+    OPTIONAL field.
+
+    It matters on the wire and not only as trivia: a resumed run has to be
+    rebuilt in the message shape it was recorded in — native turns carry
+    ``tool_calls`` and are answered by ``tool`` messages — and this is where
+    :func:`core.runtime.resume.rebuild` learns which.  One owner: the
+    swarm's opening frame reads it from here too.
+    """
+    return {"protocol": protocol} if protocol != JSON_PROTOCOL else {}
 
 
 def persist_record(store: Optional[RunStore], run_id: str,
@@ -151,6 +182,98 @@ Use only tool names from the catalogue below, spelled exactly. Call one \
 tool per reply. Base every statement on a tool result you actually \
 received; if the tools cannot support a statement, say so in the answer \
 instead of asserting it.
+"""
+
+#: The protocol this loop has always spoken: one JSON object per reply,
+#: parsed out of the text.  The default, and it stays the default until an
+#: eval harness says the other one is better — see ``ROADMAP.md`` §2.5.
+JSON_PROTOCOL = "json"
+
+#: The other one: the model does not write a decision, it **calls a
+#: function**, and the server's decoder is constrained to the namespace the
+#: request declared.
+#:
+#: The failure class this closes was measured rather than imagined.  On the
+#: reference deployment's 10 August suite a mission spent two turns of eight
+#: on a malformed tool name and two more on invalid JSON — a quarter of the
+#: budget on protocol rather than on the question — and on the 20B a
+#: four-turn mission spent two of them on argument shape.  Under
+#: ``tool_choice="required"`` neither mistake is representable: the decoder
+#: cannot emit a name outside the declared namespace, nor arguments that do
+#: not parse.  What is left is arguments that parse and are wrong, which is
+#: what :mod:`core.runtime.schema_check` is for.
+#:
+#: It is **not** the default, and that is the discipline rather than
+#: timidity: this and the grounding control were probed the same day, and a
+#: change turned on before the harness that scores it produces a delta
+#: nobody can attribute.
+NATIVE_PROTOCOL = "native"
+
+#: The closed set, so a caller can be refused by name rather than by
+#: discovering later that its word did nothing.
+PROTOCOLS = (JSON_PROTOCOL, NATIVE_PROTOCOL)
+
+#: The synthetic function a native-protocol mission finishes by calling.
+#:
+#: A function and not a sentinel string, because under
+#: ``tool_choice="required"`` the model has no other way to stop: every
+#: reply must be a call, so "I am done" has to be one too.  It is
+#: registered on **nothing** — the bus never sees it, no capability governs
+#: it, and dispatching it is not a thing this loop can do; it is read out of
+#: the call list and turned into the answer the JSON protocol would have
+#: produced from ``{"answer": …}``.
+#:
+#: ``mission_`` prefixed for the reason :data:`~core.runtime.results
+#: .RESULT_TOOL` is: it shares a namespace with whatever a server
+#: advertises, and a collision would mean the model's way of finishing was
+#: also somebody's tool.  A collision is refused at construction rather
+#: than resolved by renaming one of them, because both names would then be
+#: right somewhere and wrong here.
+ANSWER_TOOL = "mission_answer"
+
+#: The declaration of :data:`ANSWER_TOOL`, in the shape a request carries.
+#:
+#: Here rather than in the CLI because it is half of the protocol: the loop
+#: reads a call to this function and the caller declares it, and two copies
+#: of one function's schema is the arrangement that had six of ten grounding
+#: fields hand-listed in a second emitter.
+ANSWER_FUNCTION: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": ANSWER_TOOL,
+        "description": (
+            "Finish the mission. Call this — and nothing else in the same "
+            "reply — with your final answer for the person who asked. "
+            "Base every statement on a tool result you actually received."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string",
+                         "description": "The final answer, in prose."},
+            },
+            "required": ["text"],
+        },
+    },
+}
+
+#: The protocol text for a native run.  Same job as :data:`PROTOCOL` and
+#: the same reason it is one string: the instruction and the branch that
+#: reads the reply have to say the same thing.
+NATIVE_PROTOCOL_TEXT = f"""\
+You are working a mission with tools. The tools below are declared to you \
+as functions and every reply must be one or more CALLS to them — not prose, \
+not JSON in a message.
+
+To use a tool: call it by name, with its arguments.
+To finish: call {ANSWER_TOOL}(text="<your final answer>").
+
+You may make several tool calls in one reply; they are dispatched in the \
+order you give them and you are shown every result. {ANSWER_TOOL} counts \
+only when it is ALONE: called alongside tool calls it is ignored, the tools \
+run, and you are asked again. Base every statement on a tool result you \
+actually received; if the tools cannot support a statement, say so in \
+{ANSWER_TOOL} instead of asserting it.
 """
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
@@ -389,8 +512,56 @@ def _finished_record(*, outcome: str, steps: int, max_steps: int,
 
 
 @dataclass
+class MissionCall:
+    """One dispatched call inside a turn, for the turns that have several.
+
+    Only the native protocol produces these: under the JSON protocol a
+    reply is one decision, so the turn *is* the call and
+    :class:`MissionStep`'s own fields say everything there is to say.  A
+    model that can emit two calls in one reply cannot be described that
+    way, and the honest shape is a list.
+
+    The field names are :class:`MissionStep`'s deliberately.  The console
+    prints a step's calls and a step with none through the same loop, and
+    a second vocabulary for "what was called and what came back" would be
+    a second thing to keep in step with the renderer.
+    """
+
+    tool: str
+    arguments: Dict[str, Any] = field(default_factory=dict)
+    #: The id the provider gave this call, which the result message quotes
+    #: back.  Synthesized when the provider gave none — the shape requires
+    #: one, and a missing id is not a reason to lose a result.
+    call_id: str = ""
+    #: 0-based position among the turn's **real** calls, in the order the
+    #: provider returned them.  It is what rides ``tool_call.call`` and
+    #: ``tool_result.call``, and a call refused before dispatch still holds
+    #: its place: the ordinal describes what the model emitted, not what
+    #: this loop got round to running.
+    ordinal: int = 0
+    exit_code: Optional[int] = None
+    output: str = ""
+    error: str = ""
+    handle: str = ""
+    truncated: bool = False
+
+    @property
+    def refused(self) -> bool:
+        return self.exit_code is not None and self.exit_code != 0
+
+
+@dataclass
 class MissionStep:
-    """One turn: what the model said, and what came back."""
+    """One turn: what the model said, and what came back.
+
+    **A step is a model turn**, in both protocols, and that is what
+    ``--mission-steps`` counts.  It was already true of the JSON protocol
+    because a turn could only be one decision; it is stated here because
+    the native protocol makes it a choice, and the other choice — a step
+    per dispatched call — would have made ``max_steps`` mean "tool calls"
+    on one path and "round trips" on the other, silently widened a budget
+    an operator set, and put two ``step_started`` records under one index.
+    """
 
     index: int
     raw_reply: str
@@ -403,6 +574,15 @@ class MissionStep:
     handle: str = ""
     #: Whether what the model was shown was cut down from :attr:`output`.
     truncated: bool = False
+    #: Every call this turn made, when the turn was a native one.
+    #:
+    #: **Empty under the JSON protocol**, where the fields above are the
+    #: whole truth and nothing about a transcript changes.  Non-empty under
+    #: the native one, where those fields are left unset instead of being
+    #: filled from the first call: a mirror would be a second owner of
+    #: "what was called", and the day a turn's second call is the
+    #: interesting one, a reader of the mirror would be reading the first.
+    calls: List[MissionCall] = field(default_factory=list)
 
     @property
     def refused(self) -> bool:
@@ -583,6 +763,59 @@ class MissionRunner:
         could ask anything.  The CLI passes
         ``lambda: elf.client.last_usage`` and the seam stays one
         function wide.
+    protocol:
+        :data:`JSON_PROTOCOL` — the default, and byte for byte the loop
+        that has always run — or :data:`NATIVE_PROTOCOL`.
+
+        Under ``native`` the loop stops reading text.  The caller's
+        ``chat_fn`` is expected to have declared the offered tools plus
+        :data:`ANSWER_FUNCTION` and asked for ``tool_choice="required"``
+        with ``parallel_tool_calls=True``; what comes back is read from
+        *tool_calls_fn* rather than parsed out of the reply.  The loop
+        does not send the request and cannot check that the caller did
+        this — the seam is one function wide on purpose — so the CLI
+        refuses the flag at the door on a backend whose capabilities do
+        not declare both, and a library caller wiring this up itself owns
+        the same check.
+
+        The rules, stated once because a protocol split across a docstring
+        and a branch is a protocol that drifts:
+
+        * exactly one :data:`ANSWER_TOOL` call and nothing else — that is
+          the answer, and everything downstream (grounding, the repair
+          turn, the ``answer`` record) is the JSON protocol's;
+        * one or more real tool calls — each is dispatched **in the order
+          the provider returned them**, each emits its own ``tool_call``
+          and ``tool_result``, and the second and later ones carry a
+          ``call`` ordinal beside the step's ``index``;
+        * :data:`ANSWER_TOOL` *alongside* tool calls — the tools run and
+          the answer is **ignored**, with a sentence saying so appended
+          for the model.  Honoured only when alone, because the other
+          reading (answer now, drop the calls) throws away work the model
+          asked for and produces an answer written before its own
+          evidence arrived;
+        * a gated tool ends the turn at :data:`AWAITING_APPROVAL` on
+          **that** call: the calls before it have already run and are on
+          the record, the calls after it are not dispatched, and the
+          ``reason`` says how many;
+        * no calls at all — some servers answer in ``content`` despite
+          ``required`` — is read as an answer when there is text, and
+          refused as ``reply_rejected`` when there is not.
+    tool_calls_fn:
+        ``() -> [{"id", "name", "arguments", ["arguments_raw"]}, …]``,
+        read after every ``chat_fn`` call under the native protocol: every
+        call the provider returned, in provider order, cleared per call.
+
+        A nullary callable for the reason ``usage_fn`` is one — ``chat_fn``
+        returns the reply and half a dozen callers depend on that shape,
+        and handing this loop the whole client to ask instead would give a
+        deliberately confined loop something it could ask anything.  The
+        CLI passes ``lambda: list(getattr(elf.client, "last_tool_calls",
+        []) or [])`` and the seam stays one function wide.  ``None`` under
+        the native protocol is a run whose every turn looks like a reply
+        with no calls in it, which is a caller that wired half of this up
+        and will be told so on the first turn rather than silently
+        answered from prose.
     rate:
         A :class:`~core.runtime.usage.Rate` for the provider and model
         that will run, or ``None``.  Only used to put ``cost`` beside the
@@ -714,6 +947,8 @@ class MissionRunner:
         run_store: Optional[RunStore] = None,
         run_id: str = "",
         usage_fn: Optional[Callable[[], Any]] = None,
+        tool_calls_fn: Optional[Callable[[], Any]] = None,
+        protocol: str = JSON_PROTOCOL,
         rate: Optional[Rate] = None,
         ledger: Optional[Ledger] = None,
         deadline: Optional[Deadline] = None,
@@ -753,6 +988,25 @@ class MissionRunner:
         self._run_store = run_store
         self._run_id = str(run_id or "")
         self._usage_fn = usage_fn
+        self._tool_calls_fn = tool_calls_fn
+        if protocol not in PROTOCOLS:
+            raise ValueError(
+                f"protocol must be one of {', '.join(PROTOCOLS)}, got "
+                f"{protocol!r}")
+        self._protocol = protocol
+        self._native = protocol == NATIVE_PROTOCOL
+        if self._native and ANSWER_TOOL in self.offered:
+            # Refused at construction, and refused rather than worked
+            # around. Under `tool_choice="required"` the model's only way
+            # to finish is a call to `mission_answer`, so a bus tool of
+            # that name would make finishing and calling that tool the
+            # same act — and renaming either one here would leave a name
+            # that is right on the wire and wrong in the catalogue.
+            raise ValueError(
+                f"the {NATIVE_PROTOCOL} protocol finishes by calling "
+                f"{ANSWER_TOOL!r}, and this mission offers a tool of that "
+                f"name. Rename the tool, drop it from the mission's set, "
+                f"or run with --protocol {JSON_PROTOCOL}.")
         self._rate = rate
         # Kept as "the caller's, or none": `run` makes a fresh one per run
         # when it is none, and leaves a shared one alone. A run that reset
@@ -781,6 +1035,18 @@ class MissionRunner:
         CLI — is the one that hands it out.
         """
         return self._run_id
+
+    @property
+    def protocol(self) -> str:
+        """Which protocol this loop is speaking, :data:`JSON_PROTOCOL` or
+        :data:`NATIVE_PROTOCOL`.
+
+        Readable because the caller that built the ``chat_fn`` has to
+        declare the matching request, and a resume has to rebuild the
+        matching messages — two decisions made outside this object about
+        a fact it holds.
+        """
+        return self._protocol
 
     @property
     def store(self) -> MissionResultStore:
@@ -911,7 +1177,7 @@ class MissionRunner:
         system = "\n\n".join(
             part for part in (
                 self._system_message.strip(),
-                PROTOCOL.strip(),
+                self._protocol_text(),
                 "Tool catalogue:\n" + self.catalogue(),
             ) if part
         )
@@ -920,6 +1186,18 @@ class MissionRunner:
             *(dict(turn) for turn in self._history),
             {"role": "user", "content": objective},
         ]
+
+    def _protocol_text(self) -> str:
+        """The instruction half of whichever protocol is running.
+
+        One function so the branch that reads a reply and the sentence
+        that asked for it cannot disagree: a native run told to answer in
+        JSON would spend its budget writing objects nothing parses, and a
+        JSON run told to call ``mission_answer`` would name a tool the
+        catalogue does not list.
+        """
+        return (NATIVE_PROTOCOL_TEXT.strip() if self._native
+                else PROTOCOL.strip())
 
     # ── keeping the conversation inside the window ──────────────────────
 
@@ -965,9 +1243,49 @@ class MissionRunner:
         """
         if self._window is None:
             return messages, None
-        return self._window.fit(
+        kept, compaction = self._window.fit(
             messages, pinned=self.pinned, note=self._compaction_note,
         )
+        if compaction is None:
+            return kept, compaction
+        return self._heal_native(kept), compaction
+
+    @staticmethod
+    def _heal_native(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Drop ``tool`` messages whose call is no longer in the list.
+
+        A compaction drops oldest-first and the window already refuses to
+        leave a tail starting with anything but the model's own turn, so
+        this is the last edge of that rule rather than a second copy of
+        it: when the tail has been cut to its floor, a result message can
+        survive the call it answers.  Under the JSON protocol that is a
+        stray user turn and reads oddly; under the native one it is a
+        **400** — an OpenAI-shaped request may not carry a ``tool``
+        message that answers no ``tool_calls`` — and a mission that dies
+        of its own compaction is a worse failure than a shorter prompt.
+
+        Here and not in :class:`~core.runtime.context_window.MissionWindow`
+        because the window bounds a conversation and knows nothing about
+        which protocol shaped it; what a valid request looks like belongs
+        to the loop that builds one.  A list with nothing to heal comes
+        back unchanged, which is every JSON-protocol run.
+        """
+        healed: List[Dict[str, Any]] = []
+        answerable: set = set()
+        for message in messages:
+            role = message.get("role")
+            if role == "assistant":
+                answerable = {
+                    str(call.get("id") or "")
+                    for call in (message.get("tool_calls") or [])
+                }
+            elif role == "tool":
+                if str(message.get("tool_call_id") or "") not in answerable:
+                    continue
+            elif role in ("user", "system"):
+                answerable = set()
+            healed.append(message)
+        return healed
 
     # ── the loop ────────────────────────────────────────────────────────
 
@@ -1043,6 +1361,7 @@ class MissionRunner:
                        sandbox=sandbox_of(self._bus),
                        audit_ref=audit_ref_of(self._bus),
                        **_run_field(self._run_id),
+                       **_protocol_field(self._protocol),
                        **_profile_field(self._bus))
         try:
             return self._loop(objective, offered, transcript, resumption)
@@ -1140,6 +1459,20 @@ class MissionRunner:
             # call clears.
             spent = self._spent(transcript)
             step = MissionStep(index=index, raw_reply=reply)
+
+            if self._native:
+                # The whole of the other protocol, in one branch and one
+                # method. Everything it decides — an answer, a gate, a stop
+                # — is decided by the same helpers the lines below use, so
+                # there is one owner for what a dispatch emits and one for
+                # what an answer is worth.
+                done, repairs = self._native_turn(
+                    objective, offered, index, reply, spent, step,
+                    messages, transcript, repairs)
+                if done is not None:
+                    return done
+                continue
+
             messages.append({"role": "assistant", "content": reply})
 
             decision, problem = self._parse(reply)
@@ -1152,57 +1485,12 @@ class MissionRunner:
                 continue
 
             if "answer" in decision:
-                answer = str(decision["answer"])
-                report = self._ground(answer, repairs)
-                transcript.grounding = report
-
-                if report is not None and report.ran and not report.grounded:
-                    if repairs < self._validator.max_repairs:
-                        repairs += 1
-                        problem = self._validator.repair_prompt(report)
-                        step.error = problem
-                        transcript.steps.append(step)
-                        # A repair turn is a whole extra round-trip to the
-                        # model and, from outside, looks exactly like a stall.
-                        # Said out loud so a watcher can show WHY the answer
-                        # is taking longer — the check caught something.
-                        self._emit(GROUNDING, **_grounding_record(
-                            report, repairs=repairs, repairing=True))
-                        messages.append({"role": "user", "content": problem})
-                        continue
-                    # One repair turn was spent and the claim is still
-                    # unsupported. The answer is kept — deleting it would
-                    # hide a finding — and says so about itself.
-                    caveat = self._validator.caveat(report)
-                    marked = GroundingReport(
-                        results=report.results, repairs=repairs, caveat=caveat,
-                    )
-                    transcript.grounding = marked
-                    transcript.answer = answer + caveat
-                    transcript.outcome = "answered_with_caveat"
-                    transcript.steps.append(step)
-                    # The verdict BEFORE the answer, so a consumer building a
-                    # frame around the prose already knows what to mark it
-                    # with. A caveat that arrives after the text it qualifies
-                    # is a caveat that can be rendered separately from it.
-                    self._emit(GROUNDING, **_grounding_record(
-                        marked, repairs=repairs, caveat=caveat))
-                    self._emit(ANSWER, text=transcript.answer,
-                               outcome=transcript.outcome, **spent)
-                    return transcript
-
-                if report is not None:
-                    transcript.grounding = GroundingReport(
-                        results=report.results, repairs=repairs,
-                    )
-                    self._emit(GROUNDING, **_grounding_record(
-                        transcript.grounding, repairs=repairs))
-                transcript.answer = answer
-                transcript.outcome = "answered"
-                transcript.steps.append(step)
-                self._emit(ANSWER, text=answer, outcome=transcript.outcome,
-                           **spent)
-                return transcript
+                done, repairs = self._answered(
+                    str(decision["answer"]), index, step, spent, messages,
+                    transcript, repairs)
+                if done is not None:
+                    return done
+                continue
 
             name = str(decision.get("tool") or "")
             arguments = decision.get("arguments") or {}
@@ -1230,35 +1518,22 @@ class MissionRunner:
                 continue
 
             if name in self._gated:
-                # STOP. Not dispatched, not retried, and not handed back to
-                # the model to work around — the mission ends here holding the
-                # exact call it proposed, and somebody who is not this process
-                # decides what happens to it.
-                reason = (
-                    f"{name} needs a person's approval on this deployment. It "
-                    f"has been proposed exactly as written and NOT called. "
-                    f"Nothing further happens on this mission until somebody "
-                    f"decides.")
-                # Written down BEFORE the record goes out, so the id a
-                # watcher is handed is an id something can already be
-                # decided against. This process is about to exit; a request
-                # that lived only in the consumer's memory is the defect the
-                # store exists to fix.
-                approval_id, trouble = self._request_approval(
-                    objective, name, arguments, reason)
-                if trouble:
-                    reason = f"{reason} {trouble}"
-                carried = {"approval_id": approval_id} if approval_id else {}
-                step.error = reason
+                return self._gate(objective, index, name, arguments, step,
+                                  transcript)
+
+            # The tool's own schema, on the way out. AFTER the gate, so a
+            # gated call is still proposed exactly as written — what a
+            # person approves has to be the bytes the model wrote, whatever
+            # this would have said about them — and before the dispatch,
+            # because the point is not to make the call.
+            problem = self._schema_violation(name, arguments)
+            if problem:
+                step.error = problem
                 transcript.steps.append(step)
-                transcript.outcome = AWAITING_APPROVAL
-                transcript.awaiting = {"tool": name,
-                                       "arguments": dict(arguments),
-                                       **carried}
-                self._emit(GATE_REQUESTED, index=index, tool=name,
-                           arguments=dict(arguments), reason=reason,
-                           **carried)
-                return transcript
+                self._emit(REPLY_REJECTED, index=index, tool=name,
+                           problem=problem, **spent)
+                messages.append({"role": "user", "content": problem})
+                continue
 
             # Checked again here, after the model call this step spent: the
             # clock may have run out while the endpoint was answering, and
@@ -1272,60 +1547,8 @@ class MissionRunner:
                 transcript.steps.append(step)
                 return self._stopped(transcript, stop)
 
-            self._emit(TOOL_CALL, index=index, tool=name,
-                       arguments=dict(arguments), **spent)
-            # The bus has no idea what a step is and should not learn: it
-            # serves chat turns, kernel roles and missions alike. So the
-            # mission leaves its index where the audit entry is built,
-            # rather than the bus growing a mission-shaped parameter.
-            # Guarded by `isinstance`, because a caller's fake bus has no
-            # such dict and a missing audit column is not worth a crash.
-            context = getattr(self._bus, "audit_context", None)
-            if isinstance(context, dict):
-                context["step"] = index
-            if self._approval is not None and name == self._approval.tool:
-                # HERE and not at the door: a resumed run that answers
-                # without calling anything, or runs out of steps, has not
-                # used anybody's yes, and burning one on a run where nothing
-                # happened teaches an operator to approve the same act twice.
-                # Before the dispatch, so a store that refuses to spend —
-                # somebody else already did, the record moved underneath us —
-                # stops the call rather than following it. That refusal is
-                # allowed to end the mission: failing closed is the only
-                # direction this may fail in.
-                self._approval.spend()
-            # The remaining wall clock rides down as a ceiling on the call,
-            # where the bus takes one, so a tool cannot run past the
-            # deadline by more than its own bounded slack.
-            call = dict(arguments)
-            call.update(self._deadline_ceiling())
-            result = self._bus.dispatch(name, **call)
-            step.exit_code = result.exit_code
-            step.output = result.stdout
-            step.error = result.stderr
-            stored = self._store.record(
-                name, arguments,
-                text=result.stdout,
-                evidence=getattr(result, "evidence", "") or "",
-                exit_code=result.exit_code,
-            )
-            step.handle = stored.handle
-            rendered, step.truncated = self._render_result(
-                name, result, stored.handle,
-                already=self._store.first_identical(stored),
-            )
+            self._dispatch(step, index, spent, messages)
             transcript.steps.append(step)
-            # The WHOLE result, not the bounded rendering. The bound exists
-            # because a model's context is finite; a watcher's is not, and a
-            # pane showing an analyst 60% of a governed listing because the
-            # model could only be shown that much would be inventing a limit
-            # nobody imposed.
-            self._emit(TOOL_RESULT, index=index, tool=name,
-                       arguments=dict(arguments),
-                       ok=result.exit_code == 0, exit_code=result.exit_code,
-                       output=result.stdout or "", error=result.stderr or "",
-                       handle=stored.handle, truncated=step.truncated)
-            messages.append({"role": "user", "content": rendered})
 
         transcript.outcome = "budget_exhausted"
         # Which budget, with the numbers. `steps` and not `seconds`: the
@@ -1336,6 +1559,461 @@ class MissionRunner:
         transcript.budget = BudgetExhausted(
             "steps", self._max_steps, len(transcript.steps))
         return transcript
+
+    # ── the pieces both protocols are made of ───────────────────────────
+
+    def _say(self, messages: List[Dict[str, Any]], text: str,
+             call_id: str = "") -> None:
+        """Append what the loop is telling the model, in this protocol's shape.
+
+        A ``user`` turn under the JSON protocol, which is what every one of
+        these was until now and is byte for byte what it still is.  A
+        ``tool`` message quoting the call it answers under the native one,
+        because that is not a preference: an assistant turn that declared
+        ``tool_calls`` and is followed by a ``user`` message is a **400**
+        from an OpenAI-shaped server, and every declared call has to be
+        answered — including the ones this loop refused, which is why the
+        refusals go through here too rather than being written inline.
+        """
+        if self._native and call_id:
+            messages.append({"role": "tool", "tool_call_id": call_id,
+                             "content": text})
+            return
+        messages.append({"role": "user", "content": text})
+
+    def _schema_violation(self, name: str, arguments: Dict[str, Any]) -> str:
+        """What is wrong with *arguments* against the tool's own schema, or ``""``.
+
+        The schema comes off :meth:`~core.tools.bus.ToolBus.describe_tool`
+        — the same place the catalogue's argument summary comes from and
+        the same place a native request's ``parameters`` come from — so the
+        prompt, the wire and this check cannot describe one tool three
+        ways.  A bus that cannot describe the tool checks nothing: the
+        dispatch below is about to fail on its own, and inventing a refusal
+        here would hide why.
+
+        Read :mod:`core.runtime.schema_check` for what this does and does
+        not catch.  It is worth stating in one line at the call site: it
+        catches a *shape* the tool declared, and it does not catch a
+        well-typed argument meant for a different tool.
+        """
+        try:
+            info = self._bus.describe_tool(name)
+        except Exception:                       # pragma: no cover - defensive
+            return ""
+        if not isinstance(info, dict) or "error" in info:
+            return ""
+        return check_arguments(name, info.get("input_schema"), arguments)
+
+    def _dispatch(self, slot: Any, index: int, spent: Dict[str, Any],
+                  messages: List[Dict[str, Any]]) -> None:
+        """Call one tool and tell everyone what happened.
+
+        *slot* is whatever carries this call: the :class:`MissionStep`
+        itself under the JSON protocol, where a turn is a call, and a
+        :class:`MissionCall` under the native one, where it is one of
+        several.  The two share their field names precisely so this method
+        can be the single owner of "what a dispatch does" — the alternative
+        is a second copy of ten lines that emit records, and the swarm's
+        six-of-ten grounding fields are what a second copy looks like a
+        month later.
+        """
+        name = str(slot.tool or "")
+        arguments = dict(slot.arguments)
+        # The ordinal is ABSENT on the first call of a turn and on every
+        # call of a JSON-protocol run, so a consumer that has never heard
+        # of it reads exactly the stream it read before.
+        ordinal = {"call": slot.ordinal} if getattr(slot, "ordinal", 0) else {}
+        self._emit(TOOL_CALL, index=index, tool=name,
+                   arguments=dict(arguments), **ordinal, **spent)
+        # The bus has no idea what a step is and should not learn: it
+        # serves chat turns, kernel roles and missions alike. So the
+        # mission leaves its index where the audit entry is built,
+        # rather than the bus growing a mission-shaped parameter.
+        # Guarded by `isinstance`, because a caller's fake bus has no
+        # such dict and a missing audit column is not worth a crash.
+        context = getattr(self._bus, "audit_context", None)
+        if isinstance(context, dict):
+            context["step"] = index
+        if self._approval is not None and name == self._approval.tool:
+            # HERE and not at the door: a resumed run that answers
+            # without calling anything, or runs out of steps, has not
+            # used anybody's yes, and burning one on a run where nothing
+            # happened teaches an operator to approve the same act twice.
+            # Before the dispatch, so a store that refuses to spend —
+            # somebody else already did, the record moved underneath us —
+            # stops the call rather than following it. That refusal is
+            # allowed to end the mission: failing closed is the only
+            # direction this may fail in.
+            self._approval.spend()
+        # The remaining wall clock rides down as a ceiling on the call,
+        # where the bus takes one, so a tool cannot run past the
+        # deadline by more than its own bounded slack.
+        call = dict(arguments)
+        call.update(self._deadline_ceiling())
+        result = self._bus.dispatch(name, **call)
+        slot.exit_code = result.exit_code
+        slot.output = result.stdout
+        slot.error = result.stderr
+        stored = self._store.record(
+            name, arguments,
+            text=result.stdout,
+            evidence=getattr(result, "evidence", "") or "",
+            exit_code=result.exit_code,
+        )
+        slot.handle = stored.handle
+        rendered, slot.truncated = self._render_result(
+            name, result, stored.handle,
+            already=self._store.first_identical(stored),
+        )
+        # The WHOLE result, not the bounded rendering. The bound exists
+        # because a model's context is finite; a watcher's is not, and a
+        # pane showing an analyst 60% of a governed listing because the
+        # model could only be shown that much would be inventing a limit
+        # nobody imposed.
+        self._emit(TOOL_RESULT, index=index, tool=name,
+                   arguments=dict(arguments),
+                   ok=result.exit_code == 0, exit_code=result.exit_code,
+                   output=result.stdout or "", error=result.stderr or "",
+                   handle=stored.handle, truncated=slot.truncated, **ordinal)
+        self._say(messages, rendered, getattr(slot, "call_id", ""))
+
+    def _answered(self, answer: str, index: int, step: MissionStep,
+                  spent: Dict[str, Any], messages: List[Dict[str, Any]],
+                  transcript: MissionTranscript, repairs: int,
+                  call_id: str = "") -> Tuple[Optional[MissionTranscript], int]:
+        """The answer path, for whichever protocol produced the text.
+
+        ``(transcript to return, repairs)`` — the first is ``None`` when
+        the loop should carry on, which is the grounding repair turn and
+        nothing else.
+
+        One method rather than one per protocol.  What an answer is worth
+        — whether it is grounded, whether a repair turn is spent, what
+        ``grounding`` and ``answer`` carry and in which order — is a
+        property of the mission and not of how the text arrived, and a
+        native run whose caveat path drifted from the JSON one would be
+        two agents wearing one name.
+        """
+        report = self._ground(answer, repairs)
+        transcript.grounding = report
+
+        if report is not None and report.ran and not report.grounded:
+            if repairs < self._validator.max_repairs:
+                repairs += 1
+                problem = self._validator.repair_prompt(report)
+                step.error = problem
+                transcript.steps.append(step)
+                # A repair turn is a whole extra round-trip to the
+                # model and, from outside, looks exactly like a stall.
+                # Said out loud so a watcher can show WHY the answer
+                # is taking longer — the check caught something.
+                self._emit(GROUNDING, **_grounding_record(
+                    report, repairs=repairs, repairing=True))
+                self._say(messages, problem, call_id)
+                return None, repairs
+            # One repair turn was spent and the claim is still
+            # unsupported. The answer is kept — deleting it would
+            # hide a finding — and says so about itself.
+            caveat = self._validator.caveat(report)
+            marked = GroundingReport(
+                results=report.results, repairs=repairs, caveat=caveat,
+            )
+            transcript.grounding = marked
+            transcript.answer = answer + caveat
+            transcript.outcome = "answered_with_caveat"
+            transcript.steps.append(step)
+            # The verdict BEFORE the answer, so a consumer building a
+            # frame around the prose already knows what to mark it
+            # with. A caveat that arrives after the text it qualifies
+            # is a caveat that can be rendered separately from it.
+            self._emit(GROUNDING, **_grounding_record(
+                marked, repairs=repairs, caveat=caveat))
+            self._emit(ANSWER, text=transcript.answer,
+                       outcome=transcript.outcome, **spent)
+            return transcript, repairs
+
+        if report is not None:
+            transcript.grounding = GroundingReport(
+                results=report.results, repairs=repairs,
+            )
+            self._emit(GROUNDING, **_grounding_record(
+                transcript.grounding, repairs=repairs))
+        transcript.answer = answer
+        transcript.outcome = "answered"
+        transcript.steps.append(step)
+        self._emit(ANSWER, text=answer, outcome=transcript.outcome, **spent)
+        return transcript, repairs
+
+    def _gate(self, objective: str, index: int, name: str,
+              arguments: Dict[str, Any], step: MissionStep,
+              transcript: MissionTranscript, *, skipped: int = 0,
+              call: Optional[MissionCall] = None) -> MissionTranscript:
+        """STOP, and write the proposal down.
+
+        Not dispatched, not retried, and not handed back to the model to
+        work around — the mission ends here holding the exact call it
+        proposed, and somebody who is not this process decides what
+        happens to it.
+
+        *skipped* is how many further calls the same reply asked for and
+        did **not** get: only the native protocol can produce more than
+        one, and a person reading "the mission stopped here" is entitled
+        to know that two other calls the model wanted were dropped with
+        it rather than run behind the gate's back.  Zero adds no words, so
+        a JSON-protocol gate says exactly what it always said.
+        """
+        reason = (
+            f"{name} needs a person's approval on this deployment. It "
+            f"has been proposed exactly as written and NOT called. "
+            f"Nothing further happens on this mission until somebody "
+            f"decides.")
+        if skipped:
+            reason = (
+                f"{reason} The {skipped} later call"
+                f"{'' if skipped == 1 else 's'} in the same reply "
+                f"{'was' if skipped == 1 else 'were'} NOT dispatched "
+                f"either.")
+        # Written down BEFORE the record goes out, so the id a
+        # watcher is handed is an id something can already be
+        # decided against. This process is about to exit; a request
+        # that lived only in the consumer's memory is the defect the
+        # store exists to fix.
+        approval_id, trouble = self._request_approval(
+            objective, name, arguments, reason)
+        if trouble:
+            reason = f"{reason} {trouble}"
+        carried = {"approval_id": approval_id} if approval_id else {}
+        # On the CALL when there is one, and on the step otherwise. A
+        # native turn's problems belong to the call that had them — the
+        # step is the turn, and a turn with three calls has no single
+        # error — while a JSON turn is its call and keeps the field a
+        # transcript reader has always read.
+        if call is not None:
+            call.error = reason
+        else:
+            step.error = reason
+        transcript.steps.append(step)
+        transcript.outcome = AWAITING_APPROVAL
+        transcript.awaiting = {"tool": name,
+                               "arguments": dict(arguments),
+                               **carried}
+        self._emit(GATE_REQUESTED, index=index, tool=name,
+                   arguments=dict(arguments), reason=reason, **carried)
+        return transcript
+
+    # ── the native protocol ─────────────────────────────────────────────
+
+    def _read_tool_calls(self, index: int) -> List[Dict[str, Any]]:
+        """This turn's calls off the side channel, normalized.
+
+        Never raises, for the reason :meth:`_spent` does not: a side
+        channel that throws must not be able to end a mission, and a turn
+        with no readable calls is handled below as a turn with no calls —
+        which is a case the protocol has to have anyway, because a server
+        may answer in ``content`` despite ``tool_choice="required"``.
+
+        Every id is filled in here, once, so that the assistant turn and
+        the result messages that quote it cannot disagree: a provider that
+        gave no id gets one made of the step and the position, which is
+        unique inside a conversation and stable across a re-render.
+        """
+        try:
+            raw = (self._tool_calls_fn()
+                   if self._tool_calls_fn is not None else None)
+        except Exception:                       # pragma: no cover - defensive
+            raw = None
+        calls: List[Dict[str, Any]] = []
+        for position, entry in enumerate(list(raw or ())):
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            arguments = entry.get("arguments")
+            calls.append({
+                "id": str(entry.get("id") or "") or f"call_{index}_{position}",
+                "name": name,
+                "arguments": dict(arguments) if isinstance(arguments, dict)
+                else {},
+                # Kept verbatim when the backend has it: what goes back to
+                # the model as its own turn should be what the model
+                # emitted, down to the key order, and a re-serialization is
+                # a paraphrase of the model to itself.
+                "raw": entry.get("arguments_raw"),
+                "shaped": isinstance(arguments, dict) or arguments is None,
+            })
+        return calls
+
+    @staticmethod
+    def _assistant_turn(reply: str,
+                        calls: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        """The model's own turn, in the shape a server will take back.
+
+        ``content`` and ``tool_calls`` together, because a harmony model
+        emits both — the reasoning-flavoured preamble and the call — and a
+        turn that dropped the text would hand the model back a version of
+        itself that never explained anything.  No ``tool_calls`` key at all
+        when there were none: an empty list is a different thing to some
+        servers, and this is the shape a reply with no calls in it takes.
+        """
+        message: Dict[str, Any] = {"role": "assistant", "content": reply}
+        if calls:
+            message["tool_calls"] = [
+                {"id": call["id"], "type": "function",
+                 "function": {
+                     "name": call["name"],
+                     "arguments": (call["raw"]
+                                   if isinstance(call["raw"], str)
+                                   else json.dumps(call["arguments"],
+                                                   ensure_ascii=False)),
+                 }}
+                for call in calls
+            ]
+        return message
+
+    def _native_turn(
+        self, objective: str, offered: Sequence[str], index: int, reply: str,
+        spent: Dict[str, Any], step: MissionStep,
+        messages: List[Dict[str, Any]], transcript: MissionTranscript,
+        repairs: int,
+    ) -> Tuple[Optional[MissionTranscript], int]:
+        """One native turn: read the calls, run them, or answer.
+
+        ``(transcript to return, repairs)``, with ``None`` meaning carry
+        on — the same shape :meth:`_answered` returns and for the same
+        reason.
+
+        The rules are the class docstring's ``protocol`` paragraph, and
+        this is the only place they are implemented.
+        """
+        calls = self._read_tool_calls(index)
+        messages.append(self._assistant_turn(reply, calls))
+        answers = [call for call in calls if call["name"] == ANSWER_TOOL]
+        wanted = [call for call in calls if call["name"] != ANSWER_TOOL]
+
+        # `usage` rides the FIRST record this turn emits and no other.
+        # It is the cost of one model call, and a turn that made three
+        # dispatches did not pay for the call three times — a consumer
+        # summing the per-record field would report a run at triple what
+        # it cost.
+        pending = dict(spent)
+
+        def cost() -> Dict[str, Any]:
+            taken = dict(pending)
+            pending.clear()
+            return taken
+
+        def reject(problem: str, call_id: str = "", tool: str = "") -> None:
+            self._emit(REPLY_REJECTED, index=index, problem=problem,
+                       **({"tool": tool} if tool else {}), **cost())
+            self._say(messages, problem, call_id)
+
+        if not calls:
+            # Some servers answer in prose despite `tool_choice="required"`,
+            # and prose that says something is an answer: refusing it would
+            # spend a turn asking again for text already written. Prose that
+            # says nothing is the one case with nothing to salvage.
+            text = reply.strip()
+            if text:
+                return self._answered(text, index, step, cost(), messages,
+                                      transcript, repairs)
+            problem = (
+                f"That reply carried no function call and no text. Every "
+                f"reply must call one of the declared functions; call "
+                f"{ANSWER_TOOL}(text=\"…\") when you are ready to finish.")
+            step.error = problem
+            transcript.steps.append(step)
+            reject(problem)
+            return None, repairs
+
+        if answers and not wanted:
+            if len(answers) > 1:
+                problem = (
+                    f"You called {ANSWER_TOOL} {len(answers)} times in one "
+                    f"reply. An answer is one thing: call it once, alone, "
+                    f"with the whole of what you want to say.")
+                step.error = problem
+                transcript.steps.append(step)
+                for call in answers:
+                    reject(problem, call["id"], ANSWER_TOOL)
+                return None, repairs
+            call = answers[0]
+            problem = (
+                "" if call["shaped"] else
+                f"{ANSWER_TOOL} was called with arguments that are not a "
+                f"JSON object.")
+            problem = problem or check_arguments(
+                ANSWER_TOOL, ANSWER_FUNCTION["function"]["parameters"],
+                call["arguments"])
+            if problem:
+                step.error = problem
+                transcript.steps.append(step)
+                reject(problem, call["id"], ANSWER_TOOL)
+                return None, repairs
+            return self._answered(
+                str(call["arguments"]["text"]), index, step, cost(), messages,
+                transcript, repairs, call_id=call["id"])
+
+        for ordinal, entry in enumerate(wanted):
+            name = entry["name"]
+            arguments = entry["arguments"]
+            if not entry["shaped"]:
+                problem = (
+                    f"{name} was called with arguments that are not a JSON "
+                    f"object. Call it again with an object of the arguments "
+                    f"it declares.")
+                step.calls.append(MissionCall(
+                    tool=name, arguments=dict(arguments),
+                    call_id=entry["id"], ordinal=ordinal, error=problem))
+                reject(problem, entry["id"], name)
+                continue
+            if name not in offered:
+                # Unreachable through a decoder constrained to the declared
+                # namespace, which is the point of the protocol — and kept
+                # anyway, because the constraint is the SERVER's promise and
+                # a mission must not crash on a server that broke it.
+                problem = self._no_such_tool(name, offered)
+                step.calls.append(MissionCall(
+                    tool=name, arguments=dict(arguments),
+                    call_id=entry["id"], ordinal=ordinal, error=problem))
+                reject(problem, entry["id"], name)
+                continue
+            call = MissionCall(tool=name, arguments=dict(arguments),
+                               call_id=entry["id"], ordinal=ordinal)
+            step.calls.append(call)
+            if name in self._gated:
+                # The turn ends HERE, on this call. The ones before it have
+                # already run and are on the record; the ones after it are
+                # not dispatched and the reason says how many.
+                return self._gate(objective, index, name, arguments, step,
+                                  transcript, skipped=len(wanted) - ordinal - 1,
+                                  call=call), repairs
+            problem = self._schema_violation(name, arguments)
+            if problem:
+                call.error = problem
+                reject(problem, entry["id"], name)
+                continue
+            stop = self._stop()
+            if stop is not None:
+                call.error = self._no_time_to_call(name, stop)
+                transcript.steps.append(step)
+                return self._stopped(transcript, stop), repairs
+            self._dispatch(call, index, cost(), messages)
+
+        # Last, so the model reads its results before it reads the note,
+        # and only ever as a note: the tools ran, so the reply was not
+        # wasted, and the answer it wrote before seeing them is exactly the
+        # answer that should not stand.
+        for entry in answers:
+            self._say(messages,
+                      f"{ANSWER_TOOL} was IGNORED: you called it alongside "
+                      f"tool calls, so the tools ran and the answer did not. "
+                      f"Answer when you have the results — call "
+                      f"{ANSWER_TOOL} alone.",
+                      entry["id"])
+        transcript.steps.append(step)
+        return None, repairs
 
     def _request_approval(
         self, objective: str, tool: str, arguments: Dict[str, Any],

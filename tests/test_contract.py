@@ -498,6 +498,108 @@ class TestAMissionConformsToItsOwnContract:
             | set(c.OPTIONAL.get(ms.GROUNDING, ())))
 
 
+class _NativeReplies:
+    """A constrained decoder's two channels, for the contract's purposes.
+
+    ``chat`` returns the content (usually nothing) and the calls arrive on
+    the side channel, which is what :class:`MissionRunner` reads under the
+    native protocol.  Scripted as a list of call-lists, one per turn.
+    """
+
+    def __init__(self, *turns):
+        self.turns = list(turns)
+        self.last = []
+
+    def __call__(self, messages):
+        self.last = list(self.turns.pop(0)) if self.turns else [
+            {"id": "z", "name": "mission_answer",
+             "arguments": {"text": "done"}}]
+        return ""
+
+    def calls(self):
+        return list(self.last)
+
+
+def _run_native(turns, *, gated=(), tools=("catalog_search_assets",),
+                max_steps=4):
+    """A native-protocol mission over the same stub bus, and what it emitted."""
+    from core.runtime.mission import NATIVE_PROTOCOL
+
+    seen = []
+    model = _NativeReplies(*turns)
+    runner = MissionRunner(
+        model, _Bus(), list(tools), max_steps=max_steps, gated=gated,
+        observer=seen.append, store_tool="",
+        protocol=NATIVE_PROTOCOL, tool_calls_fn=model.calls)
+    return runner.run("what do we hold"), seen
+
+
+class TestANativeMissionSpeaksTheSameVocabulary:
+    """The second protocol is not a second contract.
+
+    A consumer pinned to ``SCHEMA_VERSION == 1`` reads a native run with
+    the vocabulary it already has: the same nine events, the same required
+    fields, and two optional ones it may ignore.  That is the whole reason
+    the protocol could be added without bumping the version, so it is
+    asserted rather than asserted about.
+    """
+
+    def test_a_turn_that_dispatched_twice_conforms_field_by_field(self):
+        _t, seen = _run_native([
+            [{"id": "c0", "name": "catalog_search_assets",
+              "arguments": {"q": "x"}},
+             {"id": "c1", "name": "catalog_search_assets",
+              "arguments": {"q": "y"}}],
+            [{"id": "a", "name": "mission_answer",
+              "arguments": {"text": "two"}}],
+        ])
+        assert _faults(seen) == []
+        assert [r.get("call") for r in seen if r["event"] == ms.TOOL_CALL] == \
+            [None, 1]
+
+    def test_a_native_gate_conforms(self):
+        _t, seen = _run_native(
+            [[{"id": "c0", "name": "compute_cancel_job",
+               "arguments": {"job_id": "job_7f3"}}]],
+            gated=("compute_cancel_job",),
+            tools=("catalog_search_assets", "compute_cancel_job"))
+        assert _faults(seen) == []
+        assert ms.GATE_REQUESTED in [r["event"] for r in seen]
+
+    def test_a_native_rejection_conforms(self):
+        _t, seen = _run_native([
+            [{"id": "c0", "name": "catalog_invented", "arguments": {}}],
+            [{"id": "a", "name": "mission_answer",
+              "arguments": {"text": "done"}}],
+        ])
+        assert _faults(seen) == []
+        assert ms.REPLY_REJECTED in [r["event"] for r in seen]
+
+    def test_the_opening_frame_names_the_protocol(self):
+        _t, seen = _run_native([])
+        assert seen[0]["protocol"] == "native"
+        assert c.conforms(seen[0]) == []
+
+    def test_the_vocabulary_did_not_grow(self):
+        """A tenth event is the one additive change a consumer cannot
+        absorb quietly — the reference consumer asserts the whole set."""
+        _t, seen = _run_native([
+            [{"id": "c0", "name": "catalog_search_assets",
+              "arguments": {"q": "x"}}],
+            [{"id": "a", "name": "mission_answer",
+              "arguments": {"text": "one"}}],
+        ])
+        assert {r["event"] for r in seen} <= set(c.EVENTS)
+
+    def test_the_json_protocol_carries_neither_new_field(self):
+        _t, seen = _run([
+            json.dumps({"tool": "catalog_search_assets",
+                        "arguments": {"q": "x"}}),
+            json.dumps({"answer": "three assets"}),
+        ])
+        assert all("call" not in r and "protocol" not in r for r in seen)
+
+
 class TestTheTwoAdditiveFields:
     def test_the_first_record_carries_the_schema_version(self):
         """On the FIRST record, so a consumer that is going to refuse the
@@ -756,6 +858,7 @@ _FLAG_VALUES = {
     "--top-p": "0.9",
     "--seed": "7",
     "--resume": "run_20260815T131102-9f3a1c04",
+    "--protocol": "native",
 }
 
 

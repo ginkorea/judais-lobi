@@ -53,7 +53,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from core.durable import NoSuchRun, Run, RunStore, now
-from core.runtime.mission import AWAITING_APPROVAL, MissionStep
+from core.runtime.mission import (
+    AWAITING_APPROVAL, JSON_PROTOCOL, NATIVE_PROTOCOL, MissionCall,
+    MissionStep,
+)
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
     REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
@@ -152,6 +155,12 @@ LOST_SCRUBBED = (
     "at the emitter, so what the resumed model reads back is the scrubbed "
     "sentence a watcher saw"
 )
+LOST_NATIVE_IDS = (
+    "the provider's own ids for {n} replayed tool call{s}: a `tool_call_id` "
+    "is the server's and never travelled on the event stream, so the "
+    "rebuilt turns quote ids this process minted — the conversation is "
+    "well-formed and the model will not recognise the ids as its own"
+)
 
 
 class ResumeRefused(Exception):
@@ -193,6 +202,19 @@ class Recorded:
     #: a gate.  Nothing else gets through the door — see
     #: :data:`RESUMABLE_OUTCOMES`.
     outcome: str
+    #: The protocol the recorded stretch was run under, off its own
+    #: ``mission_started.protocol`` — absent there means
+    #: :data:`~core.runtime.mission.JSON_PROTOCOL`, which is every run
+    #: recorded before the field existed.
+    #:
+    #: It is a property of the RUN and not of the resuming command line,
+    #: which is why it is read here and refused at the door when the two
+    #: disagree: the replay rebuilds the model's own turns, and a native
+    #: turn is an assistant message carrying ``tool_calls`` answered by
+    #: ``tool`` messages where a JSON one is text answered by a user turn.
+    #: Rebuilding one shape and then sending the other is a 400 at best
+    #: and a model reading somebody else's transcript at worst.
+    protocol: str = JSON_PROTOCOL
 
     def total_steps(self, more: Optional[int]) -> int:
         """The step budget for the whole run — recorded steps included.
@@ -248,7 +270,7 @@ def recorded_outcome(records: Sequence[Mapping[str, Any]]) -> str:
 
 
 def open_for_resume(store: Optional[RunStore], run_id: str, *,
-                    objective: str = "") -> Recorded:
+                    objective: str = "", protocol: str = "") -> Recorded:
     """Admit *run_id* for resuming, or refuse and say which rule it broke.
 
     Every check here happens before a server is dialled and before a model
@@ -302,6 +324,24 @@ def open_for_resume(store: Optional[RunStore], run_id: str, *,
             f"the direct loop would restart the plan rather than continue "
             f"it, so it is refused rather than half done.")
 
+    # Read before the objective check and refused beside it, because it is
+    # the same class of mistake: a resume that ran the recorded mission in
+    # a protocol it was not recorded in looks exactly like a run
+    # continuing, right up to the point where the model is handed turns it
+    # cannot have written. Unstated on the command line means "whatever the
+    # run was", which is why `--protocol` defaults to empty rather than to
+    # `json` — a flag that cannot tell "nobody said" from "somebody said
+    # json" would silently refuse every native resume.
+    recorded_protocol = str(opening[-1].get("protocol") or JSON_PROTOCOL)
+    asked = (protocol or "").strip()
+    if asked and asked != recorded_protocol:
+        raise ResumeRefused(
+            f"run {run_id} was recorded under --protocol "
+            f"{recorded_protocol} and this command says {asked}. The "
+            f"replay rebuilds the model's own turns in the shape they were "
+            f"made in, so the two have to match: pass --protocol "
+            f"{recorded_protocol}, or omit it and the run supplies it.")
+
     recorded_objective = str(opening[-1].get("objective") or "")
     wanted = (objective or "").strip()
     if wanted and wanted != recorded_objective:
@@ -321,6 +361,7 @@ def open_for_resume(store: Optional[RunStore], run_id: str, *,
         from_seq=int(meta.last_seq),
         max_steps=int(opening[-1].get("max_steps") or 0),
         outcome=outcome,
+        protocol=recorded_protocol,
     )
 
 
@@ -434,6 +475,8 @@ def rebuild(runner: Any, recorded: Recorded) -> Resumption:
     resumption = Resumption(run_id=recorded.run_id,
                             objective=recorded.objective,
                             from_seq=recorded.from_seq)
+    if recorded.protocol == NATIVE_PROTOCOL:
+        return _rebuild_native(runner, recorded, resumption)
     store = resumption.store
     tail = resumption.tail
 
@@ -469,22 +512,10 @@ def rebuild(runner: Any, recorded: Recorded) -> Resumption:
             tail.append({"role": "assistant", "content": pending_reply})
 
         elif event == TOOL_RESULT:
-            name = str(record.get("tool") or "")
-            arguments = dict(record.get("arguments") or {})
-            output = str(record.get("output") or "")
-            error = str(record.get("error") or "")
-            exit_code = int(record.get("exit_code") or 0)
+            (name, arguments, exit_code, output, error, stored, rendered,
+             truncated) = _replay_result(runner, store, record)
             if error:
                 scrubbed += 1
-            # `evidence` is empty because it never travelled: see
-            # LOST_STRUCTURED. Everything else is on the record.
-            stored = store.record(name, arguments, text=output,
-                                  evidence="", exit_code=exit_code)
-            result = _Result(exit_code=exit_code, stdout=output, stderr=error)
-            rendered, truncated = runner._render_result(
-                name, result, stored.handle,
-                already=store.first_identical(stored),
-            )
             tail.append({"role": "user", "content": rendered})
             resumption.steps.append(MissionStep(
                 index=index, raw_reply=pending_reply, tool=name,
@@ -536,6 +567,198 @@ def rebuild(runner: Any, recorded: Recorded) -> Resumption:
     resumption.next_index = recorded.spent_steps
     if store.results:
         resumption.lost.append(LOST_STRUCTURED)
+    if rejected:
+        resumption.lost.append(LOST_REJECTED_REPLY.format(
+            n=rejected, y="y" if rejected == 1 else "ies"))
+    if repaired:
+        resumption.lost.append(LOST_REPAIR_TURN.format(
+            n=repaired, s="" if repaired == 1 else "s"))
+    if scrubbed:
+        resumption.lost.append(LOST_SCRUBBED.format(
+            n=scrubbed, s="" if scrubbed == 1 else "s"))
+    return resumption
+
+
+def _replay_result(runner: Any, store: MissionResultStore,
+                   record: Mapping[str, Any]):
+    """One recorded ``tool_result`` back into the store, rendered as the
+    loop rendered it.
+
+    Shared by both protocols' rebuilds so there is one answer to "what does
+    a replayed result look like": the store is re-recorded in the same
+    order, which is what keeps the handles (``r1``, ``r2``) addressing the
+    same results, and the text goes through the runner's own
+    ``_render_result``.  A second copy of this in the native rebuild would
+    be a second owner of the transcript the resumed model reads.
+
+    Returns ``(name, arguments, exit_code, output, error, stored,
+    rendered, truncated)``.
+    """
+    name = str(record.get("tool") or "")
+    arguments = dict(record.get("arguments") or {})
+    output = str(record.get("output") or "")
+    error = str(record.get("error") or "")
+    exit_code = int(record.get("exit_code") or 0)
+    # `evidence` is empty because it never travelled: see LOST_STRUCTURED.
+    # Everything else is on the record.
+    stored = store.record(name, arguments, text=output, evidence="",
+                          exit_code=exit_code)
+    result = _Result(exit_code=exit_code, stdout=output, stderr=error)
+    rendered, truncated = runner._render_result(
+        name, result, stored.handle, already=store.first_identical(stored),
+    )
+    return (name, arguments, exit_code, output, error, stored, rendered,
+            truncated)
+
+
+def _rebuild_native(runner: Any, recorded: Recorded,
+                    resumption: Resumption) -> Resumption:
+    """The same replay, in the shape a native turn takes.
+
+    The difference is not cosmetic.  A JSON turn is one assistant message
+    of text answered by one user message; a native turn is one assistant
+    message carrying **every** call it made, followed by one ``tool``
+    message per call quoting that call's id.  A server will refuse the
+    conversation if either half is missing — an unanswered ``tool_calls``
+    or a ``tool`` message answering nothing — so the records of one step
+    are buffered and flushed together rather than appended as they arrive.
+
+    The ids are minted here.  A ``tool_call_id`` is the provider's and
+    never travelled on the event stream (the contract carries what
+    happened, not what the wire looked like), so the rebuilt turns quote
+    ids this process invented.  They are internally consistent, which is
+    what the server checks, and the loss is recorded in
+    :attr:`Resumption.lost` rather than passed off as a faithful replay.
+
+    A gate is closed off the same way: the recorded ``reason`` becomes the
+    ``tool`` message answering the proposed call, so the conversation the
+    resumed loop sends does not end on an unanswered call.
+    """
+    store = resumption.store
+    tail = resumption.tail
+
+    index = 0
+    minted = 0
+    rejected = 0
+    repaired = 0
+    scrubbed = 0
+    # One step's worth: the calls the model made, the message answering
+    # each, and any turn-level correction that has to follow them.
+    calls: List[Dict[str, Any]] = []
+    answers: List[str] = []
+    notes: List[str] = []
+    step_calls: List[MissionCall] = []
+
+    def flush() -> None:
+        nonlocal calls, answers, notes, step_calls
+        if calls:
+            tail.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [
+                    {"id": call["id"], "type": "function",
+                     "function": {"name": call["tool"],
+                                  "arguments": json.dumps(
+                                      call["arguments"], ensure_ascii=False)}}
+                    for call in calls],
+            })
+            for call, answer in zip(calls, answers):
+                tail.append({"role": "tool", "tool_call_id": call["id"],
+                             "content": answer})
+            resumption.steps.append(MissionStep(
+                index=index, raw_reply="", calls=list(step_calls)))
+            # A correction that belonged to a call this replay could not
+            # reconstruct — see LOST_REJECTED_REPLY — comes back as a user
+            # turn after the results rather than as a tool message
+            # answering nothing.
+            for note in notes:
+                tail.append({"role": "user", "content": note})
+        else:
+            for note in notes:
+                tail.append({"role": "assistant", "content": ""})
+                tail.append({"role": "user", "content": note})
+                resumption.steps.append(
+                    MissionStep(index=index, raw_reply="", error=note))
+        calls, answers, notes, step_calls = [], [], [], []
+
+    for record in recorded.records:
+        event = record.get("event")
+
+        if event == STEP_STARTED:
+            flush()
+            index = int(record.get("index", 0))
+
+        elif event == REPLY_REJECTED:
+            rejected += 1
+            notes.append(str(record.get("problem") or ""))
+
+        elif event == TOOL_CALL:
+            minted += 1
+            calls.append({"id": f"resumed_{index}_{len(calls)}",
+                          "tool": str(record.get("tool") or ""),
+                          "arguments": dict(record.get("arguments") or {})})
+
+        elif event == TOOL_RESULT:
+            if not calls:
+                continue
+            (name, arguments, exit_code, output, error, stored, rendered,
+             truncated) = _replay_result(runner, store, record)
+            if error:
+                scrubbed += 1
+            answers.append(rendered)
+            step_calls.append(MissionCall(
+                tool=name, arguments=arguments, call_id=calls[-1]["id"],
+                ordinal=len(step_calls), exit_code=exit_code, output=output,
+                error=error, handle=stored.handle, truncated=truncated))
+            if stored.handle != str(record.get("handle") or stored.handle):
+                resumption.lost.append(
+                    f"handle {record.get('handle')!r} was re-minted as "
+                    f"{stored.handle!r}: the recorded results do not number "
+                    f"the way this store does, so a handle the model was "
+                    f"given earlier now addresses a different result")
+
+        elif event == GATE_REQUESTED:
+            minted += 1
+            name = str(record.get("tool") or "")
+            arguments = dict(record.get("arguments") or {})
+            reason = str(record.get("reason") or "")
+            calls.append({"id": f"resumed_{index}_{len(calls)}",
+                          "tool": name, "arguments": arguments})
+            # The live loop returned here and answered nothing. The reason
+            # is put back as this call's result because it is true, it is
+            # on the wire, and a declared call with no answer is a request
+            # a server refuses outright.
+            answers.append(reason)
+            step_calls.append(MissionCall(
+                tool=name, arguments=arguments, call_id=calls[-1]["id"],
+                ordinal=len(step_calls), error=reason))
+            resumption.gate ={"tool": name, "arguments": arguments,
+                               "reason": reason}
+
+        elif event == GROUNDING:
+            resumption.repairs = max(resumption.repairs,
+                                     int(record.get("repairs") or 0))
+            if record.get("repairing"):
+                repaired += 1
+                # A repair turn spent a step and left no call behind it, so
+                # it is counted here exactly as the JSON rebuild counts it:
+                # the budget was spent whether or not the two messages can
+                # come back. See LOST_REPAIR_TURN.
+                resumption.steps.append(MissionStep(index=index,
+                                                    raw_reply=""))
+
+        elif event == ANSWER:
+            resumption.lost.append(
+                "an `answer` record in a run that was not finished: the "
+                "answer text is replayed as the model's own turn is not, "
+                "and the resumed loop starts from the step after it")
+
+    flush()
+    resumption.next_index = recorded.spent_steps
+    if store.results:
+        resumption.lost.append(LOST_STRUCTURED)
+    if minted:
+        resumption.lost.append(LOST_NATIVE_IDS.format(
+            n=minted, s="" if minted == 1 else "s"))
     if rejected:
         resumption.lost.append(LOST_REJECTED_REPLY.format(
             n=rejected, y="y" if rejected == 1 else "ies"))

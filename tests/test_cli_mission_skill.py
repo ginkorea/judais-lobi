@@ -17,6 +17,7 @@ import json
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1630,3 +1631,318 @@ class TestResumingFromTheCommandLine:
         agent.replies = ['{"answer": "no tools needed"}']
         run_cli(MockClass)
         assert "reconciled" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# `--protocol native`, against the real stub server
+# ---------------------------------------------------------------------------
+
+
+def native_call(name, _id=None, **arguments):
+    return {"id": _id or f"c_{name}", "name": name, "arguments": arguments}
+
+
+def native_answer(text, _id="ans"):
+    return native_call("mission_answer", _id, text=text)
+
+
+class TestTheNativeProtocolFromTheCommandLine:
+    """The wiring an operator actually touches, over the real MCP stub.
+
+    The model is a mock — there is no local vLLM in a test suite — but the
+    tool plane is the real FastMCP server over stdio, so what is exercised
+    is the actual sequence: declare the discovered tools as functions,
+    constrain the decoder to them, read the calls off the side channel,
+    dispatch each through the bridge, and answer.
+    """
+
+    def capable(self, agent, **overrides):
+        """A backend that declares what the native protocol is made of.
+
+        A ``SimpleNamespace`` and not a ``MagicMock``: every attribute of a
+        mock is truthy, so a mock would declare every capability there has
+        ever been and the door below would never refuse anything.
+        """
+        agent.client.capabilities = SimpleNamespace(
+            supports_tool_calls=True, supports_tool_choice_required=True,
+            **overrides)
+
+    def script(self, agent, *turns):
+        """The backend's two channels: content from `chat`, calls beside it."""
+        queue = list(turns)
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            calls = queue.pop(0) if queue else [native_answer("done")]
+            agent.client.last_tool_calls = list(calls)
+            return ""
+
+        agent.client.chat.side_effect = _chat
+
+    def body(self, agent, index=0):
+        return agent.client.chat.call_args_list[index].kwargs
+
+    # ── the request ────────────────────────────────────────────────────
+
+    def test_the_request_declares_the_tools_and_constrains_the_decoder(
+            self, elf, skill_file):
+        MockClass, agent = elf
+        self.capable(agent)
+        self.script(agent, [native_answer("nothing to do")])
+        run_cli(MockClass, "--skill", str(skill_file), "--protocol", "native")
+        body = self.body(agent)
+        assert body["tool_choice"] == "required"
+        assert body["parallel_tool_calls"] is True
+        assert [t["function"]["name"] for t in body["tools"]] == \
+            ["mcp.governed_read", "mission_result", "mission_answer"]
+
+    def test_the_answer_function_carries_its_own_schema(self, elf, skill_file):
+        MockClass, agent = elf
+        self.capable(agent)
+        self.script(agent, [native_answer("nothing to do")])
+        run_cli(MockClass, "--skill", str(skill_file), "--protocol", "native")
+        answer = [t for t in self.body(agent)["tools"]
+                  if t["function"]["name"] == "mission_answer"][0]
+        assert answer["function"]["parameters"]["required"] == ["text"]
+
+    def test_the_json_protocol_still_asks_for_auto(self, elf, skill_file):
+        """The default is untouched, down to the two keys on the request."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        body = self.body(agent)
+        assert body["tool_choice"] == "auto"
+        assert "parallel_tool_calls" not in body
+        assert [t["function"]["name"] for t in body["tools"]] == \
+            ["mcp.governed_read"]
+
+    # ── the run ────────────────────────────────────────────────────────
+
+    def test_a_native_mission_calls_the_server_and_answers(
+            self, elf, skill_file, capsys):
+        MockClass, agent = elf
+        self.capable(agent)
+        self.script(
+            agent,
+            [native_call("mcp.governed_read", "c0", asset_id="asset.5f21")],
+            [native_answer("The asset is asset.5f21.")])
+        run_cli(MockClass, "--skill", str(skill_file), "--protocol", "native")
+        out = capsys.readouterr().out
+        assert "The asset is asset.5f21." in out
+        assert "protocol: native" in out
+
+    def test_two_calls_in_one_turn_both_reach_the_server(
+            self, elf, skill_file, capsys):
+        MockClass, agent = elf
+        self.capable(agent)
+        self.script(
+            agent,
+            [native_call("mcp.governed_read", "c0", asset_id="asset.5f21"),
+             native_call("mcp.governed_read", "c1", asset_id="asset.9a02")],
+            [native_answer("Both read.")])
+        run_cli(MockClass, "--skill", str(skill_file), "--protocol", "native")
+        out = capsys.readouterr().out
+        assert "asset.5f21" in out and "asset.9a02" in out
+        # And the model was shown BOTH results, each quoting its own call.
+        second = agent.seeds[1]
+        assert [m["tool_call_id"] for m in second if m["role"] == "tool"] == \
+            ["c0", "c1"]
+        assert "results only, never source" in second[-1]["content"]
+
+    def test_the_wire_shape_of_the_second_ask_is_the_openai_one(
+            self, elf, skill_file):
+        MockClass, agent = elf
+        self.capable(agent)
+        self.script(
+            agent,
+            [native_call("mcp.governed_read", "c0", asset_id="asset.5f21")],
+            [native_answer("done")])
+        run_cli(MockClass, "--skill", str(skill_file), "--protocol", "native")
+        assistant = [m for m in agent.seeds[1] if m["role"] == "assistant"][0]
+        assert assistant["tool_calls"][0]["id"] == "c0"
+        assert assistant["tool_calls"][0]["function"]["name"] == \
+            "mcp.governed_read"
+
+    def test_the_opening_frame_and_the_log_say_native(self, elf, tmp_path,
+                                                      skill_file):
+        from core.durable import RunStore
+
+        MockClass, agent = elf
+        self.capable(agent)
+        self.script(agent, [native_answer("done")])
+        run_cli(MockClass, "--skill", str(skill_file), "--protocol", "native")
+        store = RunStore(tmp_path / "runs")
+        records = store.records(store.list()[0].run_id)
+        assert records[0]["event"] == "mission_started"
+        assert records[0]["protocol"] == "native"
+
+    def test_the_environment_form_is_the_flags_default(self, elf, skill_file,
+                                                       monkeypatch, capsys):
+        MockClass, agent = elf
+        monkeypatch.setenv("MISSION_PROTOCOL", "native")
+        self.capable(agent)
+        self.script(agent, [native_answer("done")])
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert "protocol: native" in capsys.readouterr().out
+
+    # ── the refusals ───────────────────────────────────────────────────
+
+    def test_a_backend_without_the_capability_is_refused_at_the_door(
+            self, elf, skill_file):
+        """Naming both the capability and the way out. A run that asked for
+        the constrained decoder and silently got prose would be measured as
+        the protocol it was not running."""
+        from core.runtime.backends.base import BackendCapabilities
+
+        MockClass, agent = elf
+        agent.client.capabilities = BackendCapabilities(
+            supports_tool_calls=True)
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--protocol", "native")
+        assert "supports_tool_choice_required" in str(exc.value)
+        assert "--protocol json" in str(exc.value)
+
+    def test_it_is_refused_before_the_model_is_asked(self, elf, skill_file):
+        from core.runtime.backends.base import BackendCapabilities
+
+        MockClass, agent = elf
+        agent.client.capabilities = BackendCapabilities()
+        with pytest.raises(SystemExit):
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--protocol", "native")
+        assert agent.client.chat.call_args_list == []
+
+    def test_a_word_that_is_neither_protocol_is_refused_naming_both(
+            self, elf, skill_file):
+        MockClass, _agent = elf
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--protocol", "functions")
+        assert "json" in str(exc.value) and "native" in str(exc.value)
+
+
+class TestResumingANativeRun:
+    """The replay has to rebuild the shape the run was recorded in.
+
+    A native turn is an assistant message carrying `tool_calls` answered by
+    `tool` messages; rebuilding it as text and sending it back is a 400 at
+    best and a model reading somebody else's transcript at worst. So the
+    protocol comes off the record, and a command line that disagrees with
+    the record is refused like a mismatched objective.
+    """
+
+    def runs(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def capable(self, agent):
+        agent.client.capabilities = SimpleNamespace(
+            supports_tool_calls=True, supports_tool_choice_required=True)
+
+    def killed(self, MockClass, agent, tmp_path):
+        """One native tool call, then the model server goes away."""
+        self.capable(agent)
+        first = [[native_call("mcp.governed_read", "c0",
+                              asset_id="asset.5f21")]]
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            if first:
+                agent.client.last_tool_calls = list(first.pop(0))
+                return ""
+            raise RuntimeError("the model server went away")
+
+        agent.client.chat.side_effect = _chat
+        with pytest.raises(SystemExit):
+            run_cli(MockClass, "--protocol", "native")
+        listed = self.runs(tmp_path).list()
+        assert len(listed) == 1
+        return listed[0].run_id
+
+    def answer_next(self, agent):
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            agent.client.last_tool_calls = [native_answer("It is asset.5f21.")]
+            return ""
+
+        agent.client.chat.side_effect = _chat
+
+    def test_the_resumed_run_finishes_in_the_same_directory(self, elf,
+                                                            tmp_path, capsys):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        self.answer_next(agent)
+        run_resume(MockClass, run_id)
+        assert "It is asset.5f21." in capsys.readouterr().out
+        assert [r.run_id for r in self.runs(tmp_path).list()] == [run_id]
+
+    def test_the_protocol_comes_off_the_record_without_being_restated(
+            self, elf, tmp_path, capsys):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        self.answer_next(agent)
+        run_resume(MockClass, run_id)
+        out = capsys.readouterr().out
+        assert "protocol: native" in out
+        # And the request it made is the native one, not the default.
+        assert agent.client.chat.call_args_list[-1].kwargs["tool_choice"] == \
+            "required"
+
+    def test_the_replayed_turn_is_rebuilt_as_tool_calls_and_results(
+            self, elf, tmp_path):
+        """The whole point. The first thing the resuming process asks
+        already contains the governed read, in the shape the model made
+        it — an assistant turn with `tool_calls`, answered by a `tool`
+        message quoting the id."""
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        agent.seeds.clear()
+        self.answer_next(agent)
+        run_resume(MockClass, run_id)
+        first_ask = agent.seeds[0]
+        assistant = [m for m in first_ask if m["role"] == "assistant"][0]
+        results = [m for m in first_ask if m["role"] == "tool"]
+        assert assistant["tool_calls"][0]["function"]["name"] == \
+            "mcp.governed_read"
+        assert results[0]["tool_call_id"] == \
+            assistant["tool_calls"][0]["id"]
+        assert "Result of mcp.governed_read" in results[0]["content"]
+
+    def test_the_minted_ids_are_said_out_loud_rather_than_passed_off(
+            self, elf, tmp_path, capsys):
+        """A `tool_call_id` is the provider's and never travelled on the
+        stream, so the rebuilt turns quote ids this process invented."""
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        self.answer_next(agent)
+        run_resume(MockClass, run_id)
+        assert "not replayed:" in capsys.readouterr().out
+
+    def test_a_protocol_that_disagrees_with_the_record_is_refused(
+            self, elf, tmp_path):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        self.answer_next(agent)
+        with pytest.raises(SystemExit) as exc:
+            run_resume(MockClass, run_id, "--protocol", "json")
+        assert "recorded under --protocol native" in str(exc.value)
+
+    def test_a_json_run_resumed_as_native_is_refused_too(self, elf, tmp_path):
+        MockClass, agent = elf
+        first = [json.dumps({"tool": "mcp.governed_read",
+                             "arguments": {"asset_id": "asset.5f21"}})]
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            if first:
+                return first.pop(0)
+            raise RuntimeError("the model server went away")
+
+        agent.client.chat.side_effect = _chat
+        with pytest.raises(SystemExit):
+            run_cli(MockClass)
+        run_id = self.runs(tmp_path).list()[0].run_id
+        self.capable(agent)
+        with pytest.raises(SystemExit) as exc:
+            run_resume(MockClass, run_id, "--protocol", "native")
+        assert "recorded under --protocol json" in str(exc.value)
