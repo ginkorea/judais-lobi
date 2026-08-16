@@ -391,6 +391,15 @@ def select_sandbox(requested: Optional[str] = None) -> Tuple[SandboxRunner, str]
         return BwrapSandbox(), "bwrap"
 
     # auto: safe by default wherever the tooling exists to be safe.
+    if choice is not None:
+        # A word that is neither: refuse rather than fall through to auto.
+        # An operator who typed JUDAIS_LOBI_SANDBOX=firejail believes they
+        # chose something, and silently choosing for them is how a control
+        # ends up in a state nobody asked for.
+        raise SandboxUnavailable(
+            f"{SANDBOX_ENV_VAR}/sandbox request {choice!r} is not a sandbox "
+            f"this framework knows; say 'bwrap' or 'none'."
+        )
     if BwrapSandbox.is_available():
         return BwrapSandbox(), "bwrap"
     return NoneSandbox(), "none"

@@ -146,6 +146,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--provider` — which backend.
 - `--model` — which model on it.
 - `--profile` — the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. Arrives back as `profile`.
+- `--unsandboxed` — run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists. Arrives back as `sandbox`.
 - `--skill` — the skill manifest: tool subset, prompt, grounding grammar.
 - `--swarm` — triage first, then stage the mission if it needs staging.
 - `--events` — where the NDJSON goes. See above.
@@ -170,6 +171,8 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `MISSION_EVENTS` — the environment form of `--events`.
 - `MISSION_HISTORY` — the environment form of `--history`.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
+- `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
+- `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.
 
 ## The exit contract
 

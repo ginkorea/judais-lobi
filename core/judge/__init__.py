@@ -4,7 +4,7 @@
 # CandidateManager is lazy to avoid the circular import through
 # core.contracts.schemas → core.judge.models → core.patch.engine.
 #
-# There is no GPUProfile here, and as of 0.8.3 there is no longer one
+# There is no GPUProfile here, and as of 0.9.0 there is no longer one
 # anywhere. There were two: this package's always said "cpu_only" and had no
 # caller at all, and core.runtime.gpu probed the client's devices to cap the
 # context window. The first was deleted as an unused liar; the second went

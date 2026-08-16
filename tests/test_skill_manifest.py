@@ -746,7 +746,7 @@ class TestTheSandboxSeam:
 
     def test_a_none_bus_is_unisolated_and_says_so(self):
         # Explicit, because a bare ``ToolBus()`` is bwrap wherever bubblewrap
-        # exists (0.8.3): the unisolated case has to be asked for by name.
+        # exists (0.9.0): the unisolated case has to be asked for by name.
         assert sandbox_name(ToolBus(sandbox=NoneSandbox())) == "none"
 
     def test_a_bare_bus_names_whatever_select_sandbox_chose(self):

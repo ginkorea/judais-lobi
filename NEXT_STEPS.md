@@ -41,8 +41,8 @@ What separates it from a framework you would trust unattended — each verified:
 
 | Gap | Evidence |
 |---|---|
-| **No sandbox by default.** `NoneSandbox` is `subprocess.run(shell=True)` with the full inherited env; the working `BwrapSandbox` has no production caller. | `core/tools/sandbox.py:23-54, 149-156` |
-| **Allow-everything policy by default.** `Tools()` builds the capability engine with `PolicyPack(allowed_scopes=["*"])`; audit, god-mode and preflight are never attached to the default bus. | `core/tools/__init__.py:60-69`, `bus.py:48-63` |
+| ~~**No sandbox by default.**~~ Closed 0.9.0: `select_sandbox` picks bwrap wherever it exists, the child env is an allow-list, and the choice rides `mission_started.sandbox`. Still open: the in-process `fs` tool. | `core/tools/sandbox.py` |
+| ~~**Allow-everything policy by default.**~~ Closed 0.9.0: `Tools()` builds `SAFE`, `--profile`/`JUDAIS_LOBI_PROFILE` opt up, refusals name the scope and the profile that grants it, `AuditLogger` is on every default bus (`audit_ref`). Still open: god-mode and preflight are unattached; kernel path governs by `set_scope_constraints`, a second surface. | `core/tools/__init__.py`, `core/policy/` |
 | **The real agent path persists nothing.** A CLI mission writes only the optional NDJSON; `SessionManager` (non-atomic `write_text`) serves only the kernel path the CLI does not reach. | `core/sessions/manager.py:53-146` |
 | **No wall-clock bound, no cancellation.** Step count + tool timeouts only; a contended local model can hang a turn forever. | `core/runtime/mission.py:540` |
 | **No usage or cost accounting.** Only char/4 estimates for compaction. | grep: no `usage`/`prompt_tokens` anywhere |
@@ -50,7 +50,7 @@ What separates it from a framework you would trust unattended — each verified:
 | **No token streaming or constrained decoding in agentic runs.** Missions call `chat(stream=False)`; the probed grammar/tool-choice path is deliberately unwired. | `core/cli.py:242-303` |
 | **Thin provider layer.** Three providers; retry only on refused connect, and the timeout/retry policy is imported by Mistral from the local backend rather than owned somewhere neutral (0.8.2 took Mistral off `curl` and onto httpx). | `core/runtime/backends/mistral_backend.py`, `local_backend.py:274` |
 | **No reproducible eval.** The 10 Aug measurements live in docstrings; in-repo there is one recorded-fabrication fixture and an MCP stub. | `tests/fixtures/`, `tests/mcp_stub_server.py` |
-| **Built, tested, unreachable.** External critic, `reading.py`, `policy/audit`, `god_mode`, `Agent.run_task`. (0.8.3 deleted two of these rather than wiring them: `kv_prefix.py`, `runtime/gpu.py`.) | importer scans |
+| **Built, tested, unreachable.** External critic, `reading.py`, `policy/audit`, `god_mode`, `Agent.run_task`. (0.9.0 deleted two of these rather than wiring them: `kv_prefix.py`, `runtime/gpu.py`.) | importer scans |
 
 None of this is a design flaw. It is the honest shape of a framework whose
 last two weeks were spent making one deployment truthful. The next phase is
@@ -84,7 +84,14 @@ Contract as data; de-TAIPAN; `tai` entry point; `mission` extra; SIGTERM
 close; swarm grounding through the shared renderer; pool checkout by tag;
 `PLATFORMS.md`; TAIPAN pins the release and asserts against `contract`.
 
-### Phase 1 — safe by default (0.9)
+### Phase 1 — safe by default (0.9) — done 15 Aug 2026 (0.9.0)
+Every bullet below shipped in 0.9.0 (lanes I/J/K/L/M). What it did *not*
+close, carried forward: the `fs` tool is in-process pathlib and no sandbox
+bounds it; the redactor covers the mission stream and mission-mode stderr but
+not the kernel/campaign/chat error prints; `http.read` sits in `ops`, so web
+research is denied under `safe` and `dev` (a decision, not an accident — but
+one to revisit); the audit file is append-only but not fsync'd (Phase 2);
+`run_python` sends code on stdin under both sandboxes now.
 - **Sandbox on by default.** `Tools()` selects `BwrapSandbox` when `bwrap` is
   present, `NoneSandbox` only under an explicit `--unsandboxed`/env opt-out
   that is *announced* on the stream. `SandboxProfile` honoured on both.
@@ -155,7 +162,7 @@ close; swarm grounding through the shared renderer; pool checkout by tag;
   required. (`curl`-Mistral went in 0.8.2; `tools/recon/*` and `bootstrap.py` are
   gone: nothing imported either, and the recon pair wanted selenium and
   undetected_chromedriver that no extra declared. `kv_prefix.py` and
-  `runtime/gpu.py` went in 0.8.3 — the prefix builder had had no caller since
+  `runtime/gpu.py` went in 0.9.0 — the prefix builder had had no caller since
   Phase 3, and the VRAM cap answered from the wrong machine.)
 
 ### Phase 5 — providers and streaming (0.13)

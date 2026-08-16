@@ -14,7 +14,7 @@
 - [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
 - [x] **Phase 6** – Repository-Native Patch Engine (parser, exact-match matcher with similarity diagnostics, path-jailed applicator, git worktree isolation with crash recovery, PatchEngine orchestrator, ToolBus-integrated PatchTool with 6 actions, 888 tests)
 - [x] **Phase 7** – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic (7.0–7.4 complete)
-- [x] **Phase 8** – Retrieval, Context Discipline & Local Inference — closed 15 Aug 2026 at 0.8.3; see PHASE_8.md
+- [x] **Phase 8** – Retrieval, Context Discipline & Local Inference — closed 15 Aug 2026 at 0.9.0; see PHASE_8.md
 - [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
 - [ ] **Phase 10** – Evaluation & Benchmarks
 

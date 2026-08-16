@@ -283,8 +283,8 @@ OUTCOMES: tuple[str, ...] = (
 #: that says so; the rest of the CLI is a person's surface and may move.
 CLI_FLAGS: tuple[str, ...] = (
     "--mission", "--mcp-url", "--mission-steps", "--provider", "--model",
-    "--profile", "--skill", "--swarm", "--events", "--history", "--gate-tool",
-    "--temperature", "--top-p", "--seed",
+    "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
+    "--history", "--gate-tool", "--temperature", "--top-p", "--seed",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -301,7 +301,12 @@ CLI_FLAGS: tuple[str, ...] = (
 #: ``--events`` and ``--history``; ``JUDAIS_LOBI_PROFILE`` is the environment
 #: form of ``--profile`` — the capability profile the run is governed by, and
 #: since the default is now the deny-by-default ``safe`` profile, the variable
-#: a consumer sets when a hosted mission needs more than read-only.
+#: a consumer sets when a hosted mission needs more than read-only;
+#: ``JUDAIS_LOBI_SANDBOX`` is the environment form of ``--unsandboxed``
+#: (``none``) and can also force ``bwrap``, which is a refusal on a host
+#: without it rather than a silent downgrade; ``JUDAIS_LOBI_AUDIT`` moves the
+#: audit file (a path) or silences it (``none``/``off``), and either way the
+#: opening frame's ``audit_ref`` says what happened.
 #:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
@@ -311,7 +316,7 @@ ENV_VARS: tuple[str, ...] = (
     "ELF_PERSONALITY", "TAI_PERSONALITY",
     "LOCAL_API_BASE", "LOCAL_MODEL",
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
-    "JUDAIS_LOBI_PROFILE",
+    "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
 )
 
 

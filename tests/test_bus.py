@@ -643,14 +643,14 @@ class TestSecretsNeverReachTheAuditFile:
         bus.dispatch("t", key="sk-abc12345678901234567890")
         text = (tmp_path / "audit.jsonl").read_text()
         assert "sk-abc123" not in text
-        assert "[REDACTED]" in text
+        assert "<redacted:" in text
 
     def test_a_bearer_token_in_an_argument(self, tmp_path):
         bus, logger = _audited(tmp_path)
         bus.dispatch("t", header="Bearer eyJhbGciOiJIUzI1NiJ9xyz")
         text = (tmp_path / "audit.jsonl").read_text()
         assert "eyJhbGciOiJIUzI1NiJ9xyz" not in text
-        assert "[REDACTED]" in text
+        assert "<redacted:" in text
 
     def test_the_mcp_token_this_process_was_given(self, tmp_path, monkeypatch):
         """The one with no shape at all. Only the environment knows it."""
@@ -659,7 +659,7 @@ class TestSecretsNeverReachTheAuditFile:
         bus.dispatch("t", auth="totally-opaque-credential")
         text = (tmp_path / "audit.jsonl").read_text()
         assert "totally-opaque-credential" not in text
-        assert "[REDACTED]" in text
+        assert "<redacted:" in text
 
 
 class TestTheArgumentsAreBounded:

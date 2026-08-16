@@ -241,7 +241,7 @@ def _secret_values() -> List[Tuple[str, str]]:
     return found
 
 
-_BEARER = re.compile(r"(?i)\bbearer\s+([A-Za-z0-9._\-+/=]{8,})")
+_BEARER = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._\-+/=]{8,})")
 #: A header and everything after it up to the next delimiter.  Greedy on
 #: purpose: ``Authorization: Bearer abc`` is two tokens and taking only the
 #: first would leave the credential sitting next to a label announcing it.
@@ -256,15 +256,50 @@ _SHAPES: Sequence[Tuple["re.Pattern", str]] = (
 )
 
 
+#: ``NAME=value`` and ``"NAME": "value"`` for any NAME ending in a secret
+#: suffix.  The name survives and the value does not: an audit line that says
+#: ``MCP_TOKEN=`` was passed is worth reading, one that says what it was is a
+#: leak.  Came from the audit logger's own list when the two redactors were
+#: folded into one owner.
+_ASSIGNMENT = re.compile(
+    r"([A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD)[\"']?\s*[:=]\s*[\"']?)"
+    r"([^\s\"',;}]{4,})",
+    re.IGNORECASE,
+)
+
+
 def _credentials(text: str) -> str:
     for value, name in _secret_values():
         if value in text:
             text = text.replace(value, redacted(name))
     text = _HEADER.sub(lambda m: f"{m.group(1)}: {redacted(m.group(1))}", text)
-    text = _BEARER.sub(lambda m: f"Bearer {redacted('bearer')}", text)
+    text = _BEARER.sub(lambda m: f"{m.group(1)}{redacted('bearer')}", text)
+    text = _ASSIGNMENT.sub(
+        lambda m: m.group(1) + redacted(m.group(1).split("=")[0].split(":")[0]
+                                        .strip("\"' ") or "secret"), text)
     for pattern, token in _SHAPES:
         text = pattern.sub(token, text)
     return text
+
+
+def scrub_secrets(text: str) -> str:
+    """Credentials only — no paths, no hostnames.
+
+    The pass the audit logger uses.  An operator's own append-only record
+    of what ran on this host is *supposed* to name this host's files, so
+    the location passes of :func:`scrub` would destroy the record; the
+    credential pass is the one thing both surfaces must agree on, and it
+    has one owner here.  Total and idempotent, like :func:`scrub`.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    return _credentials(text)
+
+
+def secret_values() -> List[str]:
+    """The credential values this process holds, longest first — for callers
+    that need the list itself and not a scrubbed string."""
+    return [value for value, _name in _secret_values()]
 
 
 # ── what counts as a path ────────────────────────────────────────────────────

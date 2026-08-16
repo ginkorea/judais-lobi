@@ -82,7 +82,7 @@ class TestSecretRedaction:
         ))
         entry = audit_log.tail(1)[0]
         assert "sk-abc" not in entry["detail"]
-        assert "[REDACTED]" in entry["detail"]
+        assert "<redacted:" in entry["detail"]
 
     def test_redact_github_token(self, audit_log):
         audit_log.log(AuditEntry(
@@ -91,7 +91,7 @@ class TestSecretRedaction:
         ))
         entry = audit_log.tail(1)[0]
         assert "ghp_" not in entry["detail"]
-        assert "[REDACTED]" in entry["detail"]
+        assert "<redacted:" in entry["detail"]
 
     def test_redact_aws_key(self, audit_log):
         audit_log.log(AuditEntry(
@@ -100,7 +100,7 @@ class TestSecretRedaction:
         ))
         entry = audit_log.tail(1)[0]
         assert "AKIA" not in entry["detail"]
-        assert "[REDACTED]" in entry["detail"]
+        assert "<redacted:" in entry["detail"]
 
     def test_redact_slack_token(self, audit_log):
         audit_log.log(AuditEntry(
@@ -109,7 +109,7 @@ class TestSecretRedaction:
         ))
         entry = audit_log.tail(1)[0]
         assert "xoxb-" not in entry["detail"]
-        assert "[REDACTED]" in entry["detail"]
+        assert "<redacted:" in entry["detail"]
 
     def test_no_redaction_for_safe_text(self, audit_log):
         audit_log.log(AuditEntry(
@@ -125,7 +125,7 @@ class TestSecretRedaction:
             detail="key1=sk-aaaabbbbccccddddeeeefffff key2=AKIAIOSFODNN7EXAMPLE",
         ))
         entry = audit_log.tail(1)[0]
-        assert entry["detail"].count("[REDACTED]") == 2
+        assert entry["detail"].count("<redacted:") == 2
 
     def test_redact_bearer_token_keeps_the_word(self, audit_log):
         """A bearer credential is the one this harness is handed most often —
@@ -138,7 +138,7 @@ class TestSecretRedaction:
         ))
         detail = audit_log.tail(1)[0]["detail"]
         assert "eyJhbGciOiJIUzI1NiJ9" not in detail
-        assert "Bearer [REDACTED]" in detail
+        assert "Bearer <redacted:bearer>" in detail
 
     def test_redact_lowercase_bearer(self, audit_log):
         audit_log.log(AuditEntry(
@@ -146,7 +146,11 @@ class TestSecretRedaction:
         ))
         detail = audit_log.tail(1)[0]["detail"]
         assert "sh0rtish" not in detail
-        assert "bearer [REDACTED]" in detail
+        # Inside an `authorization:` header the header pass wins and names
+        # the header; the credential is gone either way, and the label that
+        # replaces it is greppable.
+        assert "<redacted:" in detail
+        assert "authorization" in detail
 
     @pytest.mark.parametrize("name", ["MCP_TOKEN", "SOME_API_KEY", "APP_SECRET"])
     def test_redact_an_assignment_to_a_credential_name(self, audit_log, name):
@@ -158,7 +162,7 @@ class TestSecretRedaction:
         ))
         detail = audit_log.tail(1)[0]["detail"]
         assert "zzzz-the-actual-value" not in detail
-        assert f"{name}=[REDACTED]" in detail
+        assert f"{name}=<redacted:{name}>" in detail
 
     def test_redact_a_credential_name_in_json(self, audit_log):
         audit_log.log(AuditEntry(
@@ -166,7 +170,7 @@ class TestSecretRedaction:
         ))
         detail = audit_log.tail(1)[0]["detail"]
         assert "zzzz-the-actual-value" not in detail
-        assert "[REDACTED]" in detail
+        assert "<redacted:" in detail
 
     def test_a_name_that_merely_contains_key_is_left_alone(self, audit_log):
         """``keystore=…`` and ``monkey=…`` are not credentials. A redactor
@@ -196,7 +200,7 @@ class TestRedactingWhatTheEnvironmentGave:
         ))
         detail = audit_log.tail(1)[0]["detail"]
         assert "opaque-value-nothing-would-match" not in detail
-        assert "[REDACTED]" in detail
+        assert "<redacted:" in detail
 
     @pytest.mark.parametrize("name", ["X_KEY", "X_TOKEN", "X_SECRET"])
     def test_every_declared_suffix(self, audit_log, monkeypatch, name):
@@ -225,11 +229,11 @@ class TestRedactingWhatTheEnvironmentGave:
     def test_the_longest_value_wins_when_one_contains_another(
             self, audit_log, monkeypatch):
         """A prefix redacted first would leave the tail of the longer secret
-        sitting in the file next to a ``[REDACTED]``."""
+        sitting in the file next to a ``<redacted:…>``."""
         monkeypatch.setenv("A_TOKEN", "abcdefgh")
         monkeypatch.setenv("B_TOKEN", "abcdefgh-and-more")
         audit_log.log(AuditEntry(event_type="test", detail="tok abcdefgh-and-more"))
-        assert audit_log.tail(1)[0]["detail"] == "tok [REDACTED]"
+        assert audit_log.tail(1)[0]["detail"] == "tok <redacted:B_TOKEN>"
 
     def test_env_secrets_lists_only_credential_names(self, monkeypatch):
         monkeypatch.setenv("WHATEVER_TOKEN", "long-enough-value")

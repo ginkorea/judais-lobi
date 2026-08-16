@@ -48,12 +48,14 @@ log and destroy the thing being protected.
 
 import json
 import os
-import re
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from core.redact import (
+    MIN_SECRET_CHARS, SECRET_ENV_SUFFIXES, scrub_secrets, secret_values,
+)
 from core.contracts.schemas import AuditEntry
 
 #: The variable a deployment moves or silences the audit log with.
@@ -117,37 +119,18 @@ class AuditLogger:
     All entries are redacted for secrets before writing.
     """
 
-    SECRET_PATTERNS = [
-        re.compile(r'(sk-[a-zA-Z0-9_-]{16,})'),                   # OpenAI keys
-        re.compile(r'(ghp_[a-zA-Z0-9]{36,})'),                    # GitHub PATs
-        re.compile(r'(AKIA[A-Z0-9]{16})'),                        # AWS access keys
-        re.compile(r'(xox[bpsar]-[a-zA-Z0-9-]+)'),                # Slack tokens
-        # `Bearer <token>` in any casing, in a header, a curl line or an
-        # argument. The word is kept and the token is not: an audit entry
-        # that says a bearer credential was passed is worth reading, and
-        # one that says which is a leak.
-        re.compile(r'([Bb]earer\s+)([A-Za-z0-9._~+/=-]{8,})'),
-        # NAME=value and "NAME": "value" for any NAME ending in one of the
-        # secret suffixes. The name survives, the value does not.
-        re.compile(
-            r'([A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET)["\']?\s*[:=]\s*["\']?)'
-            r'([^\s"\',;}]{4,})',
-            re.IGNORECASE,
-        ),
-    ]
-
-    #: A variable whose name ends in one of these carries a credential, and
-    #: its *value* is redacted wherever it appears — including inside a tool
-    #: argument, where it has no recognisable shape at all.  ``MCP_TOKEN``
-    #: is covered by ``_TOKEN``; it is named here because it is the one this
-    #: harness is most often given.
-    SECRET_ENV_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET")
-
-    #: Environment values shorter than this are not treated as secrets.  A
-    #: variable set to ``1`` or ``on`` would otherwise redact every
-    #: occurrence of that text in the log, which is how a redactor destroys
-    #: the record it exists to protect.
-    MIN_ENV_SECRET_LEN = 8
+    #: Redaction has ONE owner: :func:`core.redact.scrub_secrets`, the
+    #: credential pass of the same redactor the mission stream runs — shapes
+    #: (OpenAI, GitHub, AWS, Slack, ``Bearer …``, ``Authorization:``,
+    #: ``*_KEY``/``*_TOKEN``/``*_SECRET``/``*_PASSWORD`` assignments) and the
+    #: literal values of the credential-named environment variables this
+    #: process was given.  Only the credential pass: the location passes
+    #: (home directories, hostnames, venv paths) are deliberately not run
+    #: here, because an operator's own audit record is *supposed* to name
+    #: this host's files.  Values shorter than
+    #: :data:`core.redact.MIN_SECRET_CHARS` are never treated as secrets.
+    SECRET_ENV_SUFFIXES = SECRET_ENV_SUFFIXES
+    MIN_ENV_SECRET_LEN = MIN_SECRET_CHARS
 
     def __init__(self, path: Optional[Path] = None):
         # ``audit_path("")`` and not ``audit_path()``: constructing a logger
@@ -193,37 +176,13 @@ class AuditLogger:
 
     @classmethod
     def env_secrets(cls) -> List[str]:
-        """Every credential-shaped environment value, longest first.
-
-        Longest first so that a value which is a prefix of another cannot
-        redact half of it and leave the rest legible.
-        """
-        found = set()
-        for name, value in os.environ.items():
-            if not name.upper().endswith(cls.SECRET_ENV_SUFFIXES):
-                continue
-            text = (value or "").strip()
-            if len(text) >= cls.MIN_ENV_SECRET_LEN:
-                found.add(text)
-        return sorted(found, key=len, reverse=True)
-
-    @staticmethod
-    def _mask(match) -> str:
-        """Replace the last group of *match* and keep whatever preceded it.
-
-        A pattern whose only group is the whole match becomes ``[REDACTED]``;
-        a pattern that captures a label first — ``MCP_TOKEN=``, ``Bearer ``
-        — keeps the label.  Which variable was passed is the part of the
-        entry worth having.
-        """
-        text = match.group(0)
-        cut = match.start(match.lastindex or 0) - match.start(0)
-        return text[:cut] + "[REDACTED]"
+        """Every credential-shaped environment value, longest first — read
+        through the one owner, :func:`core.redact.secret_values`."""
+        return secret_values()
 
     def _redact(self, text: str) -> str:
-        """Replace known secret patterns and known secret values."""
-        if not text:
-            return text
+        """Credentials out, through :func:`core.redact.scrub_secrets`."""
+        return scrub_secrets(text)
         for value in self.env_secrets():
             text = text.replace(value, "[REDACTED]")
         for pattern in self.SECRET_PATTERNS:

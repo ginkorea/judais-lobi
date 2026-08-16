@@ -360,6 +360,18 @@ class TestSelectSandbox:
         runner, name = select_sandbox(None)
         assert name == "none"
 
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    def test_a_word_that_is_neither_is_refused_not_guessed_at(
+            self, mock_which, monkeypatch):
+        """``JUDAIS_LOBI_SANDBOX=firejail`` is somebody choosing something;
+        falling through to the auto path would choose for them in silence."""
+        from core.tools.sandbox import SandboxUnavailable
+        monkeypatch.setenv(SANDBOX_ENV_VAR, "firejail")
+        with pytest.raises(SandboxUnavailable, match="firejail"):
+            select_sandbox(None)
+        with pytest.raises(SandboxUnavailable, match="'bwrap' or 'none'"):
+            select_sandbox("docker")
+
     @patch("core.tools.sandbox.BwrapSandbox.is_available", return_value=False)
     def test_forcing_bwrap_without_it_refuses_with_the_fix_named(self, mock_avail):
         with pytest.raises(SandboxUnavailable) as exc:

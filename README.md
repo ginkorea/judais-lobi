@@ -132,6 +132,8 @@ person's surface and may move.
 | `--mission-steps` | — | hard cap on tool turns. Default **8**, and it counts parse-error turns too |
 | `--provider` | — | `openai`, `mistral` or `local` |
 | `--model` | — | which model on it |
+| `--profile` | `JUDAIS_LOBI_PROFILE` | the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. A refusal names the scope and the profile that grants it |
+| `--unsandboxed` | `JUDAIS_LOBI_SANDBOX=none` | run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists; `JUDAIS_LOBI_SANDBOX=bwrap` forces it and refuses on a host without it |
 | `--skill` | `MISSION_SKILL` | a `SKILL.md` manifest, or a directory holding one |
 | `--swarm` | `MISSION_SWARM` | stage the mission when it needs staging |
 | `--events` | `MISSION_EVENTS` | where the NDJSON account goes: `-`, `fd:N`, or a path |
@@ -146,7 +148,9 @@ calls itself in the MCP `initialize` handshake — set it to the agent's name, o
 server that governs by principal records every call as an anonymous one, and
 anything scoring the agent from the audit trail measures it as having called
 nothing. `ELF_PERSONALITY` and `TAI_PERSONALITY` point at persona files;
-`LOCAL_API_BASE` and `LOCAL_MODEL` aim the local backend.
+`LOCAL_API_BASE` and `LOCAL_MODEL` aim the local backend. `JUDAIS_LOBI_AUDIT`
+moves the audit file (a path) or silences it (`none`/`off`); either way
+`mission_started.audit_ref` says which.
 
 ### A skill manifest — `--skill`
 
@@ -426,13 +430,17 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.8.2 — 2064 tests collected.** Mission mode, skill manifests, the grounding
+**v0.9.0 — 2330 tests collected.** Mission mode, skill manifests, the grounding
 validator, `--swarm`, the NDJSON mission stream and the published contract are
-all in this release. 0.8.2 opens the swarm's stream before triage, bounds the
-mission's conversation against the model's real context window (visible as
-`compacted` on `step_started`), gives every tool-result cut one owner
-(`core/bounding.py`), speaks to Mistral over httpx, and makes `BwrapSandbox`
-runnable (network per profile, rlimits applied, `run_python` under tmpfs). `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
+all in this release. 0.9.0 is **safe by default**: tool subprocesses run under
+`bwrap` wherever bubblewrap exists (opt out with `--unsandboxed`, announced as
+`sandbox` on `mission_started`), the capability profile is deny-by-default
+`safe` (`--profile dev|ops|god` opts up and every refusal names the scope and
+the profile that grants it), every default bus writes an append-only audit
+file (`audit_ref`), a manifest that names a code-plane tool must declare
+`sandbox: bwrap` and get it, and one redactor scrubs every error string that
+reaches the stream. The kernel's role prompts are bounded by the same context
+window the mission uses, and Phase 8 is closed. `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
 how a platform deploys this framework as its own agent.
 
 `ROADMAP.md` and `PHASE_8.md` are historical (Feb 2026): they describe the plan,
@@ -606,7 +614,7 @@ As of Phase 7.4:
 * **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
 * **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
 
-Local inference has landed (`--provider local`), and Phase 8 closed at 0.8.3 — `PHASE_8.md` records where each of its milestones ended up.
+Local inference has landed (`--provider local`), and Phase 8 closed at 0.9.0 — `PHASE_8.md` records where each of its milestones ended up.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
