@@ -430,7 +430,7 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.9.0 — 2330 tests collected.** Mission mode, skill manifests, the grounding
+**v0.9.0 — 2338 tests collected.** Mission mode, skill manifests, the grounding
 validator, `--swarm`, the NDJSON mission stream and the published contract are
 all in this release. 0.9.0 is **safe by default**: tool subprocesses run under
 `bwrap` wherever bubblewrap exists (opt out with `--unsandboxed`, announced as
