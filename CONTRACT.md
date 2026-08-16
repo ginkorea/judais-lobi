@@ -52,7 +52,7 @@ Optional, and therefore to be read with a default: `audit_ref` and `run_id` on
 `mission_started`, `plan` on `step_started`
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
-only when the model got as far as naming one), `compacted` on
+only when the model got as far as naming one), `compacted` and `resumed` on
 `step_started`, `approval_id` on `gate_requested`, `sandbox` and `profile` on
 `mission_started`, `usage` on `tool_call`, `answer`, `reply_rejected` and
 `mission_finished`, and `budget` and `reason` on `mission_finished`. `plan`
@@ -103,6 +103,66 @@ that passed no store. It is a run id and not a path: the directory is
 `.judais-lobi/runs/` unless `JUDAIS_LOBI_RUNS` moved it. No credential is
 written there — not the value of `MCP_TOKEN`, and not a transport that might
 carry one.
+
+`resumed` is `{from_seq, steps_replayed}` and rides the **first**
+`step_started` of a stretch that continues an earlier one
+(`--mission --resume <run-id>`), and no other record of the run.
+
+**A resumed run does not emit a second `mission_started`.** It is the same
+mission: one objective, one catalogue, one `run_id`, one log. A consumer
+reading the whole log of a run that was resumed twice would otherwise find
+three openings for one mission and render three of them; and a follower
+holding a cursor is already past the opening, so the frame would be one it
+never receives. `step_started` is the next record such a follower *will*
+receive and the first moment at which the resumption is true.
+
+`from_seq` is the envelope `seq` the log had reached when the run was
+reopened — where the earlier half ends, so a consumer that joined late can
+fetch exactly that half and nothing twice. `steps_replayed` is how many steps
+were rebuilt out of it, so the `index` on this record — which continues the
+earlier numbering rather than starting again — is not read as a gap. A run
+resumed with nothing left of its step budget emits no `step_started` at all
+and therefore no `resumed`: it goes straight to `mission_finished` with
+`budget_exhausted`.
+
+A resumed run's log may therefore hold **more than one**
+`mission_finished`. The earlier ones are where a previous process stopped —
+`incomplete`, emitted from its `finally`, or written by the orphan
+reconciliation below — and `resumed` on the `step_started` that follows is
+what says the run went on. Only two recorded outcomes can be picked back up
+(`incomplete` and `awaiting_approval`) plus a log with no `mission_finished`
+at all; `answered`, `answered_with_caveat` and `budget_exhausted` are
+conclusions and are refused, naming the word the run ended on.
+
+**Orphan reconciliation.** Every mission, on the way in, closes the logs of
+runs nobody else will: a run in the same store with no `mission_finished`
+whose `meta.json` has not been written for 60 seconds gets one appended,
+`incomplete`, with `steps` counted off its `step_started` records and
+`max_steps` off its opening frame. A follower's stream therefore ends rather
+than stopping mid-sentence. The staleness is a guard and not an optimisation
+— a mission merely thinking has no `mission_finished` either, and closing its
+log out from under it would send the answer it is about to give to nobody —
+and the run the closing process is itself working on is excluded outright.
+That the run was reconciled is recorded as `orphaned_at` in its metadata and
+not as a field on the stream: it is a fact about the run, not about the
+mission, and a consumer that had to learn a word to read this ending would be
+learning one about the reconciler.
+
+`max_steps` counts the **whole run** across a resume, recorded steps
+included, and `mission_finished.steps` likewise — so the two stay comparable.
+Without `--mission-steps` the resumed stretch is held to the total the run was
+started with; with it, the number is read as that many *further* steps and the
+total becomes what was spent plus what was asked for. A resume cannot buy a
+fresh budget by omission.
+
+Not everything replays. The typed payload of a tool result
+(`structuredContent`) never travelled on this stream, so a replayed result has
+its text and not its parsed fields: grounding still sees the text, and
+`mission_result(handle=…, path=…)` refuses a field path into a replayed
+result. The text of a rejected reply is not carried either — `reply_rejected`
+carries the refusal, and the reply is precisely the thing that did not parse.
+The harness says which of these applied on the console rather than replaying
+in silence.
 
 `compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,
 tokens_after, limit_tokens, profile}` and is present only on the steps where
@@ -279,6 +339,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--temperature` — sampling, when it must be stated rather than the server's.
 - `--top-p` — likewise.
 - `--seed` — likewise, for a run somebody intends to reproduce.
+- `--resume` — carry on a recorded mission by its `run_id`. The objective comes off that run, so the positional message may be omitted; a different one is refused. A finished run is refused, except one that ended `awaiting_approval`.
 
 ## Environment
 
@@ -295,6 +356,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `MISSION_EVENTS` — the environment form of `--events`.
 - `MISSION_HISTORY` — the environment form of `--history`.
 - `MISSION_SECONDS` — the environment form of `--mission-seconds`; the flag wins. Unset, blank, unparseable or ≤ 0 all mean unbounded, because a mistyped budget that killed the run before its first step would look like a broken harness.
+- `MISSION_RESUME` — the environment form of `--resume`.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.

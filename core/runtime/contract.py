@@ -290,7 +290,29 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: grounding validator reads the store rather than the conversation.
     #: The counts are per step and not a running total; a consumer wanting
     #: the run's total adds them up.
-    STEP_STARTED: ("plan", "compacted"),
+    #:
+    #: ``resumed`` — ``{from_seq, steps_replayed}``, on the **first**
+    #: ``step_started`` of a stretch that continues an earlier one
+    #: (``--mission --resume <run-id>``), and on no other record of the run.
+    #:
+    #: It is here rather than on a second ``mission_started`` because a
+    #: resumed run is the *same* mission: one objective, one catalogue, one
+    #: ``run_id``, one log.  A consumer reading the whole log of a run
+    #: resumed twice would otherwise find three openings for one mission
+    #: and render three of them; and a follower holding a cursor is past
+    #: the opening already, so the frame would be one it never receives.
+    #: ``step_started`` is the next record such a follower *will* receive
+    #: and the first moment at which the resumption is true.
+    #:
+    #: ``from_seq`` is the envelope ``seq`` the log had reached when the
+    #: run was reopened — where the earlier half ends, so a consumer that
+    #: joined late can fetch exactly that half.  ``steps_replayed`` is how
+    #: many steps were rebuilt from it, so the ``index`` on this record —
+    #: which continues the earlier numbering rather than starting again —
+    #: is not read as a gap.  A run resumed with nothing left of its step
+    #: budget emits no ``step_started`` at all and therefore no ``resumed``:
+    #: it goes straight to ``mission_finished`` with ``budget_exhausted``.
+    STEP_STARTED: ("plan", "compacted", "resumed"),
     #: ``tool`` — the name the model wrote, when it wrote one.  Absent when
     #: the reply was rejected before a name could be read out of it.
     #:
@@ -429,8 +451,8 @@ CLI_FLAGS: tuple[str, ...] = (
     "--mission", "--mcp-url", "--mission-steps", "--mission-seconds",
     "--provider", "--model",
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
-    "--history", "--gate-tool", "--approval", "--temperature", "--top-p",
-    "--seed",
+    "--history", "--gate-tool", "--approval", "--resume", "--temperature",
+    "--top-p", "--seed",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -465,7 +487,10 @@ CLI_FLAGS: tuple[str, ...] = (
 #: (``none``/``off``), and off means a gate carries no ``approval_id`` and so
 #: produces nothing anybody can decide against; ``MISSION_APPROVAL`` is the
 #: environment form of ``--approval``, the id of a decision already made that
-#: this run is carrying.
+#: this run is carrying;
+#: ``MISSION_RESUME`` is the environment form of ``--resume``, the run id of
+#: a recorded mission to carry on from — the objective comes off that run's
+#: own record, so the positional message may be omitted with it.
 #:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
@@ -477,6 +502,7 @@ ENV_VARS: tuple[str, ...] = (
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
     "MISSION_APPROVAL",
     "MISSION_SECONDS",
+    "MISSION_RESUME",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",

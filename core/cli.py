@@ -338,6 +338,16 @@ RUN_META_FLAGS = (
     "swarm", "events", "history", "gate_tool", "temperature", "top_p", "seed",
 )
 
+#: The step budget a mission runs under when nobody says otherwise.
+#:
+#: A constant rather than an argparse ``default=`` because ``--mission-steps``
+#: now has to be distinguishable from its own default: on ``--resume`` the
+#: number means *this many further steps* and its absence means *the total the
+#: run was started with* (see :meth:`core.runtime.resume.Recorded
+#: .total_steps`), and a flag that defaults to ``8`` cannot tell "nobody said"
+#: from "somebody said eight".
+DEFAULT_MISSION_STEPS = 8
+
 
 def _run_meta_flags(args) -> dict:
     """How this mission was spawned, as the run's own index over itself.
@@ -410,6 +420,10 @@ def _mission(elf, args, name, style):
     from core.runtime.mission_stream import (
         close_on_sigterm, exit_as_signalled, open_sink,
     )
+    from core.runtime.resume import (
+        ORPHAN_STALE_S, ResumeRefused, open_for_resume, rebuild,
+        reconcile_orphans,
+    )
     from core.runtime.results import RESULT_TOOL
     from core.runtime.usage import PricingTable
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
@@ -464,7 +478,38 @@ def _mission(elf, args, name, style):
     # directory.
     run_store = open_run_store()
     run_id = ""
-    if run_store is not None:
+    # What this mission is about and how many steps it may spend, resolved
+    # here because `--resume` can change both: the objective comes off the
+    # recorded run, and the budget is a TOTAL for that run rather than a
+    # fresh allowance for this process.
+    objective = args.message
+    max_steps = (DEFAULT_MISSION_STEPS if args.mission_steps is None
+                 else max(1, int(args.mission_steps)))
+    resume_id = (getattr(args, "resume", "") or "").strip()
+    recorded = None
+
+    if resume_id:
+        # Every refusal a resume can meet is answered here — before the
+        # server is dialled and before the model is asked — for the reason
+        # `--skill` and `--history` are read at the door. The worst of them
+        # is the objective mismatch: a resume of the wrong run looks
+        # exactly like a run continuing.
+        try:
+            recorded = open_for_resume(run_store, resume_id,
+                                       objective=args.message)
+        except ResumeRefused as exc:
+            raise SystemExit(f"--resume: {exc}")
+        run_id = recorded.run_id
+        objective = recorded.objective
+        max_steps = recorded.total_steps(args.mission_steps)
+        console.print(
+            f"⏩ resume: {run_id} — {recorded.spent_steps} step(s) already "
+            f"recorded, {max_steps} total for this run"
+            + (f", stopped at a gate on {recorded.outcome}"
+               if recorded.outcome else ""),
+            style=style,
+        )
+    elif run_store is not None:
         # `objective` and the flags, and NOT the transport: an --mcp-url can
         # carry a token in its query string and an --mcp-stdio command line
         # can carry one as an argument, and this directory outlives the
@@ -481,6 +526,22 @@ def _mission(elf, args, name, style):
             f"🧾 run: NOT RECORDED — this mission leaves no durable "
             f"transcript and cannot be replayed or resumed. Unset "
             f"{RUNS_ENV} (or point it at a path) to restore the default",
+            style="yellow",
+        )
+
+    # Every mission closes the logs of the runs nobody else will. A run
+    # directory with no `mission_finished` leaves a follower waiting on a
+    # stream that stopped mid-sentence, and the only evidence available for
+    # "died" versus "still going" is how long ago the metadata was written
+    # — so the rule is stated (ORPHAN_STALE_S) rather than assumed, and the
+    # run this process is about to work on is excluded outright.
+    reconciled = reconcile_orphans(run_store, live=run_id)
+    if reconciled:
+        console.print(
+            f"🧾 reconciled: {len(reconciled)} orphaned run(s) — no "
+            f"`mission_finished` and untouched for over "
+            f"{int(ORPHAN_STALE_S)}s, so each log is closed as `incomplete`: "
+            f"{', '.join(reconciled)}",
             style="yellow",
         )
 
@@ -652,7 +713,7 @@ def _mission(elf, args, name, style):
     # `mission_finished`, the `finally` below closes the sink, and
     # `exit_as_signalled` then makes the exit status the signal's.
     cancel = Cancellation()
-    budgets = Budgets(max_steps=args.mission_steps,
+    budgets = Budgets(max_steps=max_steps,
                       max_seconds=getattr(args, "mission_seconds", None))
     deadline = Deadline.of(budgets)
     close_on_sigterm(sink, cancel)
@@ -808,7 +869,22 @@ def _mission(elf, args, name, style):
                     "--unsandboxed, to sandbox them)",
                     style="yellow",
                 )
-            if getattr(args, "swarm", False):
+            if getattr(args, "swarm", False) and recorded is not None:
+                # A resume continues the loop that was recorded, and what
+                # was recorded is a MissionRunner's: the swarm's own
+                # records are its sub-missions' renumbered into one stream.
+                # Re-triaging and re-planning would be a different mission
+                # under the same id, so `--swarm` is set aside for this
+                # turn and said out loud rather than silently honoured.
+                # (A run that was actually STAGED never reaches here — it
+                # carries a checkpointed plan and is refused at the door.)
+                console.print(
+                    "🐝 swarm: set aside for this turn — --resume continues "
+                    "the recorded loop, and re-triaging would be a different "
+                    "mission under the same run id",
+                    style="yellow",
+                )
+            if getattr(args, "swarm", False) and recorded is None:
                 from core.runtime.swarm import SwarmRunner
                 console.print(
                     "🐝 swarm: triage first; small questions run direct, "
@@ -819,7 +895,7 @@ def _mission(elf, args, name, style):
                 runner = SwarmRunner(
                     chat_fn, bus, tool_names,
                     system_message=system_message,
-                    max_steps=args.mission_steps,
+                    max_steps=max_steps,
                     validator=validator,
                     gated=gated,
                     approvals=approvals,
@@ -843,7 +919,7 @@ def _mission(elf, args, name, style):
                 runner = MissionRunner(
                     chat_fn, bus, tool_names,
                     system_message=system_message,
-                    max_steps=args.mission_steps,
+                    max_steps=max_steps,
                     validator=validator,
                     gated=gated,
                     approvals=approvals,
@@ -858,7 +934,30 @@ def _mission(elf, args, name, style):
                     deadline=deadline,
                     cancel=cancel,
                 )
-            transcript = runner.run(args.message)
+            # AFTER the runner exists, because the replay renders a
+            # recorded tool result through the runner's own
+            # `_render_result` rather than a second copy of it — one owner
+            # of what a result reads like in the conversation, so the
+            # resumed model does not read a differently-worded transcript
+            # of its own previous turns.
+            resumption = None
+            if recorded is not None:
+                resumption = rebuild(runner, recorded)
+                console.print(
+                    f"⏩ replayed: {resumption.steps_replayed} step(s), "
+                    f"{len(resumption.store.results)} stored result(s), "
+                    f"continuing at index {resumption.next_index}",
+                    style=style,
+                )
+                for sentence in resumption.lost:
+                    console.print(f"   ⚠️  not replayed: {sentence}",
+                                  style="yellow")
+            # Passed only when there is one: `SwarmRunner.run` takes no
+            # resumption and must not grow a parameter it can never be
+            # given — the CLI builds a MissionRunner for every resume, and
+            # a staged run is refused at the door before that.
+            transcript = (runner.run(objective) if resumption is None
+                          else runner.run(objective, resumption))
     except (McpUnavailable, McpConnectionError) as exc:
         # Scrubbed like everything else a mission says about a failure: this
         # message names the transport, and a transport is a URL, a socket path
@@ -982,13 +1081,15 @@ def _mission(elf, args, name, style):
 
 def _main(AgentClass):
     parser = argparse.ArgumentParser(description=f"{AgentClass.__name__} CLI Interface")
-    # Optional, because two of the flags below are not a message to anybody:
-    # `--approve` and `--refuse` answer a gate and exit, and requiring a
-    # sentence nobody reads would be argparse deciding that a decision is a
-    # kind of conversation. Missing on every other path is a refusal, below,
-    # in this repo's own words rather than a usage block.
+    # Optional at the parser and checked below `parse_args`: it is required
+    # for every entry point EXCEPT `--mission --resume` (the recorded run
+    # already holds the objective) and `--approve`/`--refuse` (which answer a
+    # gate and exit). argparse cannot express "required unless", and a
+    # positional it thinks is optional with a refusal that names the
+    # exception is a better error than a usage block.
     parser.add_argument("message", type=str, nargs="?", default=None,
-                        help="Your message to the AI")
+                        help="Your message to the AI. Omit it only with "
+                             "--mission --resume, --approve or --refuse")
     parser.add_argument("--empty", action="store_true", help="Start new conversation")
     parser.add_argument("--purge", action="store_true", help="Purge long-term memory")
     parser.add_argument("--secret", action="store_true", help="Do not save this message")
@@ -1029,8 +1130,25 @@ def _main(AgentClass):
     parser.add_argument("--mcp-token", type=str, default=os.getenv("MCP_TOKEN"),
                         help="Bearer token for --mcp-url (env: MCP_TOKEN). "
                              "Prefer the env var; an argument is visible in ps")
-    parser.add_argument("--mission-steps", type=int, default=8,
-                        help="Hard cap on tool calls in a mission")
+    parser.add_argument("--mission-steps", type=int, default=None,
+                        help=f"Hard cap on tool calls in a mission "
+                             f"(default {DEFAULT_MISSION_STEPS}). With "
+                             f"--resume it is read as that many FURTHER "
+                             f"steps; unset, the resumed run is held to the "
+                             f"total it was started with")
+    parser.add_argument("--resume", type=str,
+                        default=os.getenv("MISSION_RESUME", ""),
+                        metavar="RUN_ID",
+                        help="Carry on a recorded mission: the run id printed "
+                             "when it started, which also rides the opening "
+                             "frame as mission_started.run_id. The objective "
+                             "comes off that run's own record, so the message "
+                             "may be omitted; passing one that is not the "
+                             "recorded objective is refused. A run that "
+                             "already finished is refused too — except one "
+                             "that ended awaiting_approval, which is waiting "
+                             "on a person rather than on this harness "
+                             "(env: MISSION_RESUME)")
     parser.add_argument("--mission-seconds", type=float,
                         default=_env_seconds("MISSION_SECONDS"),
                         help="Wall-clock budget for a mission, in seconds. "
@@ -1179,6 +1297,10 @@ def _main(AgentClass):
     parser.add_argument("--exclude", action="append", help="Exclude globs")
 
     args = parser.parse_args()
+    if getattr(args, "resume", "") and not args.mission:
+        parser.error(
+            "--resume continues a recorded MISSION; pass --mission with it. "
+            "A chat turn keeps its own history and is not a run.")
     os.environ.setdefault("COQUI_TTS_LOG_LEVEL", "ERROR")
 
     # BEFORE the agent is built, and before anything reads `message`.
@@ -1191,11 +1313,15 @@ def _main(AgentClass):
             "question. Pass one.")
     if args.approve or args.refuse:
         return _decide_approval(args)
-    if not args.message:
+    if not (args.message or "").strip() and not getattr(args, "resume", ""):
+        # ONE check for the positional, after the two commands that never
+        # take one have returned. The remaining exception is a resume: the
+        # recorded run already holds the objective.
         raise SystemExit(
             "a message is required — the question, or the mission's "
-            "objective. (--approve/--refuse are the two commands that take "
-            "none: they answer a gate rather than ask anything.)")
+            "objective. The exceptions: `--mission --resume <run-id>` takes "
+            "the objective from the run it continues, and --approve/--refuse "
+            "answer a gate rather than ask anything.")
 
     print(f"{GREEN}👤 You: {args.message}{RESET}")
 

@@ -424,6 +424,55 @@ class TestAMissionConformsToItsOwnContract:
         assert [s["id"] for s in carrying[0]["plan"]] == ["s1", "s2"]
         assert "plan" not in seen[0]
 
+    def test_a_resumed_stretch_says_so_on_a_declared_field(self, tmp_path):
+        """``resumed`` rides the first ``step_started`` after a resume and no
+        other record — and ``_faults`` above is what holds it to being
+        *declared* there rather than merely present.
+
+        The other half is the absence: there is no second
+        ``mission_started``. A resumed run is the same mission, and a
+        consumer reading the whole log of one resumed twice would otherwise
+        find three openings for one mission and render three.
+        """
+        from core.durable import RunStore
+        from core.runtime.resume import open_for_resume, rebuild
+
+        store = RunStore(tmp_path / "runs")
+        run_id = store.create(meta={"objective": "what do we hold"}).run_id
+        # One step, then the model server goes away. The crash still closes
+        # the log from its `finally`, which is why `incomplete` is a word a
+        # resume is allowed to pick up from.
+        first = [json.dumps({"tool": "catalog_search_assets", "arguments": {}})]
+
+        def dies(messages):
+            if first:
+                return first.pop(0)
+            raise RuntimeError("the model server went away")
+
+        killed = MissionRunner(dies, _Bus(), ["catalog_search_assets"],
+                               max_steps=4, store_tool="",
+                               run_store=store, run_id=run_id)
+        with pytest.raises(RuntimeError):
+            killed.run("what do we hold")
+
+        seen = []
+        recorded = open_for_resume(store, run_id)
+        runner = MissionRunner(
+            _replies(json.dumps({"answer": "three assets"})), _Bus(),
+            ["catalog_search_assets"], max_steps=recorded.total_steps(None),
+            observer=seen.append, store_tool="",
+            run_store=store, run_id=run_id)
+        runner.run(recorded.objective, rebuild(runner, recorded))
+
+        assert _faults(seen) == []
+        assert [r["event"] for r in seen].count(ms.MISSION_STARTED) == 0
+        carrying = [r for r in seen
+                    if r["event"] == ms.STEP_STARTED and "resumed" in r]
+        assert len(carrying) == 1
+        assert set(carrying[0]["resumed"]) == {"from_seq", "steps_replayed"}
+        assert [r["event"] for r in store.records(run_id)].count(
+            ms.MISSION_STARTED) == 1
+
     def test_a_staged_swarms_grounding_record_is_the_whole_record(self):
         """The drift itself, pinned where it happened.
 
@@ -706,6 +755,7 @@ _FLAG_VALUES = {
     "--temperature": "0.2",
     "--top-p": "0.9",
     "--seed": "7",
+    "--resume": "run_20260815T131102-9f3a1c04",
 }
 
 

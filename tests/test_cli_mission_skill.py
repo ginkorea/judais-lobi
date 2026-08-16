@@ -1416,3 +1416,217 @@ class TestResumingWithAnApproval:
 
         assert "does not gate" in capsys.readouterr().out
         assert approvals_dir.get(approval_id).state == APPROVED
+
+
+def resume_argv(run_id, *extra):
+    """``judais --mission --resume <id>`` — and no positional message.
+
+    Omitting it is the point: the objective is on the record, and typing one
+    that is not the recorded objective is the mistake the door refuses.
+    """
+    return ["test", "--mission", "--resume", run_id,
+            "--mcp-stdio", f"{sys.executable} {STUB}", *extra]
+
+
+def run_resume(MockClass, run_id, *extra):
+    from core.cli import _main
+    with patch("sys.argv", resume_argv(run_id, *extra)):
+        _main(MockClass)
+
+
+class TestResumingFromTheCommandLine:
+    """`--resume` against the real stub server, killed at a step boundary.
+
+    The kill is a model that raises on its second call, which is what a
+    served endpoint going away looks like from in here — and the outermost
+    frame of mission mode turns it into `SystemExit(1)` with a scrubbed
+    traceback, so the recorded run ends `incomplete` with its log closed
+    from the `finally`. That is the state a resume actually meets.
+    """
+
+    def runs(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def kill_after_one_step(self, agent):
+        """One tool call, then the model server goes away."""
+        first = [json.dumps({"tool": "mcp.governed_read",
+                             "arguments": {"asset_id": "asset.5f21"}})]
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            if first:
+                return first.pop(0)
+            raise RuntimeError("the model server went away")
+
+        agent.client.chat.side_effect = _chat
+
+    def killed(self, MockClass, agent, tmp_path):
+        self.kill_after_one_step(agent)
+        with pytest.raises(SystemExit):
+            run_cli(MockClass)
+        listed = self.runs(tmp_path).list()
+        assert len(listed) == 1
+        return listed[0].run_id
+
+    def answer_next(self, agent, text="The asset is asset.5f21."):
+        agent.replies = [json.dumps({"answer": text})]
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            return agent.replies.pop(0) if agent.replies else '{"answer": "d"}'
+
+        agent.client.chat.side_effect = _chat
+
+    def test_the_resumed_mission_finishes_in_the_same_run_directory(
+            self, elf, tmp_path, capsys):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        self.answer_next(agent)
+        run_resume(MockClass, run_id)
+        out = capsys.readouterr().out
+        assert "asset.5f21" in out
+        assert len(self.runs(tmp_path).list()) == 1
+        assert self.runs(tmp_path).list()[0].run_id == run_id
+
+    def test_the_log_holds_one_opening_and_the_resumed_step_says_so(
+            self, elf, tmp_path):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        self.answer_next(agent)
+        run_resume(MockClass, run_id)
+        records = self.runs(tmp_path).records(run_id)
+        assert [r["event"] for r in records].count("mission_started") == 1
+        carrying = [r for r in records
+                    if r["event"] == "step_started" and "resumed" in r]
+        assert len(carrying) == 1
+
+    def test_the_resumed_model_is_shown_the_earlier_tool_result(
+            self, elf, tmp_path):
+        """The whole point of the replay. The first thing the resuming
+        process asks the model already contains the governed read the killed
+        process made — otherwise the mission starts over in everything but
+        the log."""
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        agent.seeds.clear()
+        self.answer_next(agent)
+        run_resume(MockClass, run_id)
+        first_ask = agent.seeds[0]
+        assert first_ask[-1]["role"] == "user"
+        assert "Result of mcp.governed_read" in first_ask[-1]["content"]
+
+    def test_the_objective_comes_off_the_record(self, elf, tmp_path, capsys):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        agent.seeds.clear()
+        self.answer_next(agent)
+        run_resume(MockClass, run_id)
+        # `argv()` started the run with "what exists?" and `resume_argv`
+        # passes no message at all.
+        assert agent.seeds[0][1] == {"role": "user", "content": "what exists?"}
+
+    def test_a_different_objective_is_refused_naming_both(self, elf, tmp_path):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        from core.cli import _main
+        with patch("sys.argv", ["test", "something else entirely", "--mission",
+                                "--resume", run_id, "--mcp-stdio",
+                                f"{sys.executable} {STUB}"]):
+            with pytest.raises(SystemExit) as exc:
+                _main(MockClass)
+        assert "what exists?" in str(exc.value)
+        assert "something else entirely" in str(exc.value)
+
+    def test_an_unknown_run_is_refused_before_the_server_is_dialled(
+            self, elf, tmp_path):
+        MockClass, agent = elf
+        with pytest.raises(SystemExit) as exc:
+            run_resume(MockClass, "run_20260101T000000-deadbeef")
+        assert "no run 'run_20260101T000000-deadbeef'" in str(exc.value)
+        # Nothing was asked and nothing was connected to.
+        assert agent.client.chat.call_count == 0
+
+    def test_a_finished_run_is_refused_naming_its_outcome(self, elf, tmp_path):
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "no tools needed"}']
+        run_cli(MockClass)
+        run_id = self.runs(tmp_path).list()[0].run_id
+        with pytest.raises(SystemExit) as exc:
+            run_resume(MockClass, run_id)
+        assert "'answered'" in str(exc.value)
+
+    def test_resume_without_mission_is_refused(self, elf, capsys):
+        """A chat turn keeps its own history and is not a run. Asserted on
+        the SENTENCE and not merely on the exit: this argv would exit anyway
+        the moment something else refused it, and a test that could not tell
+        the two apart would pass over the guard being deleted."""
+        MockClass, _agent = elf
+        from core.cli import _main
+        with patch("sys.argv", ["test", "hello", "--resume", "run_abcd1234"]):
+            with pytest.raises(SystemExit):
+                _main(MockClass)
+        assert "--resume continues a recorded MISSION" in capsys.readouterr().err
+
+    def test_no_message_and_no_resume_is_refused(self, elf, capsys):
+        """The positional is optional at the parser and required here,
+        because argparse cannot say "required unless another flag is set".
+        A server is named in this argv on purpose, so the only thing left to
+        refuse is the missing message."""
+        MockClass, _agent = elf
+        from core.cli import _main
+        with patch("sys.argv", ["test", "--mission", "--mcp-stdio",
+                                f"{sys.executable} {STUB}"]):
+            with pytest.raises(SystemExit) as exc:
+                _main(MockClass)
+        assert "a message is required" in str(exc.value)
+
+    def test_the_run_directory_still_holds_no_credential_after_a_resume(
+            self, elf, tmp_path, monkeypatch):
+        """Re-read, never recovered: MCP_TOKEN comes off the environment of
+        the resuming process, and the directory it resumed from has never
+        held it."""
+        secret = "mcp-tok-9c22ab410d7e"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, tmp_path)
+        self.answer_next(agent, f"the token is {secret}")
+        run_resume(MockClass, run_id)
+        written = "".join(path.read_text(encoding="utf-8", errors="replace")
+                          for path in (tmp_path / "runs").rglob("*")
+                          if path.is_file())
+        assert written
+        assert secret not in written
+
+    def test_an_orphan_is_reconciled_and_announced(self, elf, tmp_path,
+                                                   capsys):
+        """A run with no `mission_finished`, untouched past the staleness
+        rule, is closed by the next mission that comes along — so a follower
+        of its stream is told it is over rather than waiting forever."""
+        import datetime
+
+        from core.runtime.resume import ORPHAN_STALE_S
+
+        MockClass, agent = elf
+        store = self.runs(tmp_path)
+        orphan = store.create(meta={"objective": "one that died"}).run_id
+        record = json.loads(store.meta_path(orphan).read_text())
+        record["updated_at"] = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=ORPHAN_STALE_S + 10)
+        ).isoformat(timespec="seconds")
+        store.meta_path(orphan).write_text(json.dumps(record))
+
+        agent.replies = ['{"answer": "no tools needed"}']
+        run_cli(MockClass)
+        assert "reconciled: 1 orphaned run(s)" in capsys.readouterr().out
+        assert [r["event"] for r in store.records(orphan)] == \
+            ["mission_finished"]
+        assert store.records(orphan)[0]["outcome"] == "incomplete"
+
+    def test_a_fresh_run_of_this_process_is_never_reconciled(self, elf,
+                                                             tmp_path, capsys):
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "no tools needed"}']
+        run_cli(MockClass)
+        assert "reconciled" not in capsys.readouterr().out

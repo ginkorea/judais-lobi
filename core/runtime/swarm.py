@@ -943,6 +943,51 @@ class SwarmRunner:
 
     # ── STAGED: execute, gate, iterate, synthesize ──────────────────────
 
+    # ── the checkpoint ──────────────────────────────────────────────────
+
+    def _checkpoint(self, **facts: Any) -> None:
+        """Write the staged run's progress into the run's metadata.
+
+        Through :meth:`~core.durable.RunStore.update_meta` and never
+        :meth:`~core.durable.RunStore.save`: this runner holds no
+        :class:`~core.durable.Run` and must not start, because saving a
+        record read before a step would stamp a ``last_seq`` that the
+        step's own records have moved on — which is the reused-sequence bug
+        :mod:`core.durable` was written around, reproduced by the one
+        caller most likely to reproduce it.
+
+        Into the *metadata* and not onto the stream, because a checkpoint
+        is not an event.  The plan already reaches a watcher on the first
+        ``step_started`` it produces, and each step's outcome reaches one
+        as the records of the sub-mission that produced it.  What the
+        metadata adds is an index a *restart* can read without replaying
+        the log: which steps are done, and what they found.
+
+        Never raises, for the reason :func:`~core.runtime.mission
+        .persist_record` does not: a staged mission must not die because
+        the disk it was being indexed on filled up.
+        """
+        if self._run_store is None or not self._run_id:
+            return
+        try:
+            self._run_store.update_meta(self._run_id, **facts)
+        except Exception:                       # pragma: no cover - defensive
+            pass
+
+    @staticmethod
+    def _step_done(outcome: "_StepOutcome") -> Dict[str, str]:
+        """One executed step as the metadata's ``steps_done`` entry.
+
+        ``{id, outcome, summary}`` — the word first and the prose second,
+        so a restart can branch on the word without parsing the prose.  A
+        failure's ``why`` goes in the same slot its success's ``summary``
+        would: the field answers "what came of this step", and two fields
+        only one of which is ever populated is two fields to read wrong.
+        """
+        return {"id": outcome.step.id,
+                "outcome": "ok" if outcome.ok else "failed",
+                "summary": outcome.summary if outcome.ok else outcome.why}
+
     def _staged(self, objective: str, plan: List[PlanStep]) -> MissionTranscript:
         transcript = MissionTranscript(objective=objective,
                                        catalogue=list(self._offered),
@@ -951,6 +996,10 @@ class SwarmRunner:
         # It travels on the first `step_started` instead.
         stage = _StageObserver(self._emit)
         stage.announce(plan)
+        # The plan, before the first step of it runs. A checkpoint written
+        # after the work is a checkpoint that is missing exactly when the
+        # work was what died.
+        self._checkpoint(plan=_plan_record(plan), steps_done=[])
         try:
             outcome = self._work_through(objective, plan, transcript, stage)
         finally:
@@ -973,6 +1022,7 @@ class SwarmRunner:
         results: Dict[str, _StepOutcome] = {}
         replanned = False
         queue = list(plan)
+        done: List[Dict[str, str]] = []
 
         # No check at the top of this loop either, for the reason `run` does
         # not repeat one after planning: the next thing that happens is a
@@ -1000,9 +1050,20 @@ class SwarmRunner:
                 # for a gated act.
                 transcript.outcome = AWAITING_APPROVAL
                 transcript.awaiting = sub.awaiting
+                # Checkpointed on the way out, like every other step: a
+                # turn stopped for a person is the one a restart is most
+                # likely to be looking at.
+                done.append({"id": step.id, "outcome": AWAITING_APPROVAL,
+                             "summary": "awaiting a person's decision"})
+                self._checkpoint(steps_done=list(done))
                 return transcript
 
             results[step.id] = outcome
+            # Per step, not per plan: a checkpoint written when the plan
+            # finishes is a checkpoint that never exists for the run that
+            # needed it.
+            done.append(self._step_done(outcome))
+            self._checkpoint(steps_done=list(done))
             if outcome.ok:
                 continue
 
@@ -1026,6 +1087,11 @@ class SwarmRunner:
                 if fresh:
                     queue = fresh
                     stage.announce(fresh)
+                    # The plan as REDRAWN replaces the plan as drawn, for
+                    # the reason `_StageObserver.announce` is called again:
+                    # what is checkpointed has to be the plan the steps
+                    # arriving next belong to.
+                    self._checkpoint(plan=_plan_record(fresh))
                     continue
             # Out of moves for this step: the failure is now part of the
             # answer.  The steps still queued are dropped rather than run

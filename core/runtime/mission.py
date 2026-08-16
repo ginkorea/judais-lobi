@@ -956,8 +956,27 @@ class MissionRunner:
 
     # ── the loop ────────────────────────────────────────────────────────
 
-    def run(self, objective: str) -> MissionTranscript:
-        self._store.clear()
+    def run(self, objective: str,
+            resumption: Optional[Any] = None) -> MissionTranscript:
+        """Run the mission, or carry a recorded one on from where it stopped.
+
+        *resumption* is a :class:`core.runtime.resume.Resumption` — the
+        recorded stream read back into this loop's own state — and ``None``
+        is every run that starts cold, which is the shape this method had
+        before resuming existed.  Duck-typed rather than imported, because
+        :mod:`core.runtime.resume` imports *this* module for
+        :class:`MissionStep` and a type annotation is not worth a cycle.
+
+        **A resumed run does not emit a second ``mission_started``.**  It is
+        the same mission: one objective, one catalogue, one id, one log.  A
+        consumer reading the whole log of a run that was resumed twice would
+        otherwise find three openings for one mission and render three, and
+        a follower holding a cursor sees only the new records anyway, so the
+        opening would be a frame it never receives.  What it does receive is
+        the next ``step_started``, and that is where the resumption is
+        stated — see :meth:`Resumption.as_record
+        <core.runtime.resume.Resumption.as_record>`.
+        """
         # The first start wins, so a sub-mission of a staged run does not
         # rewind the clock its parent already wound. See `Deadline.start`.
         if self._deadline is not None:
@@ -972,6 +991,16 @@ class MissionRunner:
             usage=self._shared_ledger if self._shared_ledger is not None
             else Ledger(),
         )
+        if resumption is None:
+            self._store.clear()
+        else:
+            # Adopted, not copied into: the handles the model was given
+            # earlier in this run (`r1`, `r2`) have to keep addressing the
+            # same results, and a store rebuilt beside the runner's own
+            # would mean `mission_result` reads one and the grounding
+            # validator reads the other.
+            self._store = resumption.store
+            transcript.steps.extend(resumption.steps)
         registered = self._register_store()
         # `history` is a count, not the turns: a watcher needs to tell a
         # seeded conversation from a cold start, and the turns themselves
@@ -989,16 +1018,17 @@ class MissionRunner:
         # auditing off in as many words. A consumer that finds no audit log
         # and no field cannot tell that from a harness that failed to open
         # one.
-        self._emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
-                   objective=objective, catalogue=list(offered),
-                   gated=self.gated, max_steps=self._max_steps,
-                   history=len(self._history),
-                   sandbox=sandbox_of(self._bus),
-                   audit_ref=audit_ref_of(self._bus),
-                   **_run_field(self._run_id),
-                   **_profile_field(self._bus))
+        if resumption is None:
+            self._emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
+                       objective=objective, catalogue=list(offered),
+                       gated=self.gated, max_steps=self._max_steps,
+                       history=len(self._history),
+                       sandbox=sandbox_of(self._bus),
+                       audit_ref=audit_ref_of(self._bus),
+                       **_run_field(self._run_id),
+                       **_profile_field(self._bus))
         try:
-            return self._loop(objective, offered, transcript)
+            return self._loop(objective, offered, transcript, resumption)
         finally:
             if registered:
                 self._bus.unregister(registered)
@@ -1041,11 +1071,35 @@ class MissionRunner:
 
     def _loop(
         self, objective: str, offered: Sequence[str], transcript: MissionTranscript,
+        resumption: Optional[Any] = None,
     ) -> MissionTranscript:
         messages = self.seed(objective)
         repairs = 0
+        start = 0
+        # Carried on the FIRST `step_started` of the resumed stretch and no
+        # other, exactly as the swarm's `plan` is: a field an event declares
+        # is a field a consumer has a sentence for, and one that arrived on
+        # every step would be a fact restated rather than a resumption
+        # announced.
+        opening: Dict[str, Any] = {}
 
-        for index in range(self._max_steps):
+        if resumption is not None:
+            # The seed is rebuilt rather than replayed — persona, catalogue
+            # and history belong to the resuming process, and a run resumed
+            # against a server that has since grown a tool must be told
+            # about the tool. Everything the loop itself appended is the
+            # tail, and that is the half the log can give back.
+            messages.extend(dict(turn) for turn in resumption.tail)
+            repairs = resumption.repairs
+            start = resumption.next_index
+            opening = {"resumed": resumption.as_record()}
+
+        # `self._max_steps` is the TOTAL for the run and not an allowance
+        # for this process — see `Recorded.total_steps`, which is where the
+        # caller works out what that total is. A resumed run whose recorded
+        # steps already met it runs no steps and ends `budget_exhausted`,
+        # which is the truth about it.
+        for index in range(start, self._max_steps):
             # Between steps AND before the model call, which in this loop
             # is one point: every path that continues — a parse error, a
             # refused tool, a grounding repair — comes back through here,
@@ -1057,9 +1111,10 @@ class MissionRunner:
             # what this step is about to send, and a watcher told about it
             # afterwards has already rendered the turn it applied to.
             messages, compacted = self._fit(messages)
-            self._emit(STEP_STARTED, index=index,
+            self._emit(STEP_STARTED, index=index, **opening,
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
+            opening = {}
             reply = str(self._chat(messages) or "")
             # Read here and used below: whichever record this step emits
             # carries the cost of the call that produced it. One read per
