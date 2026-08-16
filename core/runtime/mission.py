@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.bounding import MAX_RESULT_BYTES, bound_result
+from core.durable import RunStore
 from core.redact import scrub_record
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
@@ -81,6 +82,44 @@ def _profile_field(bus: Any) -> Dict[str, Any]:
     engine = getattr(bus, "capability_engine", None)
     name = getattr(engine, "current_profile", None) if engine is not None else None
     return {"profile": name} if name else {}
+
+
+def _run_field(run_id: str) -> Dict[str, Any]:
+    """``{"run_id": id}`` when this run is being recorded, else ``{}``.
+
+    The OPTIONAL field on ``mission_started`` that tells a consumer where
+    the durable transcript of this mission is: :class:`core.durable.RunStore`
+    keys a directory by it, and a consumer that wants to replay or resume a
+    run must not have to guess a directory name from a timestamp.  Absent
+    (not ``null``) when nothing is being recorded — ``JUDAIS_LOBI_RUNS=off``,
+    or a library caller that passed no store — so "there is a record of this
+    run" is a fact the stream states only when it is true.  One owner: the
+    swarm's opening frame reads it from here too.
+    """
+    return {"run_id": run_id} if run_id else {}
+
+
+def persist_record(store: Optional[RunStore], run_id: str,
+                   record: Dict[str, Any]) -> None:
+    """Append one emitted record to the run's durable log.  Never raises.
+
+    The same promise ``_emit`` makes about an observer, for the same
+    reason and one layer down: a mission must not fail because the disk
+    it was being written to filled up, and an 11,000-second submission
+    lost to a full ``/var`` is a worse outcome than a transcript with a
+    hole in it.  A caller that needs to know whether the record landed
+    reads the store.
+
+    One function rather than a copy in each runner's ``_emit``: the
+    staged path hand-listing six of ten grounding fields is what a second
+    copy of an emitter's decision looks like a month later.
+    """
+    if store is None or not run_id:
+        return
+    try:
+        store.append(run_id, record)
+    except Exception:                           # pragma: no cover - defensive
+        pass
 
 
 #: The whole protocol between the loop and the model.  Kept in one string
@@ -413,6 +452,24 @@ class MissionRunner:
         *run*: the whole of every result stays in :attr:`store`, which is
         what the grounding validator reads and what the model can still
         address by handle.
+    run_store, run_id:
+        A :class:`core.durable.RunStore` and the id of the run inside it
+        to append every emitted record to, before that record reaches
+        *observer*.  ``None`` (or an empty id) keeps no transcript, which
+        is what a library caller and every test that does not ask for one
+        get.
+
+        Named ``run_store`` and not ``store`` because :attr:`store` on
+        this class is already taken by the mission's *result* store, and
+        two different things called the same word one line apart is how a
+        caller passes the wrong one.
+
+        The pair is the durable half of the streaming contract: the
+        observer is a subscriber that may go away — a browser closing, a
+        pipe breaking — and the run directory is what is still there
+        afterwards.  ``mission_finished`` in the log is the record of a
+        run that closed; a log without one is an orphan, and that is a
+        fact about the disk rather than about whoever was watching.
 
     The store tool is offered **in addition to** ``tool_names``, and
     that is not a hole in a closed set: it reaches nothing outside the
@@ -436,6 +493,8 @@ class MissionRunner:
         history: Sequence[Dict[str, str]] = (),
         observer: Optional[Observer] = None,
         window: Optional[MissionWindow] = None,
+        run_store: Optional[RunStore] = None,
+        run_id: str = "",
     ):
         self._chat = chat_fn
         self._bus = bus
@@ -454,6 +513,21 @@ class MissionRunner:
         self._history = validate_history(history)
         self._observer = observer
         self._window = window
+        # The durable half of the observer. `None` — or a store with no run
+        # id — is a loop that keeps no transcript, which is what a library
+        # caller and every test that does not ask for one get.
+        self._run_store = run_store
+        self._run_id = str(run_id or "")
+
+    @property
+    def run_id(self) -> str:
+        """The run this loop's records are being recorded under, or ``""``.
+
+        Readable because the id is the only handle a caller has on the
+        transcript afterwards, and the store — not the runner and not the
+        CLI — is the one that hands it out.
+        """
+        return self._run_id
 
     @property
     def store(self) -> MissionResultStore:
@@ -492,10 +566,19 @@ class MissionRunner:
         validator checks an answer against the store's copy of a result, which
         a rewritten stream copy would no longer match.
         """
+        if self._observer is None and self._run_store is None:
+            return
+        record = scrub_record({"event": event, **fields})
+        # The store first, then the watcher: the sink is a CLIENT of the
+        # durable log and not a second truth beside it, so a record a
+        # consumer saw is a record the transcript has. The scrubbed copy
+        # goes to both — a credential that must not reach a pane must not
+        # reach a file on disk either.
+        persist_record(self._run_store, self._run_id, record)
         if self._observer is None:
             return
         try:
-            self._observer(scrub_record({"event": event, **fields}))
+            self._observer(record)
         except Exception:                       # pragma: no cover - defensive
             pass
 
@@ -640,6 +723,7 @@ class MissionRunner:
                    history=len(self._history),
                    sandbox=sandbox_of(self._bus),
                    audit_ref=audit_ref_of(self._bus),
+                   **_run_field(self._run_id),
                    **_profile_field(self._bus))
         try:
             return self._loop(objective, offered, transcript)

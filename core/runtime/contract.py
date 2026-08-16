@@ -224,7 +224,24 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: does with it — fetch it, show it to an operator, ignore it — is the
     #: consumer's business.  It names the file for the whole process, so
     #: the same string arrives on every mission that process runs.
-    MISSION_STARTED: ("sandbox", "profile", "audit_ref"),
+    #: ``run_id`` — the id of the durable transcript this mission is
+    #: being recorded in: one directory per run under
+    #: ``.judais-lobi/runs/`` (moved or silenced by ``JUDAIS_LOBI_RUNS``),
+    #: holding an fsync'd append-only ``events.jsonl`` of every record on
+    #: this stream and a ``meta.json`` beside it.  A consumer that wants
+    #: to replay a mission, resume one, or find out whether a mission it
+    #: lost the pipe to ever finished needs the id: the alternative is
+    #: guessing a directory name off a timestamp.
+    #:
+    #: **Absent, not null**, when nothing is being recorded — persistence
+    #: turned off in as many words, or a library caller that passed no
+    #: store — so a consumer reads it with a default like every OPTIONAL
+    #: field.  The log holds the same records this stream carries, in the
+    #: same order, each wrapped in a ``{seq, at, record}`` envelope; the
+    #: envelope is the store's numbering and never travels on the wire.
+    #: A log whose last record is ``mission_finished`` is a run that
+    #: closed; a log without one is an orphan.
+    MISSION_STARTED: ("sandbox", "profile", "audit_ref", "run_id"),
     #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
     #: first ``step_started`` that plan produces.  Absent on a direct
     #: mission, which has no plan to show, and absent on every later step.
@@ -306,7 +323,10 @@ CLI_FLAGS: tuple[str, ...] = (
 #: (``none``) and can also force ``bwrap``, which is a refusal on a host
 #: without it rather than a silent downgrade; ``JUDAIS_LOBI_AUDIT`` moves the
 #: audit file (a path) or silences it (``none``/``off``), and either way the
-#: opening frame's ``audit_ref`` says what happened.
+#: opening frame's ``audit_ref`` says what happened; ``JUDAIS_LOBI_RUNS`` does
+#: the same for the durable transcript — a path moves the run directories,
+#: ``none``/``off`` keeps none at all, and either way ``run_id`` on the
+#: opening frame is present exactly when there is one to name.
 #:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
@@ -317,6 +337,7 @@ ENV_VARS: tuple[str, ...] = (
     "LOCAL_API_BASE", "LOCAL_MODEL",
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
+    "JUDAIS_LOBI_RUNS",
 )
 
 

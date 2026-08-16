@@ -240,6 +240,36 @@ def _mission_tools(manifest, discovered, style, bus=None):
         raise SystemExit(f"--skill: {exc}")
 
 
+#: The argv-derived facts a run's metadata carries, and the deliberate
+#: absence of two.  ``--mcp-url`` and ``--mcp-stdio`` are NOT here: a URL can
+#: carry a token in its query string and a stdio command line can carry one as
+#: an argument, and a run directory outlives the process that was handed it.
+#: The transport a mission used is recoverable from the audit log of what it
+#: called; a credential written into `meta.json` is a credential on somebody's
+#: disk next month.
+RUN_META_FLAGS = (
+    "mission_steps", "provider", "model", "profile", "unsandboxed", "skill",
+    "swarm", "events", "history", "gate_tool", "temperature", "top_p", "seed",
+)
+
+
+def _run_meta_flags(args) -> dict:
+    """How this mission was spawned, as the run's own index over itself.
+
+    Only flags that were actually given: a metadata file listing every
+    default is a file in which the two settings somebody chose are invisible.
+    Read through ``getattr`` so a caller building an ``args`` of its own —
+    the tests do — is not obliged to carry the whole parser's surface.
+    """
+    given = {}
+    for flag in RUN_META_FLAGS:
+        value = getattr(args, flag, None)
+        if value in (None, "", False, []):
+            continue
+        given[flag] = value
+    return given
+
+
 def _run_mission(elf, args, name, style):
     """:func:`_mission`, with its last traceback scrubbed on the way out.
 
@@ -282,6 +312,7 @@ def _mission(elf, args, name, style):
     This function joins them in that order — who you are, then what you
     are doing — and supplies neither.
     """
+    from core.durable import RUNS_ENV, open_run_store
     from core.redact import scrub
     from core.runtime.context_window import MissionWindow
     from core.runtime.grounding import GroundingConfig, GroundingValidator
@@ -313,6 +344,40 @@ def _mission(elf, args, name, style):
             f"🧾 audit: DISABLED — nothing this mission calls will be "
             f"recorded. Unset {AUDIT_ENV} (or point it at a path) to restore "
             f"the default",
+            style="yellow",
+        )
+
+    # The durable transcript, opened BEFORE the connection for the same
+    # reason the event sink is: a run that never reached a server is exactly
+    # the run somebody comes looking for afterwards, and it has to have left
+    # a directory. The store hands out the id — this function never mints one
+    # — so there is one owner of "which run is this" and a consumer reading
+    # `mission_started.run_id` can find the directory without guessing.
+    #
+    # Said out loud both ways round, like the audit line above it: a path
+    # tells an operator where to look, and the absence of one is the more
+    # important announcement, because keeping no transcript is a decision
+    # (JUDAIS_LOBI_RUNS=off) and not a thing to discover later from an empty
+    # directory.
+    run_store = open_run_store()
+    run_id = ""
+    if run_store is not None:
+        # `objective` and the flags, and NOT the transport: an --mcp-url can
+        # carry a token in its query string and an --mcp-stdio command line
+        # can carry one as an argument, and this directory outlives the
+        # process. `created_at` on the record is when the run started, so
+        # nothing here restates it.
+        run_id = run_store.create(meta={
+            "objective": args.message,
+            "flags": _run_meta_flags(args),
+        }).run_id
+        console.print(
+            f"🧾 run: {run_id} — {run_store.directory(run_id)}", style=style)
+    else:
+        console.print(
+            f"🧾 run: NOT RECORDED — this mission leaves no durable "
+            f"transcript and cannot be replayed or resumed. Unset "
+            f"{RUNS_ENV} (or point it at a path) to restore the default",
             style="yellow",
         )
 
@@ -468,6 +533,14 @@ def _mission(elf, args, name, style):
                 style=style,
             )
             tool_names = _mission_tools(manifest, discovered, style, bus)
+            # The catalogue is not knowable until the server has answered,
+            # so it joins the metadata here rather than at `create`. Through
+            # `update_meta` and not by saving a held record: the runner is
+            # about to start appending, and writing a whole record back over
+            # one it read earlier is precisely the stale-`last_seq` bug
+            # `core.durable` was written around.
+            if run_store is not None:
+                run_store.update_meta(run_id, catalogue=list(tool_names))
             declared[:] = _function_schemas(tool_names)
             # The identifier check must not flag the name of a tool this
             # mission offered — the harness wrote that name into the prompt
@@ -573,6 +646,8 @@ def _mission(elf, args, name, style):
                     # planner is not offered the code+sdk rung at all.
                     sdk_import=manifest.sdk_import if manifest else "",
                     window=window,
+                    run_store=run_store,
+                    run_id=run_id,
                 )
             else:
                 runner = MissionRunner(
@@ -584,6 +659,8 @@ def _mission(elf, args, name, style):
                     history=history,
                     observer=sink,
                     window=window,
+                    run_store=run_store,
+                    run_id=run_id,
                 )
             transcript = runner.run(args.message)
     except (McpUnavailable, McpConnectionError) as exc:

@@ -1068,3 +1068,105 @@ class TestTheOpeningNamesTheAuditFile:
                       if entry["tool_name"] == "catalog.search"]
         assert len(dispatched) == 2
         assert all("step" in json.loads(entry["detail"]) for entry in dispatched)
+
+
+# ── the durable transcript, on both routes ───────────────────────────────────
+
+
+class TestTheRunIsRecorded:
+    """One turn is one run, whichever way the router sends it.
+
+    The staged path's sub-missions reach this runner's ``_emit`` to be
+    renumbered, and the direct path's now reach it too — a sub-runner handed
+    a store of its own would write every step twice, once under its own index
+    and once under the global one, and a direct path that went around the
+    choke point would put a mission's answer on a pane and not in its log.
+    """
+
+    def store(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def direct(self, bus, sink, store, run_id):
+        plain = ScriptedModel(DIRECT)
+        executor = ScriptedModel(tool_call("catalog.search", q="corpus"),
+                                 '{"answer": "found corpus.abc123"}')
+        return swarm(plain, executor, bus, observer=sink,
+                     run_store=store, run_id=run_id).run("what is trending?")
+
+    def staged(self, bus, sink, store, run_id):
+        plain = ScriptedModel(
+            STAGED, TWO_STEP_PLAN, '{"pass": true}',
+            "Final: corpus.abc123 charted in chart.png")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        return swarm(plain, executor, bus, observer=sink,
+                     run_store=store, run_id=run_id).run("find it and chart it")
+
+    @pytest.mark.parametrize("route", ["direct", "staged"])
+    def test_the_stream_and_the_log_hold_the_same_records(self, bus, tmp_path,
+                                                          route):
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        sink = Sink()
+        getattr(self, route)(bus, sink, store, run_id)
+        assert store.records(run_id) == sink.records
+
+    @pytest.mark.parametrize("route", ["direct", "staged"])
+    def test_nothing_is_written_twice(self, bus, tmp_path, route):
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        getattr(self, route)(bus, Sink(), store, run_id)
+        written = [r["event"] for r in store.records(run_id)]
+        assert written.count("mission_started") == 1
+        assert written.count("mission_finished") == 1
+        assert written.count("answer") == 1
+        seqs = [e["seq"] for e in store.since(run_id)]
+        assert seqs == list(range(1, len(written) + 1))
+
+    @pytest.mark.parametrize("route", ["direct", "staged"])
+    def test_the_opening_frame_names_the_run(self, bus, tmp_path, route):
+        from core.runtime.contract import conforms
+
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        sink = Sink()
+        getattr(self, route)(bus, sink, store, run_id)
+        opening = sink.of("mission_started")[0]
+        assert opening["run_id"] == run_id
+        assert conforms(opening) == []
+
+    @pytest.mark.parametrize("route", ["direct", "staged"])
+    def test_it_records_with_nobody_watching(self, bus, tmp_path, route):
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        getattr(self, route)(bus, None, store, run_id)
+        assert [r["event"] for r in store.records(run_id)][-1] == \
+            "mission_finished"
+
+    def test_a_swarm_with_neither_says_nothing_about_a_run(self, bus):
+        sink = Sink()
+        plain = ScriptedModel(DIRECT)
+        executor = ScriptedModel('{"answer": "ok"}')
+        swarm(plain, executor, bus, observer=sink).run("q")
+        assert "run_id" not in sink.of("mission_started")[0]
+
+    def test_a_sub_mission_is_not_handed_the_store(self, bus, tmp_path):
+        """One writer per run. The sub-runner's records arrive here to be
+        renumbered; a store on the sub-runner would log the pre-renumbered
+        copy as well."""
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        runner = swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "ok"}'),
+                       bus, run_store=store, run_id=run_id)
+        built = runner._runner(system_message="x", max_steps=2)
+        assert built._run_store is None and built.run_id == ""
+
+    def test_the_id_is_readable_off_the_runner(self, bus, tmp_path):
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        assert swarm(ScriptedModel(), ScriptedModel(), bus,
+                     run_store=store, run_id=run_id).run_id == run_id

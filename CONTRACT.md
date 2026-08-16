@@ -48,7 +48,7 @@ direct loop and from `--swarm` alike. Index them without a default.
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` |
 | `mission_finished` | `outcome`, `steps`, `max_steps` |
 
-Optional, and therefore to be read with a default: `audit_ref` on
+Optional, and therefore to be read with a default: `audit_ref` and `run_id` on
 `mission_started`, `plan` on `step_started`
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
@@ -83,6 +83,24 @@ much as the path: a consumer that simply finds no audit file cannot tell a
 harness that failed to write one from a harness that was told not to, and only
 one of those is a decision somebody made. It is a path on the spawning host,
 not a URL, and the same string arrives on every mission that process runs.
+
+`run_id` is the durable transcript of this mission: one directory per run
+under `.judais-lobi/runs/<run_id>/`, holding an fsync'd append-only
+`events.jsonl` and a `meta.json` replaced atomically. Every record on this
+stream is appended to that log *before* it reaches the event sink — the sink
+is a client of the log, not a second copy of it — each wrapped in a
+`{seq, at, record}` envelope. The envelope is the store's numbering and never
+travels on the wire, so the records a consumer reads are byte-identical
+whether they came off the pipe or off the disk; `seq` is the cursor a replay
+resumes from. A log whose records include `mission_finished` is a run that
+closed; a log without one is an orphan, which is how a restart tells a mission
+that died from a mission that is still going. **Absent, not `null`**, when
+nothing is being recorded — `JUDAIS_LOBI_RUNS=none|off`, or a library caller
+that passed no store. It is a run id and not a path: the directory is
+`<runs root>/<run_id>`, and the runs root is the harness's own
+`.judais-lobi/runs/` unless `JUDAIS_LOBI_RUNS` moved it. No credential is
+written there — not the value of `MCP_TOKEN`, and not a transport that might
+carry one.
 
 `compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,
 tokens_after, limit_tokens, profile}` and is present only on the steps where
@@ -173,6 +191,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.
+- `JUDAIS_LOBI_RUNS` — a path moves the durable run directories; `none`/`off` keeps none at all. Either way `run_id` on `mission_started` is present exactly when there is a transcript to name.
 
 ## The exit contract
 

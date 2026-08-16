@@ -1527,3 +1527,141 @@ class TestTheAuditKnowsWhichStepCalled:
         with pytest.raises(RuntimeError):
             MissionRunner(explode, b, ["catalog.search"], store_tool="").run("go")
         assert "step" not in b.audit_context
+
+
+# ── the durable transcript ───────────────────────────────────────────────────
+
+
+class TestTheRunIsRecorded:
+    """The sink is a client of the log, not a second copy of it.
+
+    A pane holds a mission until the socket carrying it drops; a directory
+    holds it afterwards. Both have to hold the same thing, and they do
+    because there is one choke point — ``_emit`` — and it writes the record
+    down before it hands it out.
+    """
+
+    def _store(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def test_the_stream_and_the_log_hold_the_same_records(self, bus, tmp_path):
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+        seen = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="a"),
+                          '{"answer": "found it"}'),
+            bus, ["catalog.search"], store_tool="", observer=seen.append,
+            run_store=store, run_id=run_id,
+        ).run("go")
+        assert store.records(run_id) == seen
+
+    def test_every_record_is_numbered_once_and_in_order(self, bus, tmp_path):
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="a"),
+                          '{"answer": "found it"}'),
+            bus, ["catalog.search"], store_tool="",
+            run_store=store, run_id=run_id,
+        ).run("go")
+        seqs = [e["seq"] for e in store.since(run_id)]
+        assert seqs == sorted(set(seqs)) == list(range(1, len(seqs) + 1))
+
+    def test_the_opening_frame_names_the_run(self, bus, tmp_path):
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+        seen = []
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", observer=seen.append,
+            run_store=store, run_id=run_id,
+        ).run("go")
+        opening = seen[0]
+        assert opening["run_id"] == run_id
+        assert conforms(opening) == []
+
+    def test_a_loop_with_no_store_says_nothing_about_a_run(self, bus):
+        """Absent, not null: a consumer must be able to tell "no transcript"
+        from "a transcript whose id I was not told"."""
+        seen = []
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", observer=seen.append,
+        ).run("go")
+        assert "run_id" not in seen[0]
+
+    def test_it_records_with_nobody_watching(self, bus, tmp_path):
+        """The disk is a watcher. A mission spawned with no ``--events`` sink
+        still has to leave a transcript behind."""
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", run_store=store, run_id=run_id,
+        ).run("go")
+        assert [r["event"] for r in store.records(run_id)] == \
+            ["mission_started", "step_started", "answer", "mission_finished"]
+
+    def test_a_finished_run_says_so_in_its_own_log(self, bus, tmp_path):
+        """``mission_finished`` in the log is the record of a run that closed.
+        A later lane reads its absence as an orphan; this is the half that
+        makes the reading true."""
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", run_store=store, run_id=run_id,
+        ).run("go")
+        assert store.records(run_id)[-1]["event"] == "mission_finished"
+
+    def test_a_mission_that_raised_still_closed_its_log(self, bus, tmp_path):
+        """For the reason the record is emitted from a ``finally``: a log that
+        simply stops is indistinguishable from a mission still thinking."""
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+
+        def explode(messages):
+            raise RuntimeError("the model server went away")
+
+        with pytest.raises(RuntimeError):
+            MissionRunner(explode, bus, ["catalog.search"], store_tool="",
+                          run_store=store, run_id=run_id).run("go")
+        assert store.records(run_id)[-1]["event"] == "mission_finished"
+
+    def test_what_is_written_is_the_scrubbed_record(self, bus, tmp_path,
+                                                   monkeypatch):
+        """The redactor is at the choke point, and the file is downstream of
+        it: a credential that must not reach a pane must not reach a disk."""
+        monkeypatch.setenv("MCP_TOKEN", "shhh-a-very-secret-token")
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+        MissionRunner(
+            ScriptedModel('{"answer": "the token is shhh-a-very-secret-token"}'),
+            bus, ["catalog.search"], store_tool="",
+            run_store=store, run_id=run_id,
+        ).run("go")
+        written = store.log_path(run_id).read_text(encoding="utf-8")
+        assert "shhh-a-very-secret-token" not in written
+
+    def test_a_store_that_cannot_write_does_not_fail_the_mission(self, bus,
+                                                                 tmp_path):
+        """The same promise ``_emit`` makes about an observer. An 11,000-second
+        submission lost to a full disk is worse than a hole in a transcript."""
+        class Broken:
+            def append(self, run_id, record):
+                raise OSError("no space left on device")
+
+        transcript = MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", run_store=Broken(), run_id="run_abcd1234",
+        ).run("go")
+        assert transcript.answer == "ok"
+
+    def test_the_id_is_readable_off_the_runner(self, bus, tmp_path):
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+        runner = MissionRunner(ScriptedModel(), bus, ["catalog.search"],
+                               run_store=store, run_id=run_id)
+        assert runner.run_id == run_id
