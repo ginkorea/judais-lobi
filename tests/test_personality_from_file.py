@@ -426,7 +426,7 @@ class TestCliWiring:
         built = {}
 
         class Lobi:
-            def __init__(self, model=None, provider=None):
+            def __init__(self, model=None, provider=None, sandbox_request=None):
                 built["model"], built["provider"] = model, provider
 
         agent, name = _build_agent(
@@ -444,7 +444,7 @@ class TestCliWiring:
         seen = {}
 
         class FakeAgent:
-            def __init__(self, config, model=None, provider=None):
+            def __init__(self, config, model=None, provider=None, sandbox_request=None):
                 seen.update(config=config, model=model, provider=provider)
 
         monkeypatch.setattr(agent_module, "Agent", FakeAgent)
@@ -465,7 +465,7 @@ class TestCliWiring:
         seen = {}
 
         class FakeAgent:
-            def __init__(self, config, model=None, provider=None):
+            def __init__(self, config, model=None, provider=None, sandbox_request=None):
                 seen.update(model=model, provider=provider)
 
         monkeypatch.setattr(agent_module, "Agent", FakeAgent)

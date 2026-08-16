@@ -51,10 +51,20 @@ direct loop and from `--swarm` alike. Index them without a default.
 Optional, and therefore to be read with a default: `plan` on `step_started`
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
-only when the model got as far as naming one), and `compacted` on
-`step_started`. `plan` rode `mission_started` until 0.8.x: that record is now
-emitted before triage — which is itself a call to the model — so at the time
-it is written there is no plan and there may never be one.
+only when the model got as far as naming one), `compacted` on
+`step_started`, and `sandbox` on `mission_started`. `plan` rode
+`mission_started` until 0.8.x: that record is now emitted before triage —
+which is itself a call to the model — so at the time it is written there is no
+plan and there may never be one.
+
+`sandbox` is `"bwrap"` or `"none"`: the isolation the mission's tool
+subprocesses ran under. `"bwrap"` is write isolation with the network denied
+unless a tool declared it and the child environment stripped to a small
+allow-list; `"none"` is no isolation, reached only by an explicit opt-out
+(`--unsandboxed`, `JUDAIS_LOBI_SANDBOX=none`) or a host without bubblewrap.
+It describes the subprocess plane only — an in-process MCP tool dispatches
+inside the harness process and touches no sandbox whatever this says — and it
+rides both the direct and the staged path.
 
 `compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,
 tokens_after, limit_tokens, profile}` and is present only on the steps where

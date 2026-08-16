@@ -145,6 +145,19 @@ class TestHistorySeeding:
         started = next(e for e in events if e["event"] == "mission_started")
         assert started["history"] == 2
 
+    def test_mission_started_announces_the_sandbox(self, bus):
+        """The opening frame carries the isolation the tool subprocesses ran
+        under — the bus's own word for its installed sandbox, so a consumer
+        reads it off the stream rather than inferring it from the host."""
+        events = []
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            observer=events.append,
+        ).run("go")
+        started = next(e for e in events if e["event"] == "mission_started")
+        assert started["sandbox"] == bus.sandbox_name
+        assert started["sandbox"] in ("bwrap", "none")
+
 
 class TestHistoryValidation:
     """A malformed history is refused loudly, never silently dropped."""

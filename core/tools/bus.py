@@ -13,7 +13,12 @@ from core.tools.descriptors import (
     summarize_input_schema,
 )
 from core.tools.capability import CapabilityEngine, CapabilityVerdict
-from core.tools.sandbox import SandboxRunner, NoneSandbox
+from core.tools.sandbox import (
+    SandboxRunner,
+    BwrapSandbox,
+    build_sandbox_env,
+    select_sandbox,
+)
 
 
 @dataclass
@@ -56,7 +61,14 @@ class ToolBus:
         self._descriptors: Dict[str, ToolDescriptor] = {}
         self._executors: Dict[str, Callable] = {}
         self._capability = capability_engine or CapabilityEngine()
-        self._sandbox = sandbox or NoneSandbox()
+        # Safe by default: a bus handed no sandbox picks one the way the CLI
+        # and library callers do — bwrap where bubblewrap exists, none only
+        # where it does not. A caller that wants no isolation says so by
+        # passing ``NoneSandbox()`` explicitly, so the default is the safe
+        # thing and the unsafe thing is a decision on the record. (Passing a
+        # concrete sandbox skips the auto path entirely, including its read
+        # of ``JUDAIS_LOBI_SANDBOX``.)
+        self._sandbox = sandbox if sandbox is not None else select_sandbox()[0]
         self._preflight_hook = preflight_hook
         self._god_mode = god_mode
         self._audit = audit
@@ -68,6 +80,18 @@ class ToolBus:
     @property
     def sandbox(self) -> SandboxRunner:
         return self._sandbox
+
+    @property
+    def sandbox_name(self) -> str:
+        """The word for this bus's sandbox: ``"bwrap"`` or ``"none"``.
+
+        Derived from the installed runner rather than remembered from how it
+        was chosen, so there is one owner of the string and it cannot drift
+        from the object actually enforcing (or not) the isolation. This is
+        what ``mission_started`` announces, read the same way by the direct
+        and the staged runner.
+        """
+        return "bwrap" if isinstance(self._sandbox, BwrapSandbox) else "none"
 
     def register(self, descriptor: ToolDescriptor, executor: Callable) -> None:
         """Register a tool with its descriptor and executor."""
@@ -292,18 +316,34 @@ class ToolBus:
         ignored.  Sandboxing a command must not change which command it
         is.
         """
+        # The child environment is built here, once, from the profile — this
+        # is the single place the sandbox layer decides what a tool's child
+        # inherits of the host environment, and it means the same thing on
+        # either backend because it is handed to ``execute(env=…)`` as data
+        # rather than re-derived inside each sandbox from ``os.environ``.
+        child_env = build_sandbox_env(profile)
+
         # ``shell=None`` rather than ``False``: ``run_subprocess`` always
         # passes the flag, but a caller that installs this runner directly
         # and never had an opinion should keep the sandbox's inference
         # rather than be told, by a default, that nothing is a shell.
+        #
+        # ``stdin`` is threaded through explicitly, not swallowed into
+        # ``**_kwargs``: ``run_python`` sends its program on stdin so it
+        # never appears in ``ps`` (the argv leak 0.8.2 fixed for the model
+        # key), and a runner that dropped it would send the interpreter an
+        # empty stdin and an empty program.
         def _runner(cmd, *, shell: Optional[bool] = None, timeout: int = 120,
-                    executable: Optional[str] = None, **_kwargs):
+                    executable: Optional[str] = None,
+                    stdin: Optional[str] = None, **_kwargs):
             return self._sandbox.execute(
                 cmd,
                 profile=profile,
                 timeout=timeout,
                 shell=shell,
                 executable=executable,
+                env=child_env,
+                stdin=stdin,
             )
         return _runner
 

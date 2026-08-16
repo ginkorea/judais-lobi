@@ -51,6 +51,7 @@ from core.kernel.workflows import get_coding_workflow
 from core.sessions.manager import SessionManager
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
+from core.tools.sandbox import NoneSandbox
 from core.tools.descriptors import (
     PATCH_DESCRIPTOR,
     REPO_MAP_DESCRIPTOR,
@@ -179,10 +180,20 @@ def make_real_bus(repo):
     double because the map is not what is on trial here and building a
     real one costs a tree-sitter parse per test.
     """
-    bus = ToolBus(capability_engine=CapabilityEngine(
-        PolicyPack(allowed_scopes=[
-            "fs.read", "fs.write", "git.read", "git.write", "verify.run",
-        ])))
+    # NoneSandbox on purpose: the fixture repo lives under the pytest tmp
+    # dir, outside this process's cwd, and the verifier shells out to
+    # `cd {repo} && python check.py`. Under the default bwrap sandbox `/tmp`
+    # is a private tmpfs and only cwd is writable, so that repo would be
+    # invisible to the child and the verify phase would fail for a reason
+    # that has nothing to do with the coding loop this test exercises. The
+    # default is safe; this test says out loud that it wants none.
+    bus = ToolBus(
+        capability_engine=CapabilityEngine(
+            PolicyPack(allowed_scopes=[
+                "fs.read", "fs.write", "git.read", "git.write", "verify.run",
+            ])),
+        sandbox=NoneSandbox(),
+    )
 
     bus.register(PATCH_DESCRIPTOR, PatchTool(repo_path=str(repo)))
     bus.register(VERIFY_DESCRIPTOR, VerifyTool(config={"verification": {

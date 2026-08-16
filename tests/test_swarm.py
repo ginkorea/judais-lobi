@@ -190,6 +190,16 @@ class TestTheStreamOpensFirst:
         assert (swarmed.of("mission_started")[0]
                 == plain_mission.of("mission_started")[0])
 
+    def test_the_opening_record_announces_the_sandbox(self, bus):
+        """The staged path reads the same bus property the direct path does,
+        so both announce the same isolation and neither invents its own."""
+        sink = Sink()
+        swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "done"}'),
+              bus, observer=sink).run("what is trending?")
+        started = sink.of("mission_started")[0]
+        assert started["sandbox"] == bus.sandbox_name
+        assert started["sandbox"] in ("bwrap", "none")
+
 
 # ── TRIAGE: small stays small ────────────────────────────────────────────
 

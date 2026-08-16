@@ -43,6 +43,12 @@ class _Result:
 
 
 class _Bus:
+    #: The runners read this off the bus to announce `sandbox` on
+    #: `mission_started`; the stub answers `"none"` so the field is present
+    #: and conformant without this test taking a dependency on the host's
+    #: bubblewrap.
+    sandbox_name = "none"
+
     def __init__(self, answers=None):
         self.calls = []
         self.answers = answers or {}

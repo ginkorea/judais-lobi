@@ -64,6 +64,28 @@ class TestCLISmoke:
         _main(MockClass)
         mock_elf.run_python_task.assert_called_once()
 
+    @patch("sys.argv", ["test", "hello", "--unsandboxed"])
+    def test_unsandboxed_flag_asks_the_agent_for_no_sandbox(self):
+        """`--unsandboxed` resolves to the one word `select_sandbox` reads as
+        the opt-out and hands it to the agent it builds."""
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.chat.return_value = iter([])
+        _main(MockClass)
+        _args, kwargs = MockClass.call_args
+        assert kwargs.get("sandbox_request") == "none"
+
+    @patch("sys.argv", ["test", "hello"])
+    def test_no_flag_leaves_the_sandbox_choice_to_env_and_auto(self):
+        """No flag means no request, so `JUDAIS_LOBI_SANDBOX` and then the
+        auto path decide — the on-by-default behaviour, not an opt-out."""
+        from core.cli import _main
+        MockClass, mock_elf = self._make_mock_elf_class()
+        mock_elf.chat.return_value = iter([])
+        _main(MockClass)
+        _args, kwargs = MockClass.call_args
+        assert kwargs.get("sandbox_request") is None
+
     @patch("sys.argv", ["test", "hello", "--md"])
     def test_md_flag(self):
         from core.cli import _main

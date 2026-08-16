@@ -39,8 +39,19 @@ def _build_agent(AgentClass, args):
     variable set (see :func:`_personality_default`), this is the line
     that was here before.
     """
+    # ``--unsandboxed`` resolves to the one word ``select_sandbox`` reads as
+    # the opt-out; no flag leaves it ``None``, so ``JUDAIS_LOBI_SANDBOX`` and
+    # then the auto path (bwrap when present) still decide. Flag beats env
+    # beats auto, in that order, because a flag passed None never reaches the
+    # env lookup.
+    sandbox_request = "none" if getattr(args, "unsandboxed", False) else None
+
     if not getattr(args, "personality", None):
-        return AgentClass(model=args.model, provider=args.provider), AgentClass.__name__
+        return (
+            AgentClass(model=args.model, provider=args.provider,
+                       sandbox_request=sandbox_request),
+            AgentClass.__name__,
+        )
 
     from core.agent import Agent
     from core.contracts.schemas import PersonalityConfig
@@ -50,6 +61,7 @@ def _build_agent(AgentClass, args):
         config=config,
         model=args.model or config.default_model,
         provider=args.provider or config.default_provider,
+        sandbox_request=sandbox_request,
     )
     return agent, config.name
 
@@ -455,6 +467,28 @@ def _run_mission(elf, args, name, style):
                 f"every result stays in the mission store",
                 style=style,
             )
+            # The same word `mission_started` carries on the stream, printed
+            # here for the person watching the console. `bwrap` means tool
+            # subprocesses run write-isolated with the network denied unless a
+            # tool asked and a stripped environment; `none` means no
+            # isolation. Either way the in-process MCP tool plane is not
+            # sandboxed — it dispatches inside this process and never reaches
+            # a child.
+            if bus.sandbox_name == "bwrap":
+                console.print(
+                    "🧱 sandbox: bwrap — tool subprocesses are write-isolated, "
+                    "the network is denied unless a tool declares it, and the "
+                    "environment is stripped to a small allow-list (MCP tools "
+                    "dispatch in-process and are not sandboxed)",
+                    style=style,
+                )
+            else:
+                console.print(
+                    "🔓 sandbox: none — tool subprocesses run WITHOUT isolation "
+                    "(install bubblewrap, or unset JUDAIS_LOBI_SANDBOX/drop "
+                    "--unsandboxed, to sandbox them)",
+                    style="yellow",
+                )
             if getattr(args, "swarm", False):
                 from core.runtime.swarm import SwarmRunner
                 console.print(
@@ -634,6 +668,16 @@ def _main(AgentClass):
                              "the mission holding the proposed arguments, and "
                              "the call is not made. Repeatable. There is "
                              "deliberately no flag that answers a gate.")
+
+    parser.add_argument("--unsandboxed", action="store_true",
+                        help="Run tool subprocesses with NO isolation. The "
+                             "default is a bwrap sandbox wherever bubblewrap "
+                             "is installed (write isolation, network denied "
+                             "unless a tool asks, a stripped environment); "
+                             "this opts out of it. The env form is "
+                             "JUDAIS_LOBI_SANDBOX=none, and =bwrap forces the "
+                             "sandbox and refuses if bwrap is absent. In-process "
+                             "MCP tools are unaffected either way.")
 
     parser.add_argument("--md", action="store_true", help="Non-streaming markdown output")
     parser.add_argument("--raw", action="store_true", help="Stream output (default)")

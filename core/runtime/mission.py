@@ -560,10 +560,16 @@ class MissionRunner:
         # `schema_version` first and on the FIRST record, so a consumer that
         # is going to refuse this stream refuses it before it has rendered
         # anything from it. See `core.runtime.contract`.
+        # `sandbox` is the word the bus's actual runner answers to — `bwrap`
+        # or `none` — so a consumer learns from the opening frame whether the
+        # tool subprocesses this mission runs are isolated, without inferring
+        # it from the host. One owner: the bus derives it from the installed
+        # sandbox, and the staged path reads the same property.
         self._emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
                    objective=objective, catalogue=list(offered),
                    gated=self.gated, max_steps=self._max_steps,
-                   history=len(self._history))
+                   history=len(self._history),
+                   sandbox=self._bus.sandbox_name)
         try:
             return self._loop(objective, offered, transcript)
         finally:
