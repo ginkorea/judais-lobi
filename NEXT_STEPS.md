@@ -50,7 +50,7 @@ What separates it from a framework you would trust unattended — each verified:
 | **No token streaming or constrained decoding in agentic runs.** Missions call `chat(stream=False)`; the probed grammar/tool-choice path is deliberately unwired. | `core/cli.py:242-303` |
 | **Thin provider layer.** Three providers; retry only on refused connect, and the timeout/retry policy is imported by Mistral from the local backend rather than owned somewhere neutral (0.8.2 took Mistral off `curl` and onto httpx). | `core/runtime/backends/mistral_backend.py`, `local_backend.py:274` |
 | **No reproducible eval.** The 10 Aug measurements live in docstrings; in-repo there is one recorded-fabrication fixture and an MCP stub. | `tests/fixtures/`, `tests/mcp_stub_server.py` |
-| **Built, tested, unreachable.** External critic, `reading.py`, `kv_prefix.py`, `policy/audit`, `god_mode`, `Agent.run_task`. | importer scans |
+| **Built, tested, unreachable.** External critic, `reading.py`, `policy/audit`, `god_mode`, `Agent.run_task`. (0.8.3 deleted two of these rather than wiring them: `kv_prefix.py`, `runtime/gpu.py`.) | importer scans |
 
 None of this is a design flaw. It is the honest shape of a framework whose
 last two weeks were spent making one deployment truthful. The next phase is
@@ -151,10 +151,12 @@ close; swarm grounding through the shared renderer; pool checkout by tag;
 - **Async core, sync façade.** The MCP client already runs a loop thread; make
   the run loop `async` so tool calls, streaming and cancellation are natural,
   and keep `judais` sync at the CLI edge.
-- Delete or promote the vestigial: `kv_prefix.py`, the second vector index if
-  FAISS is required. (`curl`-Mistral went in 0.8.2; `tools/recon/*` and `bootstrap.py` are
+- Delete or promote the vestigial: the second vector index if FAISS is
+  required. (`curl`-Mistral went in 0.8.2; `tools/recon/*` and `bootstrap.py` are
   gone: nothing imported either, and the recon pair wanted selenium and
-  undetected_chromedriver that no extra declared.)
+  undetected_chromedriver that no extra declared. `kv_prefix.py` and
+  `runtime/gpu.py` went in 0.8.3 — the prefix builder had had no caller since
+  Phase 3, and the VRAM cap answered from the wrong machine.)
 
 ### Phase 5 — providers and streaming (0.13)
 - One HTTP client (httpx) for every hosted provider; retry/backoff policy per

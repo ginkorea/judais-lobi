@@ -14,7 +14,7 @@
 - [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
 - [x] **Phase 6** – Repository-Native Patch Engine (parser, exact-match matcher with similarity diagnostics, path-jailed applicator, git worktree isolation with crash recovery, PatchEngine orchestrator, ToolBus-integrated PatchTool with 6 actions, 888 tests)
 - [x] **Phase 7** – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic (7.0–7.4 complete)
-- [ ] **Phase 8** – Retrieval, Context Discipline & Local Inference
+- [x] **Phase 8** – Retrieval, Context Discipline & Local Inference — closed 15 Aug 2026 at 0.8.3; see PHASE_8.md
 - [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
 - [ ] **Phase 10** – Evaluation & Benchmarks
 
@@ -879,12 +879,12 @@ This phase combines retrieval engineering with the transition from API-based inf
 
 **Tasks:**
 
-* Implement symbol-aware retrieval (fetching specific function spans, not whole files).
+* ✅ Implement symbol-aware retrieval (fetching specific function spans, not whole files) — `core/context/spans.py`, reached as `repo_map symbol`.
 * ✅ Implement **rolling summarization** for tool traces: full logs stream to disk, but only capped summaries enter the LLM context (`max_tool_output_bytes_in_context`). When output exceeds the budget, do not blindly truncate — prompt the model with a structured message: *"Output exceeded budget (N bytes). Full log at `<artifact_path>`. Use targeted retrieval (grep, tail, symbol lookup) to find specific information."*
-* **Local inference bring-up:** Deploy and validate vLLM or TRT-LLM serving the target model on the available GPU(s). Wire `local_backend.py` (stubbed in Phase 1) to the local server. For multi-GPU setups, configure tensor parallelism via the serving layer (vLLM `--tensor-parallel-size`, TRT-LLM TP config).
-* Define the **model selection criteria** for local inference: minimum coding benchmark scores, context window requirements, quantization compatibility.
+* ✅ **Local inference bring-up:** Deploy and validate vLLM or TRT-LLM serving the target model on the available GPU(s). Wire `local_backend.py` (stubbed in Phase 1) to the local server. For multi-GPU setups, configure tensor parallelism via the serving layer (vLLM `--tensor-parallel-size`, TRT-LLM TP config). — `--provider local` is a real backend: streaming, retries, and a `GET /models` probe.
+* ~~Define the **model selection criteria** for local inference: minimum coding benchmark scores, context window requirements, quantization compatibility.~~ **Superseded** by the eval harness (NEXT_STEPS Phase 3): a score from recorded runs, not a criteria document.
 * Validate that all golden transcript tests pass against the local backend.
-* ✅ Add **context window manager** with GPU-aware caps, instance-aware limits, and auto-compaction.
+* ✅ Add **context window manager** with endpoint-probed caps (the server's `max_model_len`, not the client's VRAM), instance-aware limits, and auto-compaction.
 **Definition of Done:** Context size is strictly bounded. Tool output never causes a token overflow crash. The system can run fully offline against the local backend on at least one GPU profile.
 
 ### Phase 9 – Performance Optimization (TRT-LLM / vLLM Tuning)

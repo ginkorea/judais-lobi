@@ -1,6 +1,6 @@
 # 🧠 judais-lobi
 
-> Artifact-driven. Capability-gated. GPU-aware.
+> Artifact-driven. Capability-gated. Endpoint-aware.
 > Not a chatbot. A kernel.
 
 ---
@@ -513,7 +513,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/policy/` — profiles, god mode, audit logging
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
 * `core/patch/` — patch engine: parser, matcher, applicator, worktree manager, engine orchestrator
-* `core/judge/` — composite judge: tier scoring, candidate sampling, GPU profile stub
+* `core/judge/` — composite judge: tier scoring, candidate sampling
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -534,7 +534,7 @@ The target architecture (from the roadmap) is:
 * Capability-gated tool execution with least-privilege by intersection (Global ∩ Workflow ∩ Step ∩ Phase)
 * Sandbox isolation (bwrap / nsjail)
 * Tests > Lint > LLM scoring hierarchy
-* GPU-aware orchestration (vLLM / TRT-LLM)
+* Endpoint-probed orchestration (vLLM / TRT-LLM serve the model; the client asks the endpoint how big its window is)
 * Optional external critic (frontier logic auditor)
 
 The system is moving toward:
@@ -574,7 +574,7 @@ As of Phase 7.4:
 * **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
 * **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
 
-Local inference has landed (`--provider local`). Phase 8b focuses on retrieval discipline. See `ROADMAP.md`.
+Local inference has landed (`--provider local`), and Phase 8 closed at 0.8.3 — `PHASE_8.md` records where each of its milestones ended up.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 

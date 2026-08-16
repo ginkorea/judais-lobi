@@ -2,7 +2,33 @@
 
 # Phase 8 Plan — Retrieval, Context Discipline & Local Inference
 
-**Status:** Planned (no GPU available for local inference testing).
+**Status: closed 15 Aug 2026 (0.8.3).** The plan below is the February
+document, left as written. What actually shipped rarely used the file names it
+proposed, so the table says where each milestone landed instead. Two rows are
+deliberately not code in this repo: D1 became an eval question, and B3 became a
+durability question. Both are named in `NEXT_STEPS.md` with the phase that owns
+them next.
+
+## Disposition
+
+| Milestone | Where it landed |
+| --- | --- |
+| **A** — symbol-aware retrieval | `core/context/spans.py`, reached as the `symbol` action of the `repo_map` tool (`core/tools/descriptors.py`) and asked for by name by the RETRIEVE role (`core/kernel/roles.py`), which settles with `("repo_map", "symbol")`. Tests: `tests/test_symbol_retrieval.py`. No `symbol_lookup` tool and no `span_index.py`: an action on the tool that already owns the map beat a sixth tool. |
+| **B1** — global context accounting | `core/runtime/context_window.py` — `resolve_profile` is the one cascade that answers how big the window is (backend probe → config → model default → provider default), and one estimator serves every caller. There is no `context_budget.py`; a second module would have been a second opinion. |
+| **B2** — context management at every prompt build | Chat: `Agent.chat` (`core/agent.py`) routes through `ContextWindowManager`. Mission: `MissionWindow` (0.8.2), with the compaction reported on the stream as `compacted` on `step_started` rather than written to a side file. Kernel roles: 0.8.3 — the roles route through the same owner, and their compactions are recorded as a phase artifact. |
+| **B3** — tool-log routing | Partial, and deferred on purpose. `core/tools/tool_output.py` writes full logs under `.judais-lobi/tool_logs` and puts a bounded summary plus a retrieval hint in context; putting those logs *beside the run's durable transcript* waits on there being one — NEXT_STEPS Phase 2 (thread primitive, `SessionManager` as its client). |
+| **C** — local inference bring-up | `core/runtime/backends/local_backend.py`: OpenAI-compatible chat completions, SSE streaming, a `GET /models` probe that yields `max_model_len` as `BackendCapabilities.max_context_tokens`, and connect-refused retries. Resolution and `LOCAL_API_BASE`/`LOCAL_MODEL` in `core/runtime/provider_config.py`. |
+| **C4** — offline golden tests | `tests/test_local_backend.py` against a stub server, plus `tests/mcp_stub_server.py` for the tool plane, so the whole path runs with no GPU and no network. |
+| **D1** — model selection criteria | Superseded. A criteria document would have been an opinion; NEXT_STEPS Phase 3 puts an eval harness in the repo and answers the same question with a score that is reproducible from recorded runs. No `docs/model_selection.md`. |
+| **D2** — config schema | `.judais-lobi.yml` carries the `context:` keys (`max_context_tokens`, `max_output_tokens`, `provider_defaults`, `model_overrides`, …) — see `ContextConfig.from_project`. The endpoint probe deliberately outranks them: `max_model_len` is measured and a config line is declared. |
+| **E** — documentation | README: `--provider local` setup, the context/compaction behaviour, the `context:` block, and the retrieval tooling. This table and the ROADMAP checklist close the loop. |
+
+Two things named in this plan were removed rather than finished, both in 0.8.3.
+The baseline's `core/runtime/gpu.py` stub is gone with the VRAM cap it fed:
+the client's device list never described the server's window, and the local
+backend talks to a serving endpoint that is routinely another machine. And
+`core/kv_prefix.py` — from Phase 3, never imported by anything but its test —
+went with it.
 
 ## Goals
 1. Prevent KV cache overflow by enforcing context budgets at every prompt build.

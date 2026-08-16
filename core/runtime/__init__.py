@@ -14,7 +14,6 @@ from core.runtime.context_window import (
     ContextConfig,
     MissionWindow,
 )
-from core.runtime.gpu import GPUProfile, detect_gpu_profile
 from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
 
 __all__ = [
@@ -29,8 +28,6 @@ __all__ = [
     "ContextConfig",
     "MissionWindow",
     "Compaction",
-    "GPUProfile",
-    "detect_gpu_profile",
     "DEFAULT_MODELS",
     "resolve_provider",
 ]
