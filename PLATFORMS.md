@@ -65,7 +65,7 @@ needs `tomli` (3.11+ has `tomllib` in the standard library).
 | `system_message` | **yes** | — | the prompt. Everything the agent *is* |
 | `examples` | no | `[]` | few-shot `(user, assistant)` pairs. Optional in a file although the field is required on the model: the pairs exist to pin a *voice*, and a governed register has no voice to pin. Omit them and you get **none** — never a set borrowed from another personality |
 | `text_color` | no | `cyan` | the console style |
-| `env_path` | no | `~/.elf_env` | where the agent looks for API keys |
+| `env_path` | no | `~/.elf_env` | execution-environment directory; API keys load from its `.elf_env` file. A direct dotenv-file path remains supported |
 | `rag_enhancement_style` | no | `""` | how retrieved material is to be used in an answer |
 | `default_provider` | no | `None` | the backend when no `--provider` is passed |
 | `default_model` | no | `None` | the model when no `--model` is passed |

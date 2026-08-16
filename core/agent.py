@@ -39,10 +39,15 @@ class Agent:
     ):
         self._config = config
 
-        # Load environment from personality-specific env file
+        # ``env_path`` is also the execution environment handed to the Python
+        # and install tools. Existing JudAIs and Lobi installations therefore
+        # keep credentials in ``<env_path>/.elf_env`` rather than replacing
+        # the environment directory with a dotenv file. Accept a direct file
+        # too for backwards compatibility with custom personalities.
         env_path = Path(config.env_path).expanduser()
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=True)
+        env_file = env_path / ".elf_env" if env_path.is_dir() else env_path
+        if env_file.is_file():
+            load_dotenv(dotenv_path=env_file, override=True)
 
         # --- Provider resolution ---
         self.provider = resolve_provider(
