@@ -50,11 +50,25 @@ direct loop and from `--swarm` alike. Index them without a default.
 
 Optional, and therefore to be read with a default: `plan` on `step_started`
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
-on the first step of a redrawn one), and `tool` on `reply_rejected` (present
-only when the model got as far as naming one). `plan` rode `mission_started`
-until 0.8.x: that record is now emitted before triage — which is itself a call
-to the model — so at the time it is written there is no plan and there may
-never be one.
+on the first step of a redrawn one), `tool` on `reply_rejected` (present
+only when the model got as far as naming one), and `compacted` on
+`step_started`. `plan` rode `mission_started` until 0.8.x: that record is now
+emitted before triage — which is itself a call to the model — so at the time
+it is written there is no plan and there may never be one.
+
+`compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,
+tokens_after, limit_tokens, profile}` and is present only on the steps where
+older tool round-trips had to be dropped from the conversation to keep it
+inside the model's context window. The persona, the tool catalogue, the seeded
+history turns, the objective and the newest round trip are never dropped. The
+counts describe that one step, not a running total.
+
+It is on the stream because the alternative is the failure it prevents: an
+agent whose earlier evidence quietly left its prompt looks, from outside,
+exactly like an agent that had it all along. Nothing is lost to the run —
+`tool_result` already carried the whole of every result, the mission's result
+store still holds them, and the grounding verdict is computed from that store
+rather than from the conversation.
 
 Five of these carry more meaning than their names suggest:
 

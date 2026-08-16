@@ -517,6 +517,62 @@ class TestTheMissionWiring:
         # handler flushes has to be what the mission was writing to.
         assert sink.records and sink.closed == 1
 
+    def test_the_runner_is_given_the_endpoints_own_context_window(
+            self, elf, skill_file, monkeypatch):
+        """A third line nothing downstream would notice.
+
+        Without it the mission runs identically until the conversation
+        outgrows the served model, and then it either 400s or is evicted
+        inside the server — and the second is the one that produces an
+        answer. The window is built here because this is where the
+        deployment's client, provider and model meet; the loop is handed
+        one so that a library caller can hand it a different one.
+        """
+        import core.runtime.mission as mission_module
+        from core.runtime.backends.base import BackendCapabilities
+
+        MockClass, agent = elf
+        agent.client.capabilities = BackendCapabilities(
+            max_context_tokens=8192, max_output_tokens=512)
+
+        captured = {}
+        real = mission_module.MissionRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(mission_module, "MissionRunner", Spy)
+        run_cli(MockClass, "--skill", str(skill_file))
+
+        window = captured["window"]
+        assert window.profile.source == "backend"
+        assert window.limit_tokens == 8192 - 512
+
+    def test_the_staged_runner_is_given_it_too(self, elf, monkeypatch):
+        """A staged mission runs more steps than a direct one, not fewer."""
+        import core.runtime.swarm as swarm_module
+        from core.runtime.backends.base import BackendCapabilities
+
+        MockClass, agent = elf
+        agent.client.capabilities = BackendCapabilities(
+            max_context_tokens=8192, max_output_tokens=512)
+        agent.replies = ['{"route": "direct"}', '{"answer": "no tools needed"}']
+
+        captured = {}
+        real = swarm_module.SwarmRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        run_cli(MockClass, "--swarm")
+
+        assert captured["window"].limit_tokens == 8192 - 512
+
     def test_the_manifests_sdk_name_reaches_the_staged_runner(
             self, elf, tmp_path, monkeypatch):
         """The manifest is the only thing here that knows what the

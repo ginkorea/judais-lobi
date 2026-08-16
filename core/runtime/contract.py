@@ -85,7 +85,9 @@ SCHEMA_VERSION = 1
 #: :data:`EXIT_CONTRACT`.
 MISSION_STARTED = "mission_started"
 
-#: A step of the plan/act loop is about to ask the model.  ``index``.
+#: A step of the plan/act loop is about to ask the model.  ``index``, and
+#: ``compacted`` on the steps where the conversation had to be shortened to
+#: fit the model's context window; see :data:`OPTIONAL`.
 #:
 #: A staged (``--swarm``) mission adds ``plan`` to the first one each plan
 #: produces — the plan as drawn, and again as redrawn, on the first step it
@@ -199,7 +201,23 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: written before anything asked for one.  Moving an OPTIONAL field is a
     #: minor change — a consumer reads it with a default or it was never
     #: reading it as optional.
-    STEP_STARTED: ("plan",),
+    #:
+    #: ``compacted`` — ``{dropped_turns, dropped_messages, freed_chars,
+    #: tokens_before, tokens_after, limit_tokens, profile}``, present only on
+    #: the steps where older tool round-trips had to be dropped from the
+    #: conversation to keep it inside the model's context window.  Absent on
+    #: every other step, and absent for the whole run when the caller
+    #: supplied no window.
+    #:
+    #: It is on the stream because the alternative is the failure it
+    #: prevents: an agent whose earlier evidence quietly left its prompt
+    #: looks, from outside, exactly like an agent that had it all along.
+    #: Nothing is lost to the *run* — ``tool_result`` already carried the
+    #: whole of every result, the mission's store still holds them, and the
+    #: grounding validator reads the store rather than the conversation.
+    #: The counts are per step and not a running total; a consumer wanting
+    #: the run's total adds them up.
+    STEP_STARTED: ("plan", "compacted"),
     #: ``tool`` — the name the model wrote, when it wrote one.  Absent when
     #: the reply was rejected before a name could be read out of it.
     REPLY_REJECTED: ("tool",),

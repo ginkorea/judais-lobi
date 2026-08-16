@@ -69,6 +69,33 @@ def swarm(plain, executor, bus, **kw):
                        plain_chat_fn=plain, **kw)
 
 
+def _paging_bus():
+    """One tool that returns a fresh, sizeable page every time.
+
+    Fresh because the mission store collapses a byte-identical re-fetch to
+    one line, and a run whose every result is the same never grows the
+    conversation a window exists to bound.
+    """
+    b = ToolBus(capability_engine=CapabilityEngine(
+        PolicyPack(allowed_scopes=["*"])))
+    pages = {"n": 0}
+
+    def page(**_kw):
+        pages["n"] += 1
+        return (0, f"page {pages['n']} — corpus.abc{pages['n']:03d} "
+                   + "z" * 800, "")
+
+    b.register(ToolDescriptor(tool_name="catalog.page",
+                              description="One page. Second sentence."), page)
+    return b
+
+
+def _tiny_window():
+    from core.runtime.context_window import ContextConfig, MissionWindow
+    return MissionWindow(config=ContextConfig(
+        max_context_tokens=1100, max_output_tokens=200))
+
+
 class Sink:
     def __init__(self):
         self.records = []
@@ -731,6 +758,42 @@ class TestContextIsBounded:
                 assert "RAW_OUTPUT_MARKER" not in message["content"]
         step2 = executor.seen[2][-1]["content"]
         assert "RAW_OUTPUT_MARKER" not in step2
+
+    def test_the_window_reaches_the_direct_path(self):
+        """The direct path IS a mission loop, and a window handed to the
+        swarm that stopped at the swarm would bound nothing at all."""
+        window = _tiny_window()
+        plain = ScriptedModel(DIRECT)
+        executor = ScriptedModel(*([tool_call("catalog.page")] * 6),
+                                 '{"answer": "ok"}')
+        sink = Sink()
+        SwarmRunner(executor, _paging_bus(), ["catalog.page"],
+                    plain_chat_fn=plain, system_message="Tai.",
+                    observer=sink, window=window).run("q")
+        assert any("compacted" in r for r in sink.of("step_started"))
+        assert max(window.estimate(sent) for sent in executor.seen) \
+            <= window.limit_tokens
+
+    def test_the_window_reaches_the_steps_of_a_staged_mission(self):
+        """A staged mission runs more steps than a direct one, not fewer."""
+        window = _tiny_window()
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "page", "rung": "tool"},
+                 {"id": "s2", "goal": "page again", "rung": "tool",
+                  "needs": ["s1"]}),
+            "final")
+        executor = ScriptedModel(*([tool_call("catalog.page")] * 3),
+                                 '{"answer": "one"}',
+                                 *([tool_call("catalog.page")] * 3),
+                                 '{"answer": "two"}')
+        sink = Sink()
+        SwarmRunner(executor, _paging_bus(), ["catalog.page"],
+                    plain_chat_fn=plain, system_message="Tai.",
+                    observer=sink, window=window).run("q")
+        assert any("compacted" in r for r in sink.of("step_started"))
+        assert max(window.estimate(sent) for sent in executor.seen) \
+            <= window.limit_tokens
 
     def test_every_role_prompt_is_short(self):
         from core.runtime import swarm as module
