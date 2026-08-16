@@ -46,9 +46,9 @@ What separates it from a framework you would trust unattended — each verified:
 | **The real agent path persists nothing.** A CLI mission writes only the optional NDJSON; `SessionManager` (non-atomic `write_text`) serves only the kernel path the CLI does not reach. | `core/sessions/manager.py:53-146` |
 | **No wall-clock bound, no cancellation.** Step count + tool timeouts only; a contended local model can hang a turn forever. | `core/runtime/mission.py:540` |
 | **No usage or cost accounting.** Only char/4 estimates for compaction. | grep: no `usage`/`prompt_tokens` anywhere |
-| **Two agent runtimes.** `MissionRunner`/`SwarmRunner` (JSON protocol, MCP, CLI) and the kernel `Orchestrator`+roles (state machine, sessions, judge, patch) do not share sessions, budgets or governance. Result-bounding and context caps are each implemented twice. | `core/runtime/mission.py` vs `core/kernel/` |
+| **Two agent runtimes.** `MissionRunner`/`SwarmRunner` (JSON protocol, MCP, CLI) and the kernel `Orchestrator`+roles (state machine, sessions, judge, patch) do not share sessions, budgets or governance. (0.8.2: result bounding has one owner, `core/bounding.py`, and the mission's conversation is windowed — the *runtimes* are still two.) | `core/runtime/mission.py` vs `core/kernel/` |
 | **No token streaming or constrained decoding in agentic runs.** Missions call `chat(stream=False)`; the probed grammar/tool-choice path is deliberately unwired. | `core/cli.py:242-303` |
-| **Thin provider layer.** Three providers; Mistral shells out to `curl`; retry only on the local backend and only on refused connect. | `core/runtime/backends/mistral_backend.py:25`, `local_backend.py:274` |
+| **Thin provider layer.** Three providers; retry only on refused connect, and the timeout/retry policy is imported by Mistral from the local backend rather than owned somewhere neutral (0.8.2 took Mistral off `curl` and onto httpx). | `core/runtime/backends/mistral_backend.py`, `local_backend.py:274` |
 | **No reproducible eval.** The 10 Aug measurements live in docstrings; in-repo there is one recorded-fabrication fixture and an MCP stub. | `tests/fixtures/`, `tests/mcp_stub_server.py` |
 | **Built, tested, unreachable.** External critic, `reading.py`, `kv_prefix.py`, `policy/audit`, `god_mode`, `Agent.run_task`. | importer scans |
 
@@ -152,7 +152,7 @@ close; swarm grounding through the shared renderer; pool checkout by tag;
   the run loop `async` so tool calls, streaming and cancellation are natural,
   and keep `judais` sync at the CLI edge.
 - Delete or promote the vestigial: `kv_prefix.py`, the second vector index if
-  FAISS is required, `curl`-Mistral. (`tools/recon/*` and `bootstrap.py` are
+  FAISS is required. (`curl`-Mistral went in 0.8.2; `tools/recon/*` and `bootstrap.py` are
   gone: nothing imported either, and the recon pair wanted selenium and
   undetected_chromedriver that no extra declared.)
 

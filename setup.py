@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 
 setup(
     name="judais-lobi",
@@ -12,7 +12,6 @@ setup(
     include_package_data=True,
     install_requires=[
         "openai>=1.0.0",
-        "mistralai>=1.0.0",       # ✅ Added for Mistral integration
         "rich>=14.0.0",
         "python-dotenv>=1.1.0",
         "beautifulsoup4>=4.13.4",

@@ -394,9 +394,13 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.8.1 — 1782 tests collected.** Mission mode, skill manifests, the grounding
+**v0.8.2 — 2064 tests collected.** Mission mode, skill manifests, the grounding
 validator, `--swarm`, the NDJSON mission stream and the published contract are
-all in this release. `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
+all in this release. 0.8.2 opens the swarm's stream before triage, bounds the
+mission's conversation against the model's real context window (visible as
+`compacted` on `step_started`), gives every tool-result cut one owner
+(`core/bounding.py`), speaks to Mistral over httpx, and makes `BwrapSandbox`
+runnable (network per profile, rlimits applied, `run_python` under tmpfs). `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
 how a platform deploys this framework as its own agent.
 
 `ROADMAP.md` and `PHASE_8.md` are historical (Feb 2026): they describe the plan,

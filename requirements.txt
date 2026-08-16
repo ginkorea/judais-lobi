@@ -8,7 +8,6 @@
 # was the same mistake in miniature: a compiled wheel on every install for an
 # index `core/memory/memory.py` falls back from without complaint.
 openai>=1.0.0
-mistralai>=1.0.0
 rich>=14.0.0
 python-dotenv>=1.1.0
 beautifulsoup4>=4.13.4
