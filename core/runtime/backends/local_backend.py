@@ -32,7 +32,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
-from core.runtime.backends.base import Backend, BackendCapabilities
+from core.runtime.backends.base import Backend, BackendCapabilities, Usage
 
 DEFAULT_LOCAL_API_BASE = "http://127.0.0.1:8000/v1"
 DEFAULT_LOCAL_MODEL = "local-model"
@@ -99,6 +99,7 @@ class LocalBackend(Backend):
         self._supports_tool_calls = supports_tool_calls
         self._session = session if session is not None else requests
         self._probed: Optional[ServedModel] = None
+        self.last_usage = None
 
     # ── configuration ────────────────────────────────────────────────────
 
@@ -243,6 +244,10 @@ class LocalBackend(Backend):
         ``chunk.choices[0].delta.content`` and does not know which
         backend it is draining.
         """
+        # Cleared before anything is sent: a call that raises must not
+        # leave the previous call's numbers standing for a ledger to count
+        # a second time.
+        self.last_usage = None
         body: Dict[str, Any] = {
             "model": model or self.model,
             # Inbound scrub: see `_strip_harmony`. A history carrying harmony
@@ -261,6 +266,15 @@ class LocalBackend(Backend):
 
         if stream:
             body["stream"] = True
+            # ASK for the counts. An OpenAI-compatible server streaming a
+            # completion sends no `usage` at all unless this is set — vLLM
+            # and llama.cpp both follow OpenAI here — so a streamed call
+            # without it can only ever report nothing, and a ledger that
+            # is empty for every streamed turn looks exactly like a
+            # provider that does not count. It costs one extra frame,
+            # which carries no choices and is therefore never yielded as
+            # a delta; see `_stream`.
+            body.setdefault("stream_options", {"include_usage": True})
             return self._stream(body)
         return self._complete(body)
 
@@ -366,6 +380,10 @@ class LocalBackend(Backend):
         res = self._post(body, stream=False)
         self._raise_for_status(res, body)
         payload = res.json() or {}
+        # Before the empty-choices return, not after it: a completion that
+        # produced no content still spent the prompt, and a reply nobody
+        # could use is exactly the call worth finding in the ledger.
+        self.last_usage = Usage.from_payload(payload.get("usage"))
         choices = payload.get("choices") or []
         if not choices:
             return ""
@@ -414,25 +432,50 @@ class LocalBackend(Backend):
         return json.dumps(decision)
 
     def _stream(self, body: Dict[str, Any]) -> Iterator[SimpleNamespace]:
+        """Yield one delta per frame that has one, and keep the last usage.
+
+        Two things are read off a frame now.  The counts, when the server
+        sent them — with ``stream_options.include_usage`` they arrive on
+        a **final frame of their own**, whose ``choices`` is empty — and
+        the delta, when the frame has one.
+
+        A frame with no choices is therefore not yielded.  It never was a
+        delta: passing it on would hand ``core.cli`` a chunk whose
+        ``choices[0]`` does not exist, and the usage frame is the first
+        such frame this backend has ever met.  ``_as_delta`` is untouched
+        and still describes exactly what a delta is.
+        """
         res = self._post(body, stream=True)
         self._raise_for_status(res, body)
-        for line in res.iter_lines():
-            if not line:
-                continue
-            if isinstance(line, bytes):
-                line = line.decode("utf-8", errors="replace")
-            if not line.startswith("data:"):
-                continue
-            data = line[len("data:"):].strip()
-            if not data or data == "[DONE]":
-                if data == "[DONE]":
-                    break
-                continue
-            try:
-                chunk = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            yield self._as_delta(chunk)
+        seen: Optional[Usage] = None
+        try:
+            for line in res.iter_lines():
+                if not line:
+                    continue
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data or data == "[DONE]":
+                    if data == "[DONE]":
+                        break
+                    continue
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                found = Usage.from_payload(chunk.get("usage"))
+                if found is not None:
+                    seen = found
+                if not chunk.get("choices"):
+                    continue
+                yield self._as_delta(chunk)
+        finally:
+            # In a `finally` so that a consumer that walks away mid-stream
+            # still leaves behind whatever had been reported by then —
+            # the abandoned case is the one that has to work.
+            self.last_usage = seen
 
     @staticmethod
     def _as_delta(chunk: Dict[str, Any]) -> SimpleNamespace:

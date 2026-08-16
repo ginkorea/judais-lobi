@@ -98,11 +98,19 @@ STEP_STARTED = "step_started"
 #: not an object, no ``tool`` and no ``answer``, or a tool nobody offers.
 #: ``index``, ``problem`` (the sentence handed back to the model), ``tool`` when
 #: one was named.  A recorded step, never a crash, and never a guess at intent.
+#:
+#: It follows a call to the model, so it may carry ``usage`` — what that call
+#: cost.  A rejected reply is still a billed reply, and a run whose ledger
+#: counted only the calls that worked would under-report exactly the runs that
+#: went badly.  See :data:`OPTIONAL`.
 REPLY_REJECTED = "reply_rejected"
 
 #: The model named a tool and the loop is about to dispatch it.  ``index``,
 #: ``tool``, ``arguments``.  **Emitted before the call**, which is what lets a
 #: watcher show what is about to happen rather than only what happened.
+#:
+#: It may carry ``usage`` — what the model call that *chose* this tool cost.
+#: See :data:`OPTIONAL`.
 TOOL_CALL = "tool_call"
 
 #: The bus answered.  ``index``, ``tool``, ``arguments``, ``ok``, ``exit_code``,
@@ -126,6 +134,11 @@ GATE_REQUESTED = "gate_requested"
 #: an answer that came out of a caveat path is a different thing to render
 #: than one that did not, and a consumer should not have to wait for
 #: ``mission_finished`` to find out which it is holding.
+#:
+#: It may carry ``usage`` — what the model call that wrote this text cost.  On
+#: a repaired answer that is the repair turn's call and not the draft's, which
+#: is the same rule everywhere: the per-call field on a record is the cost of
+#: the call that produced the record.  See :data:`OPTIONAL`.
 ANSWER = "answer"
 
 #: What the grounding validator said, when one was configured.  ``ran``,
@@ -155,6 +168,9 @@ GROUNDING = "grounding"
 #: they are only meaningful against each other: six steps of a stated
 #: twenty-four is not an agent that ran out of room, and a consumer holding
 #: only ``steps`` has no way to keep a reader from reading it as one.
+#:
+#: It may carry ``usage``: the run's ledger — every model call this turn made,
+#: summed — rather than one call's.  See :data:`OPTIONAL`.
 MISSION_FINISHED = "mission_finished"
 
 #: The closed vocabulary, so a consumer can assert it knows all of them.
@@ -271,7 +287,51 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     STEP_STARTED: ("plan", "compacted"),
     #: ``tool`` — the name the model wrote, when it wrote one.  Absent when
     #: the reply was rejected before a name could be read out of it.
-    REPLY_REJECTED: ("tool",),
+    #:
+    #: ``usage`` — see the block below.
+    REPLY_REJECTED: ("tool", "usage"),
+    #: ``usage`` — what the provider said the model call that produced this
+    #: record cost: ``{prompt_tokens, completion_tokens, total_tokens}``, plus
+    #: verbatim whatever else that provider's own ``usage`` object carried
+    #: (``prompt_tokens_details`` with its cached-token breakdown, say).  It
+    #: rides the three records that follow a model call — ``tool_call``,
+    #: ``answer`` and ``reply_rejected`` — and is the cost of THAT call, not a
+    #: running total.
+    #:
+    #: **Absent, never zero, when the provider reported nothing.**  Local
+    #: endpoints and stubs frequently report nothing, and three zeros would be
+    #: a claim about a call rather than the absence of one.  A consumer
+    #: metering on this must read it with a default and must not treat a
+    #: missing field as free.  Nothing here is estimated: the only other token
+    #: number in this harness is a characters-over-four estimate used to keep a
+    #: prompt inside a window, and it deliberately never reaches this stream.
+    #:
+    #: A **field and not an event**, which was a decision and not an oversight.
+    #: A ledger is exactly the kind of thing that wants its own record type,
+    #: and a new record type is the one additive change a consumer cannot
+    #: absorb quietly: the reference consumer asserts ``set(EVENTS)`` equals
+    #: the set it reads, so a tenth event is a lockstep release on both sides
+    #: for a number that fits in an existing frame.  An optional field is read
+    #: with a default by a consumer that wants it and ignored by one that does
+    #: not — the same route ``compacted`` and ``plan`` took.
+    TOOL_CALL: ("usage",),
+    #: ``usage`` — as above: the cost of the call that wrote ``text``.
+    ANSWER: ("usage",),
+    #: ``usage`` — the whole run's, and the only place a TOTAL appears:
+    #: ``{prompt_tokens, completion_tokens, total_tokens, calls}``, where
+    #: ``calls`` counts the model calls that **reported** usage rather than the
+    #: calls that were made.  On ``--swarm`` it is one number for the turn —
+    #: the router, the planner, every gate, the synthesizer and every
+    #: sub-mission's own steps — and not the last sub-mission's.
+    #:
+    #: ``cost`` — ``{amount, currency}`` — appears inside it only when the
+    #: deployment configured a price for the provider and model that ran
+    #: (a ``pricing:`` block in ``.judais-lobi.yml``).  This repo ships no
+    #: price list and must not: prices move, they differ per account, and a
+    #: framework that quoted one would be quoting a figure it cannot know.
+    #: Absent is the normal case, and a local endpoint has no cost unless
+    #: somebody priced it.
+    MISSION_FINISHED: ("usage",),
 }
 
 

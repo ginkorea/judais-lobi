@@ -472,6 +472,36 @@ ones, the five outcome words, and the exit contract — is **`CONTRACT.md`**, an
 its authority is `core/runtime/contract.py`. Read those rather than this section;
 a summary of a contract is a second copy of it.
 
+### Metering a run
+
+`mission_finished` carries an optional `usage` field —
+`{prompt_tokens, completion_tokens, total_tokens, calls}` — and the three
+records that follow a model call (`tool_call`, `answer`, `reply_rejected`)
+carry that one call's. It is **what the provider said**, never an estimate, and
+it is **absent rather than zero** when the provider said nothing, which local
+endpoints routinely do. A platform that bills from it must read it with a
+default and must not read a missing field as free. `CONTRACT.md` is the
+authority on the shape.
+
+Cost is the platform's to configure, because the framework cannot know it.
+A `pricing:` block in the project's `.judais-lobi.yml` adds
+`cost: {amount, currency}` inside the `mission_finished` form:
+
+```yaml
+pricing:
+  openai:
+    gpt-4o-mini: {prompt_per_1k: 0.15, completion_per_1k: 0.6}
+  local:
+    my-served-model: {prompt_per_1k: 0.002, completion_per_1k: 0.002, currency: EUR}
+```
+
+Keys are the provider (`openai`, `mistral`, `local`) and the model name as it
+was asked for, with `"*"` under a provider covering whatever else it serves.
+No block is the normal case: the ledger then carries tokens and no `cost` key
+at all, and `local` in particular has no cost until somebody prices it. This
+repo ships no price list and never will — prices move, they differ per account,
+and a wrong number is worse than none because somebody bills from it.
+
 ### Pinning the contract
 
 ```python

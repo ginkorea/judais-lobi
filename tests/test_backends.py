@@ -4,7 +4,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from core.runtime.backends.base import BackendCapabilities
+from core.runtime.backends.base import BackendCapabilities, Usage
 from core.runtime.backends.openai_backend import OpenAIBackend
 from core.runtime.backends.mistral_backend import MistralBackend
 from core.runtime.backends.local_backend import LocalBackend
@@ -56,6 +56,116 @@ class TestOpenAIBackend:
         assert caps.supports_streaming is True
         assert caps.supports_json_mode is True
         assert caps.supports_tool_calls is True
+
+    # ── what the call cost ───────────────────────────────────────────────
+
+    def test_usage_is_read_off_the_response(self):
+        """The SDK puts it on `response.usage`; this is the whole feature."""
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))],
+            usage=SimpleNamespace(prompt_tokens=11, completion_tokens=4,
+                                  total_tokens=15),
+        )
+        backend = OpenAIBackend(openai_client=mock)
+        backend.chat("gpt-4o-mini", [{"role": "user", "content": "hello"}])
+        assert (backend.last_usage.prompt_tokens,
+                backend.last_usage.completion_tokens,
+                backend.last_usage.total_tokens) == (11, 4, 15)
+
+    def test_a_provider_extra_travels_rather_than_being_dropped(self):
+        """Cached tokens are the number a platform meters on next."""
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))],
+            usage={"prompt_tokens": 10, "completion_tokens": 2,
+                   "total_tokens": 12,
+                   "prompt_tokens_details": {"cached_tokens": 8}},
+        )
+        backend = OpenAIBackend(openai_client=mock)
+        backend.chat("gpt-4o-mini", [{"role": "user", "content": "hello"}])
+        assert backend.last_usage.as_record()["prompt_tokens_details"] == {
+            "cached_tokens": 8}
+
+    def test_a_response_without_usage_reports_nothing_not_zero(self):
+        """A zero is a claim. Silence has to stay distinguishable from it."""
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))]
+        )
+        backend = OpenAIBackend(openai_client=mock)
+        backend.chat("gpt-4o-mini", [{"role": "user", "content": "hello"}])
+        assert backend.last_usage is None
+
+    def test_the_previous_calls_numbers_do_not_survive_a_silent_one(self):
+        """Cleared at the top of `chat`, or a ledger counts them twice."""
+        mock = MagicMock()
+        mock.chat.completions.create.side_effect = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="a"))],
+                usage={"prompt_tokens": 5, "completion_tokens": 5,
+                       "total_tokens": 10}),
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="b"))]),
+        ]
+        backend = OpenAIBackend(openai_client=mock)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage is not None
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage is None
+
+    def test_a_raised_call_leaves_nothing_behind(self):
+        mock = MagicMock()
+        mock.chat.completions.create.side_effect = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="a"))],
+                usage={"prompt_tokens": 5, "completion_tokens": 5,
+                       "total_tokens": 10}),
+            RuntimeError("boom"),
+        ]
+        backend = OpenAIBackend(openai_client=mock)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        with pytest.raises(RuntimeError):
+            backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage is None
+
+    def test_a_streams_usage_arrives_when_the_iterator_is_exhausted(self):
+        """Usage rides the last frame, so there is nothing honest to say
+        before it does."""
+        mock = MagicMock()
+        chunks = [
+            SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="a"))], usage=None),
+            SimpleNamespace(choices=[], usage={"prompt_tokens": 9,
+                                               "completion_tokens": 1,
+                                               "total_tokens": 10}),
+        ]
+        mock.chat.completions.create.return_value = iter(chunks)
+        backend = OpenAIBackend(openai_client=mock)
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        assert backend.last_usage is None
+        collected = list(stream)
+        assert len(collected) == 2, "every chunk is passed through untouched"
+        assert backend.last_usage.total_tokens == 10
+
+    def test_an_abandoned_stream_still_leaves_what_had_been_reported(self):
+        mock = MagicMock()
+        chunks = [
+            SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="a"))],
+                usage={"prompt_tokens": 2, "completion_tokens": 1,
+                       "total_tokens": 3}),
+            SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="b"))], usage=None),
+        ]
+        mock.chat.completions.create.return_value = iter(chunks)
+        backend = OpenAIBackend(openai_client=mock)
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        next(stream)
+        stream.close()
+        assert backend.last_usage.total_tokens == 3
 
 
 class _StubResponse:
@@ -386,6 +496,63 @@ class TestMistralBackend:
         assert len(attempts) == 3
         assert waits == list(CONNECT_RETRIES[:2])
 
+    # ── what the call cost ───────────────────────────────────────────────
+
+    def test_usage_is_read_off_the_json(self, monkeypatch):
+        client = _RecordingClient(response=_StubResponse(payload={
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 6,
+                      "total_tokens": 26}}))
+        backend = self._backend(monkeypatch, client)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage.as_record() == {
+            "prompt_tokens": 20, "completion_tokens": 6, "total_tokens": 26}
+
+    def test_a_reply_with_no_choices_is_still_billed(self, monkeypatch):
+        """Read before the empty-choices return, not after it."""
+        client = _RecordingClient(response=_StubResponse(payload={
+            "choices": [],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 0,
+                      "total_tokens": 20}}))
+        backend = self._backend(monkeypatch, client)
+        assert backend.chat("m", [{"role": "user", "content": "x"}]) == ""
+        assert backend.last_usage.prompt_tokens == 20
+
+    def test_no_usage_in_the_json_reports_nothing_not_zero(self, monkeypatch):
+        client = _RecordingClient(response=_StubResponse(payload={
+            "choices": [{"message": {"content": "hi"}}]}))
+        backend = self._backend(monkeypatch, client)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage is None
+
+    def test_a_streams_usage_rides_its_last_frame(self, monkeypatch):
+        """Mistral puts `usage` on the last content frame, not on one of
+        its own — so it is read off every chunk and the last wins."""
+        import json as _json
+
+        lines = [
+            "data: " + _json.dumps({"choices": [{"delta": {"content": "he"}}]}),
+            "data: " + _json.dumps({
+                "choices": [{"delta": {"content": "llo"}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 2,
+                          "total_tokens": 9}}),
+            "data: [DONE]",
+        ]
+        client = _RecordingClient(stream_response=_StubResponse(lines=lines))
+        backend = self._backend(monkeypatch, client)
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        assert backend.last_usage is None
+        chunks = list(stream)
+        assert [c.choices[0].delta.content for c in chunks] == ["he", "llo"]
+        assert backend.last_usage.total_tokens == 9
+
+    def test_a_stream_that_reported_nothing_reports_nothing(self, monkeypatch):
+        client = _RecordingClient(stream_response=_StubResponse(lines=_sse("a")))
+        backend = self._backend(monkeypatch, client)
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert backend.last_usage is None
+
     def test_a_status_error_is_never_resent(self, monkeypatch):
         """The provider ANSWERED — resending would bill for it twice."""
         import httpx
@@ -423,3 +590,59 @@ class TestLocalBackend:
     def test_construction_contacts_nothing(self):
         """No probe at construction: a CLI must start with the server cold."""
         LocalBackend(endpoint="http://127.0.0.1:1/v1")
+
+
+class TestUsageIsReportedNeverEstimated:
+    """The one rule the whole ledger rests on.
+
+    Every other token number in this tree is an estimate — characters over
+    four, used to keep a prompt inside a window and honest about being a
+    guess.  This one is a provider's own count or it is nothing, because a
+    platform bills from it.
+    """
+
+    def test_an_absent_object_is_nothing(self):
+        assert Usage.from_payload(None) is None
+
+    def test_an_object_with_no_counts_is_nothing_not_three_zeros(self):
+        """`{}` where the counts should be is silence wearing the shape of
+        a report."""
+        assert Usage.from_payload({}) is None
+        assert Usage.from_payload({"queue_time": 0.4}) is None
+
+    def test_a_real_zero_is_kept(self):
+        """A provider that says zero completion tokens has SAID something."""
+        usage = Usage.from_payload({"prompt_tokens": 8, "completion_tokens": 0})
+        assert usage is not None
+        assert usage.completion_tokens == 0
+
+    def test_a_missing_total_is_derived_from_the_two_that_were_given(self):
+        """Arithmetic on numbers the provider gave, not a guess at one."""
+        assert Usage.from_payload(
+            {"prompt_tokens": 8, "completion_tokens": 2}).total_tokens == 10
+
+    def test_a_stated_total_is_never_recomputed(self):
+        usage = Usage.from_payload({"prompt_tokens": 8, "completion_tokens": 2,
+                                    "total_tokens": 99})
+        assert usage.total_tokens == 99
+
+    def test_a_pydantic_shaped_object_is_read_through_model_dump(self):
+        class _Usage:
+            def model_dump(self):
+                return {"prompt_tokens": 1, "completion_tokens": 2,
+                        "total_tokens": 3}
+
+        assert Usage.from_payload(_Usage()).total_tokens == 3
+
+    def test_a_plain_object_is_read_attribute_by_attribute(self):
+        got = Usage.from_payload(
+            SimpleNamespace(prompt_tokens=4, completion_tokens=1,
+                            total_tokens=5))
+        assert (got.prompt_tokens, got.total_tokens) == (4, 5)
+
+    def test_a_boolean_is_not_a_count(self):
+        """`True` is an `int` in Python, and a flag is not one token."""
+        assert Usage.from_payload({"prompt_tokens": True}) is None
+
+    def test_unparseable_counts_are_not_counts(self):
+        assert Usage.from_payload({"prompt_tokens": "many"}) is None

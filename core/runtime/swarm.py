@@ -79,6 +79,7 @@ from core.runtime.mission_stream import (
     Observer, REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
 )
 from core.runtime.results import RESULT_TOOL
+from core.runtime.usage import Ledger, Rate
 
 __all__ = ["SwarmRunner", "PlanStep", "RUNGS", "RUNGS_WITHOUT_SDK", "SDK_RUNG"]
 
@@ -384,6 +385,17 @@ class SwarmRunner:
         sub-runner writing to the same run as well would put every step
         in the log twice, once under its own index and once under the
         global one.  One turn is one run.
+    usage_fn, rate:
+        As :class:`MissionRunner`'s, and handed down to every runner this
+        builds.  The staged path makes model calls of its own — the
+        router, the planner, each gate, the synthesizer and its repair
+        turns — *outside* any :class:`MissionRunner`, so those are folded
+        in here; everything a sub-mission spends is folded into the SAME
+        :class:`~core.runtime.usage.Ledger` by handing it down rather
+        than by adding sub-totals up afterwards.  One ledger per turn,
+        one place the arithmetic happens: a second accumulator is how the
+        opening frame once carried six of ten grounding fields, and
+        numbers are the half nobody notices is wrong.
     """
 
     def __init__(
@@ -407,6 +419,8 @@ class SwarmRunner:
         window: Optional[MissionWindow] = None,
         run_store: Optional[RunStore] = None,
         run_id: str = "",
+        usage_fn: Optional[Callable[[], Any]] = None,
+        rate: Optional[Rate] = None,
     ):
         self._chat = chat_fn
         self._plain_chat = plain_chat_fn or chat_fn
@@ -432,6 +446,16 @@ class SwarmRunner:
         # each build one short list of their own and send it once, so there
         # is nothing there for a window to bound.
         self._window = window
+        self._usage_fn = usage_fn
+        self._rate = rate
+        # Replaced at the top of every `run`, so a runner used twice does
+        # not report the first turn's tokens on the second.
+        self._ledger = Ledger()
+        #: The per-call field of the most recent call THIS object made,
+        #: so the synthesized answer can carry the cost of the call that
+        #: actually wrote it — which is the repair turn when there was
+        #: one, not the draft it replaced.
+        self._last_spent: Dict[str, Any] = {}
         self._max_plan_steps = max(1, int(max_plan_steps))
         self._step_budget = max(1, int(step_budget))
         self._retries = max(0, int(retries_per_step))
@@ -491,6 +515,40 @@ class SwarmRunner:
     def run_id(self) -> str:
         """The run this swarm's records are recorded under, or ``""``."""
         return self._run_id
+    # ── what the last call cost ─────────────────────────────────────────
+
+    def _spent(self) -> Dict[str, Any]:
+        """Fold this object's own model call in; render its per-call field.
+
+        The sub-missions do not come through here — they are handed
+        ``ledger=self._ledger`` and fold themselves in through
+        :meth:`MissionRunner._spent`, which is the same
+        :meth:`~core.runtime.usage.Ledger.add`.  What is left for this
+        method is the four roles that are this class's own calls: triage,
+        the planner, each gate and the synthesizer.
+
+        ``{}`` when the provider reported nothing, so a record carries no
+        ``usage`` key rather than a zeroed one.  Never raises.
+        """
+        try:
+            usage = self._usage_fn() if self._usage_fn is not None else None
+        except Exception:                       # pragma: no cover - defensive
+            usage = None
+        recorded = self._ledger.add(usage)
+        self._last_spent = ({"usage": recorded.as_record()}
+                            if recorded is not None else {})
+        return self._last_spent
+
+    def _totals(self) -> Dict[str, Any]:
+        """``{"usage": …}`` for ``mission_finished``, or ``{}``.
+
+        Through :meth:`~core.runtime.usage.Ledger.as_record`, which is the
+        direct path's renderer too — this record is emitted from three
+        places in this file and a hand-listed copy in any of them is the
+        drift the grounding renderer already paid for once.
+        """
+        spent = self._ledger.as_record(self._rate)
+        return {"usage": spent} if spent is not None else {}
 
     # ── the one entry point ─────────────────────────────────────────────
 
@@ -507,6 +565,10 @@ class SwarmRunner:
         all and was reported as never having run, while it had in fact run
         and asked.
         """
+        # One ledger for the whole turn, made here: the router's call is
+        # already part of what this turn spent, and every runner below is
+        # handed this same object.
+        self._ledger = Ledger()
         self._emit(MISSION_STARTED, **self._opening(objective))
         try:
             plan = (self._plan(objective)
@@ -518,8 +580,12 @@ class SwarmRunner:
             # ``finished`` clause exists to prevent.  Announcing early would
             # otherwise have manufactured that state where there was honest
             # silence before.
+            # Zero steps and possibly two model calls: triage and the
+            # planner both ran before this. What they cost is on the
+            # record even though nothing was accomplished with it, which
+            # is exactly the run an operator wants the number for.
             self._emit(MISSION_FINISHED, outcome="incomplete", steps=0,
-                       max_steps=self._max_steps)
+                       max_steps=self._max_steps, **self._totals())
             raise
         if plan is None or len(plan) == 1:
             # A plan the planner could not state, or a plan of one step, IS
@@ -587,6 +653,9 @@ class SwarmRunner:
             history=history,
             observer=observer,
             window=self._window,
+            usage_fn=self._usage_fn,
+            rate=self._rate,
+            ledger=self._ledger,
         )
 
     def _direct(self, objective: str) -> MissionTranscript:
@@ -600,6 +669,14 @@ class SwarmRunner:
             observer=(_OpenedAlready(self._emit)
                       if self._recording else None),
             window=self._window,
+            usage_fn=self._usage_fn,
+            rate=self._rate,
+            # THE SAME ledger, not a fresh one. The direct path's runner
+            # emits this turn's `mission_finished` itself, and the router
+            # call that chose this path was already made — a runner with
+            # its own ledger would report a turn that cost one call less
+            # than it did.
+            ledger=self._ledger,
         )
         return runner.run(objective)
 
@@ -741,7 +818,8 @@ class SwarmRunner:
 
     def _staged(self, objective: str, plan: List[PlanStep]) -> MissionTranscript:
         transcript = MissionTranscript(objective=objective,
-                                       catalogue=list(self._offered))
+                                       catalogue=list(self._offered),
+                                       usage=self._ledger)
         # `run` opened the stream before triage; the plan did not exist then.
         # It travels on the first `step_started` instead.
         stage = _StageObserver(self._emit)
@@ -751,7 +829,7 @@ class SwarmRunner:
         finally:
             self._emit(MISSION_FINISHED, outcome=transcript.outcome,
                        steps=len(transcript.steps),
-                       max_steps=self._max_steps)
+                       max_steps=self._max_steps, **self._totals())
         return outcome
 
     def _work_through(self, objective: str, plan: List[PlanStep],
@@ -967,6 +1045,7 @@ class SwarmRunner:
                         + "\n".join(lines)},
         ]
         answer = str(self._plain_chat(messages) or "").strip()
+        self._spent()
         if not answer:
             # The synthesizer said nothing.  The step results themselves are
             # the honest fallback — facts the gates passed, not prose.
@@ -989,7 +1068,13 @@ class SwarmRunner:
             # per event or it is not a vocabulary.
             self._emit(GROUNDING, **_grounding_record(
                 report, repairs=report.repairs, caveat=report.caveat or ""))
-        self._emit(ANSWER, text=transcript.answer, outcome=transcript.outcome)
+        # `_last_spent` and not the synthesizer's own call, because
+        # `_ground` above may have spent a repair turn — and then the text
+        # on this record is the repair's, not the draft's. The per-call
+        # field is the cost of the call that produced the text beside it;
+        # the run's total is on `mission_finished`.
+        self._emit(ANSWER, text=transcript.answer, outcome=transcript.outcome,
+                   **self._last_spent)
         return transcript
 
     def _ground(self, answer: str, messages: List[Dict[str, str]],
@@ -1022,6 +1107,7 @@ class SwarmRunner:
             messages.append({"role": "user",
                              "content": self._validator.repair_prompt(report)})
             answer = str(self._plain_chat(messages) or "").strip() or answer
+            self._spent()
             report = self._validator.validate(answer, evidence)
         if not report.grounded:
             caveat = self._validator.caveat(report)
@@ -1053,7 +1139,14 @@ class SwarmRunner:
         try:
             reply = str(self._plain_chat(messages) or "")
         except Exception:
+            # Nothing to fold: `last_usage` is cleared at the start of
+            # every call, so a call that raised reports nothing and adding
+            # it would be adding None.
             return None
+        # The router, the planner and every gate come through here. Folded
+        # even when the reply turns out to be unparseable below — a call
+        # that produced garbage was still billed.
+        self._spent()
         text = _FENCE.sub("", reply.strip()).strip()
         if not text:
             return None

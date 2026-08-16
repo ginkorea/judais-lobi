@@ -55,3 +55,50 @@ class TestUnifiedClientMistral:
     def test_unsupported_provider_raises(self):
         with pytest.raises(ValueError, match="Unsupported provider"):
             UnifiedClient(provider_override="unsupported")
+
+
+class TestTheUsageSideChannel:
+    """`chat` returns a str or an iterator; the counts arrive beside it.
+
+    A third return shape would be a breaking change to every caller of
+    `chat` for the sake of a number most of them ignore, so the client
+    grew a property instead.
+    """
+
+    def _client(self, usage):
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Hello!"))],
+            usage=usage,
+        )
+        return UnifiedClient(provider_override="openai", openai_client=mock_openai)
+
+    def test_nothing_has_been_asked_yet(self):
+        client = self._client(None)
+        assert client.last_usage is None
+
+    def test_it_is_the_backends(self):
+        client = self._client({"prompt_tokens": 6, "completion_tokens": 2,
+                               "total_tokens": 8})
+        client.chat(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+        assert client.last_usage is client._backend.last_usage
+        assert client.last_usage.total_tokens == 8
+
+    def test_a_provider_that_said_nothing_is_none_and_not_zero(self):
+        client = self._client(None)
+        client.chat(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+        assert client.last_usage is None
+
+    def test_an_injected_backend_that_never_heard_of_usage_does_not_raise(self):
+        """A library caller may inject anything with `chat`. Reading the
+        counts off one that has none must be `None`, not an AttributeError
+        in the middle of somebody's mission."""
+
+        class _Bare:
+            capabilities = None
+
+            def chat(self, model, messages, stream=False, **kw):
+                return "hi"
+
+        client = UnifiedClient(provider_override="openai", backend=_Bare())
+        assert client.last_usage is None

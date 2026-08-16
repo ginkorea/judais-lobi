@@ -674,6 +674,39 @@ context:
 
 ---
 
+# 🧮 Usage ledger
+
+Every backend reports what the provider said a completion cost — `prompt_tokens`,
+`completion_tokens`, `total_tokens`, plus any extras that provider sent, read off
+`UnifiedClient.last_usage`. A mission accumulates them and finishes with a line:
+
+```
+🧮 usage: 8412 prompt + 903 completion tokens over 11 calls
+```
+
+On the event stream the same numbers ride `tool_call`, `answer` and
+`reply_rejected` per call, and `mission_finished` as the run's totals. They are
+**reported, never estimated**, and **absent rather than zero** when a provider
+said nothing — which local endpoints often do. See `CONTRACT.md`.
+
+Cost is optional and comes from configuration, never from a price list in this
+repo — prices move and differ per account. Add a `pricing:` block to
+`.judais-lobi.yml` and the totals grow a `cost`:
+
+```yaml
+pricing:
+  openai:
+    gpt-4o-mini: {prompt_per_1k: 0.15, completion_per_1k: 0.6}
+    "*":         {prompt_per_1k: 1.0,  completion_per_1k: 2.0, currency: USD}
+  local:
+    my-served-model: {prompt_per_1k: 0.002, completion_per_1k: 0.002, currency: EUR}
+```
+
+`"*"` under a provider covers whatever else it serves. No block means tokens and
+no cost, and `local` has no cost until somebody prices it.
+
+---
+
 # 🛠 Current Capabilities
 
 Direct mode still works.

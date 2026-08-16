@@ -36,3 +36,20 @@ class UnifiedClient:
     @property
     def capabilities(self):
         return self._backend.capabilities
+
+    @property
+    def last_usage(self):
+        """What the provider said the last completion cost, or ``None``.
+
+        A side channel rather than a return value: :meth:`chat` returns a
+        ``str`` or an iterator and every caller in this tree branches on
+        exactly those two, so a third shape would be a breaking change to
+        every one of them for the sake of a number most of them ignore.
+
+        ``getattr`` with a default because a caller may inject any object
+        as ``backend=`` — a stub in a test, a platform's own adapter —
+        and a backend that never heard of usage must report nothing
+        rather than raise. Nothing reported is ``None``, never zero: see
+        :class:`core.runtime.backends.base.Usage`.
+        """
+        return getattr(self._backend, "last_usage", None)

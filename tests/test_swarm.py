@@ -1170,3 +1170,180 @@ class TestTheRunIsRecorded:
         run_id = store.create().run_id
         assert swarm(ScriptedModel(), ScriptedModel(), bus,
                      run_store=store, run_id=run_id).run_id == run_id
+
+
+# ── one ledger for the whole turn ────────────────────────────────────────────
+
+
+class FlatMeter:
+    """The same report after every model call, whoever made it.
+
+    Flat on purpose.  What these tests are about is *which calls are
+    counted*, and a flat rate makes the total a multiple of the call count
+    — so an arithmetic assertion reads as "these calls and no others".
+    """
+
+    PROMPT, COMPLETION = 10, 1
+
+    def __init__(self):
+        self.reads = 0
+
+    def __call__(self):
+        from core.runtime.backends.base import Usage
+
+        self.reads += 1
+        return Usage(prompt_tokens=self.PROMPT, completion_tokens=self.COMPLETION,
+                     total_tokens=self.PROMPT + self.COMPLETION)
+
+
+def _staged_swarm(bus, sink, meter, **kw):
+    """A two-step staged turn: router, planner, two executors, synthesizer."""
+    plain = ScriptedModel(
+        STAGED,
+        plan({"id": "s1", "goal": "search", "rung": "tool"},
+             {"id": "s2", "goal": "search again", "rung": "tool"}),
+        "the synthesized answer",
+    )
+    executor = ScriptedModel(
+        tool_call("catalog.search", q="one"), '{"answer": "found one"}',
+        tool_call("catalog.search", q="two"), '{"answer": "found two"}',
+    )
+    runner = swarm(plain, executor, bus, observer=sink, usage_fn=meter, **kw)
+    return runner.run("do the thing"), plain, executor
+
+
+class TestTheSwarmCountsItsOwnCallsAndItsSubMissions:
+    def test_the_total_is_every_call_the_turn_made(self, bus):
+        """The router, the planner, the synthesizer AND every executor
+        step.  A swarm that counted only its own roles would report a
+        staged turn as costing less than the direct turn it replaced."""
+        sink, meter = Sink(), FlatMeter()
+        _staged_swarm(bus, sink, meter)
+        finished = sink.of("mission_finished")[-1]
+        assert finished["usage"]["calls"] == meter.reads
+        assert finished["usage"]["prompt_tokens"] == (
+            meter.reads * FlatMeter.PROMPT)
+
+    def test_the_sub_missions_calls_are_in_it(self, bus):
+        """The mutation this exists for: hand the sub-runners a ledger of
+        their own and this number drops to the swarm's own roles."""
+        sink, meter = Sink(), FlatMeter()
+        _, plain, executor = _staged_swarm(bus, sink, meter)
+        finished = sink.of("mission_finished")[-1]
+        assert executor.calls == 4, "two steps of two turns each"
+        assert finished["usage"]["calls"] == plain.calls + executor.calls
+
+    def test_one_mission_finished_and_it_is_the_swarms(self, bus):
+        sink, meter = Sink(), FlatMeter()
+        _staged_swarm(bus, sink, meter)
+        assert len(sink.of("mission_finished")) == 1
+
+    def test_the_transcript_holds_the_same_ledger(self, bus):
+        sink, meter = Sink(), FlatMeter()
+        transcript, _, _ = _staged_swarm(bus, sink, meter)
+        assert transcript.usage.calls == meter.reads
+
+    def test_a_sub_missions_tool_call_carries_its_own_per_call_usage(self, bus):
+        sink, meter = Sink(), FlatMeter()
+        _staged_swarm(bus, sink, meter)
+        calls = sink.of("tool_call")
+        assert calls, "the staged path dispatched nothing"
+        for record in calls:
+            assert record["usage"]["total_tokens"] == (
+                FlatMeter.PROMPT + FlatMeter.COMPLETION)
+
+    def test_the_synthesized_answer_carries_the_call_that_wrote_it(self, bus):
+        sink, meter = Sink(), FlatMeter()
+        _staged_swarm(bus, sink, meter)
+        assert sink.of("answer")[-1]["usage"]["total_tokens"] == 11
+
+    def test_every_record_still_conforms(self, bus):
+        from core.runtime.contract import conforms
+
+        sink, meter = Sink(), FlatMeter()
+        _staged_swarm(bus, sink, meter)
+        for record in sink.records:
+            assert conforms(record) == [], record
+
+    def test_no_usage_source_leaves_the_staged_stream_as_it_was(self, bus):
+        sink = Sink()
+        _staged_swarm(bus, sink, None)
+        assert all("usage" not in record for record in sink.records)
+
+
+class TestTheDirectFallbackCountsTheRouterCallToo:
+    """`_direct` hands its runner the swarm's own ledger, not a fresh one.
+
+    The router call that chose the direct path had already happened; a
+    sub-runner accumulating on its own would report the turn as one call
+    cheaper than it was, and the `mission_finished` a consumer reads on
+    that path is the SUB-RUNNER'S.
+    """
+
+    def _direct_turn(self, bus, sink, meter):
+        plain = ScriptedModel(DIRECT)
+        executor = ScriptedModel('{"answer": "done directly"}')
+        runner = swarm(plain, executor, bus, observer=sink, usage_fn=meter)
+        return runner.run("small question"), plain, executor
+
+    def test_the_router_call_is_counted(self, bus):
+        sink, meter = Sink(), FlatMeter()
+        _, plain, executor = self._direct_turn(bus, sink, meter)
+        finished = sink.of("mission_finished")[-1]
+        assert (plain.calls, executor.calls) == (1, 1)
+        assert finished["usage"]["calls"] == 2
+
+    def test_a_plan_of_one_step_falls_back_and_still_counts_both(self, bus):
+        sink, meter = Sink(), FlatMeter()
+        plain = ScriptedModel(
+            STAGED, plan({"id": "s1", "goal": "just search", "rung": "tool"}))
+        executor = ScriptedModel('{"answer": "done"}')
+        swarm(plain, executor, bus, observer=sink,
+              usage_fn=meter).run("question")
+        # router + planner + the one executor turn.
+        assert sink.of("mission_finished")[-1]["usage"]["calls"] == 3
+
+
+class TestATurnThatDiedBeforeItStartedStillSaysWhatItSpent:
+    def test_a_planner_that_died_reports_the_calls_that_were_made(self, bus):
+        """Zero steps and one round-trip already paid for: exactly the run
+        an operator wants the number for.
+
+        `KeyboardInterrupt` because it is a `BaseException` and therefore
+        the one thing `_json_reply` does not swallow — an ordinary
+        exception in the planner is a plan nobody could draw, which
+        fails open to the direct path rather than ending the turn.
+        """
+        class _Exploding(ScriptedModel):
+            def __call__(self, messages):
+                if self.calls >= 1:
+                    self.seen.append([])
+                    raise KeyboardInterrupt("the planner died")
+                return super().__call__(messages)
+
+        sink, meter = Sink(), FlatMeter()
+        runner = swarm(_Exploding(STAGED), ScriptedModel(), bus,
+                       observer=sink, usage_fn=meter)
+        with pytest.raises(KeyboardInterrupt):
+            runner.run("question")
+        finished = sink.of("mission_finished")[-1]
+        assert finished["steps"] == 0
+        assert finished["usage"]["calls"] == 1, "triage was billed"
+
+
+class TestCostOnTheStagedPath:
+    def test_the_rate_reaches_the_swarms_own_last_record(self, bus):
+        from core.runtime.usage import Rate
+
+        sink, meter = Sink(), FlatMeter()
+        _staged_swarm(bus, sink, meter,
+                      rate=Rate(prompt_per_1k=1.0, completion_per_1k=1.0,
+                                currency="GBP"))
+        cost = sink.of("mission_finished")[-1]["usage"]["cost"]
+        assert cost["currency"] == "GBP"
+        assert cost["amount"] == round(meter.reads * 11 / 1000.0, 6)
+
+    def test_no_rate_no_cost(self, bus):
+        sink, meter = Sink(), FlatMeter()
+        _staged_swarm(bus, sink, meter)
+        assert "cost" not in sink.of("mission_finished")[-1]["usage"]

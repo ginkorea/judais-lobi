@@ -169,7 +169,7 @@ What survives of it moves rather than dies. The **performance telemetry** bullet
 — tokens/sec, time-to-first-token, tail latency — is the client's business
 after all, because the client is what observes it; it becomes the usage/telemetry
 **ledger** in the new Phase 9, measured per run and carried on
-`mission_finished`, next to tokens and cost. The hardware bullets stay as
+`mission_finished` as an optional field, next to tokens and cost. The hardware bullets stay as
 history in §5.11, where the reference-profile notes are kept verbatim for
 whoever stands the serving layer up.
 
@@ -195,8 +195,15 @@ Properties 2 and 3.
   a second one for missions.
 - **Usage ledger.** Every backend returns `usage`; the run accumulates prompt
   and completion tokens and, for hosted providers, cost; `mission_finished`
-  carries it; the ledger is a first-class event so a platform can meter. This
-  is where February's Phase 9 telemetry lands (§2.3).
+  carries it. First-class **field**, not a first-class event as this bullet
+  originally said: the reference consumer asserts `set(contract.EVENTS)` equals
+  the set it reads, so a tenth event would force a lockstep release on both
+  sides for a number that fits in frames that already exist — while an optional
+  field is read with a default by a platform that meters and ignored by one
+  that does not. So `usage` rides `tool_call`, `answer` and `reply_rejected`
+  per call and `mission_finished` as the run's totals, absent (never zero) when
+  the provider reported nothing. This is where February's Phase 9 telemetry
+  lands (§2.3).
 - **Approvals as durable records.** Core has the ask half — `--gate-tool`,
   `gate_requested`, the `AWAITING_APPROVAL` outcome. Add the resume half: a
   decision arrives on a later turn as a durable record and widens the closed
