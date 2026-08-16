@@ -1068,3 +1068,284 @@ class TestTheOpeningNamesTheAuditFile:
                       if entry["tool_name"] == "catalog.search"]
         assert len(dispatched) == 2
         assert all("step" in json.loads(entry["detail"]) for entry in dispatched)
+
+
+# ---------------------------------------------------------------------------
+# One clock for the whole turn, and one switch
+# ---------------------------------------------------------------------------
+
+
+class _Clock:
+    """A monotonic that moves only when a fake model says so."""
+
+    def __init__(self, start=1_000.0):
+        self.now = float(start)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += float(seconds)
+
+
+class SlowModel(ScriptedModel):
+    """Every reply costs *seconds* of fake clock. Nothing sleeps."""
+
+    def __init__(self, clock, seconds, *replies):
+        super().__init__(*replies)
+        self._clock = clock
+        self._seconds = float(seconds)
+
+    def __call__(self, messages):
+        self._clock.advance(self._seconds)
+        return super().__call__(messages)
+
+
+TWO_STEPS = plan({"id": "s1", "goal": "a", "rung": "tool"},
+                 {"id": "s2", "goal": "b", "rung": "tool", "needs": ["s1"]})
+
+#: The same plan with ``done`` conditions, so each step costs a gate call —
+#: a model round trip the swarm makes ITSELF, between two sub-missions.
+GATED_TWO_STEPS = plan(
+    {"id": "s1", "goal": "a", "rung": "tool", "done": "a is found"},
+    {"id": "s2", "goal": "b", "rung": "tool", "needs": ["s1"],
+     "done": "b is found"})
+
+
+class TestOneClockForTheWholeTurn:
+    """A staged turn is one question, so it gets one wall clock.
+
+    This is the opposite of how ``max_steps`` travels: the step budget is
+    deliberately *portioned*, a slice per sub-mission, because steps are what
+    staging exists to spend in small amounts. Seconds are shared, because an
+    operator who allowed a mission ninety seconds allowed the mission ninety
+    seconds — and a clock handed out per stage would give a five-step plan
+    five times what was asked for.
+    """
+
+    def _staged(self, bus, clock, seconds, per_call, executor_replies,
+                plain_replies=(STAGED, TWO_STEPS, "the answer"), **kwargs):
+        from core.budgets import Deadline
+
+        plain = SlowModel(clock, per_call, *plain_replies)
+        executor = SlowModel(clock, per_call, *executor_replies)
+        runner = swarm(plain, executor, bus,
+                       deadline=Deadline(seconds, monotonic=clock), **kwargs)
+        return runner, plain, executor
+
+    def test_the_clock_starts_before_triage(self, bus):
+        """Triage and planning are two model round trips before the first
+        step, and on a cold endpoint they are most of a small budget. A clock
+        that started at the first sub-mission would not be the mission's."""
+        clock = _Clock()
+        seen = []
+        runner, plain, executor = self._staged(
+            bus, clock, 5.0, 3.0, [tool_call("catalog.search", q="a")],
+            observer=seen.append)
+        transcript = runner.run("go")
+
+        # Triage (3 s) then the planner (6 s): over before a step ran.
+        assert plain.calls == 2
+        assert executor.calls == 0
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.budget.which == "seconds"
+        assert seen[0]["event"] == "mission_started"
+        assert seen[-1]["event"] == "mission_finished"
+        assert seen[-1]["budget"] == {"which": "seconds", "limit": 5.0,
+                                      "spent": 6.0}
+
+    def test_sub_missions_share_the_clock_rather_than_restarting_it(self, bus):
+        """The bug this guards: five sub-missions of a minute each fitting
+        inside a one-minute budget, because each runner wound its own."""
+        clock = _Clock()
+        runner, plain, executor = self._staged(
+            bus, clock, 20.0, 3.0,
+            [tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+             tool_call("catalog.search", q="b"), '{"answer": "b done"}'])
+        transcript = runner.run("go")
+
+        # Triage + plan = 6 s; the first sub-mission's two turns take it to
+        # 12; the gate has no `done` condition so nothing else is asked; the
+        # second sub-mission's two take it to 18 and the check before
+        # synthesis is still inside 20 — so this one ANSWERS.
+        assert transcript.completed is True
+        assert clock.now - 1_000.0 == 21.0
+
+    def test_a_sub_mission_stops_on_the_turns_clock_not_its_own(self, bus):
+        """The check that has to live INSIDE the sub-runner. A sub-mission
+        handed no clock spends its whole step allowance after the turn is
+        already over, and the swarm only finds out when it comes back."""
+        clock = _Clock()
+        runner, _plain, executor = self._staged(
+            bus, clock, 8.0, 3.0,
+            [tool_call("catalog.search", q="a")] * 6)
+        transcript = runner.run("go")
+
+        # Triage and the planner take it to 6; the executor's first reply
+        # takes it to 9, past 8, and nothing further is asked of it. Its
+        # step allowance was four.
+        assert executor.calls == 1
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.budget.which == "seconds"
+
+    def test_a_turn_that_runs_out_mid_plan_stops_there(self, bus):
+        clock = _Clock()
+        runner, plain, executor = self._staged(
+            bus, clock, 10.0, 3.0,
+            [tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+             tool_call("catalog.search", q="b"), '{"answer": "b done"}'])
+        transcript = runner.run("go")
+
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.budget.which == "seconds"
+        # The first sub-mission ran and its steps are on the transcript; the
+        # second was never started.
+        assert len(transcript.steps) == 2
+        assert executor.calls == 2
+
+    def test_it_does_not_spend_a_round_trip_replanning_past_the_deadline(
+            self, bus):
+        """A redraw is one or two more model round trips, and the step that
+        just failed may have failed BECAUSE the clock ran out inside it — in
+        which case replanning is the harness spending a budget it has already
+        exceeded on planning work it cannot then do."""
+        clock = _Clock()
+        runner, plain, executor = self._staged(
+            bus, clock, 13.0, 3.0,
+            [tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+             tool_call("catalog.search", q="b"), '{"answer": "b done"}'])
+        transcript = runner.run("go")
+
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.answer is None
+        # Triage and the planner, and neither a redraw nor a synthesizer.
+        assert plain.calls == 2
+
+    def test_it_does_not_spend_a_round_trip_synthesizing_past_the_deadline(
+            self, bus):
+        """Synthesis is one more model call, and the last one. A turn whose
+        every step SUCCEEDED but whose clock ran out on the way must not
+        spend a further call writing prose about it — the outcome is the
+        answer here, and the steps that ran are on the transcript anyway."""
+        clock = _Clock()
+        runner, plain, executor = self._staged(
+            bus, clock, 7.5, 1.0,
+            [tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+             tool_call("catalog.search", q="b"), '{"answer": "b done"}'],
+            plain_replies=(STAGED, GATED_TWO_STEPS,
+                           json.dumps({"pass": True}),
+                           json.dumps({"pass": True}),
+                           "the answer"))
+        transcript = runner.run("go")
+
+        # Both steps ran and both gates passed — nothing failed.
+        assert executor.calls == 4
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.answer is None
+        # Triage, the planner and the two gates. No synthesizer.
+        assert plain.calls == 4
+
+    def test_the_finished_record_comes_through_the_direct_paths_renderer(
+            self, bus):
+        """One owner. This module hand-listed six of `grounding`'s ten fields
+        once; `mission_finished` is now rendered by the function the direct
+        loop uses, so `budget` cannot arrive on one path and not the other."""
+        from core.runtime import swarm as swarm_module
+
+        clock = _Clock()
+        seen = []
+        runner, _plain, _executor = self._staged(
+            bus, clock, 10.0, 3.0,
+            [tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+             tool_call("catalog.search", q="b"), '{"answer": "b done"}'],
+            observer=seen.append)
+        runner.run("go")
+
+        finished = [r for r in seen if r["event"] == "mission_finished"]
+        assert len(finished) == 1
+        assert set(finished[0]) == {"event", "outcome", "steps", "max_steps",
+                                    "budget"}
+        assert swarm_module._finished_record.__module__ == \
+            "core.runtime.mission"
+
+    def test_the_direct_route_of_a_swarm_gets_the_same_clock(self, bus):
+        """Triage says DIRECT and the sub-runner is a whole MissionRunner.
+        A clock the swarm forgot to hand it is a budget that only applies to
+        half the routes."""
+        clock = _Clock()
+        runner, plain, executor = self._staged(
+            bus, clock, 5.0, 3.0,
+            [tool_call("catalog.search", q="a")] * 6,
+            plain_replies=(DIRECT,))
+        transcript = runner.run("go")
+
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.budget.which == "seconds"
+
+
+class TestTheSwarmTakesTheSwitchToo:
+    def test_a_turn_cancelled_between_steps_ends_incomplete_saying_why(
+            self, bus):
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        seen = []
+
+        class _CancelsAfterAStep(ScriptedModel):
+            def __call__(self, messages):
+                reply = super().__call__(messages)
+                if self.calls >= 2:
+                    switch.cancel()
+                return reply
+
+        executor = _CancelsAfterAStep(
+            tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+            tool_call("catalog.search", q="b"), '{"answer": "b done"}')
+        plain = ScriptedModel(STAGED, TWO_STEPS, "the answer")
+        transcript = swarm(plain, executor, bus, cancel=switch,
+                           observer=seen.append).run("go")
+
+        assert transcript.outcome == "incomplete"
+        assert transcript.reason == "cancelled"
+        assert seen[-1]["event"] == "mission_finished"
+        assert seen[-1]["reason"] == "cancelled"
+        assert "budget" not in seen[-1]
+
+    def test_a_switch_thrown_before_triage_still_closes_the_stream(self, bus):
+        """The opening record is emitted before the router is asked, so it is
+        owed a closing one even when nothing else happens at all."""
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        switch.cancel()
+        seen = []
+        plain = ScriptedModel(STAGED, TWO_STEPS, "the answer")
+        executor = ScriptedModel('{"answer": "never asked"}')
+        transcript = swarm(plain, executor, bus, cancel=switch,
+                           observer=seen.append).run("go")
+
+        assert plain.calls == 0 and executor.calls == 0
+        assert transcript.outcome == "incomplete"
+        assert transcript.reason == "cancelled"
+        assert [r["event"] for r in seen] == ["mission_started",
+                                              "mission_finished"]
+
+    def test_a_switch_thrown_during_planning_stops_before_the_first_step(
+            self, bus):
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+
+        class _CancelsWhilePlanning(ScriptedModel):
+            def __call__(self, messages):
+                reply = super().__call__(messages)
+                if self.calls >= 2:
+                    switch.cancel()
+                return reply
+
+        plain = _CancelsWhilePlanning(STAGED, TWO_STEPS, "the answer")
+        executor = ScriptedModel('{"answer": "never asked"}')
+        transcript = swarm(plain, executor, bus, cancel=switch).run("go")
+
+        assert executor.calls == 0
+        assert transcript.reason == "cancelled"

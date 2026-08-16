@@ -323,6 +323,391 @@ class TestBudget:
         assert transcript.answer is None
         assert transcript.outcome == "budget_exhausted"
 
+    def test_the_step_case_says_steps_and_the_numbers(self, bus):
+        """`budget_exhausted` was one word for one budget for as long as
+        there was one budget. Now there are two, and the word alone sends an
+        operator to lengthen a step cap that may not be what ran out."""
+        transcript = MissionRunner(
+            ScriptedModel(*[tool_call("catalog.search", q="x")] * 5),
+            bus, ["catalog.search"], max_steps=3,
+        ).run("go")
+        assert transcript.budget is not None
+        assert transcript.budget.which == "steps"
+        assert (transcript.budget.limit, transcript.budget.spent) == (3, 3)
+
+    def test_a_mission_that_answered_carries_no_budget(self, bus):
+        """Present exactly when it ran out. A consumer branches on the
+        outcome and indexes the field, so a stray one on an answered run is
+        a consumer telling somebody a good answer hit a limit."""
+        transcript = MissionRunner(
+            ScriptedModel('{"answer": "done"}'), bus, ["catalog.search"],
+        ).run("go")
+        assert transcript.budget is None and transcript.reason == ""
+
+
+# ---------------------------------------------------------------------------
+# The wall clock, and the switch somebody outside can throw
+# ---------------------------------------------------------------------------
+
+
+class _R:
+    """What a fake bus hands back — the three fields the loop reads."""
+
+    exit_code, stdout, stderr, evidence = 0, "it worked", "", "it worked"
+
+
+class _Clock:
+    """A monotonic that moves only when a test, or a fake model, says so."""
+
+    def __init__(self, start=1_000.0):
+        self.now = float(start)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += float(seconds)
+
+
+class SlowModel(ScriptedModel):
+    """A :class:`ScriptedModel` whose every reply costs *seconds* of clock.
+
+    The endpoint is what spends a mission's wall clock — minutes of it, on
+    a 20B at 59 tok/s — so the fake that stands in for one has to be what
+    spends the fake clock.  Nothing here sleeps: a test that spent its own
+    budget to prove a budget is spent would be slow and flaky, and what is
+    being asserted is the comparison.
+    """
+
+    def __init__(self, clock, seconds, *replies):
+        super().__init__(*replies)
+        self._clock = clock
+        self._seconds = float(seconds)
+
+    def __call__(self, messages):
+        self._clock.advance(self._seconds)
+        return super().__call__(messages)
+
+
+class TestTheWallClock:
+    def _runner(self, bus, clock, seconds, per_call, *replies, **kwargs):
+        from core.budgets import Deadline
+
+        return MissionRunner(
+            SlowModel(clock, per_call, *replies), bus, ["catalog.search"],
+            deadline=Deadline(seconds, monotonic=clock), **kwargs,
+        )
+
+    def test_a_mission_stops_when_its_seconds_run_out(self, bus):
+        """Steps bound the work; seconds bound the waiting. A model that
+        answers slowly enough burns a budget the step cap never notices."""
+        clock = _Clock()
+        transcript = self._runner(
+            bus, clock, 5.0, 3.0,
+            *[tool_call("catalog.search", q="x")] * 20,
+            max_steps=20,
+        ).run("go")
+
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.budget.which == "seconds"
+        assert transcript.budget.limit == 5.0
+        assert transcript.budget.spent == 6.0
+        # And it was NOT the step cap: two of a stated twenty.
+        assert len(transcript.steps) == 2
+
+    def test_the_last_record_says_which_budget_and_by_how_much(self, bus):
+        clock = _Clock()
+        seen = []
+        self._runner(
+            bus, clock, 5.0, 3.0,
+            *[tool_call("catalog.search", q="x")] * 20,
+            max_steps=20, observer=seen.append,
+        ).run("go")
+
+        finished = seen[-1]
+        assert finished["event"] == "mission_finished"
+        assert finished["outcome"] == "budget_exhausted"
+        assert finished["budget"] == {"which": "seconds", "limit": 5.0,
+                                      "spent": 6.0}
+
+    def test_an_answered_run_carries_no_budget_field(self, bus):
+        clock = _Clock()
+        seen = []
+        self._runner(bus, clock, 60.0, 1.0, '{"answer": "done"}',
+                     observer=seen.append).run("go")
+        assert seen[-1]["outcome"] == "answered"
+        assert "budget" not in seen[-1]
+
+    def test_no_deadline_is_the_loop_as_it_ran_before(self, bus):
+        """Unbounded is the default, and unbounded means the clock is not
+        consulted at all — including by a fake bus that would choke on a
+        keyword it never declared."""
+        clock = _Clock()
+        transcript = MissionRunner(
+            SlowModel(clock, 10_000, *[tool_call("catalog.search", q="x")] * 4),
+            bus, ["catalog.search"], max_steps=3,
+        ).run("go")
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.budget.which == "steps"
+
+    def test_the_clock_is_checked_between_steps_too(self, bus):
+        """Not only before a dispatch. Every path that continues — a parse
+        error, a refused tool, a grounding repair — comes back through the
+        top of the loop, which is the point that stops a run from spending
+        a repair turn past its deadline."""
+        clock = _Clock()
+        transcript = self._runner(
+            bus, clock, 5.0, 6.0, "not json at all", "also not json",
+            max_steps=6,
+        ).run("go")
+
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.budget.which == "seconds"
+        # One rejected reply, and the second was never asked for.
+        assert len(transcript.steps) == 1
+
+    def test_the_clock_is_checked_before_the_tool_the_model_named(self, bus):
+        """The check that costs a dispatch. The model's reply is what spends
+        the clock, so a run can be over by the time it says which tool it
+        wants — and `tool_call` is emitted BEFORE the call, so a watcher told
+        one was coming must not then be told the mission ended without it."""
+        clock = _Clock()
+        seen = []
+        transcript = self._runner(
+            bus, clock, 5.0, 6.0, tool_call("catalog.search", q="x"),
+            observer=seen.append,
+        ).run("go")
+
+        assert transcript.outcome == "budget_exhausted"
+        assert [r["event"] for r in seen if r["event"] == "tool_call"] == []
+        # Recorded as a step all the same, saying what it was and that it
+        # never ran: a proposal with no result beside it reads like a tool
+        # that failed silently.
+        assert len(transcript.steps) == 1
+        assert transcript.steps[0].tool == "catalog.search"
+        assert "NOT called" in transcript.steps[0].error
+        assert "seconds budget" in transcript.steps[0].error
+
+
+class TestTheToolCeiling:
+    """The remaining clock rides down as a ceiling on the tool call.
+
+    It is a *named parameter of the bus* and not a keyword forwarded to the
+    tool, because everything the bus does not name goes to the executor —
+    which for an MCP tool is a remote server. A mission that "just passed a
+    timeout down" would be inventing an argument for somebody else's schema.
+    """
+
+    class _TakesOne:
+        sandbox_name = "none"
+
+        def __init__(self):
+            self.seen = []
+
+        def describe_tool(self, name):
+            return {"description": f"does {name}"}
+
+        def dispatch(self, name, deadline_s=None, **kwargs):
+            self.seen.append(deadline_s)
+            return _R()
+
+        def register_tool(self, name, tool):
+            return name
+
+        def unregister(self, name):
+            return None
+
+    class _TakesNone:
+        sandbox_name = "none"
+
+        def __init__(self):
+            self.seen = []
+
+        def describe_tool(self, name):
+            return {"description": f"does {name}"}
+
+        def dispatch(self, name, **kwargs):
+            self.seen.append(dict(kwargs))
+            return _R()
+
+        def register_tool(self, name, tool):
+            return name
+
+        def unregister(self, name):
+            return None
+
+    def _run(self, fake, deadline):
+        return MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="x"),
+                          '{"answer": "done"}'),
+            fake, ["catalog.search"], deadline=deadline, store_tool="",
+        ).run("go")
+
+    def test_a_bus_that_takes_a_ceiling_is_handed_the_time_left(self):
+        from core.budgets import Deadline
+
+        clock = _Clock()
+        fake = self._TakesOne()
+        self._run(fake, Deadline(30.0, monotonic=clock))
+        assert fake.seen == [30.0]
+
+    def test_the_real_bus_takes_one(self, bus):
+        """Asserted against the shipped `ToolBus`, not only a stub: the
+        probe is a signature check, and a rename there would silently turn
+        the ceiling off everywhere."""
+        from core.runtime.mission import _takes_deadline
+
+        assert _takes_deadline(bus) is True
+
+    def test_a_bus_that_takes_none_is_handed_none(self):
+        """A caller's fake bus must never meet a keyword it did not declare
+        just because somebody set a deadline."""
+        from core.budgets import Deadline
+
+        fake = self._TakesNone()
+        self._run(fake, Deadline(30.0, monotonic=_Clock()))
+        assert fake.seen == [{"q": "x"}]
+
+    def test_no_deadline_passes_nothing_at_all(self):
+        fake = self._TakesOne()
+        self._run(fake, None)
+        assert fake.seen == [None]
+
+
+class TestTheSwitchSomebodyOutsideCanThrow:
+    def test_a_cancelled_run_ends_incomplete_saying_why(self, bus):
+        """Not a sixth outcome word. A cancelled run stopped without an
+        answer, which is what `incomplete` has always meant; what it was
+        missing is the reason."""
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        seen = []
+
+        class _CancelsAfterOne(ScriptedModel):
+            def __call__(self, messages):
+                reply = super().__call__(messages)
+                if len(self.seen) >= 1:
+                    switch.cancel()
+                return reply
+
+        transcript = MissionRunner(
+            _CancelsAfterOne(*[tool_call("catalog.search", q="x")] * 6),
+            bus, ["catalog.search"], max_steps=6,
+            cancel=switch, observer=seen.append,
+        ).run("go")
+
+        assert transcript.outcome == "incomplete"
+        assert transcript.reason == "cancelled"
+        assert transcript.budget is None
+        # It ENDED, it was not killed: the transcript kept the step that ran
+        # and the stream got the record that says the run is over.
+        assert len(transcript.steps) == 1
+        assert seen[-1]["event"] == "mission_finished"
+        assert seen[-1]["reason"] == "cancelled"
+        assert "budget" not in seen[-1]
+
+    def test_a_switch_thrown_before_the_first_step_still_finishes(self, bus):
+        """The opening record is owed a closing one whatever happens in
+        between — including nothing."""
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        switch.cancel()
+        seen = []
+        transcript = MissionRunner(
+            ScriptedModel('{"answer": "never asked"}'), bus,
+            ["catalog.search"], cancel=switch, observer=seen.append,
+        ).run("go")
+
+        assert transcript.outcome == "incomplete"
+        assert transcript.reason == "cancelled"
+        assert [r["event"] for r in seen] == ["mission_started",
+                                              "mission_finished"]
+
+    def test_the_switch_stops_a_tool_the_model_had_already_named(self, bus):
+        """Cancelled while the endpoint was answering. Nothing new starts."""
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        calls = []
+        real_dispatch = bus.dispatch
+
+        def watched(name, **kwargs):
+            calls.append(name)
+            return real_dispatch(name, **kwargs)
+
+        bus.dispatch = watched
+
+        class _CancelsAtOnce(ScriptedModel):
+            def __call__(self, messages):
+                reply = super().__call__(messages)
+                switch.cancel()
+                return reply
+
+        transcript = MissionRunner(
+            _CancelsAtOnce(tool_call("catalog.search", q="x")),
+            bus, ["catalog.search"], cancel=switch,
+        ).run("go")
+
+        assert calls == []
+        assert transcript.reason == "cancelled"
+        assert "was cancelled" in transcript.steps[0].error
+
+    def test_a_cancellation_outranks_a_clock_that_also_ran_out(self, bus):
+        """Both true at the same check. The person who threw the switch is
+        the one who will read the sentence, and "somebody stopped this" is
+        the truer thing to show them."""
+        from core.budgets import Cancellation, Deadline
+
+        clock = _Clock()
+        switch = Cancellation()
+        switch.cancel()
+        deadline = Deadline(1.0, monotonic=clock).start()
+        clock.advance(60)
+
+        transcript = MissionRunner(
+            ScriptedModel('{"answer": "x"}'), bus, ["catalog.search"],
+            deadline=deadline, cancel=switch,
+        ).run("go")
+        assert (transcript.outcome, transcript.reason) == ("incomplete",
+                                                           "cancelled")
+
+    def test_an_answer_already_produced_is_kept(self, bus):
+        """The switch stops what has not happened yet; it does not delete
+        what has. A model that finished its answer in the same round trip
+        somebody threw the switch in did the work, and discarding a real
+        answer to report a stop would lose the thing the turn was for."""
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+
+        class _CancelsAtOnce(ScriptedModel):
+            def __call__(self, messages):
+                reply = super().__call__(messages)
+                switch.cancel()
+                return reply
+
+        transcript = MissionRunner(
+            _CancelsAtOnce('{"answer": "it is 42"}'), bus,
+            ["catalog.search"], cancel=switch,
+        ).run("go")
+        assert transcript.outcome == "answered"
+        assert transcript.answer == "it is 42"
+
+    def test_a_bare_threading_event_works_too(self, bus):
+        """Duck-typed on `is_set()`: a caller already holding an Event
+        should not have to wrap it."""
+        import threading
+
+        event = threading.Event()
+        event.set()
+        transcript = MissionRunner(
+            ScriptedModel('{"answer": "never asked"}'), bus,
+            ["catalog.search"], cancel=event,
+        ).run("go")
+        assert transcript.reason == "cancelled"
+
 
 # ---------------------------------------------------------------------------
 # Argument schemas in the catalogue

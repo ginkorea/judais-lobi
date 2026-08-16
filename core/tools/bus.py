@@ -142,7 +142,9 @@ class ToolBus:
         return existed
 
     def dispatch(self, tool_name: str, *args: Any,
-                 action: Optional[str] = None, **kwargs: Any) -> ToolResult:
+                 action: Optional[str] = None,
+                 deadline_s: Optional[float] = None,
+                 **kwargs: Any) -> ToolResult:
         """Dispatch a tool invocation through capability gating.
 
         Parameters
@@ -153,6 +155,24 @@ class ToolBus:
             For multi-action tools, the specific action to run.
             Scopes are resolved from ``descriptor.action_scopes[action]``
             when present.
+        deadline_s : float, optional
+            How long the *caller* still has, in seconds — a **ceiling** on
+            this call's subprocess timeout, never a floor.  A sandboxed
+            tool that would have run for its own 120 s is cut to whatever
+            is left, so a run with a wall-clock budget cannot overshoot it
+            by a tool's full timeout.  ``None`` is the ordinary case and
+            changes nothing.
+
+            Named here rather than forwarded, and that is the whole reason
+            it is a parameter of this method.  Everything this signature
+            does not name goes to the executor, and for an MCP tool the
+            executor is a remote server: a caller that "just passed a
+            timeout down" would be inventing an argument for somebody
+            else's schema.  Consumed here, it reaches only the one layer
+            that owns a timeout — the sandbox runner below — and an
+            in-process tool that never touches a subprocess is unaffected,
+            which is honest: this bounds the plane it can bound and does
+            not pretend to bound the other.
         *args, **kwargs
             Forwarded to the executor.  When *action* is given the executor
             receives ``(action, *args, **kwargs)``.
@@ -285,7 +305,8 @@ class ToolBus:
         started = time.perf_counter()
         try:
             if self._should_use_sandbox(tool_name, action, descriptor):
-                runner = self._build_sandbox_runner(descriptor.sandbox_profile)
+                runner = self._build_sandbox_runner(
+                    descriptor.sandbox_profile, deadline_s)
                 saved_runners = self._apply_subprocess_runner(executor, runner)
 
             if action:
@@ -358,8 +379,14 @@ class ToolBus:
             return False
         return True
 
-    def _build_sandbox_runner(self, profile: SandboxProfile) -> Callable:
+    def _build_sandbox_runner(self, profile: SandboxProfile,
+                              deadline_s: Optional[float] = None) -> Callable:
         """A ``run_subprocess``-shaped callable that runs inside the sandbox.
+
+        *deadline_s* is :meth:`dispatch`'s ceiling, applied to whatever
+        timeout the tool asks for — ``min``, never ``max``: a caller with
+        eight seconds left must not be able to *extend* a tool that
+        deliberately bounds itself at five.
 
         ``shell`` and ``executable`` are forwarded, not swallowed.  This
         accepted both from :func:`core.tools.executor.run_subprocess` and
@@ -390,10 +417,17 @@ class ToolBus:
         def _runner(cmd, *, shell: Optional[bool] = None, timeout: int = 120,
                     executable: Optional[str] = None,
                     stdin: Optional[str] = None, **_kwargs):
+            bounded = timeout
+            if deadline_s is not None:
+                # `max(1, …)` because a timeout of zero means "no timeout"
+                # to most of the subprocess layer underneath, which is the
+                # opposite of what a spent deadline is asking for. One
+                # second is the smallest bound that still means a bound.
+                bounded = max(1, min(int(timeout), int(deadline_s)))
             return self._sandbox.execute(
                 cmd,
                 profile=profile,
-                timeout=timeout,
+                timeout=bounded,
                 shell=shell,
                 executable=executable,
                 env=child_env,

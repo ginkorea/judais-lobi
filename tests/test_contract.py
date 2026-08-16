@@ -76,6 +76,34 @@ def _replies(*texts):
     return chat
 
 
+class _FakeClock:
+    """A monotonic that moves only when a fake model answers."""
+
+    def __init__(self, start=1_000.0):
+        self.now = float(start)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += float(seconds)
+
+
+def _slow(clock, seconds, *texts):
+    """A model whose every reply costs *seconds* of fake clock.
+
+    Nothing sleeps.  What the wall-clock budget is asserted against is the
+    comparison, not the sleeping, and a test that spent its own budget to
+    prove one is spent would be slow and flaky both.
+    """
+    chat = _replies(*texts)
+
+    def slow_chat(messages):
+        clock.advance(seconds)
+        return chat(messages)
+    return slow_chat
+
+
 def _run(replies, *, gated=(), tools=("catalog_search_assets",), max_steps=4,
          validator=None):
     seen = []
@@ -197,6 +225,46 @@ class TestAMissionConformsToItsOwnContract:
             max_steps=2)
         assert transcript.outcome == "budget_exhausted"
         assert _faults(seen) == []
+
+    def test_a_mission_that_ran_out_of_seconds(self):
+        """The second budget. It reaches a consumer as the same outcome word
+        with a different ``budget.which``, which is the whole reason the
+        field exists — narrowing the question fixes one of these and not the
+        other."""
+        from core.budgets import Deadline
+
+        clock = _FakeClock()
+        seen = []
+        runner = MissionRunner(
+            _slow(clock, 6.0, *[json.dumps(
+                {"tool": "catalog_search_assets", "arguments": {}})] * 4),
+            _Bus(), ["catalog_search_assets"], max_steps=4,
+            observer=seen.append, store_tool="",
+            deadline=Deadline(5.0, monotonic=clock))
+        transcript = runner.run("go")
+
+        assert transcript.outcome == "budget_exhausted"
+        assert _faults(seen) == []
+        assert seen[-1]["budget"] == {"which": "seconds", "limit": 5.0,
+                                      "spent": 6.0}
+
+    def test_a_mission_somebody_cancelled(self):
+        """``incomplete`` with a ``reason``, and no new outcome word for a
+        consumer's closed set to have to grow."""
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        switch.cancel()
+        seen = []
+        transcript = MissionRunner(
+            _replies(json.dumps({"answer": "never reached"})), _Bus(),
+            ["catalog_search_assets"], observer=seen.append, store_tool="",
+            cancel=switch).run("go")
+
+        assert transcript.outcome == "incomplete"
+        assert _faults(seen) == []
+        assert seen[-1]["reason"] == "cancelled"
+        assert seen[-1]["outcome"] in c.OUTCOMES
 
     def test_a_mission_that_repaired_and_then_caveated(self):
         """Both grounding records — the interim one carrying ``repairing`` and
@@ -388,8 +456,48 @@ class TestTheContractIsWhole:
         source += (REPO / "core" / "runtime" / "swarm.py").read_text()
         assigned = set(re.findall(r'\.outcome = "([a-z_]+)"', source))
         assigned |= set(re.findall(r'outcome: str = "([a-z_]+)"', source))
+        # `_stop` returns its verdict as a tuple that is unpacked onto the
+        # transcript, so the outcome word never appears beside `.outcome =`.
+        # Without this pattern a new word introduced there — `cancelled`,
+        # say, which was very nearly one — would reach a consumer with
+        # nothing here noticing.
+        assigned |= set(re.findall(r'return "([a-z_]+)", ', source))
         assigned.add(AWAITING_APPROVAL)
         assert assigned <= set(c.OUTCOMES), assigned - set(c.OUTCOMES)
+
+    def test_the_budget_words_are_the_ones_the_shared_module_declares(self):
+        """``mission_finished.budget.which`` is a closed set, and it is
+        `core.budgets`'s to close. A word the mission could emit and that
+        module does not list is a word this contract documents nowhere.
+
+        The document is held to the *list* and not merely to mentioning
+        each word somewhere, because every one of these words appears in
+        the Events section for other reasons — ``steps`` is a required
+        field, ``tokens`` is in the compaction record — so a presence
+        check would pass over a `which` vocabulary the page had quietly
+        stopped stating. Anchored on "``which`` is one of", which is the
+        contract's own phrase and not somebody's prose.
+        """
+        from core.budgets import WHICH
+
+        assert WHICH == ("steps", "seconds", "bytes", "tokens")
+        section = _md_section("Events")
+        listed = re.search(r"`which` is one of ([^;]+);", section, re.S)
+        assert listed, "CONTRACT.md no longer states the `which` vocabulary"
+        assert re.findall(r"`([a-z]+)`", listed.group(1)) == list(WHICH)
+
+    def test_cancellation_did_not_become_a_sixth_outcome(self):
+        """A consumer's closed set of outcome words is the thing this tuple
+        exists to let it assert, and widening it is a cost every consumer
+        pays. TAIPAN's bridge keys a sentence per word and falls through to a
+        fallback that states the raw one; adding `cancelled` would have been
+        *safe* there and still wrong, because a cancelled run genuinely IS a
+        run that stopped without an answer."""
+        from core.runtime.mission import CANCELLED
+
+        assert CANCELLED not in c.OUTCOMES
+        assert "reason" in c.OPTIONAL[ms.MISSION_FINISHED]
+        assert "incomplete" in c.OUTCOMES
 
     def test_the_exit_contract_names_the_clauses_a_consumer_builds_on(self):
         assert set(c.EXIT_CONTRACT) == {
@@ -481,6 +589,7 @@ def _mission_parser() -> argparse.ArgumentParser:
 _FLAG_VALUES = {
     "--mcp-url": "http://127.0.0.1:8000/mcp",
     "--mission-steps": "6",
+    "--mission-seconds": "90",
     "--model": "gpt-oss-20b",
     "--profile": "dev",
     "--skill": "skill.yaml",
@@ -620,6 +729,13 @@ class _SpySink:
         self.closed += 1
 
 
+def _Switch():
+    """The mission's cancellation, spelled out where a test reads it."""
+    from core.budgets import Cancellation
+
+    return Cancellation()
+
+
 @pytest.fixture
 def sigterm_restored():
     previous = signal.getsignal(signal.SIGTERM)
@@ -662,6 +778,109 @@ class TestSigtermClosesTheStream:
         stream = io.StringIO()
         stream.close()
         ms.NdjsonSink(stream).flush()
+
+    def test_the_first_signal_cancels_instead_of_closing(
+            self, monkeypatch, sigterm_restored):
+        """Closing the stream ON the signal saved every record except the one
+        that says the run is over — which is the record a pane needs to stop
+        spinning. So the first ask is cooperative: throw the switch, return,
+        and let the loop finish and close in its own `finally`."""
+        import os
+
+        sink, switch = _SpySink(), _Switch()
+        ms.close_on_sigterm(sink, switch)
+        killed = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(sig))
+
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+        assert switch.is_set() is True
+        assert switch.cause == ms.SIGTERM_CAUSE
+        # Nothing closed, nothing died: the mission is still running and
+        # still has a record to write.
+        assert (sink.flushed, sink.closed, killed) == (0, 0, [])
+
+    def test_a_second_signal_does_not_wait(self, monkeypatch, sigterm_restored):
+        """Somebody asked twice, which means the first ask is not being
+        honoured fast enough — a model call in flight, a tool mid-subprocess.
+        The honest answer is the old behaviour."""
+        import os
+
+        sink, switch = _SpySink(), _Switch()
+        ms.close_on_sigterm(sink, switch)
+        killed = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(sig))
+
+        handler = signal.getsignal(signal.SIGTERM)
+        handler(signal.SIGTERM, None)
+        handler(signal.SIGTERM, None)
+
+        assert (sink.flushed, sink.closed) == (1, 1)
+        assert killed == [signal.SIGTERM]
+
+    def test_the_whole_ordering_a_stopped_run_gets(self, monkeypatch,
+                                                   sigterm_restored):
+        """Cancel → the loop ends → `mission_finished` → the sink closes →
+        the process dies of the signal. Asserted as one sequence, because
+        every one of those steps is only worth having in that order."""
+        import os
+
+        from core.runtime.mission import MissionRunner
+
+        events, order = [], []
+
+        class _Sink:
+            def __call__(self, record):
+                events.append(dict(record))
+
+            def flush(self):
+                order.append("flush")
+
+            def close(self):
+                order.append("close")
+
+        sink, switch = _Sink(), _Switch()
+        ms.close_on_sigterm(sink, switch)
+        handler = signal.getsignal(signal.SIGTERM)
+
+        def signalled(messages):
+            handler(signal.SIGTERM, None)
+            return json.dumps({"tool": "catalog_search_assets",
+                               "arguments": {}})
+
+        transcript = MissionRunner(
+            signalled, _Bus(), ["catalog_search_assets"], observer=sink,
+            store_tool="", cancel=switch).run("go")
+        sink.close()
+
+        killed = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(sig))
+        ms.exit_as_signalled(switch)
+
+        assert transcript.outcome == "incomplete"
+        assert events[-1]["event"] == ms.MISSION_FINISHED
+        assert events[-1]["reason"] == "cancelled"
+        assert order == ["close"]
+        # And the exit status is still the signal's: a turn that was stopped
+        # and reports success is a turn a consumer will believe finished.
+        assert killed == [signal.SIGTERM]
+        assert _faults(events) == []
+
+    def test_a_library_cancellation_does_not_kill_the_process(
+            self, monkeypatch):
+        """`exit_as_signalled` is for the run a SIGTERM asked to stop. A
+        caller that threw the switch itself wants its process back."""
+        import os
+
+        from core.budgets import Cancellation
+
+        killed = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(sig))
+        switch = Cancellation()
+        switch.cancel()
+        ms.exit_as_signalled(switch)
+        ms.exit_as_signalled(None)
+        assert killed == []
 
 
 # ── the diagnostic clause, which used to be a warning ────────────────────────

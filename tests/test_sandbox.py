@@ -200,6 +200,44 @@ class TestTheBusForwardsWhatTheToolDecided:
         runner(["python", "-"], stdin="print('hi')")
         assert seen["stdin"] == "print('hi')"
 
+    def test_a_callers_deadline_is_a_ceiling_on_the_tools_own_timeout(self):
+        """A mission with a wall-clock budget must not overshoot it by a
+        tool's full 120 s. `min`, never `max`: a caller with eight seconds
+        left must not be able to EXTEND a tool that bounds itself at five."""
+        from core.tools.bus import ToolBus
+        from core.tools.descriptors import SandboxProfile as _Profile
+
+        seen = []
+
+        class RecordingSandbox:
+            def execute(self, cmd, *, profile=None, timeout=None, env=None,
+                        shell=None, executable=None, stdin=None):
+                seen.append(timeout)
+                return 0, "ok", ""
+
+        bus = ToolBus(sandbox=RecordingSandbox())
+        bus._build_sandbox_runner(_Profile(), 7.4)("x", timeout=120)
+        bus._build_sandbox_runner(_Profile(), 900)("x", timeout=5)
+        bus._build_sandbox_runner(_Profile(), None)("x", timeout=30)
+        assert seen == [7, 5, 30]
+
+    def test_a_spent_deadline_still_leaves_a_second_and_not_zero(self):
+        """Zero means "no timeout" to most of the subprocess layer, which is
+        the opposite of what a spent budget is asking for."""
+        from core.tools.bus import ToolBus
+        from core.tools.descriptors import SandboxProfile as _Profile
+
+        seen = []
+
+        class RecordingSandbox:
+            def execute(self, cmd, *, profile=None, timeout=None, **_kw):
+                seen.append(timeout)
+                return 0, "ok", ""
+
+        bus = ToolBus(sandbox=RecordingSandbox())
+        bus._build_sandbox_runner(_Profile(), 0.0)("x", timeout=120)
+        assert seen == [1]
+
     def test_the_bus_builds_the_child_env_from_the_profile(self, monkeypatch):
         """The bus hands ``execute`` an env built from the profile's
         allow-list — the one place the child's environment is decided — so

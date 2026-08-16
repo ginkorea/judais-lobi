@@ -53,7 +53,8 @@ Optional, and therefore to be read with a default: `audit_ref` on
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
 only when the model got as far as naming one), `compacted` on
-`step_started`, and `sandbox` and `profile` on `mission_started`. `plan` rode
+`step_started`, `sandbox` and `profile` on `mission_started`, and `budget` and
+`reason` on `mission_finished`. `plan` rode
 `mission_started` until 0.8.x: that record is now emitted before triage —
 which is itself a call to the model — so at the time it is written there is no
 plan and there may never be one.
@@ -98,7 +99,7 @@ exactly like an agent that had it all along. Nothing is lost to the run —
 store still holds them, and the grounding verdict is computed from that store
 rather than from the conversation.
 
-Five of these carry more meaning than their names suggest:
+Six of these carry more meaning than their names suggest:
 
 - **`tool_call` is emitted before the call is made.** That is what lets a
   watcher show what is about to happen rather than only what happened.
@@ -117,6 +118,17 @@ Five of these carry more meaning than their names suggest:
   each plan drawn. It is the first thing a watcher hears after the planner has
   finished, because the record that opens the stream is written before the
   planner is asked.
+- **`mission_finished` says which budget ran out.** `budget` —
+  `{which, limit, spent}` — is present **exactly when** `outcome` is
+  `budget_exhausted`, and absent on every other outcome, so a consumer may
+  branch on the outcome and index the field. `which` is one of `steps`,
+  `seconds`, `bytes`, `tokens`; `spent` is not always equal to `limit`, because
+  a wall clock is noticed a little after it runs out and reporting the limit as
+  the spend would hide by how much. `bytes` and `tokens` are declared and not
+  yet emitted by anything: the vocabulary is closed now so that the day
+  something spends them, it fills in a field you were already told to expect.
+  `reason` is present when the outcome word does not say why — today, only
+  `"cancelled"` beside `incomplete`.
 
 `grounding` is absent altogether when no grounding grammar was configured. An
 absent report and a clean one are different facts.
@@ -130,11 +142,23 @@ Carried by `mission_finished`, and by `answer` when there is one.
   support. The caveat is already appended to `answer.text`.
 - `awaiting_approval` — the mission reached a gated tool. Nothing was called and
   nothing further happens until a person decides.
-- `budget_exhausted` — `max_steps` tool turns spent without reaching an answer.
-  Read it against `max_steps`, never alone.
+- `budget_exhausted` — the run hit a hard bound. Never "the model gave up".
+  **Which** bound is on the record, as `budget` — `{which, limit, spent}`, with
+  `which` one of `steps`, `seconds`, `bytes`, `tokens` — and reading the word
+  without it is reading half a sentence: a mission out of `steps` needs a
+  narrower question, a mission out of `seconds` needs a faster endpoint, and
+  the word alone does not say which you have.
 - `incomplete` — the transcript's default, and therefore the word a mission ends
   on when it ended by raising. `mission_finished` comes out of a `finally`, so a
   crash still closes the stream; the reason is on stderr.
+
+  It is also the word a **cancelled** run ends on — a caller threw the switch,
+  or the process was sent `SIGTERM` — and there the reason is on the record
+  rather than on stderr, as `reason: "cancelled"`. Cancellation is a field and
+  not a sixth word here on purpose: this list is the closed set a consumer
+  asserts it knows, widening it is a cost every consumer pays, and a cancelled
+  run really is a run that stopped without an answer. A consumer that ignores
+  `reason` renders it exactly as it rendered one before the field existed.
 
 ## Command line
 
@@ -143,6 +167,11 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--mission` — run as a mission rather than a chat turn.
 - `--mcp-url` — the tool plane.
 - `--mission-steps` — the tool-turn budget; arrives back as `max_steps`.
+- `--mission-seconds` — the wall-clock budget for the whole run. Unset is
+  **unbounded**. Checked between steps and before each model call, and shared by
+  every stage of a `--swarm` turn; a call already in flight is not interrupted,
+  so the real bound is this plus one round trip. Running out arrives back as
+  `budget_exhausted` with `budget.which == "seconds"`.
 - `--provider` — which backend.
 - `--model` — which model on it.
 - `--profile` — the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. Arrives back as `profile`.
@@ -170,6 +199,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `MISSION_SWARM` — the environment form of `--swarm`.
 - `MISSION_EVENTS` — the environment form of `--events`.
 - `MISSION_HISTORY` — the environment form of `--history`.
+- `MISSION_SECONDS` — the environment form of `--mission-seconds`; the flag wins. Unset, blank, unparseable or ≤ 0 all mean unbounded, because a mistyped budget that killed the run before its first step would look like a broken harness.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.
@@ -190,10 +220,15 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - **`mission_finished` always arrives.** It is emitted from a `finally`, so a
   mission killed by an exception still closes its own stream. A stream that
   simply stops is indistinguishable from an agent that is thinking.
-- **SIGTERM is honoured.** The sink is flushed and closed, then the default
-  disposition is restored and the signal re-raised — so what was already written
-  survives, and the exit status is still the signal's rather than a spurious
-  clean exit.
+- **SIGTERM asks a run to wind up, and it gets to.** The first signal throws the
+  mission's cancellation: the loop stops at its next step, keeps its transcript,
+  and writes its own `mission_finished` — `incomplete` with
+  `reason: "cancelled"` — and only then is the sink flushed and closed. So a
+  stopped turn closes its stream with the record that says it is over, rather
+  than with the record before it. The default disposition is then restored and
+  the signal re-raised, so the exit status is still the signal's rather than a
+  spurious clean exit. A **second** SIGTERM does not wait: it flushes, closes and
+  dies, so a run stuck in a model call or a subprocess can still be stopped.
 - **stderr carries the diagnostic**, and its tail is what to show when a mission
   produced no events or stopped without an answer. It is a traceback, and it is
   **scrubbed before it is written** — home directories, this host's name,

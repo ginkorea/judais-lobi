@@ -2,17 +2,45 @@
 #
 # Phase 7.0: Phase params accept str (was Phase enum). Since Phase is now
 # str,Enum, all existing callers work without changes.
+#
+# 0.9.x: the base exception and the words for the budgets themselves are
+# `core.budgets`'s, not this module's. A kernel session and a mission both
+# run out of *steps* and of *seconds*, and until the mission grew a wall
+# clock there was no second runtime to disagree with — so the moment there
+# was one, the definition moved out to a module that imports nothing and
+# both can import. What stays here is what is genuinely the kernel's: a
+# phase, its retries, and the fact that the kernel's clock runs per phase
+# where a mission's runs per run.
 
 import time
 from dataclasses import dataclass
 
 from core.bounding import MAX_RESULT_BYTES
+from core.budgets import BudgetExhausted
 from core.kernel.state import SessionState
+
+__all__ = [
+    "BudgetConfig", "BudgetExhausted", "PhaseRetriesExhausted",
+    "TotalIterationsExhausted", "PhaseTimeoutExhausted",
+    "check_phase_retries", "check_total_iterations", "check_phase_time",
+    "check_all_budgets",
+]
 
 
 @dataclass(frozen=True)
 class BudgetConfig:
-    """Hard budget parameters for a kernel session. Immutable after creation."""
+    """Hard budget parameters for a kernel session. Immutable after creation.
+
+    The fields are the kernel's own units and stay here: a *phase* is what
+    this runtime retries and what it times, and a mission has no such
+    thing.  What is shared with the mission path is one directory up —
+    :class:`core.budgets.Budgets` for the shape of "steps and seconds",
+    :class:`core.budgets.BudgetExhausted` for the exception every check
+    below raises, and :data:`core.bounding.MAX_RESULT_BYTES` for the byte
+    cap this defaults to.  A caller catching ``BudgetExhausted`` around a
+    kernel session catches the same class a mission would raise, and reads
+    ``which``/``limit``/``spent`` off it either way.
+    """
     max_phase_retries: int = 3
     max_total_iterations: int = 30
     max_time_per_phase_seconds: float = 300.0
@@ -23,13 +51,16 @@ class BudgetConfig:
     max_candidates: int = 5
 
 
-class BudgetExhausted(Exception):
-    """Base exception for all budget violations."""
-    pass
-
-
 class PhaseRetriesExhausted(BudgetExhausted):
-    """Raised when a phase exceeds max_phase_retries."""
+    """Raised when a phase exceeds max_phase_retries.
+
+    ``which`` is ``"retries"`` — the one budget the kernel has and the
+    mission stream does not, which is why
+    :data:`core.budgets.WHICH` (the closed set a ``mission_finished``
+    may name) does not list it and the base class does not police the
+    word.  The kernel-shaped attributes are kept beside it because
+    callers read ``exc.phase``.
+    """
 
     def __init__(self, phase: str, retries: int, max_retries: int):
         self.phase = phase
@@ -37,23 +68,35 @@ class PhaseRetriesExhausted(BudgetExhausted):
         self.max_retries = max_retries
         name = phase.name if hasattr(phase, 'name') else phase
         super().__init__(
-            f"Phase {name} exhausted retries: {retries}/{max_retries}"
+            "retries", max_retries, retries,
+            message=f"Phase {name} exhausted retries: {retries}/{max_retries}",
         )
 
 
 class TotalIterationsExhausted(BudgetExhausted):
-    """Raised when total iterations across all phases exceeds the cap."""
+    """Raised when total iterations across all phases exceeds the cap.
+
+    ``which`` is ``"steps"``: an iteration here and a step in a mission
+    are the same thing under two names, and one of the two names is the
+    one a consumer was told to expect.
+    """
 
     def __init__(self, iterations: int, max_iterations: int):
         self.iterations = iterations
         self.max_iterations = max_iterations
         super().__init__(
-            f"Total iterations exhausted: {iterations}/{max_iterations}"
+            "steps", max_iterations, iterations,
+            message=f"Total iterations exhausted: {iterations}/{max_iterations}",
         )
 
 
 class PhaseTimeoutExhausted(BudgetExhausted):
-    """Raised when a single phase exceeds its time budget."""
+    """Raised when a single phase exceeds its time budget.
+
+    ``which`` is ``"seconds"``.  The *scope* differs from a mission's —
+    this clock runs per phase, a mission's per run — and that is a fact
+    about the caller, not about the word.
+    """
 
     def __init__(self, phase: str, elapsed: float, max_seconds: float):
         self.phase = phase
@@ -61,7 +104,8 @@ class PhaseTimeoutExhausted(BudgetExhausted):
         self.max_seconds = max_seconds
         name = phase.name if hasattr(phase, 'name') else phase
         super().__init__(
-            f"Phase {name} timed out: {elapsed:.1f}s/{max_seconds:.1f}s"
+            "seconds", max_seconds, elapsed,
+            message=f"Phase {name} timed out: {elapsed:.1f}s/{max_seconds:.1f}s",
         )
 
 
