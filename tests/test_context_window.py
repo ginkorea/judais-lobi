@@ -1,11 +1,11 @@
 # tests/test_context_window.py — Context window manager tests
 
+import sys
 from types import SimpleNamespace
 
 from core.runtime.context_window import (
     ContextConfig, ContextWindowManager, MissionWindow,
 )
-from core.runtime.gpu import GPUProfile
 
 
 def test_context_compaction():
@@ -30,16 +30,32 @@ def test_context_compaction():
     assert any("Context summary" in m["content"] for m in messages)
 
 
-def test_gpu_cap_applies_for_local():
-    cfg = ContextConfig()
-    mgr = ContextWindowManager(config=cfg)
-    profile = mgr._resolve_profile(
+def test_a_local_window_is_not_capped_by_the_machine_holding_the_cli(monkeypatch):
+    """The window belongs to the endpoint, not to this process's devices.
+
+    This cascade used to end by probing the caller's GPUs — importing
+    `torch` at resolve time — and capping a `local` window by their VRAM.
+    The local backend speaks HTTP to a server that is routinely another
+    box, so that was the wrong machine's answer; and when the probe found
+    nothing it produced a small number rather than no number. Nothing here
+    consults a device list any more, and the retired `JUDAIS_LOBI_VRAM_GB`
+    knob is set below precisely to prove it is not read either.
+    """
+    class Detonate:
+        def __getattr__(self, name):
+            raise AssertionError(f"context resolution reached torch.{name}")
+
+    monkeypatch.setitem(sys.modules, "torch", Detonate())
+    monkeypatch.setenv("JUDAIS_LOBI_VRAM_GB", "4")
+
+    mgr = ContextWindowManager(config=ContextConfig())
+    profile = mgr.resolve_profile(
         provider="local",
-        model="gpt-4o",
+        model="a-model-no-default-knows",
         backend_caps=None,
-        gpu_profile=GPUProfile(device_count=1, total_vram_gb=4.0, device_names=["gpu0"]),
     )
-    assert profile.max_context_tokens == 4096
+    assert profile.source == "provider_default"
+    assert profile.max_context_tokens == 32768
 
 
 def test_backend_caps_override():
@@ -50,7 +66,6 @@ def test_backend_caps_override():
         provider="openai",
         model="gpt-4o",
         backend_caps=caps,
-        gpu_profile=None,
     )
     assert profile.max_context_tokens == 7777
     assert profile.max_output_tokens == 333
@@ -204,10 +219,7 @@ def test_a_client_whose_capabilities_raise_is_not_a_mission_that_failed():
             raise RuntimeError("no route to host")
 
     window = MissionWindow(provider="local", model="gpt-oss-20b",
-                           client=Unreachable(), config=ContextConfig(),
-                           gpu_profile=GPUProfile(device_count=0,
-                                                  total_vram_gb=0.0,
-                                                  device_names=[]))
+                           client=Unreachable(), config=ContextConfig())
     assert window.limit_tokens > 0
 
 

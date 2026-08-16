@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.bounding import MAX_RESULT_BYTES
 from core.context.formatter import estimate_tokens
-from core.runtime.gpu import GPUProfile, detect_gpu_profile, vram_to_context_cap
 from core.tools.config_loader import load_project_config
 
 
@@ -92,12 +91,11 @@ class ContextWindowManager:
         provider: str,
         model: str,
         backend_caps=None,
-        gpu_profile: Optional[GPUProfile] = None,
     ) -> Tuple[List[Dict[str, str]], ContextStats]:
         from core.runtime.messages import build_chat_context
 
         messages = build_chat_context(system_prompt, history, invoked_tools)
-        profile = self.resolve_profile(provider, model, backend_caps, gpu_profile)
+        profile = self.resolve_profile(provider, model, backend_caps)
         compacted, stats = self._compact(messages, profile)
         return compacted, stats
 
@@ -106,7 +104,6 @@ class ContextWindowManager:
         provider: str,
         model: str,
         backend_caps=None,
-        gpu_profile: Optional[GPUProfile] = None,
     ) -> ModelContextProfile:
         """How much room this provider/model/endpoint actually has.
 
@@ -163,13 +160,21 @@ class ContextWindowManager:
             max_out = int(cfg.max_output_tokens or base.max_output_tokens)
             base = ModelContextProfile(max_ctx, max_out, source="provider_default")
 
-        # GPU-aware cap for local inference (or explicit provider)
-        if provider == "local":
-            profile = gpu_profile or detect_gpu_profile()
-            cap = vram_to_context_cap(profile.total_vram_gb)
-            if cap:
-                return ModelContextProfile(min(base.max_context_tokens, cap), base.max_output_tokens, source="gpu_cap")
-
+        # There is no client-side VRAM cap at the end of this cascade any
+        # more.  It used to be one: for ``provider == "local"``, probe the
+        # GPUs of the machine *running this process* and cap the window by
+        # their total VRAM.  That answered a question the client cannot
+        # answer.  The local backend speaks HTTP to a serving endpoint, and
+        # in a real deployment that endpoint is another box entirely — how
+        # much VRAM the CLI host has says nothing about how long a context
+        # the server accepts, and one GPU versus four is a serving-layer
+        # decision (vLLM's ``--tensor-parallel-size``, TRT-LLM's TP config).
+        # The server already answers the question honestly: the `backend`
+        # branch at the top of this method reads `max_model_len` off
+        # ``GET /models``.  When that probe fails, a declared default is a
+        # stated guess; a cap derived from the wrong machine's device list
+        # is a wrong number wearing a measurement's clothes — and it cost a
+        # `torch` import at resolve time to produce.
         return base
 
     #: The name this cascade was resolved by before it had a second caller.
@@ -363,14 +368,12 @@ class MissionWindow:
         config: Optional[ContextConfig] = None,
         manager: Optional[ContextWindowManager] = None,
         min_tail_messages: int = MISSION_MIN_TAIL,
-        gpu_profile: Optional[GPUProfile] = None,
     ):
         self._manager = manager or ContextWindowManager(config=config)
         self._provider = provider or ""
         self._model = model or ""
         self._client = client
         self._min_tail = max(1, int(min_tail_messages))
-        self._gpu_profile = gpu_profile
         self._profile: Optional[ModelContextProfile] = None
 
     @property
@@ -384,7 +387,7 @@ class MissionWindow:
                 except Exception:       # pragma: no cover - defensive
                     caps = None
             self._profile = self._manager.resolve_profile(
-                self._provider, self._model, caps, self._gpu_profile,
+                self._provider, self._model, caps,
             )
         return self._profile
 

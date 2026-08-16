@@ -4,11 +4,13 @@
 # CandidateManager is lazy to avoid the circular import through
 # core.contracts.schemas → core.judge.models → core.patch.engine.
 #
-# There is no GPUProfile here any more. There were two of them: this package's
-# always said "cpu_only" and had no caller at all, while core.runtime.gpu
-# detects honestly and feeds ContextWindowManager. Two types with one name is
-# a coin flip at every import site, so the unused liar was deleted. Ask
-# core.runtime.detect_gpu_profile(). See tests/test_one_gpu_profile.py.
+# There is no GPUProfile here, and as of 0.8.3 there is no longer one
+# anywhere. There were two: this package's always said "cpu_only" and had no
+# caller at all, and core.runtime.gpu probed the client's devices to cap the
+# context window. The first was deleted as an unused liar; the second went
+# with the cap it fed, because how many candidates may run at once and how
+# long a context is accepted are both properties of the serving layer, not of
+# the device list on the machine that happens to be holding the CLI.
 
 from core.judge.models import (
     TierVerdict,
