@@ -230,3 +230,109 @@ class TestToolsProfileDefault:
         assert denial["error"] == "capability_denied"
         assert "shell.exec" in denial["missing_scopes"]
         assert "--profile dev" in denial["message"]
+
+
+def _mocked(fn):
+    """The six constructor patches every test in this file needs, once."""
+    for target in ("core.tools.WebResearchTool", "core.tools.WebSearchTool",
+                   "core.tools.FetchPageTool", "core.tools.RunShellTool",
+                   "core.tools.InstallProjectTool", "core.tools.RunPythonTool"):
+        fn = patch(target)(fn)
+    return fn
+
+
+class TestAuditIsOnByDefault:
+    """`AuditLogger` existed from Phase 4b and nothing ever passed one here.
+
+    The default deployment — the one a platform spawns — therefore kept no
+    record of a single tool call, which is the difference between a framework
+    you can leave unattended and one you cannot. These tests hold the default
+    down; `core/policy/audit.py` owns where the file goes.
+    """
+
+    @_mocked
+    def test_the_default_bus_has_a_logger(self, MockResearch, MockWeb, MockFetch,
+                                          MockShell, MockInstall, MockPython,
+                                          tmp_path, monkeypatch):
+        from core.policy.audit import AUDIT_ENV
+
+        _setup_mocks(MockWeb, MockResearch, MockFetch, MockShell, MockInstall, MockPython)
+        target = tmp_path / "run.jsonl"
+        monkeypatch.setenv(AUDIT_ENV, str(target))
+        tools = Tools(elfenv="/tmp/fake", memory=None)
+        assert tools.bus.audit_ref == str(target)
+
+    @_mocked
+    def test_the_default_path_is_under_the_working_directory(
+            self, MockResearch, MockWeb, MockFetch, MockShell, MockInstall,
+            MockPython, tmp_path, monkeypatch):
+        from core.policy.audit import AUDIT_ENV
+
+        _setup_mocks(MockWeb, MockResearch, MockFetch, MockShell, MockInstall, MockPython)
+        monkeypatch.delenv(AUDIT_ENV, raising=False)
+        monkeypatch.chdir(tmp_path)
+        tools = Tools(elfenv="/tmp/fake", memory=None)
+        assert tools.bus.audit_ref.startswith(
+            str(tmp_path / ".judais-lobi" / "audit"))
+
+    @_mocked
+    def test_a_dispatch_through_the_default_bus_is_recorded(
+            self, MockResearch, MockWeb, MockFetch, MockShell, MockInstall,
+            MockPython, tmp_path, monkeypatch):
+        import json
+
+        from core.policy.audit import AUDIT_ENV
+        from core.tools.descriptors import ToolDescriptor
+
+        _setup_mocks(MockWeb, MockResearch, MockFetch, MockShell, MockInstall, MockPython)
+        target = tmp_path / "run.jsonl"
+        monkeypatch.setenv(AUDIT_ENV, str(target))
+        tools = Tools(elfenv="/tmp/fake", memory=None)
+        tools.bus.register(ToolDescriptor(tool_name="probe"),
+                           lambda **kw: (0, "ran", ""))
+        tools.bus.dispatch("probe", q="x")
+        line = json.loads(target.read_text().strip().splitlines()[-1])
+        assert line["tool_name"] == "probe"
+        assert line["verdict"] == "allowed"
+
+    @_mocked
+    def test_the_disable_word_turns_it_off_and_writes_nothing(
+            self, MockResearch, MockWeb, MockFetch, MockShell, MockInstall,
+            MockPython, tmp_path, monkeypatch):
+        """Explicitly off, which is a decision, and it leaves no file — the
+        stream says so as `audit_ref: null` rather than leaving a consumer to
+        infer it from an empty directory."""
+        from core.policy.audit import AUDIT_ENV
+        from core.tools.descriptors import ToolDescriptor
+
+        _setup_mocks(MockWeb, MockResearch, MockFetch, MockShell, MockInstall, MockPython)
+        monkeypatch.setenv(AUDIT_ENV, "off")
+        monkeypatch.chdir(tmp_path)
+        tools = Tools(elfenv="/tmp/fake", memory=None)
+        tools.bus.register(ToolDescriptor(tool_name="probe"),
+                           lambda **kw: (0, "ran", ""))
+        tools.bus.dispatch("probe")
+        assert tools.bus.audit_ref is None
+        assert list(tmp_path.iterdir()) == []
+
+    @_mocked
+    def test_a_caller_can_ask_for_no_audit_explicitly(
+            self, MockResearch, MockWeb, MockFetch, MockShell, MockInstall,
+            MockPython):
+        """`audit=None` is a request; omitting the parameter is not. Without
+        the sentinel the two would be the same call and the default would have
+        to come down on the side of keeping no records."""
+        _setup_mocks(MockWeb, MockResearch, MockFetch, MockShell, MockInstall, MockPython)
+        tools = Tools(elfenv="/tmp/fake", memory=None, audit=None)
+        assert tools.bus.audit_ref is None
+
+    @_mocked
+    def test_a_caller_can_supply_its_own_logger(
+            self, MockResearch, MockWeb, MockFetch, MockShell, MockInstall,
+            MockPython, tmp_path):
+        from core.policy.audit import AuditLogger
+
+        _setup_mocks(MockWeb, MockResearch, MockFetch, MockShell, MockInstall, MockPython)
+        logger = AuditLogger(path=tmp_path / "mine.jsonl")
+        tools = Tools(elfenv="/tmp/fake", memory=None, audit=logger)
+        assert tools.bus.audit_ref == str(tmp_path / "mine.jsonl")

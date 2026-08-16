@@ -765,3 +765,80 @@ class TestTheSafeDefaultGovernsTheMission:
                    if line.startswith('{') and '"mission_started"' in line]
         assert started
         assert started[0].get("profile") == "safe"
+
+
+class TestTheAuditIsAnnounced:
+    """Where the record of this mission is being kept, said before it starts.
+
+    Both ways round, and the absence is the louder of the two: an unaudited
+    run is somebody's decision (``JUDAIS_LOBI_AUDIT=off``) and should never be
+    discovered afterwards by finding an empty directory. The same fact rides
+    the machine channel as ``mission_started.audit_ref``, so an operator
+    reading the console and a platform reading the stream are told the same
+    thing.
+    """
+
+    def _audit(self, agent, path):
+        from core.policy.audit import AuditLogger
+
+        agent.tools.bus._audit = AuditLogger(path=path)
+
+    def test_the_path_is_printed(self, elf, tmp_path, capsys):
+        MockClass, agent = elf
+        self._audit(agent, tmp_path / "audit.jsonl")
+        run_cli(MockClass)
+        assert str(tmp_path / "audit.jsonl") in capsys.readouterr().out
+
+    def test_the_stream_carries_the_same_path(self, elf, tmp_path):
+        MockClass, agent = elf
+        self._audit(agent, tmp_path / "audit.jsonl")
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--events", str(events))
+        opening = json.loads(events.read_text().splitlines()[0])
+        assert opening["event"] == "mission_started"
+        assert opening["audit_ref"] == str(tmp_path / "audit.jsonl")
+
+    def test_every_dispatch_reaches_the_file(self, elf, tmp_path):
+        MockClass, agent = elf
+        self._audit(agent, tmp_path / "audit.jsonl")
+        run_cli(MockClass)
+        entries = [json.loads(line) for line
+                   in (tmp_path / "audit.jsonl").read_text().splitlines()]
+        assert [e["tool_name"] for e in entries] == ["mcp.governed_read"]
+        assert entries[0]["verdict"] == "allowed"
+
+    def test_no_audit_is_announced_rather_than_left_to_be_noticed(
+            self, elf, capsys):
+        MockClass, _agent = elf
+        run_cli(MockClass)
+        assert "audit: DISABLED" in capsys.readouterr().out
+
+    def test_a_disabled_audit_is_null_on_the_stream(self, elf, tmp_path):
+        MockClass, _agent = elf
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--events", str(events))
+        opening = json.loads(events.read_text().splitlines()[0])
+        assert opening["audit_ref"] is None
+
+    def test_a_write_failure_is_counted_and_printed_at_the_end(
+            self, elf, tmp_path, capsys):
+        """Dispatch survives a full disk; the mission does not pretend it was
+        recorded. The bus says the first failure on stderr with its exception
+        and the CLI prints the count when the run is over — in the ``finally``,
+        because a run that ended badly is exactly the run whose audit gaps
+        matter."""
+        class Full:
+            path = tmp_path / "audit.jsonl"
+
+            def log(self, entry):
+                raise OSError(28, "No space left on device")
+
+        MockClass, agent = elf
+        agent.tools.bus._audit = Full()
+        run_cli(MockClass)
+        captured = capsys.readouterr()
+        assert agent.tools.bus.audit_failures == 1
+        assert "could NOT be written" in captured.out
+        assert "No space left on device" in captured.err
+        # And the mission still answered.
+        assert "asset.5f21" in captured.out

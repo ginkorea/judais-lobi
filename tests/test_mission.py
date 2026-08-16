@@ -1378,3 +1378,152 @@ class TestEveryStringOnTheStreamIsClassified:
         unclassified = sorted(set(sum(
             (self._unclassified(r) for r in events), [])))
         assert unclassified == [], unclassified
+
+
+class TestTheStreamNamesTheAuditFile:
+    """``mission_started.audit_ref`` — where this run's dispatches are recorded.
+
+    Optional on the contract and therefore read with a default, but always
+    emitted, and ``None`` when auditing was turned off in as many words. That
+    null is the point: a consumer that simply finds no audit file cannot tell
+    a harness that failed to open one from a harness that was told not to,
+    and only one of those is a decision somebody made.
+    """
+
+    def _audited_bus(self, tmp_path):
+        from core.policy.audit import AuditLogger
+
+        b = ToolBus(
+            capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
+            audit=AuditLogger(path=tmp_path / "audit.jsonl"),
+        )
+        b.register(
+            ToolDescriptor(tool_name="catalog.search", description="Search."),
+            lambda **kw: (0, f"hits for {kw.get('q')}", ""))
+        return b
+
+    def _started(self, runner_bus, **kw):
+        events = []
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), runner_bus, ["catalog.search"],
+            observer=events.append, **kw,
+        ).run("go")
+        return next(e for e in events if e["event"] == "mission_started")
+
+    def test_it_names_the_file(self, tmp_path):
+        started = self._started(self._audited_bus(tmp_path))
+        assert started["audit_ref"] == str(tmp_path / "audit.jsonl")
+
+    def test_it_is_null_when_there_is_no_audit(self, bus):
+        assert self._started(bus)["audit_ref"] is None
+
+    def test_it_is_always_present(self, bus):
+        """Present-and-null rather than absent: an absent field and a field
+        saying "no record was kept" are different sentences."""
+        assert "audit_ref" in self._started(bus)
+
+    def test_the_record_still_conforms(self, tmp_path):
+        assert conforms(self._started(self._audited_bus(tmp_path))) == []
+
+    def test_it_is_declared_optional_on_the_contract(self):
+        assert "audit_ref" in contract.OPTIONAL[contract.MISSION_STARTED]
+
+    def test_a_bus_that_never_heard_of_auditing_does_not_stop_the_mission(self):
+        """Either runner takes any object with ``dispatch`` and
+        ``describe_tool``. A fake bus in somebody's test suite is not obliged
+        to know what an audit is, and nothing here is a reason for a mission
+        not to start."""
+        class Minimal:
+            def describe_tool(self, name):
+                return {"name": name, "description": "d"}
+
+            def dispatch(self, name, **kw):
+                raise AssertionError("not reached")
+
+            def register(self, *a, **kw):
+                return None
+
+            def unregister(self, name):
+                return None
+
+        assert self._started(Minimal(), store_tool="")["audit_ref"] is None
+
+
+class TestTheAuditKnowsWhichStepCalled:
+    """The bus has no idea what a step is, and must not learn one.
+
+    The mission leaves its index in ``bus.audit_context`` before each
+    dispatch and the bus copies it onto the entry — one settable dict
+    against a mission-shaped parameter on a module that serves chat turns
+    and kernel roles too.
+    """
+
+    def _run_two_calls(self, tmp_path):
+        from core.policy.audit import AuditLogger
+
+        logger = AuditLogger(path=tmp_path / "audit.jsonl")
+        b = ToolBus(
+            capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
+            audit=logger,
+        )
+        b.register(
+            ToolDescriptor(tool_name="catalog.search", description="Search."),
+            lambda **kw: (0, "hits", ""))
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="a"),
+                          tool_call("catalog.search", q="b"),
+                          '{"answer": "ok"}'),
+            b, ["catalog.search"], store_tool="",
+        ).run("go")
+        return logger
+
+    def test_each_entry_carries_the_step_it_belongs_to(self, tmp_path):
+        logger = self._run_two_calls(tmp_path)
+        steps = [json.loads(e["detail"])["step"] for e in logger.tail(10)]
+        assert steps == [0, 1]
+
+    def test_the_arguments_are_there_too(self, tmp_path):
+        logger = self._run_two_calls(tmp_path)
+        detail = json.loads(logger.tail(10)[0]["detail"])
+        assert '"q": "a"' in detail["arguments"]
+
+    def test_the_step_is_withdrawn_when_the_mission_ends(self, tmp_path):
+        """The bus outlives the run. A step left behind would stamp the next
+        chat turn with the last mission's index — a column that is wrong
+        rather than absent, which is the worse of the two."""
+        from core.policy.audit import AuditLogger
+
+        logger = AuditLogger(path=tmp_path / "audit.jsonl")
+        b = ToolBus(
+            capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
+            audit=logger,
+        )
+        b.register(
+            ToolDescriptor(tool_name="catalog.search", description="Search."),
+            lambda **kw: (0, "hits", ""))
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="a"),
+                          '{"answer": "ok"}'),
+            b, ["catalog.search"], store_tool="",
+        ).run("go")
+        b.dispatch("catalog.search", q="later")
+        assert "step" not in json.loads(logger.tail(1)[0]["detail"])
+
+    def test_a_mission_that_raised_still_withdraws_it(self, tmp_path):
+        from core.policy.audit import AuditLogger
+
+        def explode(messages):
+            raise RuntimeError("the model server went away")
+
+        logger = AuditLogger(path=tmp_path / "audit.jsonl")
+        b = ToolBus(
+            capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
+            audit=logger,
+        )
+        b.register(
+            ToolDescriptor(tool_name="catalog.search", description="Search."),
+            lambda **kw: (0, "hits", ""))
+        b.audit_context["step"] = 9
+        with pytest.raises(RuntimeError):
+            MissionRunner(explode, b, ["catalog.search"], store_tool="").run("go")
+        assert "step" not in b.audit_context

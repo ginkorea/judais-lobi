@@ -954,3 +954,117 @@ class TestTheSwarmStreamDoesNotNameTheHost:
         assert error.count("<home>") == 1
         assert error == ("warn: cache <home>/data/mission.log unreadable, "
                          f"key <redacted:{leaky_env}>")
+
+
+
+
+# ── the opening record names this run's audit file, whichever way it goes ────
+
+
+class TestTheOpeningNamesTheAuditFile:
+    """A staged mission is a second emitter of ``mission_started``.
+
+    It builds that record by hand from ``_opening`` — which is exactly the
+    arrangement that once shipped six grounding fields where the direct path
+    emitted ten — so ``audit_ref`` comes out of the same
+    :func:`core.runtime.mission.audit_ref_of` the direct loop uses, reading
+    the value off the **bus** rather than resolving a second path of its own.
+    A stream naming a file nothing wrote to would be worse than no
+    ``audit_ref`` at all, because a consumer would believe it.
+    """
+
+    @pytest.fixture
+    def audited_bus(self, tmp_path, calls):
+        from core.policy.audit import AuditLogger
+
+        b = ToolBus(
+            capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
+            audit=AuditLogger(path=tmp_path / "audit.jsonl"),
+        )
+
+        def execute(**kw):
+            calls.append(("catalog.search", dict(kw)))
+            return (0, "corpus abc123", "")
+
+        b.register(ToolDescriptor(tool_name="catalog.search",
+                                  description="search. Second sentence."),
+                   execute)
+        return b
+
+    def _openings(self, plain, executor, bus_):
+        seen = []
+        SwarmRunner(executor, bus_, ["catalog.search"],
+                    system_message="You are Tai.", plain_chat_fn=plain,
+                    observer=seen.append).run("go")
+        return [r for r in seen if r["event"] == "mission_started"]
+
+    def test_the_staged_path_names_it(self, audited_bus, tmp_path):
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "a", "rung": "tool"},
+                 {"id": "s2", "goal": "b", "rung": "tool", "needs": ["s1"]}),
+            "the answer")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+            tool_call("catalog.search", q="b"), '{"answer": "b done"}')
+        openings = self._openings(plain, executor, audited_bus)
+        assert [o["audit_ref"] for o in openings] == \
+            [str(tmp_path / "audit.jsonl")]
+
+    def test_the_direct_path_through_the_swarm_names_it_once(
+            self, audited_bus, tmp_path):
+        """One turn, one opening. The sub-runner underneath is a whole
+        ``MissionRunner`` and its own ``mission_started`` is dropped, so this
+        also says the surviving record is the one carrying the reference."""
+        openings = self._openings(
+            ScriptedModel(DIRECT), ScriptedModel('{"answer": "ok"}'),
+            audited_bus)
+        assert [o["audit_ref"] for o in openings] == \
+            [str(tmp_path / "audit.jsonl")]
+
+    def test_it_is_null_when_the_bus_is_not_audited(self, bus):
+        openings = self._openings(
+            ScriptedModel(DIRECT), ScriptedModel('{"answer": "ok"}'), bus)
+        assert [o["audit_ref"] for o in openings] == [None]
+
+    def test_the_opening_is_the_record_the_direct_runner_would_have_emitted(
+            self, audited_bus):
+        """A consumer that could tell from the opening frame which way the
+        router went would be reading an internal decision off a contract that
+        promises it one vocabulary — ``audit_ref`` included."""
+        staged_plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "a", "rung": "tool"},
+                 {"id": "s2", "goal": "b", "rung": "tool", "needs": ["s1"]}),
+            "the answer")
+        staged_executor = ScriptedModel(
+            tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+            tool_call("catalog.search", q="b"), '{"answer": "b done"}')
+        staged = self._openings(staged_plain, staged_executor, audited_bus)[0]
+        direct = self._openings(ScriptedModel(DIRECT),
+                                ScriptedModel('{"answer": "ok"}'),
+                                audited_bus)[0]
+        assert staged == direct
+
+    def test_the_staged_path_audits_every_dispatch_with_its_step(
+            self, audited_bus, tmp_path):
+        """Renumbering the stream's ``index`` is the swarm's business; the
+        audit reads whatever the sub-runner set, which is that sub-mission's
+        own step."""
+        import json
+
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "a", "rung": "tool"},
+                 {"id": "s2", "goal": "b", "rung": "tool", "needs": ["s1"]}),
+            "the answer")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+            tool_call("catalog.search", q="b"), '{"answer": "b done"}')
+        self._openings(plain, executor, audited_bus)
+        lines = [json.loads(line) for line
+                 in (tmp_path / "audit.jsonl").read_text().splitlines()]
+        dispatched = [entry for entry in lines
+                      if entry["tool_name"] == "catalog.search"]
+        assert len(dispatched) == 2
+        assert all("step" in json.loads(entry["detail"]) for entry in dispatched)

@@ -212,7 +212,19 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: are otherwise indistinguishable on the wire.  Absent (not ``null``)
     #: when the bus was built from a raw capability engine that never recorded
     #: a profile name, so it is read with a default like every OPTIONAL field.
-    MISSION_STARTED: ("sandbox", "profile"),
+    #:
+    #: ``audit_ref`` — the path of the append-only JSONL file this run's
+    #: tool dispatches are being recorded in, or ``null`` when auditing was
+    #: turned off explicitly (``JUDAIS_LOBI_AUDIT=off``).  A **string or
+    #: null**, and the null is the point: a consumer that finds no audit
+    #: file has to guess whether the harness failed to write one or was
+    #: told not to, and only one of those is somebody's decision.
+    #:
+    #: A path on the host that spawned us and not a URL: what a consumer
+    #: does with it — fetch it, show it to an operator, ignore it — is the
+    #: consumer's business.  It names the file for the whole process, so
+    #: the same string arrives on every mission that process runs.
+    MISSION_STARTED: ("sandbox", "profile", "audit_ref"),
     #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
     #: first ``step_started`` that plan produces.  Absent on a direct
     #: mission, which has no plan to show, and absent on every later step.

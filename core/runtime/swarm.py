@@ -70,7 +70,7 @@ from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
     AWAITING_APPROVAL, MissionRunner, MissionTranscript, _grounding_record,
-    _profile_field, validate_history,
+    _profile_field, audit_ref_of, sandbox_of, validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -504,11 +504,17 @@ class SwarmRunner:
             # The bus is the one owner of the string; the direct runner reads
             # the same property, so the two paths cannot disagree about
             # whether this mission's tool subprocesses were isolated.
-            "sandbox": self._bus.sandbox_name,
+            "sandbox": sandbox_of(self._bus),
             # Same OPTIONAL `profile` field the direct path's MissionRunner
             # emits, from the same owner — a consumer must not be able to tell
             # which route ran from the opening frame.
             **_profile_field(self._bus),
+            # Through the direct path's own helper, not a second reading of
+            # the same bus. This dict is a hand-written copy of a record
+            # another module emits, which is precisely the arrangement that
+            # let the swarm ship six grounding fields where the direct path
+            # emitted ten.
+            "audit_ref": audit_ref_of(self._bus),
         }
 
     # ── DIRECT: the path that already worked, untouched ─────────────────

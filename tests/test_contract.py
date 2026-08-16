@@ -237,6 +237,22 @@ class TestAMissionConformsToItsOwnContract:
         assert [r["event"] for r in seen][0] == ms.MISSION_STARTED
         assert _faults(seen) == []
 
+    def test_both_emitters_open_with_an_audit_ref(self):
+        """``audit_ref`` is optional and therefore the kind of field that ends
+        up on one emitter and not the other — nothing in ``conforms`` would
+        object, and a consumer would meet a reference on direct turns and
+        nothing on staged ones. Both, or it is not one contract.
+
+        Its *value* is ``None`` here because neither of these buses is
+        audited; where it comes from is tested against a real logger in
+        ``tests/test_mission.py`` and ``tests/test_swarm.py``.
+        """
+        _, direct = _run([json.dumps({"answer": "done"})])
+        staged = _staged()
+        for stream in (direct, staged):
+            opening = next(r for r in stream if r["event"] == ms.MISSION_STARTED)
+            assert "audit_ref" in opening
+
     def test_a_swarm_opens_its_stream_before_the_router_is_asked(self):
         """The silence clause is a promise about the FIRST call to the model,
         and under ``--swarm`` that is the router's own — not the first step's.

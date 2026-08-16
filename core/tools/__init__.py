@@ -10,7 +10,7 @@ from .web_search import WebSearchTool
 from .web_research import WebResearchTool
 from .rag_crawler import RagCrawlerTool
 from core.memory.memory import UnifiedMemory
-from typing import Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional, Union
 
 from core.tools.bus import ToolBus, ToolResult
 from core.tools.capability import CapabilityEngine
@@ -38,6 +38,14 @@ from core.tools.verify_tools import VerifyTool
 from core.tools.repo_map_tool import RepoMapTool
 from core.tools.patch_tool import PatchTool
 from core.tools.config_loader import load_project_config
+from core.policy.audit import default_audit_logger
+
+#: "The caller said nothing about auditing", which is not the same as
+#: ``audit=None``. Without a sentinel there is no way to ask for an
+#: unaudited bus on purpose, and no way to tell that request apart from a
+#: caller who simply never heard of the parameter — and the default has to
+#: come down on the side of keeping records.
+_AUDIT_DEFAULT = object()
 
 
 class Tools:
@@ -56,6 +64,7 @@ class Tools:
         sandbox: Optional[SandboxRunner] = None,
         sandbox_request: Optional[str] = None,
         profile: Optional[ProfileMode] = None,
+        audit: Any = _AUDIT_DEFAULT,
     ):
         self.elfenv = elfenv
         self.registry: dict[str, Union[Tool, Callable[[], Tool]]] = {}
@@ -92,11 +101,20 @@ class Tools:
         # on a host without bwrap raises rather than silently downgrading.
         if sandbox is None:
             sandbox = select_sandbox(sandbox_request)[0]
+        # Audited unless a caller said otherwise, which is the whole
+        # difference between a framework you can leave running and one you
+        # cannot. `AuditLogger` has existed since Phase 4b and nothing had
+        # ever passed one here, so the default deployment kept no record of
+        # any tool call it made. See `core.policy.audit` for where the file
+        # goes and how `JUDAIS_LOBI_AUDIT` moves or silences it.
+        if audit is _AUDIT_DEFAULT:
+            audit = default_audit_logger()
 
         # Create ToolBus
         self._bus = ToolBus(
             capability_engine=capability_engine,
             sandbox=sandbox,
+            audit=audit,
         )
 
         # Always-available tools

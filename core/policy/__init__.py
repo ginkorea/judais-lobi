@@ -11,7 +11,13 @@ from core.policy.profiles import (
     scope_grant_hint,
     select_profile,
 )
-from core.policy.audit import AuditLogger
+from core.policy.audit import (
+    AUDIT_ENV,
+    AuditLogger,
+    audit_path,
+    audit_run_id,
+    default_audit_logger,
+)
 from core.policy.god_mode import GodModeSession
 
 __all__ = [
@@ -26,6 +32,10 @@ __all__ = [
     "policy_for_profile",
     "scope_grant_hint",
     "select_profile",
+    "AUDIT_ENV",
     "AuditLogger",
+    "audit_path",
+    "audit_run_id",
+    "default_audit_logger",
     "GodModeSession",
 ]

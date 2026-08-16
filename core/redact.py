@@ -154,6 +154,7 @@ SCRUBBED_FIELDS = frozenset({
 VERBATIM_FIELDS = frozenset({
     "output", "arguments", "objective", "catalogue", "gated",
     "handle", "outcome", "plan", "silent", "uncited", "check", "verdict",
+    "sandbox", "profile", "audit_ref",
 })
 
 #: The argument for every member of :data:`VERBATIM_FIELDS`, in one place.
@@ -191,6 +192,14 @@ WHY_VERBATIM: Mapping[str, str] = {
     "uncited": "Names of checks that found nothing — check names, not prose.",
     "check": "The name of a grounding check.",
     "verdict": "One word from the validator's own closed set.",
+    "sandbox": (
+        "One of two closed words, `bwrap` or `none`, chosen by the harness "
+        "and never containing anything a redactor would look for."),
+    "profile": "One of the four ProfileMode names, chosen by the harness.",
+    "audit_ref": (
+        "The path of the audit file, stated ON PURPOSE so a consumer can "
+        "find the record; a scrubbed path names a file nobody can open. It "
+        "is a path on the spawning host and the contract says so."),
 }
 
 
