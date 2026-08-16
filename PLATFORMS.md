@@ -389,12 +389,48 @@ and ends at outcome `awaiting_approval` (`core.runtime.mission.AWAITING_APPROVAL
 The arguments travel verbatim because what a person approves has to be the bytes
 that would run.
 
-**There is deliberately no flag that answers a gate.** A framework that could
-approve its own proposal would be a framework whose gate is a formality. The
-platform resumes by spawning a *new* mission with the approved tool removed from
-its `--gate-tool` list — which widens the closed set by exactly one tool, for
-exactly one turn, after exactly one person said so. TAIPAN does precisely that,
-and holds no state anywhere saying "this analyst approves cancellations".
+**No flag on a mission run answers a gate.** A framework that could approve its
+own proposal would be a framework whose gate is a formality, and there is no
+code path in `MissionRunner` or `SwarmRunner` that can move a record to
+*approved* — a test greps for it.
+
+The answer arrives instead as a **durable record written from outside the run**.
+Unless `JUDAIS_LOBI_APPROVALS` says otherwise, a gate writes
+`.judais-lobi/approvals/<id>.json` holding the tool, the arguments verbatim, the
+objective and the run that asked, and the id rides `gate_requested.approval_id`.
+Two ways to answer it:
+
+* **A platform calls the library.** `core.runtime.approvals.ApprovalStore(root)`
+  → `.get(id)`, `.decide(id, approve=…, decided_by=…, note=…)`, `.pending()`,
+  `.reconcile(live_run_ids)`. This is the integration point, and it is why
+  `--approve`/`--refuse` are **not** in `contract.CLI_FLAGS`: a platform decides
+  in its own process, where it knows who the person is.
+* **An operator runs the command.** `judais --mission --approve <id>
+  --decided-by <who> [--note …]`, or `--refuse`. It builds no agent and asks no
+  model.
+
+`decided_by` is free text and only its **emptiness** is refused. This framework
+has no principal system and will not invent one: *who counts as a person* is the
+platform's question, and the platform's answer belongs on top of this mechanism
+rather than inside it. TAIPAN's `mission/approvals.py` is exactly that — the
+same states and transitions with a `must_be_a_person` check that refuses a
+delegated agent identity.
+
+The platform then resumes by spawning a *new* mission with `--approval <id>`
+(env `MISSION_APPROVAL`), which widens the closed set by exactly one tool, for
+exactly one run, after exactly one person said so. The approval is **spent when
+the tool is dispatched**, so a resumed run that never reaches it leaves the
+decision unspent rather than burning it on nothing; a pending, refused, spent or
+abandoned record is refused at the door, naming the state. Nothing defaults or
+expires into a yes, and no state anywhere says "this analyst approves
+cancellations".
+
+**Read the widening off `mission_started.gated`.** There is no field announcing
+an approval on the stream — the approved tool is simply not in the gated list
+for that run, which is already the statement of what the run will not call.
+Keep passing the full `--gate-tool` list on the resumed spawn; `--approval` does
+the subtraction, and doing it yourself as well would make the flag's narrowness
+your bug to maintain.
 
 > **Name a gated tool the way the resolved catalogue names it.** Unlike
 > `allowed_tools`, which matches by `same_tool`, gate names are matched by exact
@@ -428,6 +464,7 @@ judais --mission                        \
        --events   fd:7                  \
        --history  /tmp/turn-history.json \
        [--gate-tool mcp.some_tool]…     \
+       [--approval ap_<id>]             \
        [--swarm]
 ```
 

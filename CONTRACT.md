@@ -53,8 +53,9 @@ Optional, and therefore to be read with a default: `audit_ref` on
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
 only when the model got as far as naming one), `compacted` on
-`step_started`, and `sandbox` and `profile` on `mission_started`. `plan` rode
-`mission_started` until 0.8.x: that record is now emitted before triage —
+`step_started`, `approval_id` on `gate_requested`, and `sandbox` and
+`profile` on `mission_started`. `plan` rode `mission_started` until 0.8.x:
+that record is now emitted before triage —
 which is itself a call to the model — so at the time it is written there is no
 plan and there may never be one.
 
@@ -106,7 +107,9 @@ Five of these carry more meaning than their names suggest:
   model was shown. The bound exists because a *model's* context is finite.
 - **`gate_requested` is terminal**, and `arguments` travels verbatim. The
   mission stops holding the exact call it proposed, because what a person
-  approves has to be the bytes that would run.
+  approves has to be the bytes that would run. It carries `approval_id`
+  whenever the deployment keeps durable approval records, which it does
+  unless `JUDAIS_LOBI_APPROVALS` says otherwise.
 - **`grounding` is emitted twice when a repair happens**, on `--swarm` as on
   the direct path. The interim record has `repairing: true` and is work in
   progress — show it, do not latch it. The record with `repairing: false` is
@@ -117,6 +120,29 @@ Five of these carry more meaning than their names suggest:
   each plan drawn. It is the first thing a watcher hears after the planner has
   finished, because the record that opens the stream is written before the
   planner is asked.
+
+`approval_id` names the durable record this request was written to:
+`.judais-lobi/approvals/<id>.json` under the harness's working directory by
+default, moved or silenced by `JUDAIS_LOBI_APPROVALS`. A gate is answered from
+**outside** the run that asked — a different process, sometimes a different
+day, always after this one has exited — so the request needs a name that
+outlives the process, and this is it. Show it beside the proposed call; carry
+it back on the turn that resumes, as `--approval <id>`.
+
+The decision is not made on this stream and is not made by this harness.
+Nothing times out into a yes; the record is answered once, by somebody who is
+named on it, through the library (`core.runtime.approvals.ApprovalStore.decide`)
+or the operator command `judais --mission --approve <id> --decided-by <who>`.
+An approved, unspent record then widens exactly one run's gated set by exactly
+one tool, and it is spent at the moment that tool is dispatched. **A consumer
+sees the widening as that tool's absence from `mission_started.gated`** — there
+is no second field announcing it, because the gated list already is the
+statement of what this run will not call.
+
+`approval_id` is absent, not `null`, when nothing was written: either an
+explicit opt-out, or a directory the harness could not write — and the second
+says so in `reason`, because a request with no record is one nobody can ever
+answer.
 
 `grounding` is absent altogether when no grounding grammar was configured. An
 absent report and a clean one are different facts.
@@ -152,6 +178,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--events` — where the NDJSON goes. See above.
 - `--history` — prior turns, seeded as chat messages ahead of the objective.
 - `--gate-tool` — offer a tool and refuse to call it. Repeatable.
+- `--approval` — an approval id somebody has already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched. A pending, refused, spent or abandoned record is refused at the door, naming the state.
 - `--temperature` — sampling, when it must be stated rather than the server's.
 - `--top-p` — likewise.
 - `--seed` — likewise, for a run somebody intends to reproduce.
@@ -173,6 +200,14 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.
+- `JUDAIS_LOBI_APPROVALS` — a path moves the durable approval records; `none`/`off` keeps none, and then a gate carries no `approval_id`.
+- `MISSION_APPROVAL` — the environment form of `--approval`; the flag wins.
+
+The flags that *answer* a gate — `--approve`, `--refuse`, `--decided-by`,
+`--note` — are deliberately **not** in the list above. They are an operator's
+command and not a spawning surface: a platform that integrates these approvals
+calls `core.runtime.approvals.ApprovalStore.decide` from its own process, where
+it knows who the person is. Core enforces only that somebody is named.
 
 ## The exit contract
 

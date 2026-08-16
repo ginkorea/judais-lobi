@@ -169,6 +169,68 @@ def _resolve_gates(wanted, offered):
     return resolved
 
 
+def _decide_approval(args):
+    """``--approve``/``--refuse``: answer a gate, and exit.  Not a mission.
+
+    A decision is a write from **outside** the run that asked, which is the
+    whole reason the request is a file rather than a socket.  So this path
+    builds no agent, opens no MCP transport, asks no model and emits no
+    events: it resolves the store, calls
+    :meth:`~core.runtime.approvals.ApprovalStore.decide`, says what happened
+    and returns.  A run that could answer its own gate would not be a gate,
+    and the cheapest way to guarantee it cannot is for the answering code to
+    share nothing with the running code.
+
+    ``--decided-by`` is required by :meth:`decide` and not by argparse, so the
+    refusal a person sees is the one sentence this framework has an opinion
+    about — a decision names who made it — rather than a usage block.  Core
+    cannot check that the name is a *person*: there is no identity layer here
+    and one invented would be a guess at the platform's.  A platform that
+    knows who clicked calls the library instead of this command.
+    """
+    from core.runtime.approvals import (
+        APPROVALS_ENV, ApprovalError, default_approval_store,
+    )
+
+    approve = bool(getattr(args, "approve", None))
+    wanted = getattr(args, "approve", None) or getattr(args, "refuse", None)
+    flag = "--approve" if approve else "--refuse"
+    store = default_approval_store()
+    if store is None:
+        raise SystemExit(
+            f"{flag}: this deployment keeps no approval records "
+            f"({APPROVALS_ENV} is set to a disabling word), so there is "
+            f"nothing to decide. A decision has to be readable from outside "
+            f"the run that asked for it.")
+    try:
+        approval = store.decide(
+            wanted, approve=approve,
+            decided_by=getattr(args, "decided_by", "") or "",
+            note=getattr(args, "note", "") or "")
+    except ApprovalError as exc:
+        raise SystemExit(f"{flag}: {exc}")
+
+    verb = "APPROVED" if approve else "REFUSED"
+    console.print(
+        f"✅ {approval.approval_id} {verb} by {approval.decided_by} at "
+        f"{approval.decided_at} — {approval.tool}({approval.arguments})",
+        style="green" if approve else "yellow")
+    if approve:
+        # The exact next command, because the widening is narrow enough to be
+        # easy to get wrong: this id, this once, and only if the run actually
+        # calls the tool.
+        console.print(
+            f"   Resume the work with:  --mission --approval "
+            f"{approval.approval_id} '<the objective>'\n"
+            f"   It lifts {approval.tool} out of that ONE run's gated set and "
+            f"is spent the moment the tool is dispatched.",
+            style="cyan")
+    else:
+        console.print("   Nothing was called, and nothing will be.",
+                      style="yellow")
+    return 0
+
+
 def _load_history(args):
     """The ``--history`` turns, or ``[]``.  Refusals are ``SystemExit``.
 
@@ -282,7 +344,11 @@ def _mission(elf, args, name, style):
     This function joins them in that order — who you are, then what you
     are doing — and supplies neither.
     """
+    from core.policy.audit import audit_run_id
     from core.redact import scrub
+    from core.runtime.approvals import (
+        APPROVALS_ENV, ApprovalError, default_approval_store, resolve,
+    )
     from core.runtime.context_window import MissionWindow
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
@@ -295,6 +361,16 @@ def _mission(elf, args, name, style):
     # below: a malformed history is a refusal at the door, not a mission
     # that runs to completion answering questions nobody quite asked.
     history = _load_history(args)
+    # And so is the approval. `resolve` refuses anything that is not an
+    # approved, unspent record and NAMES the state it found — pending is not
+    # a yes nobody got round to, spent is not a second yes. At the door for
+    # the same reason as the history: an operator who pasted the wrong id
+    # finds out in a second rather than after the model has been asked.
+    approvals = default_approval_store()
+    try:
+        ticket = resolve(approvals, getattr(args, "approval", "") or "")
+    except ApprovalError as exc:
+        raise SystemExit(f"--approval: {exc}")
     transport = _build_mcp_transport(args)
     bus = elf.tools.bus
 
@@ -490,12 +566,47 @@ def _mission(elf, args, name, style):
                 )
             gated = _resolve_gates(getattr(args, "gate_tool", None) or [],
                                    tool_names)
+            if ticket is not None:
+                # The subtraction has ONE owner — the ticket — and it is
+                # applied here as well as inside the runner so that the line
+                # an operator reads and the set the loop enforces cannot
+                # disagree about what this run gates.
+                widened, gated = gated, ticket.widen(gated)
+                if len(widened) == len(gated):
+                    console.print(
+                        f"⚠️  approval {ticket.approval_id} is for "
+                        f"{ticket.tool}, which this run does not gate — "
+                        f"nothing was widened, and the decision stays unspent",
+                        style="yellow")
+                else:
+                    console.print(
+                        f"🔓 approval {ticket.approval_id}: {ticket.tool} was "
+                        f"approved by {ticket.decided_by} at "
+                        f"{ticket.decided_at} — out of the gated set for THIS "
+                        f"run only, and spent the moment it is dispatched",
+                        style=style)
             if gated:
                 console.print(
                     f"🔒 gated: {', '.join(gated)} — offered and not called; "
                     f"proposing one ends the mission for a person to decide",
                     style=style,
                 )
+                # Said where it matters and nowhere else: on a mission with no
+                # gates there is nothing to record, and a line about approvals
+                # on every run would be noise an operator learns to skip.
+                if approvals is not None:
+                    console.print(
+                        f"🗒️  approvals: {approvals.root} — a proposal is "
+                        f"written there and answered with --approve <id> "
+                        f"--decided-by <who>",
+                        style=style)
+                else:
+                    console.print(
+                        f"🗒️  approvals: DISABLED — a gate will stop this "
+                        f"mission and leave NO record for anybody to decide "
+                        f"against. Unset {APPROVALS_ENV} (or point it at a "
+                        f"path) to restore the default",
+                        style="yellow")
             if history:
                 console.print(
                     f"🧵 history: {len(history)} prior turn(s) seeded as "
@@ -565,6 +676,9 @@ def _mission(elf, args, name, style):
                     max_steps=args.mission_steps,
                     validator=validator,
                     gated=gated,
+                    approvals=approvals,
+                    approval=ticket,
+                    run_id=audit_run_id(),
                     history=history,
                     observer=sink,
                     plain_chat_fn=plain_chat_fn,
@@ -581,6 +695,9 @@ def _mission(elf, args, name, style):
                     max_steps=args.mission_steps,
                     validator=validator,
                     gated=gated,
+                    approvals=approvals,
+                    approval=ticket,
+                    run_id=audit_run_id(),
                     history=history,
                     observer=sink,
                     window=window,
@@ -651,6 +768,24 @@ def _mission(elf, args, name, style):
             f"and it was NOT called.",
             style="yellow",
         )
+        # The id and the exact next command. A gate that told somebody they
+        # had to decide, and not how, is a gate that gets answered by
+        # deleting the flag.
+        recorded = proposed.get("approval_id") or ""
+        if recorded:
+            console.print(
+                f"   approval {recorded} — decide it with:\n"
+                f"     --mission --approve {recorded} --decided-by <who> "
+                f"[--note '<why>']\n"
+                f"     --mission --refuse {recorded} --decided-by <who>\n"
+                f"   then resume with:  --mission --approval {recorded} "
+                f"'<the objective>'",
+                style="cyan")
+        else:
+            console.print(
+                "   No durable record was written, so there is no id to "
+                "decide against. See the reason above.",
+                style="red")
     else:
         console.print(
             f"⏹️  Mission ended without an answer: {transcript.outcome}",
@@ -660,7 +795,13 @@ def _mission(elf, args, name, style):
 
 def _main(AgentClass):
     parser = argparse.ArgumentParser(description=f"{AgentClass.__name__} CLI Interface")
-    parser.add_argument("message", type=str, help="Your message to the AI")
+    # Optional, because two of the flags below are not a message to anybody:
+    # `--approve` and `--refuse` answer a gate and exit, and requiring a
+    # sentence nobody reads would be argparse deciding that a decision is a
+    # kind of conversation. Missing on every other path is a refusal, below,
+    # in this repo's own words rather than a usage block.
+    parser.add_argument("message", type=str, nargs="?", default=None,
+                        help="Your message to the AI")
     parser.add_argument("--empty", action="store_true", help="Start new conversation")
     parser.add_argument("--purge", action="store_true", help="Purge long-term memory")
     parser.add_argument("--secret", action="store_true", help="Do not save this message")
@@ -757,8 +898,38 @@ def _main(AgentClass):
                         help="A tool this deployment offers and GATES. It is "
                              "shown in the catalogue, marked; naming it ends "
                              "the mission holding the proposed arguments, and "
-                             "the call is not made. Repeatable. There is "
-                             "deliberately no flag that answers a gate.")
+                             "the call is not made. Repeatable. No flag on a "
+                             "mission run answers a gate; the answer arrives "
+                             "as a durable record written from outside it.")
+    parser.add_argument("--approval", type=str,
+                        default=os.getenv("MISSION_APPROVAL", ""),
+                        metavar="ID",
+                        help="Carry a decision somebody already made into "
+                             "this run. The approved tool leaves the gated "
+                             "set for THIS run only and the approval is spent "
+                             "the moment that tool is dispatched. A pending, "
+                             "refused, spent or abandoned record is refused "
+                             "at the door, naming the state — nothing "
+                             "defaults into a yes (env: MISSION_APPROVAL)")
+    # Not mission-mode contract flags, deliberately: see `_decide_approval`
+    # and the note in CONTRACT.md. A platform that knows who its people are
+    # calls `ApprovalStore.decide` from its own process; this is the operator
+    # standing at a terminal with an id in their hand.
+    parser.add_argument("--approve", type=str, default=None, metavar="ID",
+                        help="Answer a gate YES and exit. Not a mission run: "
+                             "no agent is built, no model is asked. Requires "
+                             "--decided-by — a decision names who made it")
+    parser.add_argument("--refuse", type=str, default=None, metavar="ID",
+                        help="Answer a gate NO and exit. Requires "
+                             "--decided-by")
+    parser.add_argument("--decided-by", type=str, default="", metavar="WHO",
+                        help="Who is answering the gate. Free text: this "
+                             "framework has no principal system and will not "
+                             "invent one, but it refuses a decision signed by "
+                             "nobody")
+    parser.add_argument("--note", type=str, default="",
+                        help="What the decider wants recorded — the reason "
+                             "for a no, or a condition on a yes")
 
     parser.add_argument("--unsandboxed", action="store_true",
                         help="Run tool subprocesses with NO isolation. The "
@@ -809,6 +980,22 @@ def _main(AgentClass):
 
     args = parser.parse_args()
     os.environ.setdefault("COQUI_TTS_LOG_LEVEL", "ERROR")
+
+    # BEFORE the agent is built, and before anything reads `message`.
+    # Answering a gate must share as little as possible with running one:
+    # no persona, no memory, no tool bus, no model — nothing that could
+    # reach the record except the one function that writes it.
+    if args.approve and args.refuse:
+        raise SystemExit(
+            "--approve and --refuse are the two answers to the same "
+            "question. Pass one.")
+    if args.approve or args.refuse:
+        return _decide_approval(args)
+    if not args.message:
+        raise SystemExit(
+            "a message is required — the question, or the mission's "
+            "objective. (--approve/--refuse are the two commands that take "
+            "none: they answer a gate rather than ask anything.)")
 
     print(f"{GREEN}👤 You: {args.message}{RESET}")
 

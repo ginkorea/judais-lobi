@@ -842,3 +842,275 @@ class TestTheAuditIsAnnounced:
         assert "No space left on device" in captured.err
         # And the mission still answered.
         assert "asset.5f21" in captured.out
+
+
+# ── approvals, from the command line an operator actually types ──────────
+
+
+@pytest.fixture
+def approvals_dir(tmp_path, monkeypatch):
+    """Point the durable approval store somewhere this test owns.
+
+    Env-gated rather than injected because that is the surface: a deployment
+    moves the directory with `JUDAIS_LOBI_APPROVALS`, and a suite that wrote
+    into the repository's own `.judais-lobi/` would be exercising a different
+    path from the one an operator gets.
+    """
+    from core.runtime.approvals import APPROVALS_ENV, ApprovalStore
+
+    root = tmp_path / "approvals"
+    monkeypatch.setenv(APPROVALS_ENV, str(root))
+    # A wide console, because rich wraps at 80 under capture and a test
+    # asserting a sentence must not also be asserting where it broke — a
+    # tmp_path is long enough to be folded in half mid-directory.
+    monkeypatch.setenv("COLUMNS", "200")
+    return ApprovalStore(root)
+
+
+def decide_cli(MockClass, *extra):
+    """`--approve`/`--refuse` take no message; that is half the point."""
+    from core.cli import _main
+    with patch("sys.argv", ["test", "--mission", *extra]):
+        _main(MockClass)
+
+
+class TestTheGateWritesARecordAndSaysItsName:
+    def _gated(self, MockClass, agent, skill_file, *extra):
+        agent.replies = [json.dumps(
+            {"tool": "mcp.governed_read",
+             "arguments": {"asset_id": "asset.5f21"}})]
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--gate-tool", "governed_read", *extra)
+
+    def test_the_console_prints_the_id_and_the_exact_next_command(
+            self, elf, skill_file, approvals_dir, capsys):
+        MockClass, agent = elf
+        self._gated(MockClass, agent, skill_file)
+
+        out = capsys.readouterr().out
+        pending = approvals_dir.pending()
+        assert len(pending) == 1
+        approval_id = pending[0].approval_id
+        assert approval_id in out
+        assert f"--approve {approval_id} --decided-by" in out
+        assert f"--approval {approval_id}" in out
+
+    def test_the_record_holds_the_call_and_the_objective(
+            self, elf, skill_file, approvals_dir):
+        MockClass, agent = elf
+        self._gated(MockClass, agent, skill_file)
+
+        recorded = approvals_dir.pending()[0]
+        assert recorded.tool == "mcp.governed_read"
+        assert recorded.arguments == {"asset_id": "asset.5f21"}
+        assert recorded.objective == "what exists?"
+        assert recorded.run_id                      # reconcilable later
+
+    def test_the_id_rides_the_stream(self, elf, skill_file, approvals_dir,
+                                     tmp_path):
+        MockClass, agent = elf
+        events = tmp_path / "events.ndjson"
+        self._gated(MockClass, agent, skill_file, "--events", str(events))
+
+        records = [json.loads(line) for line
+                   in events.read_text().splitlines()]
+        gate = [r for r in records if r["event"] == "gate_requested"][0]
+        assert gate["approval_id"] == approvals_dir.pending()[0].approval_id
+
+    def test_the_store_is_announced_where_the_gate_is(
+            self, elf, skill_file, approvals_dir, capsys):
+        MockClass, agent = elf
+        self._gated(MockClass, agent, skill_file)
+        assert f"approvals: {approvals_dir.root}" in capsys.readouterr().out
+
+    def test_a_disabled_store_is_announced_rather_than_discovered(
+            self, elf, skill_file, monkeypatch, capsys):
+        """A gate with no record is a gate nobody can answer, and that must
+        not be found out by looking in an empty directory."""
+        from core.runtime.approvals import APPROVALS_ENV
+
+        monkeypatch.setenv(APPROVALS_ENV, "off")
+        MockClass, agent = elf
+        self._gated(MockClass, agent, skill_file)
+
+        out = capsys.readouterr().out
+        assert "approvals: DISABLED" in out
+        assert "no id to decide against" in out
+
+    def test_an_ungated_mission_says_nothing_about_approvals(
+            self, elf, skill_file, approvals_dir, capsys):
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert "approvals:" not in capsys.readouterr().out
+
+
+class TestDecidingIsNotAMissionRun:
+    def test_approving_names_the_decider_and_prints_how_to_resume(
+            self, elf, approvals_dir, capsys):
+        from core.runtime.approvals import APPROVED
+
+        MockClass, agent = elf
+        approval_id = approvals_dir.request(
+            tool="mcp.governed_read", arguments={"asset_id": "asset.5f21"})
+        decide_cli(MockClass, "--approve", approval_id, "--decided-by", "dana",
+                   "--note", "the asset is public")
+
+        assert approvals_dir.get(approval_id).state == APPROVED
+        assert approvals_dir.get(approval_id).decided_by == "dana"
+        out = capsys.readouterr().out
+        assert "APPROVED by dana" in out
+        assert f"--approval {approval_id}" in out
+        # No agent was built, no model asked, nothing connected.
+        assert agent.client.chat.call_count == 0
+
+    def test_refusing_records_the_no(self, elf, approvals_dir, capsys):
+        from core.runtime.approvals import REFUSED
+
+        MockClass, agent = elf
+        approval_id = approvals_dir.request(tool="mcp.governed_read")
+        decide_cli(MockClass, "--refuse", approval_id, "--decided-by", "dana")
+
+        assert approvals_dir.get(approval_id).state == REFUSED
+        assert "REFUSED by dana" in capsys.readouterr().out
+        assert agent.client.chat.call_count == 0
+
+    def test_a_decision_that_names_nobody_is_refused(self, elf, approvals_dir):
+        from core.runtime.approvals import PENDING
+
+        MockClass, _agent = elf
+        approval_id = approvals_dir.request(tool="mcp.governed_read")
+        with pytest.raises(SystemExit) as exc:
+            decide_cli(MockClass, "--approve", approval_id)
+        assert "decided_by" in str(exc.value)
+        assert approvals_dir.get(approval_id).state == PENDING
+
+    def test_a_second_decision_is_refused(self, elf, approvals_dir):
+        MockClass, _agent = elf
+        approval_id = approvals_dir.request(tool="mcp.governed_read")
+        decide_cli(MockClass, "--refuse", approval_id, "--decided-by", "dana")
+        with pytest.raises(SystemExit) as exc:
+            decide_cli(MockClass, "--approve", approval_id,
+                       "--decided-by", "sam")
+        assert "answered once" in str(exc.value)
+
+    def test_an_unknown_id_is_refused(self, elf, approvals_dir):
+        MockClass, _agent = elf
+        with pytest.raises(SystemExit) as exc:
+            decide_cli(MockClass, "--approve", "ap_deadbeefdeadbeef",
+                       "--decided-by", "dana")
+        assert "no approval" in str(exc.value)
+
+    def test_both_answers_at_once_is_refused(self, elf, approvals_dir):
+        MockClass, _agent = elf
+        approval_id = approvals_dir.request(tool="mcp.governed_read")
+        with pytest.raises(SystemExit) as exc:
+            decide_cli(MockClass, "--approve", approval_id,
+                       "--refuse", approval_id, "--decided-by", "dana")
+        assert "Pass one" in str(exc.value)
+
+    def test_deciding_with_no_store_is_refused(self, elf, monkeypatch):
+        from core.runtime.approvals import APPROVALS_ENV
+
+        monkeypatch.setenv(APPROVALS_ENV, "none")
+        MockClass, _agent = elf
+        with pytest.raises(SystemExit) as exc:
+            decide_cli(MockClass, "--approve", "ap_deadbeefdeadbeef",
+                       "--decided-by", "dana")
+        assert APPROVALS_ENV in str(exc.value)
+
+    def test_a_message_is_still_required_of_everything_else(self, elf):
+        """`message` went optional so a decision need not pretend to be one.
+        Every other path still refuses without it, in this repo's words."""
+        from core.cli import _main
+
+        MockClass, _agent = elf
+        with patch("sys.argv", ["test", "--mission"]):
+            with pytest.raises(SystemExit) as exc:
+                _main(MockClass)
+        assert "a message is required" in str(exc.value)
+
+
+class TestResumingWithAnApproval:
+    def test_the_approved_tool_is_no_longer_gated_and_is_called(
+            self, elf, skill_file, approvals_dir, tmp_path, capsys):
+        from core.runtime.approvals import SPENT
+
+        MockClass, agent = elf
+        approval_id = approvals_dir.request(
+            tool="mcp.governed_read", arguments={"asset_id": "asset.5f21"})
+        approvals_dir.decide(approval_id, approve=True, decided_by="dana")
+
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--gate-tool", "governed_read",
+                "--approval", approval_id, "--events", str(events))
+
+        opening = json.loads(events.read_text().splitlines()[0])
+        # The widening a consumer sees: the tool is simply not in `gated`.
+        assert opening["gated"] == []
+        assert "mcp.governed_read" in opening["catalogue"]
+        out = capsys.readouterr().out
+        assert f"approval {approval_id}" in out
+        assert "asset.5f21" in out                  # it answered
+        assert approvals_dir.get(approval_id).state == SPENT
+
+    def test_the_run_after_it_gates_the_tool_again(
+            self, elf, skill_file, approvals_dir):
+        """One tool, one run. Nothing anywhere says this operator approves
+        governed reads."""
+        MockClass, agent = elf
+        approval_id = approvals_dir.request(tool="mcp.governed_read")
+        approvals_dir.decide(approval_id, approve=True, decided_by="dana")
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--gate-tool", "governed_read", "--approval", approval_id)
+
+        agent.replies = [json.dumps(
+            {"tool": "mcp.governed_read",
+             "arguments": {"asset_id": "asset.5f21"}})]
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--gate-tool", "governed_read", "--approval", approval_id)
+        assert "spent" in str(exc.value)
+
+    @pytest.mark.parametrize("state,arrange", [
+        ("pending", lambda s, i: None),
+        ("refused", lambda s, i: s.decide(i, approve=False, decided_by="dana")),
+        ("abandoned", lambda s, i: s.abandon(i)),
+    ])
+    def test_anything_but_approved_is_refused_at_the_door(
+            self, elf, skill_file, approvals_dir, state, arrange):
+        """Named, and before the model is asked. Nothing defaults into a yes,
+        and an operator who pasted the wrong id finds out in a second."""
+        MockClass, agent = elf
+        approval_id = approvals_dir.request(tool="mcp.governed_read")
+        arrange(approvals_dir, approval_id)
+
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--gate-tool", "governed_read", "--approval", approval_id)
+        assert state in str(exc.value)
+        assert agent.client.chat.call_count == 0
+
+    def test_an_id_nobody_wrote_is_refused_at_the_door(
+            self, elf, skill_file, approvals_dir):
+        MockClass, agent = elf
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--approval", "ap_deadbeefdeadbeef")
+        assert "no approval" in str(exc.value)
+        assert agent.client.chat.call_count == 0
+
+    def test_an_approval_for_a_tool_this_run_does_not_gate_says_so(
+            self, elf, skill_file, approvals_dir, capsys):
+        """It widened nothing, and it is not spent. Silence here would read as
+        a resume that worked."""
+        from core.runtime.approvals import APPROVED
+
+        MockClass, _agent = elf
+        approval_id = approvals_dir.request(tool="mcp.something_else")
+        approvals_dir.decide(approval_id, approve=True, decided_by="dana")
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--gate-tool", "governed_read", "--approval", approval_id)
+
+        assert "does not gate" in capsys.readouterr().out
+        assert approvals_dir.get(approval_id).state == APPROVED

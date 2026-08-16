@@ -53,6 +53,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.bounding import MAX_RESULT_BYTES, bound_result
 from core.redact import scrub_record
+from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
 )
@@ -361,9 +362,47 @@ class MissionRunner:
         run, which means the call has to be *proposed* before it is
         stopped.
 
-        The harness supplies the mechanism and never the decision.
-        There is deliberately no parameter here by which a caller could
-        pre-answer one.
+        The harness supplies the mechanism and never the decision.  There
+        is deliberately no parameter here by which a caller could
+        pre-answer one — ``approval`` below is not that parameter: it
+        takes a *ticket*, which only
+        :func:`~core.runtime.approvals.resolve` can build and only out of
+        a record somebody already decided, on disk, from outside this
+        process.  A boolean would have been that parameter, which is why
+        there is not one.
+    approvals:
+        A :class:`~core.runtime.approvals.ApprovalStore`, or ``None`` for
+        the behaviour this loop had before one existed.  With a store, a
+        mission that stops at a gate **writes the request down** before it
+        returns: a file with the tool, the arguments verbatim, the
+        objective and this run's id, addressed by an id that also rides
+        ``gate_requested.approval_id``.  Without one, the gate still
+        stops the mission and the request lives only in whatever the
+        caller kept — which was the whole defect: an approval that dies
+        with a socket gets re-asked, or worse, defaulted.
+
+        Injected rather than reached for, so a library caller and a test
+        each get exactly the store they passed and no directory appears
+        under anybody's working copy uninvited.
+    approval:
+        An :class:`~core.runtime.approvals.ApprovalTicket` — a decision
+        somebody already made, resolved at the door by
+        :func:`~core.runtime.approvals.resolve` — or ``None``.
+
+        A ticket does **one** thing: its tool leaves :attr:`gated` for
+        this run.  Not for the deployment, not for the caller, not until
+        somebody revokes it: for this run, and the spending happens at the
+        moment the tool is actually dispatched, so a run that never
+        reaches it has not used anybody's yes.  A ticket cannot be
+        constructed from a record that is not approved, which is why this
+        parameter is an object and not an id — there is no code path in
+        this module that reads a state and decides what it means.
+    run_id:
+        What to record on an approval request as the run that asked, so a
+        restart can tell a request whose run is gone from one whose run is
+        still working.  ``""`` records nothing, and
+        :meth:`~core.runtime.approvals.ApprovalStore.reconcile` leaves such
+        a record alone rather than abandoning it.
     history:
         Prior conversation turns, oldest first, as
         ``[{"role": "user"|"assistant", "content": …}, …]`` — the
@@ -433,6 +472,9 @@ class MissionRunner:
         max_result_bytes: int = MAX_RESULT_BYTES,
         store_tool: str = RESULT_TOOL,
         gated: Sequence[str] = (),
+        approvals: Optional[ApprovalStore] = None,
+        approval: Optional[ApprovalTicket] = None,
+        run_id: str = "",
         history: Sequence[Dict[str, str]] = (),
         observer: Optional[Observer] = None,
         window: Optional[MissionWindow] = None,
@@ -447,6 +489,17 @@ class MissionRunner:
         self._store_tool = (store_tool or "").strip()
         self._store = MissionResultStore()
         self._gated = frozenset(str(name) for name in gated if name)
+        self._approvals = approvals
+        self._approval = approval
+        self._run_id = str(run_id or "")
+        if approval is not None:
+            # The whole of what a decision does. One tool, out of the set
+            # this run gates, through the ticket's own subtraction so that
+            # the direct path, the staged path and the opening frame cannot
+            # disagree about which tools are gated. Everything else about
+            # the run is unchanged, and nothing anywhere records that this
+            # tool is now generally allowed.
+            self._gated = frozenset(approval.widen(self._gated))
         # Validated here as well as at the CLI, because the CLI is one
         # caller of several and a runner seeded with a system turn or a
         # non-string content would fail somewhere much less legible than
@@ -791,13 +844,25 @@ class MissionRunner:
                     f"has been proposed exactly as written and NOT called. "
                     f"Nothing further happens on this mission until somebody "
                     f"decides.")
+                # Written down BEFORE the record goes out, so the id a
+                # watcher is handed is an id something can already be
+                # decided against. This process is about to exit; a request
+                # that lived only in the consumer's memory is the defect the
+                # store exists to fix.
+                approval_id, trouble = self._request_approval(
+                    objective, name, arguments, reason)
+                if trouble:
+                    reason = f"{reason} {trouble}"
+                carried = {"approval_id": approval_id} if approval_id else {}
                 step.error = reason
                 transcript.steps.append(step)
                 transcript.outcome = AWAITING_APPROVAL
                 transcript.awaiting = {"tool": name,
-                                       "arguments": dict(arguments)}
+                                       "arguments": dict(arguments),
+                                       **carried}
                 self._emit(GATE_REQUESTED, index=index, tool=name,
-                           arguments=dict(arguments), reason=reason)
+                           arguments=dict(arguments), reason=reason,
+                           **carried)
                 return transcript
 
             self._emit(TOOL_CALL, index=index, tool=name,
@@ -811,6 +876,17 @@ class MissionRunner:
             context = getattr(self._bus, "audit_context", None)
             if isinstance(context, dict):
                 context["step"] = index
+            if self._approval is not None and name == self._approval.tool:
+                # HERE and not at the door: a resumed run that answers
+                # without calling anything, or runs out of steps, has not
+                # used anybody's yes, and burning one on a run where nothing
+                # happened teaches an operator to approve the same act twice.
+                # Before the dispatch, so a store that refuses to spend —
+                # somebody else already did, the record moved underneath us —
+                # stops the call rather than following it. That refusal is
+                # allowed to end the mission: failing closed is the only
+                # direction this may fail in.
+                self._approval.spend()
             result = self._bus.dispatch(name, **arguments)
             step.exit_code = result.exit_code
             step.output = result.stdout
@@ -841,6 +917,40 @@ class MissionRunner:
 
         transcript.outcome = "budget_exhausted"
         return transcript
+
+    def _request_approval(
+        self, objective: str, tool: str, arguments: Dict[str, Any],
+        reason: str,
+    ) -> Tuple[str, str]:
+        """``(approval_id, trouble)`` — the durable record for one gate.
+
+        ``("", "")`` when no store was injected: the loop as it ran before
+        approvals were durable, which is what a test and a library caller
+        holding their own gate machinery still want.
+
+        A store that cannot write is **said out loud** rather than swallowed.
+        The gate has already done its job — nothing is dispatched either way
+        — but a request with no record is a request nobody can ever answer,
+        and an operator who is never told that is waiting on a decision that
+        cannot be made.  Same lesson as the audit log's failed write: a bare
+        ``pass`` around a record that did not get written is how a run comes
+        to look complete and be unaccountable.
+
+        It writes and returns; there is nothing here that reads a state, and
+        nothing here that could produce an approved one.
+        """
+        if self._approvals is None:
+            return "", ""
+        try:
+            return self._approvals.request(
+                tool=tool, arguments=dict(arguments), objective=objective,
+                run_id=self._run_id, reason=reason), ""
+        except OSError as exc:
+            return "", (
+                f"NO DURABLE RECORD of this request could be written "
+                f"({exc}), so there is nothing for anybody to decide "
+                f"against — the call is still not made, and asking again "
+                f"will not help until the approvals directory is writable.")
 
     def _ground(self, answer: str, repairs: int) -> Optional[GroundingReport]:
         """Validate the answer, or ``None`` when nothing is configured."""

@@ -71,6 +71,10 @@ class TestPlatformsGuideNamesWhatAnIntegratorNeeds:
     @pytest.mark.parametrize("name", [
         "sdk_import", "allowed_tools", "--gate-tool",
         "SCHEMA_VERSION", "MCP_CLIENT_NAME",
+        # The gate's other half. A platform that finds `--gate-tool` and not
+        # these builds the ask and re-implements the answer, which is the one
+        # place a framework must not leave a platform improvising.
+        "--approval", "approval_id", "ApprovalStore",
     ])
     def test_the_guide_names_it(self, platforms, name):
         assert name in platforms, f"PLATFORMS.md never mentions {name}"

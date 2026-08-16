@@ -1527,3 +1527,257 @@ class TestTheAuditKnowsWhichStepCalled:
         with pytest.raises(RuntimeError):
             MissionRunner(explode, b, ["catalog.search"], store_tool="").run("go")
         assert "step" not in b.audit_context
+
+
+# ── the gate writes the request down, and a decision widens one run ──────────
+
+
+class TestTheGateWritesADurableRequest:
+    """`AWAITING_APPROVAL` used to be the end of the story.
+
+    The mission stopped, the process exited, and the request lived in whatever
+    the consumer happened to keep — a socket, a tab, the memory of the program
+    that spawned us. An approval that dies with a socket gets re-asked, or
+    worse, defaulted. So the ask half writes a file, and its id rides the
+    record a watcher already reads.
+    """
+
+    def _gated_run(self, bus, store, **kw):
+        events = []
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.search", "catalog.get"],
+            gated=["catalog.get"], approvals=store, observer=events.append,
+            **kw,
+        ).run("fetch a1")
+        return transcript, events
+
+    def test_the_request_is_on_disk_when_the_record_goes_out(self, bus, tmp_path):
+        from core.runtime.approvals import PENDING, ApprovalStore
+
+        store = ApprovalStore(tmp_path / "approvals")
+        transcript, events = self._gated_run(bus, store, run_id="r-7")
+
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        approval_id = gate["approval_id"]
+        recorded = store.get(approval_id)
+        assert recorded.state == PENDING
+        assert recorded.tool == "catalog.get"
+        assert recorded.arguments == {"asset_id": "a1"}
+        assert recorded.objective == "fetch a1"
+        assert recorded.run_id == "r-7"
+        assert transcript.awaiting["approval_id"] == approval_id
+
+    def test_the_id_conforms_as_an_optional_field(self, bus, tmp_path):
+        from core.runtime.approvals import ApprovalStore
+
+        _t, events = self._gated_run(bus, ApprovalStore(tmp_path / "a"))
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert conforms(gate) == []
+        assert "approval_id" in contract.OPTIONAL[contract.GATE_REQUESTED]
+
+    def test_the_call_is_still_not_made(self, bus, tmp_path):
+        """Writing the request down is bookkeeping, not permission."""
+        from core.runtime.approvals import ApprovalStore
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        transcript, events = self._gated_run(bus, ApprovalStore(tmp_path / "a"))
+        assert transcript.outcome == AWAITING_APPROVAL
+        assert [r for r in events if r["event"] == "tool_result"] == []
+
+    def test_without_a_store_the_loop_is_what_it_was(self, bus):
+        """`None` is the old behaviour, whole: no id, no key on `awaiting`,
+        and a library caller holding its own gate machinery is untouched."""
+        transcript, events = self._gated_run(bus, None)
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert "approval_id" not in gate
+        assert transcript.awaiting == {"tool": "catalog.get",
+                                       "arguments": {"asset_id": "a1"}}
+
+    def test_a_store_that_cannot_write_says_so_instead_of_shrugging(
+            self, bus, tmp_path):
+        """A request with no record is one nobody can ever answer, and an
+        operator who is never told that waits on a decision that cannot be
+        made. Same lesson as the audit log's failed write."""
+        from core.runtime.approvals import ApprovalStore
+
+        blocked = tmp_path / "blocked"
+        blocked.write_text("I am a file, not a directory", encoding="utf-8")
+
+        transcript, events = self._gated_run(bus, ApprovalStore(blocked))
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert "approval_id" not in gate
+        assert "NO DURABLE RECORD" in gate["reason"]
+        assert "NO DURABLE RECORD" in transcript.steps[0].error
+
+
+class TestAnApprovalWidensOneRunByOneTool:
+    def _approved(self, tmp_path, tool="catalog.get"):
+        from core.runtime.approvals import ApprovalStore, resolve
+
+        store = ApprovalStore(tmp_path / "approvals")
+        approval_id = store.request(tool=tool, arguments={"asset_id": "a1"})
+        store.decide(approval_id, approve=True, decided_by="dana")
+        return store, approval_id, resolve(store, approval_id)
+
+    def test_the_approved_tool_leaves_the_gated_set_on_the_opening_frame(
+            self, bus, tmp_path):
+        _store, _id, ticket = self._approved(tmp_path)
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          '{"answer": "ok"}'),
+            bus, ["catalog.search", "catalog.get"],
+            gated=["catalog.search", "catalog.get"], approval=ticket,
+            observer=events.append,
+        ).run("fetch a1")
+
+        opened = [r for r in events if r["event"] == "mission_started"][0]
+        # The widening IS the absence. There is no second field announcing it.
+        assert opened["gated"] == ["catalog.search"]
+        assert "catalog.get" in opened["catalogue"]
+
+    def test_exactly_that_tool_and_no_other(self, bus, tmp_path):
+        _store, _id, ticket = self._approved(tmp_path, tool="catalog.search")
+        runner = MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus,
+            ["catalog.search", "catalog.get"],
+            gated=["catalog.search", "catalog.get"], approval=ticket)
+        assert runner.gated == ["catalog.get"]
+
+    def test_the_approved_tool_is_dispatched_and_the_approval_is_spent(
+            self, bus, tmp_path):
+        from core.runtime.approvals import SPENT
+
+        store, approval_id, ticket = self._approved(tmp_path)
+        events = []
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          '{"answer": "asset a1"}'),
+            bus, ["catalog.get"], gated=["catalog.get"], approval=ticket,
+            observer=events.append,
+        ).run("fetch a1")
+
+        assert transcript.outcome == "answered"
+        assert [r["tool"] for r in events
+                if r["event"] == "tool_result"] == ["catalog.get"]
+        assert store.get(approval_id).state == SPENT
+
+    def test_a_run_that_never_calls_it_leaves_the_decision_unspent(
+            self, bus, tmp_path):
+        """Spend-on-dispatch, and this is the case it is for: a yes burned on
+        a run where nothing happened teaches an operator to approve twice."""
+        from core.runtime.approvals import APPROVED
+
+        store, approval_id, ticket = self._approved(tmp_path)
+        MissionRunner(
+            ScriptedModel('{"answer": "I did not need it"}'),
+            bus, ["catalog.get"], gated=["catalog.get"], approval=ticket,
+        ).run("fetch a1")
+
+        assert store.get(approval_id).state == APPROVED
+
+    def test_dispatching_a_different_tool_does_not_spend_it(
+            self, bus, tmp_path):
+        """The spend is attached to the ONE tool the decision was about. A
+        run that used something else has used nobody's yes."""
+        from core.runtime.approvals import APPROVED
+
+        store, approval_id, ticket = self._approved(tmp_path)
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="x"),
+                          '{"answer": "found it another way"}'),
+            bus, ["catalog.search", "catalog.get"], gated=["catalog.get"],
+            approval=ticket,
+        ).run("fetch a1")
+
+        assert store.get(approval_id).state == APPROVED
+
+    def test_calling_it_twice_in_one_run_spends_one_decision(
+            self, bus, tmp_path):
+        from core.runtime.approvals import SPENT
+
+        store, approval_id, ticket = self._approved(tmp_path)
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          tool_call("catalog.get", asset_id="a2"),
+                          '{"answer": "both"}'),
+            bus, ["catalog.get"], gated=["catalog.get"], approval=ticket,
+        ).run("fetch both")
+
+        assert store.get(approval_id).state == SPENT
+        assert store.get(approval_id).spent_at
+
+    def test_the_next_run_without_the_approval_gates_it_again(
+            self, bus, tmp_path):
+        """One tool, one run. There is no state anywhere saying this operator
+        approves fetches."""
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        _store, _id, ticket = self._approved(tmp_path)
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          '{"answer": "ok"}'),
+            bus, ["catalog.get"], gated=["catalog.get"], approval=ticket,
+        ).run("fetch a1")
+
+        second = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"],
+        ).run("fetch a1 again")
+        assert second.outcome == AWAITING_APPROVAL
+
+    def test_a_spent_record_cannot_be_resolved_into_a_second_run(
+            self, bus, tmp_path):
+        from core.runtime.approvals import NotApproved, resolve
+
+        store, approval_id, ticket = self._approved(tmp_path)
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          '{"answer": "ok"}'),
+            bus, ["catalog.get"], gated=["catalog.get"], approval=ticket,
+        ).run("fetch a1")
+
+        with pytest.raises(NotApproved) as exc:
+            resolve(store, approval_id)
+        assert "spent" in str(exc.value)
+
+
+class TestTheRunnerCannotAnswerItsOwnGate:
+    """The rule, as a grep.
+
+    A framework that could approve its own proposal has a gate that is a
+    formality, and the cheapest guarantee is that the running code shares no
+    call with the answering code. Written against the source because that is
+    the property — not "it does not happen on this path" but "there is no
+    path".
+    """
+
+    SOURCES = ("core/runtime/mission.py", "core/runtime/swarm.py")
+
+    @pytest.mark.parametrize("name", SOURCES)
+    def test_the_loop_never_calls_decide(self, name):
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parent.parent / name).read_text()
+        assert ".decide(" not in source, f"{name} answers a gate"
+        assert "decided_by" not in source, f"{name} names a decider"
+
+    @pytest.mark.parametrize("name", SOURCES)
+    def test_the_loop_never_names_the_approved_state(self, name):
+        """It cannot write `state = APPROVED` if it never says the word."""
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parent.parent / name).read_text()
+        assert "APPROVED" not in source, f"{name} knows what approved is"
+
+    def test_only_the_store_reaches_the_approved_state(self):
+        """One owner, across the whole of `core/`."""
+        from pathlib import Path
+
+        core = Path(__file__).resolve().parent.parent / "core"
+        writers = sorted(
+            path.relative_to(core).as_posix()
+            for path in core.rglob("*.py")
+            if "state = APPROVED" in path.read_text())
+        assert writers == ["runtime/approvals.py"]

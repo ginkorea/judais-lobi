@@ -48,6 +48,17 @@ mission with more steps, and a sub-mission proposing a gated tool ends
 the whole turn at ``awaiting_approval`` holding the proposed call, the
 same as it always did.
 
+Approvals are the direct path's, entirely.  A sub-runner *is* a
+:class:`~core.runtime.mission.MissionRunner`, so it writes the durable
+request itself and the ``approval_id`` reaches a watcher on the
+``gate_requested`` this class re-emits — which passes gate records
+through with their fields untouched, so there is no second copy of the
+id to drift.  A resumed turn carries one
+:class:`~core.runtime.approvals.ApprovalTicket` into every sub-runner it
+builds; the ticket spends itself once, on the dispatch that uses it, so
+a plan of five steps that calls the approved tool in the third has spent
+exactly one decision.
+
 The stream opens before triage.  Triage is a call to the model like any
 other, and the contract's silence clause promises ``mission_started``
 ahead of the first one; a turn that announced itself after the router
@@ -65,6 +76,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from core.redact import scrub_record
+from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
@@ -376,6 +388,9 @@ class SwarmRunner:
         max_steps: int = 24,
         validator: Optional[GroundingValidator] = None,
         gated: Sequence[str] = (),
+        approvals: Optional[ApprovalStore] = None,
+        approval: Optional[ApprovalTicket] = None,
+        run_id: str = "",
         history: Sequence[Dict[str, str]] = (),
         observer: Optional[Observer] = None,
         plain_chat_fn: Optional[Callable[[List[Dict[str, str]]], Any]] = None,
@@ -394,6 +409,16 @@ class SwarmRunner:
         self._max_steps = max(1, int(max_steps))
         self._validator = validator
         self._gated = list(gated)
+        self._approvals = approvals
+        self._approval = approval
+        self._run_id = str(run_id or "")
+        if approval is not None:
+            # Narrowed HERE as well as in every MissionRunner this builds,
+            # because `_opening` renders the gated names for the whole turn
+            # from this list and a consumer must not be able to tell from the
+            # opening frame which route ran. One owner for the subtraction
+            # itself: `ApprovalTicket.widen`.
+            self._gated = approval.widen(self._gated)
         self._history = validate_history(history)
         self._observer = observer
         # Handed to every MissionRunner this builds and to nothing else.
@@ -528,6 +553,9 @@ class SwarmRunner:
             max_steps=max_steps,
             validator=None,
             gated=self._gated,
+            approvals=self._approvals,
+            approval=self._approval,
+            run_id=self._run_id,
             history=history,
             observer=observer,
             window=self._window,
@@ -540,6 +568,9 @@ class SwarmRunner:
             max_steps=self._max_steps,
             validator=self._validator,
             gated=self._gated,
+            approvals=self._approvals,
+            approval=self._approval,
+            run_id=self._run_id,
             history=self._history,
             observer=(_OpenedAlready(self._observer)
                       if self._observer is not None else None),
