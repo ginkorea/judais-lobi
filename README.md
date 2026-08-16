@@ -443,8 +443,10 @@ reaches the stream. The kernel's role prompts are bounded by the same context
 window the mission uses, and Phase 8 is closed. `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
 how a platform deploys this framework as its own agent.
 
-`ROADMAP.md` and `PHASE_8.md` are historical (Feb 2026): they describe the plan,
-not the code that is here now.
+`ROADMAP.md` is the one roadmap: §1 is where the framework stands at 0.9.0
+and what is still missing, §2 is Phases 9–13, and §5 is the history — the
+Feb 2026 blueprint, the Phase 8 disposition, and what two weeks in production
+taught. `NEXT_STEPS.md` and `PHASE_8.md` were folded into it on 15 Aug 2026.
 
 ### Completed
 
@@ -465,8 +467,14 @@ a record of how it grew. The current total is the one above.
 
 ### Up Next
 
-* ✅ Phase 8a — Local inference, a real MCP client, and file-loaded personalities
-* ⏳ Phase 8b — Retrieval & context discipline
+Phase 8 closed at 0.9.0, and the numbering continues in `ROADMAP.md` §2:
+
+* ⏳ Phase 9 — durable and bounded: a fsync'd append-only transcript, resume,
+  a wall-clock budget, a usage ledger, approvals as durable records
+* ⏳ Phase 10 — measurable: an in-repo eval harness scored from recorded runs
+* ⏳ Phase 11 — one runtime: the mission loop and the kernel become one `Run`
+* ⏳ Phase 12 — providers and streaming: `answer_delta` at the source
+* ⏳ Phase 13 — embeddable: a library API first, the CLI second (1.0)
 
 ### Phase 7 Highlights (7.0–7.4)
 
@@ -534,9 +542,10 @@ If you are **running this from another program**, read:
 * 📄 `CONTRACT.md` — the mission stream, its events and the exit contract
 * 📄 `PLATFORMS.md` — deploying judais-lobi as a platform's agent
 
-If you want to understand the **plan it grew from**, read:
+If you want to understand **where this is going**, read:
 
-* 📜 `ROADMAP.md` — the Feb 2026 architectural blueprint. Historical
+* 🗺️ `ROADMAP.md` — the only roadmap: where 0.9.0 stands (§1), Phases 9–13
+  (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 
 If you want to understand the **current implementation**, inspect:
 
@@ -614,7 +623,7 @@ As of Phase 7.4:
 * **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
 * **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
 
-Local inference has landed (`--provider local`), and Phase 8 closed at 0.9.0 — `PHASE_8.md` records where each of its milestones ended up.
+Local inference has landed (`--provider local`), and Phase 8 closed at 0.9.0 — `ROADMAP.md` §5.10 records where each of its milestones ended up.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
@@ -782,7 +791,7 @@ It is attempting to become:
 * Mission-capable (campaign orchestration with HITL approval gates)
 * Air-gap ready
 
-The design philosophy is explicit in `ROADMAP.md` :
+The design philosophy is explicit in `ROADMAP.md` §3:
 
 * Artifacts over chat
 * Budgets over infinite loops

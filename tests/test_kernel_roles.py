@@ -728,7 +728,8 @@ class TestTheEffectiveLimit:
 
 
 class TestThePromptIsFittedToTheWindow:
-    """PHASE_8 B2: an agentic phase's prompt goes through the window owner.
+    """ROADMAP Phase 8, milestone B2: an agentic phase's prompt goes
+    through the window owner.
 
     The trace used to be folded into the task's own message, so the whole
     prompt was two messages: when it did not fit there was nothing to drop,

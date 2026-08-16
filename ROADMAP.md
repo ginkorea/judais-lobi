@@ -1,26 +1,410 @@
-> Historical (Feb 2026). For current behaviour see README.md, CONTRACT.md, PLATFORMS.md.
+# ROADMAP.md — where judais-lobi is going
 
-# ROADMAP.md
-**Project:** judais-lobi
-**Objective:** Transform judais-lobi into a local-first, contract-driven, autonomous execution kernel — starting with software development, generalizable to any structured task domain.
+**This is the only roadmap.** Until 15 Aug 2026 the repository carried three
+overlapping plans: this file (Feb 2026, Phases 0–10), `PHASE_8.md` (the Feb
+Phase 8 plan plus its closing disposition) and `NEXT_STEPS.md` (Aug 2026,
+Phases 0–6). Two of them numbered their phases from zero, so the repository had
+two "Phase 1"s and two "Phase 3"s that meant different things. All three are
+folded in here, under **one** numbering that only ever moves forward:
+February's Phases 0–8 are the past, and the plan continues at **Phase 9**.
+`NEXT_STEPS.md` and `PHASE_8.md` are deleted; git keeps the originals.
 
-## Implementation Status
-
-- [x] **Phase 0** – Dependency Injection, Test Harness & Baseline (73 tests, DI seams, pytest harness)
-- [x] **Phase 1** – Extract Runtime & Stabilize the Spine (runtime extracted, 107 tests, `elf.py` provider-free)
-- [x] **Phase 2** – Kernel State Machine & Hard Budgets (state machine, budgets, orchestrator, 164 tests)
-- [x] **Phase 3** – Session Artifacts, Contracts & KV Prefixing (`elf.py` deleted, Agent class, Pydantic contracts, SessionManager, 269 tests)
-- [x] **Phase 4** – MCP-Style Tool Bus, Sandboxing & Capability Gating (ToolBus, CapabilityEngine, BwrapSandbox, 3 consolidated tools, profiles, god mode, audit, 562 tests)
-- [x] **Phase 5** – The Repo Map & Context Compression (3-tier extraction: Python ast + tree-sitter + regex, multi-language dependency graph, relevance ranking, token-budgeted excerpts, DOT/Mermaid visualization, git-commit-keyed caching, 783 tests)
-- [x] **Phase 6** – Repository-Native Patch Engine (parser, exact-match matcher with similarity diagnostics, path-jailed applicator, git worktree isolation with crash recovery, PatchEngine orchestrator, ToolBus-integrated PatchTool with 6 actions, 888 tests)
-- [x] **Phase 7** – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic (7.0–7.4 complete)
-- [x] **Phase 8** – Retrieval, Context Discipline & Local Inference — closed 15 Aug 2026 at 0.9.0; see PHASE_8.md
-- [ ] **Phase 9** – Performance Optimization (TRT-LLM / vLLM Tuning)
-- [ ] **Phase 10** – Evaluation & Benchmarks
+Sections 1–4 are live. Section 5 is history, marked as such, and kept because
+docstrings and the README quote it.
 
 ---
 
-## 1. Mission Statement
+## 1. Where we are
+
+**v0.9.0**, 15 Aug 2026. 2,338 tests collected; ~23.2k non-test lines in
+`core/`+`judais/`+`lobi/`, ~26k lines of tests.
+
+For two weeks this framework ran in production as **Tai**, the mission agent
+inside a separate platform: a 20B local model, an MCP tool plane of ~20
+governed tools, a browser pane reading the NDJSON mission stream, real
+analysts, a recorded bake-off against a second harness, and a behavioural eval
+that went from 6-of-10 missions reporting `0/0 … grounded` to 10/10 with 0%
+error. That pressure produced the best parts of what is here — the grounding
+validator, the mission stream and its contract, the MCP client, the skill
+manifest as the only content channel, the swarm's failure containment — and it
+is recorded in §5.9. What it also exposed is that a framework can make *one*
+deployment truthful while its *default* deployment is still not one you would
+run unattended. 0.9.0 closed the first half of that gap. The rest is §2.
+
+### 1.1 The six properties
+
+"Capable, not a toy" is not a feeling. It is six properties, and a framework
+has them **by default, not by injection**. Every phase in §2 exists to finish
+one of them.
+
+1. **Safe by default** — code and shell run isolated; tools are deny-by-default
+   with scopes; every action is audited; a human gate is a durable record.
+2. **Durable** — a run survives the process: resumable, replayable, exact.
+3. **Bounded** — steps, wall-clock, bytes, tokens, dollars — each a recorded
+   outcome, never a silent truncation.
+4. **Observable and measurable** — one event stream, one usage ledger, one
+   eval harness that replays recorded runs and scores them the same way twice.
+5. **One runtime** — a single loop that every mode (chat, mission, swarm,
+   coding kernel) composes, so a fix lands once.
+6. **Embeddable** — a library API first, the CLI second; a platform integrates
+   it in fifty lines and pins a contract version.
+
+### 1.2 The honest gap table
+
+Written 15 Aug 2026 against `master` at 0.9.0. Every row was re-checked in the
+tree on the day it was written; struck rows are what 0.8.2 and 0.9.0 closed.
+Re-verify before acting on any of it.
+
+| Gap | Where it lives | Property |
+|---|---|---|
+| ~~**No sandbox by default.**~~ Closed 0.9.0: `select_sandbox` picks bwrap wherever it exists, the child env is an allow-list, and the choice rides `mission_started.sandbox`. **Still open:** the `fs` tool is in-process pathlib and no sandbox bounds it. | `core/tools/sandbox.py`, `core/tools/fs_tools.py` | 1 |
+| ~~**Allow-everything policy by default.**~~ Closed 0.9.0: `Tools()` builds `SAFE`, `--profile`/`JUDAIS_LOBI_PROFILE` opt up, refusals name the scope and the profile that grants it, and `AuditLogger` is on every default bus (`audit_ref`). **Still open:** god-mode and the preflight hook are constructor parameters nothing passes; the kernel path governs through `set_scope_constraints`, a second surface. | `core/tools/__init__.py`, `core/policy/`, `core/kernel/orchestrator.py` | 1 |
+| ~~**Tracebacks leak absolute paths.**~~ Closed 0.9.0: one redactor at the emitter. **Still open:** it covers the mission stream and mission-mode stderr, not the kernel/campaign/chat error prints. | `core/redact.py`, `core/cli.py` | 1 |
+| **The real agent path persists nothing.** A CLI mission writes only the optional NDJSON; `SessionManager` (non-atomic `write_text`) serves only the kernel path the CLI does not reach. The audit file is append-only but never fsync'd. | `core/sessions/manager.py`, `core/policy/audit.py` | 2 |
+| **No wall-clock bound, no cancellation.** Step count and per-tool timeouts only; a contended local model can hang a turn forever. | `core/runtime/mission.py` (`max_steps`) | 3 |
+| **No usage or cost accounting.** Only char/4 estimates for compaction — `prompt_tokens`/`completion_tokens` appear nowhere in `core/`. | grep | 3, 4 |
+| **No reproducible eval.** The Aug 2026 measurements live in docstrings; in-repo there is one recorded-fabrication fixture and an MCP stub. | `tests/fixtures/`, `tests/mcp_stub_server.py` | 4 |
+| **Two agent runtimes.** `MissionRunner`/`SwarmRunner` (JSON protocol, MCP, CLI) and the kernel `Orchestrator`+roles (state machine, sessions, judge, patch) do not share sessions, budgets or governance. 0.8.2 gave result bounding one owner (`core/bounding.py`) and windowed the mission's conversation; 0.9.0 put the kernel's role prompts through the same window owner. The *runtimes* are still two. | `core/runtime/mission.py` vs `core/kernel/` | 5 |
+| **No token streaming or constrained decoding in agentic runs.** Missions call `chat(stream=False)`; the probed grammar/tool-choice path is deliberately unwired. | `core/cli.py` | 4, 6 |
+| **Thin provider layer.** Three providers; retry only on refused connect, and the timeout/retry policy is imported by Mistral from the local backend rather than owned somewhere neutral. (0.8.2 took Mistral off `curl` and onto httpx.) | `core/runtime/backends/` | 6 |
+| **Built, tested, unreachable.** `runtime/reading.py` (no production importer), `policy/god_mode.py` (`GodModeSession` is exported and never constructed), `Agent.run_task` (no caller). The external critic and `critic/triggers.py` are reached only from `Orchestrator`, and only when a `critic=` is injected — nothing in `core/` injects one. **Closed 0.9.0:** `policy/audit` is on every default bus. **Deleted rather than wired, 0.9.0:** `kv_prefix.py`, `runtime/gpu.py`. | importer scans | 4 |
+
+None of this is a design flaw. It is the honest shape of a framework whose
+production fortnight was spent making one deployment truthful. The work in §2
+is making the *default* deployment trustworthy.
+
+---
+
+## 2. The plan
+
+One numbering, forward only. February's Phases 0–8 are the as-built past;
+Phases 9–13 are the work. Each phase names the seam it touches and, where the
+answer already exists somewhere, where to take it from. Lane it: builder in a
+worktree, tests in the file's idiom, mutation-checked, reviewer lane, conductor
+merges. Version bump every phase.
+
+### 2.1 The index
+
+| Phase | What | State |
+|---|---|---|
+| 0 | Dependency injection, test harness & baseline | ✅ 73 tests, DI seams |
+| 1 | Extract runtime & stabilise the spine | ✅ runtime extracted, `elf.py` provider-free |
+| 2 | Kernel state machine & hard budgets | ✅ state machine, budgets, orchestrator |
+| 3 | Session artifacts, contracts & KV prefixing | ✅ `elf.py` deleted, Agent class, Pydantic contracts, `SessionManager` (the KV-prefix builder was deleted unused at 0.9.0) |
+| 4 | MCP-style tool bus, sandboxing & capability gating | ✅ `ToolBus`, `CapabilityEngine`, `BwrapSandbox`, profiles, god mode, audit |
+| 5 | The repo map (context compression) | ✅ 3-tier extraction, dependency graph, ranked excerpts, caching |
+| 6 | Repository-native patch engine | ✅ parser, exact-match matcher, path-jailed applicator, worktree isolation |
+| 7 | Pluggable workflows, campaign orchestrator, composite judge & external critic | ✅ 7.0–7.4 |
+| 8 | Retrieval, context discipline & local inference | ✅ closed 0.9.0 — disposition in §5.10 |
+| — | *Release 0.8.0 — the separation* | ✅ contract as data, `tai` entry point, `mission` extra, SIGTERM close, `PLATFORMS.md` |
+| — | *Release 0.8.2 — the honest stream* | ✅ swarm silence, mission window, one bounder, httpx Mistral, a bwrap that runs |
+| — | *Release 0.9.0 — safe by default* | ✅ property 1, less its residuals (§1.2) |
+| ~~9~~ | ~~Performance optimisation (TRT-LLM / vLLM tuning)~~ | **Retired** — §2.3 |
+| 9 | Durable and bounded (0.10) | properties 2 and 3 |
+| 10 | Measurable (0.11) | property 4; absorbs February's Phase 10 |
+| 11 | One runtime (0.12) | property 5 |
+| 12 | Providers and streaming (0.13) | properties 4 and 6 |
+| 13 | Embeddable (1.0) | property 6 |
+
+### 2.2 As built
+
+February's Phases 0–8 are detailed in §5.4, with Phase 8's milestone-by-
+milestone disposition in §5.10. They keep their numbers, so the docstrings that
+cite "ROADMAP Phase 8" stay true.
+
+Three releases of August 2026 did phase-sized work without taking a phase
+number. `NEXT_STEPS.md` numbered them 0, 0.5 and 1; that numbering is retired
+here so no reader meets a second Phase 1.
+
+**0.8.0 — the separation (15 Aug 2026).** Contract as data
+(`core/runtime/contract.py`: `SCHEMA_VERSION`, `EVENTS`, `FIELDS`, `OPTIONAL`,
+`OUTCOMES`, `CLI_FLAGS`, `ENV_VARS`, `EXIT_CONTRACT`, `conforms`); every
+platform particular removed from `core/`; the `tai` entry point and the
+`mission` extra; `close_on_sigterm`; swarm grounding routed through the shared
+renderer; `PLATFORMS.md`; the reference platform pinning the release by tag and
+asserting against `contract`.
+
+**0.8.2 — the honest stream (15 Aug 2026).** The mission stream opens before
+triage, so a slow `--swarm` router no longer looks like a dead harness, and a
+repair turn stops being spent in silence. The mission's conversation is
+windowed, not only each result. One owner for the tool-result cut
+(`core/bounding.py`) and three callers that stopped having opinions. Mistral
+off `curl` and onto httpx — the key leaves `argv`, the call gets a timeout, the
+stream closes itself. The bwrap backend run against reality: a network the
+profile decides, rlimits it actually applies, and a `run_python` whose program
+exists inside the sandbox. `faiss-cpu` became an extra; `core/bootstrap.py` and
+`core/tools/recon/` — two corners nothing had imported since Phase 3 — were
+deleted.
+
+**0.9.0 — safe by default (15 Aug 2026).** Property 1, minus the residuals
+listed in §1.2. Sandbox on by default: `select_sandbox` is the one owner of the
+choice, `bwrap` wherever bubblewrap exists, `NoneSandbox` only under an
+explicit `--unsandboxed`/env opt-out that is *announced* as
+`mission_started.sandbox`, with a stripped child env and `run_python` off
+`argv`. Deny-by-default policy: `Tools()` builds `SAFE`, not an
+allow-everything bus; `--profile dev|ops|god` opts up; every refusal names the
+scope and the profile that grants it. Audit on the default bus: append-only
+JSONL, secret-redacted, and the stream names the file (`audit_ref`). The
+manifest code gate: a skill that names a code-plane tool is refused unless the
+manifest declares isolation and the bus provides it. One redactor at the
+emitter, so the contract clause warning that tracebacks leak absolute paths
+became false. The kernel's role prompts joined the same context-window owner
+the mission uses, and their compactions became a phase artifact rather than a
+shrug. `kv_prefix.py` and `runtime/gpu.py` were deleted rather than wired.
+
+### 2.3 Retired: February's Phase 9 (TRT-LLM / vLLM tuning)
+
+February's Phase 9 asked this repository to auto-detect GPU profiles, adopt FP8
+KV cache, batch candidate generation across devices, and publish tuning
+profiles for three reference machines. **That work is not this repository's.**
+The local backend talks to an OpenAI-compatible *serving endpoint*, and that
+endpoint is routinely another box: tensor parallelism, quantisation, batching
+and FP8 are decisions made where the weights are, by vLLM or TRT-LLM, and a
+client that has opinions about them is a client answering from the wrong
+machine. 0.9.0 acted on that: `core/runtime/gpu.py` and the client-side VRAM
+cap it fed were deleted, and the context window is now sized by the endpoint's
+own `max_model_len` probe.
+
+What survives of it moves rather than dies. The **performance telemetry** bullet
+— tokens/sec, time-to-first-token, tail latency — is the client's business
+after all, because the client is what observes it; it becomes the usage/telemetry
+**ledger** in the new Phase 9, measured per run and carried on
+`mission_finished`, next to tokens and cost. The hardware bullets stay as
+history in §5.11, where the reference-profile notes are kept verbatim for
+whoever stands the serving layer up.
+
+### 2.4 Phase 9 — durable and bounded (0.10)
+
+Properties 2 and 3.
+
+- **A thread durability primitive.** Monotonic per-thread `seq`, fsync'd
+  append-only JSONL, atomic `os.replace` for metadata, `since(cursor)` +
+  `follow()`. The reference platform has one and paid for the bug that teaches
+  it: writing the whole thread back stamped a stale `last_seq`, and the next
+  append reused sequence numbers. Carry that bug in as a test. Make the
+  primitive the mission's transcript store; `SessionManager` becomes a client
+  of it, not a second store, and stops writing artifacts with a non-atomic
+  `write_text`.
+- **Resume.** `judais --mission --resume <run-id>` replays the stream to the
+  last step before a missing `mission_finished` and continues; the swarm's plan
+  and step results are checkpointed per step. Restart and orphan reconciliation
+  come with it — and the credential is deliberately not persisted.
+- **Wall-clock budget and cooperative cancel.** `--mission-seconds`; a
+  `budget_exhausted` outcome that names *which* budget (steps, seconds, bytes,
+  tokens). The kernel's `budgets.py` already has the dataclass — one owner, not
+  a second one for missions.
+- **Usage ledger.** Every backend returns `usage`; the run accumulates prompt
+  and completion tokens and, for hosted providers, cost; `mission_finished`
+  carries it; the ledger is a first-class event so a platform can meter. This
+  is where February's Phase 9 telemetry lands (§2.3).
+- **Approvals as durable records.** Core has the ask half — `--gate-tool`,
+  `gate_requested`, the `AWAITING_APPROVAL` outcome. Add the resume half: a
+  decision arrives on a later turn as a durable record and widens the closed
+  set by exactly one tool for exactly one turn. Nothing defaults or expires
+  into a yes.
+- Fsync the audit file while the durability primitive is being written; it is
+  the same lesson in the same week.
+
+### 2.5 Phase 10 — measurable (0.11)
+
+Property 4. **This phase absorbs February's Phase 10 (Evaluation &
+Benchmarks).** February wanted an internal task suite scored on success rate,
+iteration count, wall time, token usage and human interventions, compared
+against the Phase 0 baseline. That is the same document as an eval harness, and
+it is written once, here — with the addition February could not have known it
+needed: the score must come from the *recorded stream*, not from the agent's
+self-report.
+
+- **An eval harness in-repo.** Missions × behavioural flags (orientation,
+  chaining, absence, state, boundary, disambiguation, submission, synthesis), a
+  mechanically-held train/test split, a dated `RUBRIC_CHANGES` ledger, and
+  scoring from the recorded stream. Run it against the MCP stub server so it
+  needs no GPU; run it against a live endpoint when one is offered. Keep
+  February's KPI list — success rate, iterations, wall time, tokens, and above
+  all **human interventions required** — as the report's columns.
+- **Recorded-run replay.** A recorder that captures model I/O and tool I/O so a
+  mission can be replayed deterministically and a grounding change scored on
+  yesterday's runs. Grow `tests/fixtures/` from one fabrication file into a
+  corpus.
+- **Wire what is built.** `runtime/reading.py` (the field-misreading tier — the
+  `total_s: 80.847` lesson) becomes a grounding tier behind a manifest flag;
+  `critic/triggers.py` fires the external critic on `answered_with_caveat` when
+  a provider is configured, which also gives the critic its first production
+  caller. Both measured by the harness before either is on by default.
+- **Plane-claim grounding check.** `grounding.py` already carries
+  `tools_offered` and uses it only to derive the ignore list. Refuse a claim of
+  a plane whose tools were not offered *and called* this turn. The prompt-level
+  version of this rule exists in a deployment's personality file and says in
+  its own comment that it belongs here.
+- Decide `god_mode` and the preflight hook: measured and wired, or deleted.
+
+### 2.6 Phase 11 — one runtime (0.12)
+
+Property 5.
+
+- Collapse `MissionRunner`/`SwarmRunner` and the kernel `Orchestrator` onto one
+  loop object: `Run(personality, tools, policy, budgets, store, observer)`.
+  Modes become compositions — chat is no tools; mission is tools + grounding;
+  swarm is a planner that spawns child `Run`s; coding is roles that are `Run`s
+  with a judge. Result bounding, context management, budgets and governance are
+  then written once, and the two governance surfaces (`PolicyPack` and the
+  kernel's `set_scope_constraints`) become one.
+- **Async core, sync façade.** The MCP client already runs a loop thread; make
+  the run loop `async` so tool calls, streaming and cancellation are natural,
+  and keep `judais` synchronous at the CLI edge.
+- Delete or promote what is left vestigial: the second vector index, if FAISS
+  is required at all. (`curl`-Mistral went in 0.8.2; `tools/recon/*` and
+  `bootstrap.py` are gone — nothing imported either, and the recon pair wanted
+  selenium and undetected_chromedriver that no extra declared. `kv_prefix.py`
+  and `runtime/gpu.py` went in 0.9.0.)
+
+### 2.7 Phase 12 — providers and streaming (0.13)
+
+Properties 4 and 6.
+
+- One HTTP client (httpx) for every hosted provider; a retry/backoff policy per
+  error class, owned in one neutral place instead of imported by Mistral from
+  the local backend; Anthropic as a first-class backend — the critic already
+  speaks it.
+- **`answer_delta` at the source.** A deployment fans one `answer` record into
+  bounded deltas client-side; emit real deltas here instead. Keep the design
+  lesson that made that work: the grounding verdict rides the answer's own
+  frames, never a sibling event. Ship the AG-UI translator as an optional
+  `core.runtime.agui` so the next browser does not rewrite it.
+- **Reply-rejection buffering.** A rejected reply is mechanics, not content;
+  a consumer must be able to render it as such.
+- Wire the probed constrained-decoding path (`response_format`,
+  `tool_choice=required`) behind a capability flag, measured by Phase 10.
+
+### 2.8 Phase 13 — embeddable (1.0)
+
+Property 6.
+
+- **Library API first**: `from judais_lobi import Run, Personality, Skill,
+  Tools`, speaking the same contract the CLI speaks; the CLI becomes a thin
+  client of it.
+- **Model-state events** as a first-class channel — `cold`, `asking`, `queued`,
+  `loading`, `loaded`, `failed`, `absent`. A deployment learned that "queued"
+  is not "loading" and that a browser must be able to say which.
+- A `judais-lobi[server]` extra: an SSE endpoint over the stream store, with
+  the operational rules a real deployment paid for — stream cap below the
+  connection ceiling, heartbeat inside the socket write timeout, no refusal
+  after the first byte.
+- Framework defaults for the prompt text that every deployment has had to write
+  for itself: how to work a governed tool plane, and "if a number is not in the
+  view, it is not in the draft."
+- **1.0 means**: `SCHEMA_VERSION` frozen for a major, `PLATFORMS.md` sufficient
+  to integrate without reading source, and the eval harness running in CI on
+  every push.
+
+---
+
+## 3. Principles
+
+The February design philosophy and the August lessons say the same things in
+different words. Merged, deduplicated, and still true at 0.9.0. The eight the
+README's closing section quotes are all here, under the same names.
+
+- **Artifacts over Chat:** State is on disk, not in a sliding text window.
+- **Capabilities over Trust:** The model is assumed hostile; the sandbox and
+  network gates keep it safe. Scope is computed from the intersection of
+  policy, workflow, step plan, and phase — never requested freely at runtime.
+- **Capabilities over Tools:** The permission model uses stable capability tags
+  (`repo.read`, `net.scan`, `verify.run`), not tool names. Tools are
+  implementation details that change; capabilities are the API contract. A
+  `StepPlan` declares it needs `repo.write`; the kernel maps that to whichever
+  tool provides it. This keeps plans evolvable without breaking old sessions.
+- **Determinism over Vibes:** Tests dictate success; LLMs only suggest code.
+- **Budgets over Infinite Loops:** Everything has a timeout and a retry cap,
+  and exhausting one is a recorded outcome that names the budget — never a
+  silent truncation.
+- **Dumb Tools, Smart Kernel:** Tools execute. They do not decide, retry,
+  repair, or escalate. All intelligence lives in the kernel. If a tool contains
+  an `if/else` about what to do next, it has too much agency.
+- **Static Graphs, Adaptive Phases:** The workflow template (phase topology,
+  transitions, schemas) is static and auditable. The LLM controls what happens
+  *inside* a phase — which tools to call, what plan to propose, what patch to
+  emit. The LLM never controls *which phase runs next.* This is three-tier
+  orchestration: rigid campaign graph (Tier 0), rigid workflow graph (Tier 1),
+  flexible phase-internal loop (Tier 2). If the LLM can rewrite any transition
+  graph, every budget and safety constraint has a backdoor.
+- **Plans over Prompts:** Complex missions are decomposed into a structured
+  `CampaignPlan` artifact — a DAG of steps with explicit workflow assignments,
+  artifact declarations, and capability requests. The human reviews and freezes
+  this plan before a single tool call fires. The plan is the executable
+  artifact.
+- **Commit or Abort:** The greatest architectural risk is a partial refactor —
+  a half-agentic, half-chatbot chimera where some paths use artifacts and
+  others use `self.history`, where some tools go through the bus and others
+  call subprocess directly. Each phase must fully replace the subsystem it
+  targets. There will not be two systems of truth.
+- **Migration over Rewrite:** Each phase must leave the system in a working
+  state. No big-bang rewrites.
+- **Air-Gap Ready:** Every external dependency (frontier critic, hosted
+  backends, network tools) is optional and capability-gated. The system runs
+  identically with or without network access. A `refused` response from any
+  external service is a non-event, not a blocker.
+- **Refusals name the reason and the fix.** Every refusal the production agent
+  emitted in its demo was read aloud as a feature. Keep it that way.
+- **One owner per fact.** The swarm once hand-listed six grounding fields where
+  the direct path emitted ten. That is what a second emitter costs. Route
+  through the renderer; derive the list.
+- **The seam is data.** Add to `core/runtime/contract.py`, bump
+  `SCHEMA_VERSION` when breaking, and keep the consumer test that cannot pass
+  by absence.
+- **Tests must be able to fail.** Mutation-check every new assertion; clear
+  `__pycache__` between flips — a same-size, same-second revert keeps stale
+  bytecode and lies.
+- **Nothing platform-specific in core.** Env var, manifest field, or injection
+  — never a path, a hostname, a tool name or an SDK name.
+- **If a human can, an agent can — under the same governance.** The framework
+  supplies content; the platform supplies every judgement about it. That
+  division is what made the trust boundary safe, and it holds at 1.0.
+- **Measure before default.** Nothing becomes on-by-default until the harness
+  scores it against a held-out set.
+
+**Constraints and non-goals.** No Docker: sandboxing uses native Linux
+namespaces — `bwrap` is the backend that ships, and February's Tier-2 `nsjail`
+would go behind the same `SandboxRunner` interface, not beside it. Hosted backends
+(OpenAI, Mistral) remain supported alongside local serving — the system is not
+local-only until the user chooses it, and it must be able to run fully offline
+against a local endpoint when they do. Failures roll back cleanly. Network is
+deny-by-default. This is not a chat product (though direct chat remains
+available for simple queries), not a web-first IDE, not vendor-locked, and not
+a framework where LLMs design their own execution pipelines. It is also not the
+serving layer: GPU topology, quantisation and batching belong where the weights
+are (§2.3).
+
+---
+
+## 4. How you know it is no longer a toy
+
+- A fresh `pip install 'judais-lobi[mission]'` runs a mission with tools
+  isolated, deny-by-default scopes, an audit file, a bounded budget, a
+  resumable transcript, and a usage ledger — with zero flags.
+- Killing the process mid-run and resuming produces the same stream suffix.
+- The eval harness reports a score for a release, and that score is
+  reproducible from recorded runs on a machine without a GPU.
+- A second platform integrates in an afternoon from `PLATFORMS.md` alone, and
+  its conformance test goes red the day the contract breaks.
+
+---
+---
+
+## 5. History
+
+**Everything below this line is history.** §5.1–§5.8 and §5.11 are the February
+2026 document, kept because it is still the clearest statement of what this
+system is for and because docstrings and the README quote it; where it is
+stale, a note says so and the live answer is in §1–§4. §5.9 and §5.10 are
+August 2026: what the production fortnight taught, and where each Phase 8
+milestone actually landed.
+
+
+### 5.1 Mission statement (Feb 2026)
+
+*Still the objective, and kept verbatim. One bullet has since been contradicted by the tree: read "GPU-Aware Orchestration" against §2.3.*
+
 Judais-lobi will evolve from a CLI assistant with tools into a local-first autonomous execution kernel with:
 
 * **Artifact-Driven State:** Artifacts are the *only* source of truth. No conversational history drives execution.
@@ -32,9 +416,12 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
 * **Deterministic Workflows:** Repository-native patch workflows using Search/Replace blocks, governed by a rigid scoring hierarchy (Tests > Static Analysis > LLM).
 * **GPU-Aware Orchestration:** VRAM-aware scheduling and KV cache prefixing that adapts to the available hardware — from a single RTX 5090 (32GB) to multi-GPU configurations (e.g., 4x L4, RTX 6000 Pro 96GB).
 
-## 2. Architectural Target State
+### 5.2 Architectural target state (Feb 2026)
 
-### 2.1 System Overview
+*The diagram and the ten invariants describe the kernel path, which is one of the two runtimes §2.6 is collapsing. Invariant 3 ("all tool execution flows through `ToolBus -> SandboxRunner -> Subprocess`") became true by default only at 0.9.0, and the in-process `fs` tool is still the exception (§1.2).*
+
+
+#### 5.2.1 System Overview
 
 ```text
                           ┌─────────────────────────┐
@@ -104,7 +491,7 @@ Judais-lobi will evolve from a CLI assistant with tools into a local-first auton
    └─────────────────────────────────┘
 ```
 
-### 2.2 Core Components
+#### 5.2.2 Core Components
 ```text
 core/
   kernel/                # Orchestrator, budgets, workflow engine
@@ -157,7 +544,7 @@ sessions/
 
 ```
 
-### 2.3 Execution Model & Hard Budgets
+#### 5.2.3 Execution Model & Hard Budgets
 
 Execution operates at three tiers. Each tier has a strict boundary: the layer above dispatches, the layer below executes. No tier reaches into another's internals.
 
@@ -197,14 +584,14 @@ Note: `CAPABILITY_CHECK` is not a phase. It is an invariant enforced by the Tool
 10. **Least Privilege by Intersection:** Every tool call passes through a scope intersection that computes `EffectiveScope = GlobalPolicy ∩ WorkflowScope ∩ StepScope ∩ PhaseScope`. GlobalPolicy is the deny-by-default `CapabilityEngine`. WorkflowScope is `workflow.required_scopes`. StepScope is `step_plan.capabilities_required` (campaign mode) or the full workflow scope (single-task mode). PhaseScope is `workflow.phase_capabilities[current_phase]`. The LLM can never escalate through any layer — it can only narrow. Even if a prompt injection forces a capability request for `net.http` in a coding workflow, WorkflowScope blocks it before it reaches the ToolBus. This is capability-based security: the scope is computed from the plan, not requested at runtime.
 
 
+### 5.3 System inventory & migration map (Feb 2026)
 
----
+*The "current codebase" below is v0.7.2. Every migration named in it has since happened; `core/elf.py` was deleted at the end of Phase 3.*
 
-## 3. Current System Inventory & Migration Map
 
 Before building forward, the roadmap must account for every existing subsystem. The current codebase (v0.7.2, ~1,100 LOC) provides:
 
-### 3.1 What Exists Today
+#### 5.3.1 What Exists Today
 
 | Subsystem | Files | Status in Target Architecture |
 | --- | --- | --- |
@@ -215,12 +602,12 @@ Before building forward, the roadmap must account for every existing subsystem. 
 | **Tool registry** (`core/tools/`) | Base class, subprocess template, shell/python/web/fetch/RAG/install/voice/recon | **Migrated** to `tools/bus/` registry. Existing tools become tool servers. Voice and recon remain optional. |
 | **Agent personalities** (`lobi/lobi.py`, `judais/judais.py`) | System prompts, few-shot examples, character voice, color schemes | **Preserved** as personality layers in `core/roles/`. The Coder role loads a personality overlay (Lobi or JudAIs) that shapes tone and style. Agent identity is not discarded. |
 
-### 3.2 What Is Deliberately Cut
+#### 5.3.2 What Is Deliberately Cut
 
 * **Conversational history as execution state.** Short-term memory (`load_short`/`add_short`) no longer drives the LLM context. Session artifacts replace it.
 * **Implicit tool invocation via prompt patterns.** Tools are invoked structurally through the ToolBus, not by LLM free-text matching.
 
-### 3.3 What Is Carried Forward
+#### 5.3.3 What Is Carried Forward
 
 * **FAISS + SQLite long-term memory.** Semantic recall across sessions remains valuable for the Planner and Reviewer roles.
 * **RAG archive system.** Crawling, chunking, and embedding of project docs feeds into the `ContextPack` artifact.
@@ -231,9 +618,11 @@ Before building forward, the roadmap must account for every existing subsystem. 
 
 ---
 
-## 4. Phase Plan
+### 5.4 Phases 0–8 as February planned them
 
-### Phase 0 – Dependency Injection, Test Harness & Baseline
+*All eight are done. They keep their numbers — the docstrings in `core/context/spans.py`, `core/kernel/roles.py` and `tests/test_symbol_retrieval.py` that cite "ROADMAP Phase 8" still point at Phase 8 here. Phase 7's February text ran to ~490 lines of plan; it is condensed below to the decisions that outlived it, and git has the original.*
+
+#### Phase 0 – Dependency Injection, Test Harness & Baseline
 
 **Goal:** Make the system testable, then test it. Establish the safety net required before any refactoring begins.
 
@@ -257,7 +646,7 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 * Capture **baseline metrics** (response latency, token usage per interaction) to measure against later phases.
 **Definition of Done:** `make test` passes with zero network calls. Every existing feature has at least one test covering its happy path. DI seams exist for client, memory, and subprocess execution. Regressions from subsequent phases are immediately detectable.
 
-### Phase 1 – Extract Runtime & Stabilize the Spine
+#### Phase 1 – Extract Runtime & Stabilize the Spine
 
 **Goal:** Pull provider backends and message building out of `elf.py` into a clean runtime layer.
 
@@ -271,7 +660,7 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 * `unified_client.py` becomes a thin router delegating to backends.
 **Definition of Done:** All golden transcript tests still pass. Message assembly is centralized. `elf.py` no longer contains provider-specific logic.
 
-### Phase 2 – Kernel State Machine & Hard Budgets
+#### Phase 2 – Kernel State Machine & Hard Budgets
 
 **Goal:** Implement the orchestration core that governs phase transitions and enforces limits.
 
@@ -283,7 +672,7 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 * `elf.py` is reduced to a thin adapter that delegates to the kernel for agentic tasks, while still supporting direct chat for simple queries. This is `elf.py`'s last phase as a living file — see Section 10.
 **Definition of Done:** The state machine can be driven through all phases with mock artifacts. Budget enforcement is tested (exceeding `max_phase_retries` halts the phase, exceeding `max_total_iterations` halts the session).
 
-### Phase 3 – Session Artifacts, Contracts & KV Prefixing
+#### Phase 3 – Session Artifacts, Contracts & KV Prefixing
 
 **Goal:** Establish artifacts as the sole driver of state and optimize for KV Cache reuse.
 
@@ -300,7 +689,7 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 * **Delete `elf.py`.** At this point, all of its responsibilities have been extracted: runtime (Phase 1), kernel (Phase 2), artifacts (this phase). The `Elf` class is replaced by the kernel + role system. Lobi and JudAIs become personality configs loaded by roles, not subclasses of a god object. See Section 10.
 **Definition of Done:** Sessions are replayable entirely from disk artifacts. `elf.py` is deleted. Invalid outputs trigger structured, budget-constrained retries. `PermissionGrant` artifacts are recorded so that session replay can re-apply the same grants deterministically. Any retrieval from long-term memory pins its results in the session artifacts (embedding backend ID, model name, query, returned chunk IDs, similarity scores) so that replays reproduce the same retrieval results even if embeddings change over time.
 
-### Phase 4 – MCP-Style Tool Bus, Sandboxing & Capability Gating
+#### Phase 4 – MCP-Style Tool Bus, Sandboxing & Capability Gating
 
 **Goal:** Implement strict execution isolation and deny-by-default capabilities.
 
@@ -316,7 +705,7 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 * **ToolBus Registry:** Every tool declares `requires_network` and `required_scope`. If missing, the bus returns a structured error template forcing the LLM to generate a `PermissionRequest`. The kernel pauses and waits for a user signal (or a pre-signed policy file) before granting.
 **Definition of Done:** All execution is sandboxed. No tool calls subprocess directly. Tools cannot hit the network or unauthorized filesystem paths without an explicit, auditable grant artifact. Grant artifacts are replayable.
 
-### Phase 5 – The Repo Map (Context Compression) ✅
+#### Phase 5 – The Repo Map (Context Compression) ✅
 
 **Goal:** Feed the model the project structure deterministically without blowing the context limit.
 
@@ -352,7 +741,7 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 
 **Definition of Done:** ✅ The Planner role can ingest a 100+ file, multi-language repository architecture in under ~4k tokens. Dependency graph ranks files by relevance to target files. Visualization exports support human inspection. Cache prevents redundant extraction.
 
-### Phase 6 – Repository-Native Patch Engine ✅
+#### Phase 6 – Repository-Native Patch Engine ✅
 
 **Goal:** Reliable code modification using exact-match constraints.
 
@@ -381,497 +770,64 @@ Writing tests against live API calls, live subprocesses, and live FAISS indexes 
 
 **Definition of Done:** ✅ Patch protocol produces reproducible edits. Exact-match validation with structured diagnostics. Git worktree isolation for atomic cross-file changes. Automatic rollback on failure. 12 tool descriptors, 31 operations under 13 scopes.
 
-### Phase 7 – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic
+#### Phase 7 – Pluggable Workflows, Campaign Orchestrator, Composite Judge & External Critic ✅
 
 **Goal:** Abstract the state machine into pluggable `WorkflowTemplate` objects, add a Campaign Orchestrator for multi-step missions with HITL approval, implement role dispatchers per domain, and add a deterministic scoring hierarchy with an optional external critic.
 
-#### 7.0 WorkflowTemplate & State Machine Abstraction
-
-The kernel currently hardcodes a coding pipeline: `Phase` enum, `TRANSITIONS` dict, `_PHASE_ORDER` list, and `PHASE_SCHEMAS` mapping are all static globals. To support multiple task domains without duplicating kernel logic, these must become parameters of a `WorkflowTemplate` that the `Orchestrator` and `SessionState` consume.
-
-**The refactor is surgical and backward-compatible.** The coding workflow becomes `CODING_WORKFLOW = WorkflowTemplate(...)` — a constant that produces identical behavior to the current hardcoded enum. Zero existing tests break.
-
-**`WorkflowTemplate` dataclass:**
-
-```python
-@dataclass(frozen=True)
-class WorkflowTemplate:
-    name: str                                           # "coding", "generic", "redteam", ...
-    phases: Tuple[str, ...]                             # Ordered phase names (strings, not enum)
-    transitions: Dict[str, FrozenSet[str]]              # phase -> set of valid next phases
-    phase_schemas: Dict[str, Type[BaseModel]]           # phase -> Pydantic model for artifact validation
-    phase_order: Tuple[str, ...]                        # Linear progression (excludes branch targets)
-    branch_rules: Dict[str, Callable]                   # phase -> function(result) -> next_phase_name
-    terminal_phases: FrozenSet[str]                     # {"HALTED", "COMPLETED"}
-    phase_capabilities: Dict[str, FrozenSet[str]]       # phase -> allowed capability tags for that phase
-    default_budget_overrides: Dict[str, Any] = field(default_factory=dict)
-    required_scopes: List[str] = field(default_factory=list)  # Scopes needed by this workflow
-    description: str = ""
-```
-
-**Key design points:**
-
-* **Phases are strings, not enum members.** This allows workflow templates to define domain-specific phase names (`RECON`, `VULN_MAP`, `EXPLOIT`) without modifying a global enum. `SessionState.current_phase` becomes `str`. Transition validation uses `workflow.transitions[current]`.
-* **`branch_rules`** replace the hardcoded `if current == Phase.RUN: ...` logic in `_select_next_phase()`. Each workflow declares its own branching — e.g., coding says "RUN success → FINALIZE, RUN failure → FIX"; generic says "EVALUATE success → FINALIZE, EVALUATE failure → PLAN".
-* **`phase_schemas`** replace the global `PHASE_SCHEMAS` dict. `validate_phase_output()` looks up `workflow.phase_schemas[phase_name]`. A workflow can register domain-specific Pydantic models (e.g., `ReconReport`, `ExploitPlan`) for its phases.
-* **`phase_capabilities`** define which capability tags are available in each phase, creating a **temporal sandbox**. PLAN can read the repo but not write it. EXECUTE can write but only through the patch engine. The LLM cannot execute while it's supposed to be planning. The CapabilityEngine computes `EffectiveScope` per tool call as the intersection of all applicable layers (see Invariant 10).
-* **`default_budget_overrides`** allow workflows to tune budgets — red teaming may need more iterations than coding, data analysis may need longer phase timeouts for large datasets.
-
-**Built-in templates:**
-
-```python
-CODING_WORKFLOW = WorkflowTemplate(
-    name="coding",
-    phases=("INTAKE", "CONTRACT", "REPO_MAP", "PLAN", "RETRIEVE",
-            "PATCH", "CRITIQUE", "RUN", "FIX", "FINALIZE", "HALTED", "COMPLETED"),
-    transitions={...},      # Identical to current TRANSITIONS dict
-    phase_schemas={...},    # Identical to current PHASE_SCHEMAS dict
-    phase_order=("INTAKE", "CONTRACT", "REPO_MAP", "PLAN",
-                 "RETRIEVE", "PATCH", "CRITIQUE", "RUN"),
-    branch_rules={
-        "RUN": lambda result: "FINALIZE" if result.success else "FIX",
-        "FIX": lambda result: "PATCH",
-        "FINALIZE": lambda result: "COMPLETED",
-    },
-    terminal_phases=frozenset({"HALTED", "COMPLETED"}),
-    phase_capabilities={
-        "INTAKE":   frozenset({"fs.read"}),
-        "CONTRACT": frozenset({"fs.read"}),
-        "REPO_MAP": frozenset({"fs.read", "git.read"}),
-        "PLAN":     frozenset({"fs.read", "git.read"}),           # Read-only: no execution during planning
-        "RETRIEVE": frozenset({"fs.read", "git.read"}),
-        "PATCH":    frozenset({"fs.read", "fs.write", "git.write"}),  # Write only through patch engine
-        "CRITIQUE": frozenset({"fs.read", "git.read"}),
-        "RUN":      frozenset({"fs.read", "verify.run"}),
-        "FIX":      frozenset({"fs.read", "git.read"}),
-        "FINALIZE": frozenset({"fs.read", "git.read"}),
-    },
-    description="Full software development pipeline with repo map, patching, and test loop.",
-)
-
-GENERIC_WORKFLOW = WorkflowTemplate(
-    name="generic",
-    phases=("INTAKE", "PLAN", "EXECUTE", "EVALUATE", "FINALIZE", "HALTED", "COMPLETED"),
-    transitions={
-        "INTAKE":   frozenset({"PLAN", "HALTED"}),
-        "PLAN":     frozenset({"EXECUTE", "HALTED"}),
-        "EXECUTE":  frozenset({"EVALUATE", "HALTED"}),
-        "EVALUATE": frozenset({"PLAN", "EXECUTE", "FINALIZE", "HALTED"}),
-        "FINALIZE": frozenset({"COMPLETED", "HALTED"}),
-        "HALTED":   frozenset(),
-        "COMPLETED": frozenset(),
-    },
-    phase_schemas={...},    # INTAKE -> TaskContract, PLAN -> ChangePlan, FINALIZE -> FinalReport
-    phase_order=("INTAKE", "PLAN", "EXECUTE", "EVALUATE"),
-    branch_rules={
-        "EVALUATE": lambda result: "FINALIZE" if result.success else "PLAN",
-        "FINALIZE": lambda result: "COMPLETED",
-    },
-    terminal_phases=frozenset({"HALTED", "COMPLETED"}),
-    description="Flexible pipeline for arbitrary structured tasks. EXECUTE dispatches to any tool on the bus.",
-)
-```
-
-**`WorkflowSelector`:**
-
-A function (not a class) that reads the INTAKE artifact and returns a `WorkflowTemplate`. Selection hierarchy:
-1. CLI flag: `--workflow coding` → hardcoded choice, no LLM involved.
-2. Policy file: `workflow: "generic"` in `PolicyPack` → deterministic.
-3. LLM classification: Given the task description, classify into a known template name. If no match → `GENERIC_WORKFLOW`. The LLM picks from a fixed menu; it cannot invent a template.
-
-**Refactored `SessionState`:**
-
-* `current_phase: str` (was `Phase` enum)
-* `workflow: WorkflowTemplate` (new field, passed at construction)
-* `enter_phase()` validates against `workflow.transitions`
-
-**Refactored `Orchestrator`:**
+*Condensed. The February section carried the full `WorkflowTemplate` dataclass, the `CampaignPlan` and `StepPlan` schemas, and a numbered implementation order; those are now the code, in `core/kernel/workflows.py`, `core/contracts/campaign.py` and `core/campaign/`.*
 
-* `__init__(..., workflow: WorkflowTemplate = CODING_WORKFLOW)`
-* `_select_next_phase()` reads `workflow.phase_order` and `workflow.branch_rules`
-* `_is_terminal()` checks `workflow.terminal_phases`
-* `_validate_and_record()` looks up `workflow.phase_schemas`
+##### 7.0 WorkflowTemplate & state machine abstraction ✅
 
-**Refactored `validation.py`:**
+The kernel hardcoded a coding pipeline: the `Phase` enum, the `TRANSITIONS` dict, `_PHASE_ORDER` and `PHASE_SCHEMAS` were static globals. 7.0 made them parameters of a `WorkflowTemplate` that the `Orchestrator` and `SessionState` consume. `CODING_WORKFLOW = WorkflowTemplate(...)` reproduced the old behaviour exactly — zero existing tests broke. The design points that still govern:
 
-* `get_schema_for_phase(phase, workflow)` instead of reading the global `PHASE_SCHEMAS`
+* **Phases are strings, not enum members**, so a template can declare domain phases (`RECON`, `VULN_MAP`, `EXPLOIT`) without touching a global enum.
+* **`branch_rules`** replace the hardcoded `if current == Phase.RUN: …` in `_select_next_phase()`; each workflow declares its own branching.
+* **`phase_schemas`** replace the global `PHASE_SCHEMAS`; a workflow registers its own Pydantic models.
+* **`phase_capabilities`** create a *temporal sandbox*: PLAN can read the repo but not write it; EXECUTE writes only through the patch engine. The LLM cannot execute while it is supposed to be planning.
+* **`default_budget_overrides`** let a workflow tune budgets — red teaming may need more iterations than coding.
 
-**Implementation order:**
+**Status: complete.** 86 new tests (974 total). `GENERIC_WORKFLOW` proven end-to-end with an evaluate-failure loop, budget halting and phase retry. Domain workflows (red team, data analysis) and their tool packages and dispatchers were explicitly *not* Phase 7 deliverables — 7.0 delivered the mechanism, and content is addable without kernel changes.
 
-1. ~~Create `core/kernel/workflows.py` with `WorkflowTemplate` dataclass and `CODING_WORKFLOW` constant.~~ ✅
-2. ~~Refactor `SessionState`: `current_phase` becomes `str`, accept `workflow` parameter, validate against `workflow.transitions`.~~ ✅
-3. ~~Refactor `Orchestrator`: accept `workflow` parameter, replace hardcoded phase logic with `workflow.branch_rules` and `workflow.phase_order`.~~ ✅
-4. ~~Refactor `validation.py`: accept workflow parameter for schema lookup.~~ ✅
-5. ~~Update all existing tests to pass `CODING_WORKFLOW` (or default to it). **Zero behavioral change at this step.**~~ ✅
-6. ~~Create `GENERIC_WORKFLOW` constant.~~ ✅
-7. ~~Proof-of-concept: run a non-coding task through `GENERIC_WORKFLOW` with a stub dispatcher.~~ ✅
-8. ~~Write `WorkflowSelector` function.~~ ✅
+##### 7.1 Composite Judge ✅
 
-**Phase 7.0 status: COMPLETE.** 86 new tests (974 total). `Phase` is now `str, Enum`. CODING_WORKFLOW produces identical behavior to Phase 6 — zero existing tests broken. GENERIC_WORKFLOW proven end-to-end with evaluate-failure loop, budget halting, and phase retry.
+Hard policy, not vibes:
 
-**What this enables (future, not Phase 7 scope):**
+1. `pytest`/`stdout` (hard pass/fail — stops everything).
+2. `pyright`/`lint` (static analysis — blocks promotion unless explicitly waived by policy).
+3. `LLM Reviewer` (qualitative — breaks ties only, flags risks). *LLM never overrides green/red tests.*
+4. `External Critic` (optional — frontier-model logic auditor, see 7.3). *Never blocks if unavailable or refuses. Never overrides green/red tests.*
 
-Domain-specific workflows are defined as additional `WorkflowTemplate` constants with their own phases, schemas, tools, and capability profiles. Examples:
+##### 7.2 Candidate sampling ✅
 
-* **Red Team Workflow:** `INTAKE → RECON → VULN_MAP → EXPLOIT_PLAN → EXECUTE → EVALUATE → FINALIZE`. Registers `ReconReport`, `ExploitPlan`, `ExploitResult` schemas. Requires `net.scan`, `net.exploit` scopes. `BwrapSandbox` drops `--unshare-net` when these scopes are granted. Uses `RedTeamDispatcher` for role prompts.
-* **Data Analysis Workflow:** `INTAKE → DATA_MAP → PLAN → TRANSFORM → ANALYZE → FINALIZE`. Registers `DataProfile`, `TransformPlan`, `AnalysisResult` schemas. Uses `DATA_SCI` capability profile (`fs.read`, `fs.write`, `python.exec` with pandas/numpy venv). Uses `DataDispatcher` for role prompts.
-* **Domain-specific tool packages:** `core/tools/redteam/` (nmap, gobuster, metasploit_rpc), `core/tools/data/` (sql_query, pandas_exec, plot_generator). Same ToolBus, same capability gating.
-* **Domain-specific role dispatchers:** `CodeDispatcher` (Planner/Coder/Reviewer), `RedTeamDispatcher` (OSINT_Analyst/Exploit_Dev/Vuln_Assessor), `DataDispatcher` (Data_Engineer/Statistician/Visualizer). JudAIs and Lobi remain persona overlays applied to any dispatcher.
+`CandidateManager` evaluates N candidate patches in isolated worktrees and the Composite Judge selects the winner. **Deterministic candidate ordering** is the rule that survives: candidate IDs (`candidate_0`, `candidate_1`, …) are assigned *before dispatch* and scored in ID order, not completion order — otherwise the winner depends on which GPU returns first, which is a race condition dressed as a result.
 
-These are **not Phase 7 deliverables** — they are future workflow templates that the Phase 7 abstraction makes trivially addable. Phase 7 delivers the mechanism (`WorkflowTemplate`, `CODING_WORKFLOW`, `GENERIC_WORKFLOW`, `WorkflowSelector`). Future phases deliver the content.
+February also made `N` a function of an auto-detected `gpu_profile`, with a per-hardware VRAM table. That table is in §5.11 and the mechanism is retired: the client does not size the server (§2.3).
 
-#### 7.1 Composite Judge
+##### 7.3 External Critic (optional frontier-model auditor) ✅
 
-Implement the **Composite Judge** as hard policy, not vibes:
+Local models are effective builders and vulnerable to "confident wrong". The split: **local model = builder**, **deterministic judge = truth oracle**, **external frontier model = critic**. The critic does not write code, does not get tools, does not get repo access. It is a judge in the balcony, not a player on the field.
 
-1. `pytest`/`stdout` (Hard Pass/Fail — stops everything).
-2. `pyright`/`lint` (Static analysis — blocks promotion unless explicitly waived by policy).
-3. `LLM Reviewer` (Qualitative — breaks ties only, flags risks). *LLM never overrides green/red tests.*
-4. `External Critic` (Optional — frontier-model logic auditor, see 7.3). *Never blocks if unavailable or refuses. Never overrides green/red tests.*
+* **Air-gap design.** The whole subsystem is optional. Critic calls are *interceptors on phase transitions*, not phases in the state machine, so when there is no key, no network, or `external_critic.enabled: false`, the checkpoints are no-ops and the pipeline runs identically.
+* **A redactor runs before any external call** — nothing leaves without passing it.
+* **Verdict policy — the critic never kneecaps the pipeline.** `approve` logs and continues; `caution` logs, surfaces and does not halt; `block` requires plan revision *or* an explicit user override recorded as an artifact; `refused` is logged and **ignored**; `unavailable` is a silent no-op. The `refused` rule is the load-bearing one: a frontier model that refuses a legitimate pentesting task must be a non-event. The deterministic judge remains the only hard gate.
+* **Capability-gated and cost-capped** through `TaskContract`: `enabled`, `provider`, `max_calls_per_session`, `max_tokens_per_call`, `redaction_level`, `allowed_artifact_fields`; reports cached by `sha256(redacted_payload)`.
 
-#### 7.2 Candidate Sampling
+*As built at 0.9.0 the critic has no production caller — it is reached only when an `Orchestrator` is constructed with `critic=`, and nothing in `core/` does that. Phase 10 (§2.5) gives it one.*
 
-Implement candidate sampling with hardware-adaptive concurrency (see VRAM Budget Note).
+##### 7.4 Campaign Orchestrator (Tier 0 — workflow of workflows) ✅
 
-**VRAM Budget Note:** Candidate sampling concurrency is dictated by the GPU profile, not hardcoded. The system must query available VRAM at startup and select a strategy accordingly:
+A thin macro loop that decomposes a mission into a DAG of steps, gets human sign-off, and dispatches each step as an isolated workflow with explicit artifact handoff. Lifecycle: `MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS`. Pre-authored plan execution, per-step dispatch and artifact handoff all work; deeper MISSION_ANALYSIS / OPTION_DEVELOPMENT refinement remains planned.
 
-| GPU Profile | VRAM | 7B FP8 (~8-10GB/gen) | 13B+ FP8 (~16-20GB/gen) | Strategy |
-| --- | --- | --- | --- | --- |
-| 1x RTX 5090 | 32GB | Concurrent N=2 feasible | Sequential only | Shared KV prefix, sequential fallback |
-| 1x RTX 6000 Pro | 96GB | Concurrent N=3+ | Concurrent N=2-3 | Full parallel candidate generation |
-| 4x L4 | 4x 24GB | N=1 per GPU, 4 parallel | N=1 per GPU (tight) | Tensor-parallel or pipeline-parallel serving; candidates distributed across GPUs |
-| 1x consumer (16-24GB) | 16-24GB | Sequential N=2 | Not feasible | Sequential with aggressive KV eviction |
+* **DAG validation in code, nudged in prompts:** acyclicity, unique `step_id`s, declared artifacts. An invalid plan is rejected at PLAN_DRAFTING and returned to the model.
+* **Artifact handoff, not chat transfer:** a step exports to `handoff_out/`, and the next step's `handoff_in/` is materialised from it. No shared state, no chat log crossing a step boundary.
+* **`StepPlan` is a contract, not a script.** It declares intent and boundaries — objective, `inputs`, `outputs_expected`, `capabilities_required` (tags, not tool names), success criteria — and not individual tool calls; the workflow's phases handle sequencing, the ToolBus handles access, the kernel handles retries. Its **ActionDigest** is a SHA256 of the ordered fields, used for caching retried steps, replay detection, and audit: deterministic proof that the agent executed what was approved.
+* **EffectiveScope — least privilege by intersection.** `GlobalPolicy ∩ WorkflowScope ∩ StepScope ∩ PhaseScope`, computed per tool call. GlobalPolicy is the deny-by-default `CapabilityEngine`; WorkflowScope is `workflow.required_scopes`; StepScope is `step_plan.capabilities_required` (campaign) or the full workflow scope (single task); PhaseScope is `workflow.phase_capabilities[current_phase]`. The LLM can only narrow, never escalate: a coding workflow cannot gain `net.scan` even if a prompt injection asks for it, and a PLAN phase cannot write files even where EXECUTE may.
+* **HUMAN_REVIEW** serialises the plan into `$EDITOR`, revalidates on save, and locks capability grants per step at approval time.
+* **Campaigns do not violate "workflow templates are static":** they *select* from installed templates, they do not rewrite graphs. The campaign layer is a workflow router and an artifact courier with a human checkpoint. It is not a second, less-audited orchestrator (it has exactly six deterministic phases), not an LLM execution loop, and not a replacement for `--task` — single tasks bypass Tier 0 entirely.
 
-The runtime must expose a `gpu_profile` configuration (auto-detected or user-specified) that feeds into the kernel's budget system. Candidate count `N` becomes a derived parameter, not a constant. Empirical validation is required per profile before committing to concurrent batching.
+**Definition of Done (Phase 7):** the state machine is parameterised by `WorkflowTemplate` with `phase_capabilities` enforcing temporal sandboxing; `CODING_WORKFLOW` reproduces Phase 6 behaviour with every existing test unchanged; `GENERIC_WORKFLOW` executes a non-coding task end to end; `WorkflowSelector` picks the template at INTAKE; EffectiveScope is computed and enforced on every tool call; competing patches are graded deterministically and the proven winner selected; the external critic is fully operational when configured and fully absent when not, and its refusals never halt the pipeline; the Campaign Orchestrator executes a `CampaignPlan` DAG with per-step `StepPlan` contracts, HITL approval, computed scope grants, artifact handoff and a synthesised final report.
 
-**Deterministic candidate ordering:** When candidates are generated in parallel (across GPUs or concurrent requests), assign deterministic candidate IDs (`candidate_0`, `candidate_1`, ...) **before dispatch**. The Composite Judge scores candidates in ID order, not completion order. Otherwise the winning candidate depends on which GPU returns first — a race condition that breaks reproducibility.
-
-#### 7.3 External Critic (Optional Frontier-Model Auditor)
-**Status:** ✅ COMPLETE.
-
-**Motivation:** Local models are effective builders but vulnerable to "confident wrong" — logically coherent plans that miss critical assumptions, patches that pass tests but violate deeper constraints, or review loops that converge on the wrong answer. An external frontier model provides an independent logic audit without replacing local execution.
-
-**Architecture:**
-
-* **Local model = builder** (Planner/Coder/Reviewer roles, patch generation, repo ops)
-* **Deterministic judge = truth oracle** (tests/lint/bench — always authoritative)
-* **External frontier model = critic** (logic auditor, risk assessor, plan sanity checker)
-
-The critic does **not** write code. It does not get tools. It does not get repo access. It only critiques artifacts. It is a judge in the balcony, not a player on the field.
-
-**Air-gap design:** The entire critic subsystem is optional. When disabled (no API key, no network, air-gapped environment, or `external_critic.enabled: false` in policy), the pipeline runs identically — the critic checkpoints become no-ops. This is enforced structurally: critic calls are **interceptors on phase transitions**, not phases in the state machine. The orchestrator checks "should I call the critic before entering this next phase?" and skips silently when the critic is unavailable.
-
-**When to call the critic (trigger-based, not every loop):**
-
-High-leverage checkpoints only:
-
-1. **After PLAN (before RETRIEVE)** — catch missing assumptions, wrong file targets, untestable approach.
-2. **After RUN passes (before FINALIZE)** — catch "green tests but wrong semantics", latent risk.
-
-Escalation triggers (automatic, budget-permitting):
-
-* \> N iterations without progress (FIX loop spinning)
-* Patch touches security-sensitive surfaces (auth, crypto, permissions)
-* Dependency changes (new packages, version bumps)
-* Large refactor scope (> K files or > M lines changed)
-* Local reviewer disagreement with local planner
-* Planning uncertainty flagged by the local model itself
-
-**What the critic sees (minimal, structured `CritiquePack`):**
-
-* `TaskContract` (constraints, allowed commands, acceptance criteria)
-* `ChangePlan` (steps, files targeted)
-* `RepoMap excerpt` (only signatures + file paths, no full source)
-* `PatchSet` summary (diff stats + snippets of changed regions only)
-* `RunReport` (if tests ran: failures or pass summary)
-* `LocalReviewerReport` (what the local reviewer thought)
-
-No full repo. No secrets. No giant logs. No tool output dumps.
-
-**Redactor (non-negotiable, runs before any external call):**
-
-* Strip secrets (keys, tokens, passwords) by pattern matching
-* Strip hostnames/IPs if redaction level is `strict`
-* Replace file contents with diff snippets or function signatures only
-* Clamp payload size hard (cost + leakage control)
-* Log: `payload_size_bytes`, `redaction_ruleset_version`, `sha256(payload)`
-
-**Critic response contract (`ExternalCriticReport`):**
-
-* `verdict`: `approve` | `caution` | `block` | `refused`
-* `top_risks`: list (severity, rationale)
-* `missing_tests`: list
-* `logic_concerns`: list
-* `suggested_plan_adjustments`: list
-* `suggested_patch_adjustments`: list
-* `questions_for_builder`: list (bounded)
-* `confidence`: 0–1
-
-**Verdict policy — the critic never kneecaps the pipeline:**
-
-| Verdict | Kernel response |
-| --- | --- |
-| `approve` | Logged, pipeline continues |
-| `caution` | Logged, surfaced to user, does **not** halt |
-| `block` | Requires plan revision **or** explicit user override recorded as artifact |
-| `refused` | Logged, **ignored**, pipeline continues as if critic was not called |
-| `unavailable` | Silent no-op, pipeline continues |
-
-The `refused` verdict is the critical design constraint. If a frontier model returns a refusal (e.g., content policy triggers on a legitimate pentesting task), the system treats it as a non-event. The critic's system prompt frames all interactions as code review of existing artifacts, never as generation requests — this minimizes refusals. But when they happen, they must never block execution. The deterministic judge (tests/lint) remains the only hard gate.
-
-**Capability gating (fits Phase 4 permission model):**
-
-Critic access is a permissioned capability, same as network access. `TaskContract` declares:
-
-* `external_critic.enabled: true|false`
-* `external_critic.provider: <name>` (e.g., "openai", "anthropic")
-* `external_critic.max_calls_per_session: k`
-* `external_critic.max_tokens_per_call: n`
-* `external_critic.redaction_level: strict|normal`
-* `external_critic.allowed_artifact_fields: [...]`
-
-Grants are logged to the session. All requests and payload hashes are recorded for auditability.
-
-**Cost control:**
-
-* Max calls per session (hard budget in `TaskContract`)
-* Max tokens per call (input and output)
-* Trigger-based invocation only (not every loop)
-* **Critic caching:** Hash the `CritiquePack`. If the same content is reviewed again (e.g., after a no-op retry), reuse the prior report. Cache keyed by `sha256(redacted_payload)`.
-
-#### 7.4 Campaign Orchestrator (Tier 0 — Workflow of Workflows)
-**Status:** ✅ COMPLETE.
-
-**Implementation note:** Current code supports **pre-authored CampaignPlan execution** with HUMAN_REVIEW, per-step dispatch, and artifact handoff. Basic plan drafting from `--campaign` is now supported; deeper MISSION_ANALYSIS / OPTION_DEVELOPMENT refinement remains planned.
-
-**Motivation:** A single workflow handles one task. Real missions require multiple coordinated tasks — analyzing data *then* building a model, mapping an attack surface *then* exploiting vulnerabilities, refactoring a module *then* updating all callers. The Campaign Orchestrator is a thin macro loop that decomposes complex missions into a DAG of steps, gets human sign-off, and dispatches each step as an isolated workflow with explicit artifact handoff.
-
-The key insight: campaigns are **orchestration of artifacts and permissions**, not "a smarter agent." The kernel stays deterministic; the plan becomes the executable artifact; the human owns the moment where risk and scope get locked.
-
-**Campaign Lifecycle (planned full flow):**
-
-```text
-MISSION_ANALYSIS       Ingest raw user prompt. Identify constraints, domains, success criteria.
-        │
-OPTION_DEVELOPMENT     Generate potential approaches (strategies, not implementations). (planned)
-        │
-PLAN_DRAFTING          Break chosen approach into a DAG of MissionSteps. (implemented via `--campaign`)
-        │               Assign a WorkflowTemplate to each step.
-        │               Declare artifact handoff between steps.
-        │
-HUMAN_REVIEW           *** Execution halts. *** (implemented)
-        │               Present plan to human ($EDITOR file-edit loop).
-        │               Human approves, rejects, or modifies.
-        │               Capability grants locked per step.
-        │               Plan frozen on approval (Invariant 9).
-        │
-DISPATCH               Loop through approved steps in DAG order.
-        │               For each step: spawn Orchestrator with assigned workflow,
-        │               materialized handoff_in/ bundle, budgets, capabilities.
-        │               Each step runs in an isolated child session.
-        │
-SYNTHESIS              Compile declared exports from all steps into campaign report.
-```
-
-**`CampaignPlan` Schema:**
-
-```python
-class ArtifactRef(BaseModel):
-    step_id: str                    # Source step
-    artifact_name: str              # e.g., "cleaned_data.csv", "recon_report.json"
-
-class CampaignLimits(BaseModel):
-    max_steps: int = 10
-    max_total_tool_calls: int = 500
-    max_total_tokens: int = 2_000_000
-    deadline_seconds: Optional[int] = None
-
-class MissionStep(BaseModel):
-    step_id: str
-    description: str
-    target_workflow: str            # Template ID: "coding", "generic", "redteam", "datasci"
-    capabilities_required: List[str]  # Hard requirement: ["net.scan", "fs.write"]
-    capabilities_optional: List[str] = []  # Nice-to-have
-    risk_flags: List[str] = []      # ["network-active", "writes-repo", "installs-deps"]
-    inputs_from: List[str] = []     # step_ids this step depends on (DAG edges)
-    handoff_artifacts: List[ArtifactRef] = []  # Explicit artifact imports from upstream
-    exports: List[str] = []         # Artifact names this step declares as output
-    success_criteria: str
-    budget_overrides: Dict[str, Any] = {}
-
-class CampaignPlan(BaseModel):
-    campaign_id: str
-    objective: str
-    assumptions: List[str]
-    steps: List[MissionStep]
-    limits: CampaignLimits = CampaignLimits()
-```
-
-**DAG Validation (enforced in code, nudged in prompts):**
-
-* All `step_id` values unique
-* All `inputs_from` references point to existing `step_id` values
-* DAG is acyclic (topological sort succeeds)
-* Every step has at least one success criterion with a measurable outcome
-* Every step declares its exports
-* `target_workflow` matches an installed template name
-
-**Artifact Handoff — Artifacts Over Chat:**
-
-Each workflow step starts with a clean slate, seeded only with the crystallized artifacts of upstream steps. No conversation history, no chat log teleportation, no mystery meat context.
-
-The handoff is literal file operations:
-1. Step N finishes, writes outputs to `handoff_out/`
-2. `CampaignOrchestrator` marks Step N complete
-3. `CampaignOrchestrator` initializes Step N+1
-4. Parent copies declared `ArtifactRef` items from Step N's `handoff_out/` into Step N+1's `handoff_in/`
-5. Step N+1's `INTAKE` phase reads from `handoff_in/` — not from Step N's session
-
-**Session Namespace Design:**
-
-```text
-sessions/<campaign_id>/
-  campaign.json          # CampaignPlan + current state (frozen after HUMAN_REVIEW)
-  synthesis/             # Final compiled outputs
-  steps/
-    <step_id>/
-      workflow.json      # Selected WorkflowTemplate
-      step_plan.json     # StepPlan contract (intent, capabilities, success criteria, digest)
-      scope_grant.json   # What was requested vs granted, with reasons
-      artifacts/         # Step-local artifacts (standard session layout)
-      handoff_in/        # Materialized imports from upstream steps
-      handoff_out/       # Exports available to downstream steps
-```
-
-Three properties:
-1. **Isolation:** Each step has its own session + artifacts. Steps cannot read each other's artifacts directly.
-2. **Explicit handoff:** Only declared artifacts cross step boundaries, via `handoff_in/` / `handoff_out/`.
-3. **Traceability:** Campaign report can cite exactly which step produced what, from which artifact.
-
-**StepPlan — The Execution Contract:**
-
-If `CampaignPlan` is "what and why," each step needs a `StepPlan` that is "how, with receipts." The StepPlan is generated in the step's PLAN phase (before EXECUTE) and declares the step's intent, boundaries, capabilities, and failure strategy. It is a **contract**, not a script — it declares what the step will accomplish and what it needs, not every individual API call.
-
-```python
-class StepPlan(BaseModel):
-    step_id: str
-    workflow_id: str                          # Must match an installed WorkflowTemplate
-    objective: str
-    inputs: List[ArtifactRef] = []            # What this step reads from handoff_in/
-    outputs_expected: List[ArtifactRef] = []  # What this step will write to handoff_out/
-    capabilities_required: List[str] = []     # Capability tags (not tool names) needed
-    success_criteria: List[str]               # Measurable outcomes
-    rollback_strategy: Literal["retry", "backtrack", "abort", "human_review"] = "backtrack"
-    digest: str = ""                          # SHA256 of ordered fields — for caching + replay detection
-```
-
-**StepPlan is NOT a BPMN script.** It does not enumerate individual tool calls or action sequences. The workflow's phases handle sequencing; the ToolBus handles access control; the kernel handles retry logic. The StepPlan declares *intent and boundaries*. The existing phase artifacts (`ChangePlan`, `PatchSet`, `RunReport`) remain the action-level plans within each phase.
-
-**StepPlan validation rules:**
-* `workflow_id` must match an installed `WorkflowTemplate`
-* `capabilities_required` must be a subset of `workflow.required_scopes` (can't request what the workflow doesn't offer)
-* `outputs_expected` artifact paths must resolve under the step's `handoff_out/` or `artifacts/`
-* Network/file capabilities require corresponding grants in the campaign's approval
-
-**StepPlan stored as:** `sessions/<campaign_id>/steps/<step_id>/step_plan.json`
-
-**ActionDigest** — the `digest` field is a SHA256 hash of the StepPlan's ordered fields (objective, inputs, outputs, capabilities, success criteria). Stored in the session and used for:
-* **Caching:** If a step is retried with an identical digest, prior results can be reused.
-* **Replay detection:** "This step executed under digest X, produced artifacts A/B/C."
-* **Audit:** Deterministic proof that the agent executed what was approved.
-
-**EffectiveScope — Least Privilege by Intersection:**
-
-The CapabilityEngine computes the effective tool scope for every tool call as a strict intersection:
-
-```
-EffectiveScope = GlobalPolicy ∩ WorkflowScope ∩ StepScope ∩ PhaseScope
-```
-
-| Layer | Source | What it constrains |
-|-------|--------|--------------------|
-| **GlobalPolicy** | `CapabilityEngine` (deny-by-default, grants, god mode) | What the kernel allows at all |
-| **WorkflowScope** | `workflow.required_scopes` | What the workflow template permits (coding gets repo tools, generic gets minimal I/O) |
-| **StepScope** | `step_plan.capabilities_required` (campaign) or full WorkflowScope (single-task) | What this specific step declared it needs |
-| **PhaseScope** | `workflow.phase_capabilities[current_phase]` | What the current phase allows (PLAN = read-only, EXECUTE = read+write) |
-
-The intersection means the LLM can never escalate — it can only narrow. A coding workflow cannot gain `net.scan` even if a prompt injection requests it. A PLAN phase cannot write files even if the workflow allows writes in EXECUTE. Capabilities are the stable abstraction layer — tools change, capabilities are the API contract.
-
-**HUMAN_REVIEW Gate:**
-
-When the `CampaignOrchestrator` reaches HUMAN_REVIEW:
-
-1. Serialize `CampaignPlan` to `campaign.plan.json` (or YAML) on disk
-2. Open in `$EDITOR` (like `git rebase -i` or `git commit`)
-3. On save/close: validate strictly via Pydantic. If invalid: show errors, reopen editor
-4. If valid: freeze plan (Invariant 9) and proceed to DISPATCH
-
-The approval UI also shows and locks **capability grants**:
-* Step list + workflow assignments
-* Capabilities requested per step (required vs. optional)
-* Whether each capability is currently permitted by policy
-* User can: approve all, approve but downgrade capabilities, approve with per-step overrides
-
-**How Campaigns Preserve the "Static Workflows" Doctrine:**
-
-Campaigns do not violate "Workflow Templates Are Static" because:
-* Campaigns don't rewrite workflow graphs — they *select* from installed templates
-* Step execution is bounded by the selected workflow's template, budgets, and transitions
-* Adaptation happens inside phases (Tier 2), not in the campaign graph (Tier 0) or workflow graph (Tier 1)
-* The Campaign layer is a **workflow router + artifact courier** with a human checkpoint
-
-**What CampaignOrchestrator is NOT:**
-
-* Not a second, less-audited orchestrator — it has exactly 6 phases, all deterministic
-* Not an LLM execution loop — the LLM generates the plan, the human approves it, the system dispatches it
-* Not a replacement for `--task` — single tasks bypass Tier 0 entirely
-
-**Implementation tasks (Campaign + StepPlan + Scope Intersection):**
-
-15. Namespace + session layout for parent/child steps (`campaign_id/step_id` dirs) in `SessionManager`
-16. `CampaignPlan` + `MissionStep` + `CampaignLimits` + `ArtifactRef` schemas in `core/contracts/campaign.py`
-17. `StepPlan` schema with ActionDigest (SHA256 hash of ordered fields for caching + replay)
-18. DAG validator (acyclic, unique step_ids, artifact declarations, template existence)
-19. StepPlan validator (workflow_id exists, capabilities ⊆ workflow.required_scopes, outputs under handoff_out/)
-20. HUMAN_REVIEW file-edit loop (`$EDITOR` open + Pydantic revalidation on save)
-21. `phase_capabilities` field on `WorkflowTemplate` — per-phase capability allowlists
-22. EffectiveScope intersection in CapabilityEngine: `Global ∩ Workflow ∩ Step ∩ Phase` computed per tool call
-23. `scope_grant.json` artifact per step: what was requested vs granted, with reasons
-24. Step dispatcher: instantiate existing `Orchestrator` with selected workflow template, `handoff_in/` bundle, computed `EffectiveScope`, budget overrides
-25. Artifact handoff: `handoff_out/` → `handoff_in/` materialization between steps
-26. Synthesis step: compose final campaign report from declared step exports
-27. `CampaignOrchestrator` macro loop: MISSION_ANALYSIS → OPTION_DEVELOPMENT → PLAN_DRAFTING → HUMAN_REVIEW → DISPATCH → SYNTHESIS (MISSION_ANALYSIS/OPTION_DEVELOPMENT planned; PLAN_DRAFTING implemented)
-28. CLI: `--campaign "mission description"` and `--campaign-plan plan.json` (implemented)
-29. Contract-first planner prompt (implemented)
-
-**Other implementation tasks (Workflows, Judge, Critic):**
-
-1. `WorkflowTemplate` dataclass + `CODING_WORKFLOW` + `GENERIC_WORKFLOW` (see 7.0)
-2. Refactor `SessionState`, `Orchestrator`, `validation.py` to accept workflow parameter
-3. `WorkflowSelector` function (CLI flag → policy → LLM classification → GENERIC fallback)
-4. Proof-of-concept: non-coding task through `GENERIC_WORKFLOW` with stub dispatcher
-5. `CodeDispatcher` (Planner/Coder/Reviewer prompts — extracted from future role system)
-6. `GenericDispatcher` (PLAN/EXECUTE/EVALUATE prompts for arbitrary tasks)
-7. `ExternalCriticBackend` interface (HTTP client to frontier API, uses `core/runtime/backends/` pattern)
-8. `CritiquePack` builder (assembles minimal artifact payload from session state)
-9. `Redactor` (strict by default, configurable per policy)
-10. `ExternalCriticReport` schema + Pydantic validation
-11. Critic trigger policy (when to call, what to send, what to do with verdicts)
-12. Orchestrator interceptor hooks on phase transitions (workflow-aware, not hardcoded to coding phases)
-13. CLI: `--workflow <name>` flag to select workflow, `--critic` flag to enable, `--no-critic` to force off
-14. Manual invocation: `lobi critic --session <id>` for post-hoc review of any session
-
-**Suggested implementation order (low drama, high leverage):**
-
-Phase 7 breaks into four sub-phases that can be delivered incrementally:
-1. **7.0** — ~~WorkflowTemplate abstraction + phase_capabilities + EffectiveScope intersection.~~ **COMPLETE** (974 tests). Pure refactor — `CODING_WORKFLOW` produces identical behavior to Phase 6. `GENERIC_WORKFLOW` proven end-to-end.
-2. **7.1–7.2** — ~~Composite Judge + Candidate Sampling (tasks 5–6).~~ **COMPLETE** (1059 tests). `CompositeJudge` with 3-tier scoring (test/lint/LLM review). `CandidateManager` with worktree isolation. `JudgeReport` registered as CRITIQUE phase schema. `BudgetConfig.max_candidates` field. `GPUProfile` stub.
-3. **7.3** — ~~External Critic (tasks 7–14).~~ **COMPLETE** (Phase 7.3 implemented).
-4. **7.4** — ~~Campaign Orchestrator + StepPlan + scope grants (tasks 15–20, 23–29).~~ **COMPLETE**. Requires 7.0 (WorkflowTemplate registry + EffectiveScope). Independent of 7.1–7.3.
-
-**Definition of Done:** State machine is parameterized by `WorkflowTemplate` with `phase_capabilities` enforcing temporal sandboxing. `CODING_WORKFLOW` produces identical behavior to Phase 6 (all 888+ tests pass unchanged). `GENERIC_WORKFLOW` can execute a non-coding task end-to-end. `WorkflowSelector` picks template at INTAKE. EffectiveScope intersection (`Global ∩ Workflow ∩ Step ∩ Phase`) is computed and enforced on every tool call. Generates competing patches (coding workflow), grades them deterministically, discards test failures, selects the proven winner. External critic is fully operational when configured, fully absent when not — system runs identically in both modes. Critic refusals never halt the pipeline. Campaign Orchestrator can execute a pre-authored `CampaignPlan` DAG with `StepPlan` contracts per step, present it for HITL approval, dispatch isolated child workflows with computed scope grants and artifact handoff, and synthesize a final report. ActionDigest hashes enable caching, replay detection, and audit. Single tasks (`--task`) bypass the campaign layer entirely — EffectiveScope still applies (Global ∩ Workflow ∩ Phase, with StepScope = WorkflowScope). Auto-drafting of CampaignPlans is planned.
-
-### Phase 8 – Retrieval, Context Discipline & Local Inference
+#### Phase 8 – Retrieval, Context Discipline & Local Inference
 
 **Goal:** Prevent KV cache overflow and bring up local model serving.
 
@@ -882,40 +838,15 @@ This phase combines retrieval engineering with the transition from API-based inf
 * ✅ Implement symbol-aware retrieval (fetching specific function spans, not whole files) — `core/context/spans.py`, reached as `repo_map symbol`.
 * ✅ Implement **rolling summarization** for tool traces: full logs stream to disk, but only capped summaries enter the LLM context (`max_tool_output_bytes_in_context`). When output exceeds the budget, do not blindly truncate — prompt the model with a structured message: *"Output exceeded budget (N bytes). Full log at `<artifact_path>`. Use targeted retrieval (grep, tail, symbol lookup) to find specific information."*
 * ✅ **Local inference bring-up:** Deploy and validate vLLM or TRT-LLM serving the target model on the available GPU(s). Wire `local_backend.py` (stubbed in Phase 1) to the local server. For multi-GPU setups, configure tensor parallelism via the serving layer (vLLM `--tensor-parallel-size`, TRT-LLM TP config). — `--provider local` is a real backend: streaming, retries, and a `GET /models` probe.
-* ~~Define the **model selection criteria** for local inference: minimum coding benchmark scores, context window requirements, quantization compatibility.~~ **Superseded** by the eval harness (NEXT_STEPS Phase 3): a score from recorded runs, not a criteria document.
+* ~~Define the **model selection criteria** for local inference: minimum coding benchmark scores, context window requirements, quantization compatibility.~~ **Superseded** by the eval harness (the new Phase 10, §2.5): a score from recorded runs, not a criteria document.
 * Validate that all golden transcript tests pass against the local backend.
 * ✅ Add **context window manager** with endpoint-probed caps (the server's `max_model_len`, not the client's VRAM), instance-aware limits, and auto-compaction.
 **Definition of Done:** Context size is strictly bounded. Tool output never causes a token overflow crash. The system can run fully offline against the local backend on at least one GPU profile.
 
-### Phase 9 – Performance Optimization (TRT-LLM / vLLM Tuning)
-
-**Goal:** Maximize throughput and minimize latency across all supported GPU profiles.
-**Tasks:**
-
-* Implement **GPU profile auto-detection** (`nvidia-smi` / `torch.cuda`): enumerate devices, total VRAM, compute capability. Expose as `gpu_profile` config that feeds into budget and concurrency decisions system-wide.
-* Measure and adopt FP8 KV cache utilization (if stable on the stack; particularly beneficial on Ada/Blackwell architectures).
-* Implement batched inference support for evaluating multiple patch candidates concurrently (contingent on VRAM budget validation from Phase 7). On multi-GPU setups, distribute candidates across devices.
-* Add performance telemetry: `tokens/sec`, `time_to_first_token`, `VRAM_headroom`, `tail_latency`. Track per-device metrics for multi-GPU configurations.
-* Validate and document tuning profiles for reference hardware:
-  * **1x RTX 5090 (32GB)** — Primary development target. FP8 quantization, sequential or concurrent N=2 for 7B models.
-  * **4x L4 (4x 24GB)** — Cloud/server target. Tensor-parallel serving, one candidate per device.
-  * **1x RTX 6000 Pro (96GB)** — High-end workstation. Large models (30B+) or concurrent N=3 for smaller models.
-**Definition of Done:** System runs continuously with stable VRAM usage on all tested profiles. Batched candidate generation fully saturates available GPU(s) (or is documented as infeasible per profile with justification).
-
-### Phase 10 – Evaluation & Benchmarks
-
-**Goal:** Objective measurement of agent capability.
-**Tasks:**
-
-* Create internal task suite: rename refactor, bug fix, add test, API extension.
-* Track: Success rate, Iteration count, Wall time, Token usage.
-* Track Key KPI: **Human Interventions Required**.
-* Compare results against baseline metrics captured in Phase 0.
-**Definition of Done:** Repeatable benchmark suite that proves the multi-role, capability-gated architecture outperforms a naive loop.
-
 ---
 
-## 5. Failure Mode Matrix
+### 5.5 Failure mode matrix (Feb 2026)
+
 
 To prevent system collapse under edge cases, the kernel must handle failures structurally:
 
@@ -942,39 +873,14 @@ To prevent system collapse under edge cases, the kernel must handle failures str
 
 ---
 
-## 6. Constraints & Non-Goals
+### 5.6 User interface contract (Feb 2026)
 
-* **Constraints:**
-  * Must run fully offline on local GPU(s). Primary development target is 1x RTX 5090 (32GB), but the system must not hardcode GPU assumptions. It must adapt to the detected hardware via `gpu_profile` — from a single 16GB consumer card (reduced concurrency, smaller models) up to multi-GPU server configurations (4x L4, RTX 6000 Pro 96GB, etc.).
-  * Must fail safely and cleanly rollback.
-  * Network is deny-by-default.
-  * No Docker dependency — sandboxing uses native Linux namespaces (bwrap/nsjail). The current codebase has no Docker usage; this constraint ensures it stays that way.
-  * API-based backends (OpenAI, Mistral) remain supported alongside local inference. The system is not local-only until the user chooses it.
-* **Non-Goals:**
-  * Not a chat product (though direct chat remains available for simple queries).
-  * Not a web-first IDE.
-  * Not dependent on vendor lock-in.
-  * Not a framework where LLMs design their own execution pipelines. The LLM operates within a phase; the kernel decides which phase runs next. Workflow templates are static, auditable, and human-authored. Campaign plans are LLM-proposed but human-approved and frozen — the LLM drafts the DAG, the human owns the approval gate, and no step can be inserted after HUMAN_REVIEW without returning for re-approval.
+*Written before mission mode existed. `--mission`, `--swarm`, `--skill`, `--events`, `--history`, `--gate-tool`, `--profile` and `--unsandboxed` are the surface a consumer spawns today; they are published as data in `core/runtime/contract.py` and documented in `README.md` and `CONTRACT.md`. What follows is the kernel-path CLI as February drew it.*
 
-## 7. Design Philosophy
-
-* **Artifacts over Chat:** State is on disk, not in a sliding text window.
-* **Capabilities over Trust:** The model is assumed hostile; the sandbox and network gates keep it safe. Scope is computed from the intersection of policy, workflow, step plan, and phase — never requested freely at runtime.
-* **Capabilities over Tools:** The permission model uses stable capability tags (`repo.read`, `net.scan`, `verify.run`), not tool names. Tools are implementation details that change; capabilities are the API contract. A `StepPlan` declares it needs `repo.write`; the kernel maps that to whichever tool provides it. This keeps plans evolvable without breaking old sessions.
-* **Determinism over Vibes:** Tests dictate success; LLMs only suggest code.
-* **Budgets over Infinite Loops:** Everything has a timeout and a retry cap.
-* **Dumb Tools, Smart Kernel:** Tools execute. They do not decide, retry, repair, or escalate. All intelligence lives in the kernel. If a tool contains an `if/else` about what to do next, it has too much agency.
-* **Static Graphs, Adaptive Phases:** The workflow template (phase topology, transitions, schemas) is static and auditable. The LLM controls what happens *inside* a phase — which tools to call, what plan to propose, what patch to emit. The LLM never controls *which phase runs next.* This is three-tier orchestration: rigid campaign graph (Tier 0), rigid workflow graph (Tier 1), flexible phase-internal loop (Tier 2). If the LLM can rewrite any transition graph, every budget and safety constraint has a backdoor.
-* **Plans over Prompts:** Complex missions are decomposed into a structured `CampaignPlan` artifact — a DAG of steps with explicit workflow assignments, artifact declarations, and capability requests. The human reviews and freezes this plan before a single tool call fires. The plan is the executable artifact. The human owns the moment where risk and scope get locked. This is the difference between "run tasks" and "run missions."
-* **Migration over Rewrite:** Each phase must leave the system in a working state. No big-bang rewrites.
-* **Air-Gap Ready:** Every external dependency (frontier critic, API backends, network tools) is optional and capability-gated. The system must run identically with or without network access. External services add value when available but never gate execution. A `refused` response from any external service is a non-event, not a blocker.
-* **Commit or Abort:** The greatest architectural risk is partial refactor — a half-agentic, half-chatbot chimera where some paths use artifacts and others use `self.history`, where some tools go through the bus and others call subprocess directly. Each phase must fully replace the subsystem it targets. Release 0.8 can break backward compatibility. That is allowed. What is not allowed is two systems of truth running in parallel.
-
-## 8. User Interface Contract
 
 The system is invoked via the existing CLI entry points (`lobi`, `judais`). The agentic workflow is an additional execution mode, not a replacement for direct chat.
 
-### Direct Mode (Preserved)
+#### Direct Mode (Preserved)
 ```bash
 lobi "explain this function"          # Chat
 lobi --shell "list large files"       # Code generation + execution
@@ -983,7 +889,7 @@ lobi --rag crawl ./docs               # RAG indexing
 lobi --recall 5                       # Adventure history
 ```
 
-### Agentic Mode — Single Task (New)
+#### Agentic Mode — Single Task (New)
 ```bash
 lobi --task "add pagination to the /users endpoint"
 lobi --task "fix the race condition in worker.py" --grant net.any
@@ -998,7 +904,7 @@ lobi --task "recon target.example.com" --workflow redteam --grant net.scan
 * `workflow.json` records which template was used (for deterministic replay).
 * The user can inspect, resume, or replay any session from its artifacts.
 
-### Campaign Mode — Multi-Step Missions (Current + Planned)
+#### Campaign Mode — Multi-Step Missions (Current + Planned)
 ```bash
 lobi --campaign "migrate auth system to JWT"       # Draft plan (implemented)
 lobi --campaign-plan ./mission.json                # Pre-authored plan (implemented)
@@ -1016,7 +922,12 @@ lobi --campaign-plan ./mission.json                # Pre-authored plan (implemen
 2. **CLI pre-authorization:** `--grant net.any,git.fetch` pre-signs scopes for the session. No interactive prompts for covered scopes.
 3. **Policy file:** `--policy ./policy.json` loads a `PolicyPack` artifact that auto-approves matching scopes. Useful for CI, unattended runs, or project-standard policies.
 
-## 9. Phase Dependencies
+---
+
+### 5.7 Phase dependencies (Feb 2026)
+
+*The graph below ends at February's Phase 9 and Phase 10. Phase 9 is retired (§2.3) and Phase 10 is absorbed into the new Phase 10 (§2.5); read those two nodes as "the serving layer" and "the eval harness".*
+
 
 Phases are not strictly linear. The dependency graph allows parallel work where inputs are independent:
 
@@ -1064,7 +975,12 @@ Phase 0 (Tests & Baseline)
 * Local inference bring-up (Phase 8) can begin prototyping as soon as the runtime interface is defined (Phase 1), though full integration requires Phase 3 contracts.
 * Domain-specific workflow templates (RedTeam, DataSci) can be added at any point after Phase 7.0 ships — they are content, not infrastructure. Campaign mode can compose any combination of installed templates.
 
-## 10. Point of No Return: The Deletion of `elf.py`
+---
+
+### 5.8 Point of no return: the deletion of `elf.py` (Feb 2026)
+
+*Done. `core/elf.py` was deleted at the end of Phase 3 and `core/agent.py` replaced it.*
+
 
 As long as `core/elf.py` exists in full power, the system will gravitate back toward conversational entropy. Every quick fix, every "just add it to Elf for now" shortcut, re-entrenches the god object.
 
@@ -1098,3 +1014,76 @@ core/roles/
 The role system composes prompts as: `STATIC_PREFIX + RoleDirective + PersonalityOverlay + PhaseContext`.
 
 This is the point of no return. After this, there is no going back to the chatbot architecture. The system is a kernel.
+
+---
+
+### 5.9 What two weeks in production taught (Aug 2026)
+
+For two weeks judais-lobi ran as **Tai**, the mission agent inside a separate platform: a 20B local model, an MCP tool plane of ~20 governed tools, a browser pane reading the NDJSON mission stream, real analysts, a recorded bake-off against a second harness, and a behavioural eval that went from 6-of-10 missions reporting `0/0 … grounded` to 10/10 with 0% error. Every row below is a lesson the platform taught and the shape it took in `core/`.
+
+| Lesson the platform taught | What it became in core |
+|---|---|
+| A grounding check that considers nothing must not report a pass | three verdicts `ran / grounded / verified` (`core/runtime/grounding.py`) |
+| "Write no numbers" was a winning move against a substring check | the claim table — `{value, path}` verified by walking the payload |
+| A fenced code block is a proposed computation, not an assertion | `prose_only` before every prose check |
+| The same tool spelled three ways cost two turns and deleted a true sentence | one `tool_key`/`same_tool`, a *derived* ignore list, a refusal that names the near-miss |
+| Three copies of one 33 kB view was a context problem that was not about context | byte-level result dedup + the per-mission result store |
+| History folded into the objective was ignored; "#2" was web-searched literally | `--history` as role-tagged chat turns |
+| A killed harness lost its last events | `close_on_sigterm` flushes and closes the sink |
+| A 20B model does not obey a rule stated 2,000 tokens upstream | swarm rungs explained at the moment they act |
+| The consumer's assumptions lived in convention | `core/runtime/contract.py` — the seam as data, `SCHEMA_VERSION`, `conforms()` |
+
+It also exposed what stayed in the platform's wrapper — the durability, presentation and trust layer. That is what Phases 9–13 are.
+
+---
+
+### 5.10 Phase 8 disposition (Aug 2026)
+
+**Phase 8 closed 15 Aug 2026 (0.9.0).** The February plan is in §5.4 as written. What actually shipped rarely used the file names it proposed, so this table says where each milestone landed instead. Two rows are deliberately not code in this repo: D1 became an eval question (Phase 10, §2.5) and B3 became a durability question (Phase 9, §2.4).
+
+| Milestone | Where it landed |
+| --- | --- |
+| **A** — symbol-aware retrieval | `core/context/spans.py`, reached as the `symbol` action of the `repo_map` tool (`core/tools/descriptors.py`) and asked for by name by the RETRIEVE role (`core/kernel/roles.py`), which settles with `("repo_map", "symbol")`. Tests: `tests/test_symbol_retrieval.py`. No `symbol_lookup` tool and no `span_index.py`: an action on the tool that already owns the map beat a sixth tool. |
+| **B1** — global context accounting | `core/runtime/context_window.py` — `resolve_profile` is the one cascade that answers how big the window is (backend probe → config → model default → provider default), and one estimator serves every caller. There is no `context_budget.py`; a second module would have been a second opinion. |
+| **B2** — context management at every prompt build | Chat: `Agent.chat` (`core/agent.py`) routes through `ContextWindowManager`. Mission: `MissionWindow` (0.8.2), with the compaction reported on the stream as `compacted` on `step_started` rather than written to a side file. Kernel roles: 0.9.0 — the roles route through the same owner, and their compactions are recorded as a phase artifact. |
+| **B3** — tool-log routing | Partial, and deferred on purpose. `core/tools/tool_output.py` writes full logs under `.judais-lobi/tool_logs` and puts a bounded summary plus a retrieval hint in context; putting those logs *beside the run's durable transcript* waits on there being one — the new Phase 9, §2.4 (thread primitive, `SessionManager` as its client). |
+| **C** — local inference bring-up | `core/runtime/backends/local_backend.py`: OpenAI-compatible chat completions, SSE streaming, a `GET /models` probe that yields `max_model_len` as `BackendCapabilities.max_context_tokens`, and connect-refused retries. Resolution and `LOCAL_API_BASE`/`LOCAL_MODEL` in `core/runtime/provider_config.py`. |
+| **C4** — offline golden tests | `tests/test_local_backend.py` against a stub server, plus `tests/mcp_stub_server.py` for the tool plane, so the whole path runs with no GPU and no network. |
+| **D1** — model selection criteria | Superseded. A criteria document would have been an opinion; the new Phase 10 (§2.5) puts an eval harness in the repo and answers the same question with a score that is reproducible from recorded runs. No `docs/model_selection.md`. |
+| **D2** — config schema | `.judais-lobi.yml` carries the `context:` keys (`max_context_tokens`, `max_output_tokens`, `provider_defaults`, `model_overrides`, …) — see `ContextConfig.from_project`. The endpoint probe deliberately outranks them: `max_model_len` is measured and a config line is declared. |
+| **E** — documentation | README: `--provider local` setup, the context/compaction behaviour, the `context:` block, and the retrieval tooling. This table and the ROADMAP checklist close the loop. |
+
+Two things named in that plan were removed rather than finished, both in 0.9.0. The baseline's `core/runtime/gpu.py` stub is gone with the VRAM cap it fed: the client's device list never described the server's window, and the local backend talks to a serving endpoint that is routinely another machine. And `core/kv_prefix.py` — from Phase 3, never imported by anything but its test — went with it.
+
+---
+
+### 5.11 February's Phase 9 — TRT-LLM / vLLM tuning (retired)
+
+*Retired as a phase of this repository (§2.3): the serving endpoint is another box, and a client with opinions about tensor parallelism is a client answering from the wrong machine. The telemetry bullet moved into the new Phase 9's usage ledger (§2.4). The notes are kept here for whoever stands the serving layer up.*
+
+
+**Goal:** Maximize throughput and minimize latency across all supported GPU profiles.
+**Tasks:**
+
+* Implement **GPU profile auto-detection** (`nvidia-smi` / `torch.cuda`): enumerate devices, total VRAM, compute capability. Expose as `gpu_profile` config that feeds into budget and concurrency decisions system-wide.
+* Measure and adopt FP8 KV cache utilization (if stable on the stack; particularly beneficial on Ada/Blackwell architectures).
+* Implement batched inference support for evaluating multiple patch candidates concurrently (contingent on VRAM budget validation from Phase 7). On multi-GPU setups, distribute candidates across devices.
+* Add performance telemetry: `tokens/sec`, `time_to_first_token`, `VRAM_headroom`, `tail_latency`. Track per-device metrics for multi-GPU configurations.
+* Validate and document tuning profiles for reference hardware:
+  * **1x RTX 5090 (32GB)** — Primary development target. FP8 quantization, sequential or concurrent N=2 for 7B models.
+  * **4x L4 (4x 24GB)** — Cloud/server target. Tensor-parallel serving, one candidate per device.
+  * **1x RTX 6000 Pro (96GB)** — High-end workstation. Large models (30B+) or concurrent N=3 for smaller models.
+**Definition of Done:** System runs continuously with stable VRAM usage on all tested profiles. Batched candidate generation fully saturates available GPU(s) (or is documented as infeasible per profile with justification).
+
+And the candidate-sampling VRAM table from 7.2, on the same footing:
+
+**VRAM Budget Note:** Candidate sampling concurrency is dictated by the GPU profile, not hardcoded. The system must query available VRAM at startup and select a strategy accordingly:
+
+| GPU Profile | VRAM | 7B FP8 (~8-10GB/gen) | 13B+ FP8 (~16-20GB/gen) | Strategy |
+| --- | --- | --- | --- | --- |
+| 1x RTX 5090 | 32GB | Concurrent N=2 feasible | Sequential only | Shared KV prefix, sequential fallback |
+| 1x RTX 6000 Pro | 96GB | Concurrent N=3+ | Concurrent N=2-3 | Full parallel candidate generation |
+| 4x L4 | 4x 24GB | N=1 per GPU, 4 parallel | N=1 per GPU (tight) | Tensor-parallel or pipeline-parallel serving; candidates distributed across GPUs |
+| 1x consumer (16-24GB) | 16-24GB | Sequential N=2 | Not feasible | Sequential with aggressive KV eviction |
+
+February's Phase 10, *Evaluation & Benchmarks*, is not retired — it is absorbed. Its task suite (rename refactor, bug fix, add test, API extension), its metrics (success rate, iteration count, wall time, token usage) and its key KPI (**human interventions required**) are the columns of the harness in §2.5.
