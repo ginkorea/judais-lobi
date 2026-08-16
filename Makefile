@@ -1,5 +1,9 @@
 # ===== JudAIs-Lobi Build & Maintenance =====
 
+# setup.py owns the version. Read it here rather than repeat it: this line
+# used to say v0.7.2 long after the package had stopped agreeing.
+VERSION := $(shell sed -n 's/^VERSION = "\(.*\)"/\1/p' setup.py)
+
 # Clean up previous build artifacts
 clean:
 	rm -rf build dist *.egg-info __pycache__
@@ -19,7 +23,7 @@ install:
 
 # Full rebuild: clean, rebuild, reinstall
 rebuild: clean deps build install
-	@echo "\n✅ Rebuild complete for JudAIs-Lobi v0.7.2"
+	@echo "\n✅ Rebuild complete for JudAIs-Lobi v$(VERSION)"
 
 # Publish to PyPI (optional)
 publish:
