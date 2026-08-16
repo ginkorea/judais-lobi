@@ -141,9 +141,21 @@ class TestRequirementsMirrorsSetupPy:
 
     def test_no_optional_stack_leaked_back_in(self):
         """It used to pin the whole voice/TTS stack — torch included — as
-        hard requirements while omitting mcp entirely."""
+        hard requirements while omitting mcp entirely. `faiss-cpu` was the
+        same mistake in miniature: `_make_index` imports faiss inside a try
+        and returns `NumpyIndex` when it is not there, so no code path ever
+        required the compiled wheel every install was paying for."""
         names = {re.split(r"[<>=;\[ ]", line)[0] for line in _requirements_lines()}
-        assert not names & {"torch", "TTS", "torchaudio", "mcp", "pyyaml"}
+        assert not names & {"torch", "TTS", "torchaudio", "mcp", "pyyaml",
+                            "faiss-cpu"}
+
+    def test_the_optional_ones_are_reachable_as_extras(self):
+        """Dropped from `install_requires` and named nowhere is not optional,
+        it is gone. Each of these is somebody's deliberate install."""
+        extras = ast.literal_eval(_setup_kwargs()["extras_require"])
+        offered = {re.split(r"[<>=;\[ ]", item)[0]
+                   for items in extras.values() for item in items}
+        assert {"faiss-cpu", "mcp", "pyyaml", "torch"} <= offered
 
 
 class TestTheSummaryDoesNotKeepItsOwnVersion:

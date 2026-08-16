@@ -667,6 +667,7 @@ pulls in is imported lazily.
 | `mcp` | the MCP client alone. Enough to run a mission, not enough to govern one |
 | `critic` | the external frontier-model critic, and `pyyaml` |
 | `treesitter` | multi-language symbol extraction for the repo map |
+| `faiss` | the FAISS vector index for long-term memory. Without it memory still works, on the numpy index in `core/memory/memory.py` |
 | `voice` | TTS |
 | `dev` | pytest and coverage |
 
