@@ -11,6 +11,7 @@ from core.campaign.models import CampaignState, StepStatus
 from core.campaign.session import CampaignSession, StepSessionManager
 from core.campaign.validator import validate_campaign_plan, validate_step_plan
 from core.contracts.campaign import CampaignPlan, StepPlan, ArtifactRef
+from core.durable import atomic_write_json, atomic_write_text
 from core.kernel import Orchestrator
 from core.kernel.workflows import select_workflow
 
@@ -78,10 +79,11 @@ class CampaignOrchestrator:
                 state.step_status[step_id] = StepStatus.FAILED
                 raise ValueError(f"Invalid step plan: {errors}")
 
-            (step_dir / "step_plan.json").write_text(step_plan.model_dump_json(indent=2))
+            atomic_write_text(step_dir / "step_plan.json",
+                              step_plan.model_dump_json(indent=2))
 
             scope_grant = _scope_grant_payload(step_plan, workflow.required_scopes)
-            (step_dir / "scope_grant.json").write_text(scope_grant)
+            atomic_write_text(step_dir / "scope_grant.json", scope_grant)
 
             step_session = StepSessionManager(step_dir=step_dir)
             orchestrator = Orchestrator(
@@ -168,7 +170,6 @@ def _scope_grant_payload(step_plan: StepPlan, workflow_scopes: List[str]) -> str
 
 
 def _write_synthesis(session: CampaignSession, state: CampaignState, plan: CampaignPlan) -> None:
-    import json
     payload = {
         "campaign_id": state.campaign_id,
         "status": state.status,
@@ -176,4 +177,4 @@ def _write_synthesis(session: CampaignSession, state: CampaignState, plan: Campa
         "objective": plan.objective,
     }
     path = session.synthesis_dir / "summary.json"
-    path.write_text(json.dumps(payload, indent=2))
+    atomic_write_json(path, payload, indent=2)

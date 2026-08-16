@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.contracts.campaign import CampaignPlan
+from core.durable import atomic_write_text
 
 
 class HumanReviewError(RuntimeError):
@@ -21,7 +22,7 @@ def review_plan(plan: CampaignPlan, path: Path,
 
     Returns the validated CampaignPlan after edit.
     """
-    path.write_text(plan.model_dump_json(indent=2))
+    atomic_write_text(path, plan.model_dump_json(indent=2))
 
     editor_cmd = editor or os.getenv("EDITOR")
     if not editor_cmd:

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from core.bounding import MAX_RESULT_BYTES, bound_result
+from core.durable import atomic_write_text
 
 
 @dataclass(frozen=True)
@@ -83,5 +84,4 @@ def _write_log(output: str, tool_name: str, log_root: Optional[Path]) -> Path:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     filename = f"{stamp}_{tool_name}.log"
     path = root / filename
-    path.write_text(output, encoding="utf-8")
-    return path
+    return atomic_write_text(path, output)

@@ -229,3 +229,28 @@ class TestEveryPathThatBoundsAResultCallsIt:
             "run_shell", (0, "y" * (MAX_RESULT_BYTES + 1), ""), log_root=tmp_path,
         )
         assert record.stored_path is not None
+
+    def test_the_spilled_log_is_replaced_and_never_truncated(self, tmp_path,
+                                                             monkeypatch):
+        """The spill is a store: the summary hands the agent a path and the
+        agent reads it back, usually with a `grep` in the next turn. Written
+        with a truncate-then-fill, the biggest outputs — the only ones that
+        get here — had the longest window in which that path pointed at half
+        a log, and half a log is what makes an agent invent the other half."""
+        import os
+        from core.tools.tool_output import build_tool_output_record
+
+        replaced = []
+        real = os.replace
+
+        def watch(src, dst):
+            replaced.append(Path(dst))
+            return real(src, dst)
+
+        monkeypatch.setattr(os, "replace", watch)
+        record = build_tool_output_record(
+            "run_shell", (0, "HEAD" + "x" * 5_000 + "TAIL", ""),
+            max_bytes=500, log_root=tmp_path,
+        )
+        assert replaced == [record.stored_path]
+        assert [p.name for p in tmp_path.iterdir()] == [record.stored_path.name]

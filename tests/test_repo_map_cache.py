@@ -1,5 +1,7 @@
 # tests/test_repo_map_cache.py — Tests for git-commit-keyed cache
 
+import os
+
 import pytest
 
 from core.context.models import FileSymbols, ImportEdge, RepoMapData, SymbolDef
@@ -115,3 +117,51 @@ class TestRepoMapCache:
         cache.save("abc123", data2)
         loaded = cache.load("abc123")
         assert loaded.total_files == 0
+
+
+# ---------------------------------------------------------------------------
+# RepoMapCache durability
+# ---------------------------------------------------------------------------
+
+class TestTheSaveIsAtomic:
+    """The map of a whole repository, keyed by a commit, is a store.
+
+    It is written once and read by every later run on that commit, and it is
+    the largest thing this harness writes — the widest window between the
+    truncate and the last byte. `load` answers a torn file with `None`, so the
+    only symptom of a half-written map is a repository that is silently
+    re-walked from scratch on every turn.
+    """
+
+    def _one_file(self) -> RepoMapData:
+        return RepoMapData(
+            repo_root="/tmp/repo",
+            commit_hash="abc123",
+            files={"main.py": FileSymbols(rel_path="main.py",
+                                          language="python")},
+        )
+
+    def _explode(self, monkeypatch):
+        def boom(src, dst):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(os, "replace", boom)
+
+    def test_a_failed_save_leaves_the_previous_map_whole(self, tmp_path,
+                                                         monkeypatch):
+        cache = RepoMapCache(str(tmp_path))
+        cache.save("abc123", self._one_file())
+        self._explode(monkeypatch)
+        with pytest.raises(OSError):
+            cache.save("abc123", RepoMapData(repo_root="/tmp/repo",
+                                             commit_hash="abc123", files={}))
+        assert cache.load("abc123").total_files == 1
+
+    def test_a_failed_save_leaves_no_staging_file_behind(self, tmp_path,
+                                                         monkeypatch):
+        cache = RepoMapCache(str(tmp_path))
+        self._explode(monkeypatch)
+        with pytest.raises(OSError):
+            cache.save("abc123", self._one_file())
+        cache_dir = tmp_path / ".judais-lobi" / "cache" / "repo_map"
+        assert list(cache_dir.iterdir()) == []

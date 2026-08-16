@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from core.context.models import FileSymbols, ImportEdge, RepoMapData, SymbolDef
+from core.durable import atomic_write_json
 from core.tools.executor import run_subprocess
 
 
@@ -75,8 +76,7 @@ class RepoMapCache:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         path = self._cache_dir / f"{commit_hash}.json"
         raw = self._serialize(data)
-        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
-        return path
+        return atomic_write_json(path, raw, indent=2)
 
     def _serialize(self, data: RepoMapData) -> dict:
         """Convert RepoMapData to a JSON-serializable dict."""
