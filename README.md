@@ -171,6 +171,34 @@ Three things come out of it, and nothing else does:
 * **a grounding grammar**, below. Optional; absent means nothing is enforced and
   nothing claims to have been.
 
+One thing a manifest is *refused* for: **`sandbox: bwrap`, required the moment
+`allowed_tools` names a tool that runs code the model composed** — a shell, an
+interpreter, a `pip install` (the set is derived from the `shell.exec`,
+`python.exec` and `pip.install` scopes in `core/tools/descriptors.py`, not from a
+list of names, so a tool registered tomorrow is covered the day it arrives). A
+governed mission that can run arbitrary code on the host without isolation is the
+hazard here, and a hosted platform must not have to find it in a transcript. Both
+halves are checked, and the refusal names every problem at once:
+
+```yaml
+allowed_tools: [governed_read, run_shell_command]
+sandbox: bwrap          # or the resolve refuses, naming the tool and the fix
+```
+
+* the **declaration** is required of the manifest — including for an entry marked
+  `?`, because whether a file is governed must not depend on what a server
+  happened to advertise this morning;
+* the **isolation** is required of the run: declare `sandbox: bwrap` and get a bus
+  that is not under bwrap (not installed, or opted out) and the mission refuses at
+  the door rather than running unisolated.
+
+`sandbox: none` is the other legal value — an explicit *no isolation was asked
+for*, accepted and inert for a manifest with no code-plane tool, and refused with
+its own reason for one that has them. Absent is not `none`; absent is silence,
+which is what this check exists to stop being an answer. The value is rendered
+into the prompt like any other operational field, because a model that has not
+been told it is inside bwrap reads the denied network as a broken tool.
+
 ### Bounded results, and a store to read the rest from
 
 A tool result is capped at 32 KB before it enters the transcript — head and

@@ -232,7 +232,8 @@ YAML frontmatter between `---` fences, then a Markdown body. It needs `pyyaml`,
 which is why `[mission]` and not `[mcp]` is the extra to install. Point it at a
 directory holding several skills and it refuses, listing them by name.
 
-Four things come out of a manifest and nothing else does.
+Four things come out of a manifest and nothing else does — and one thing it is
+refused for, `sandbox`, below.
 
 **`allowed_tools` — the closed set.** A list of tool names, intersected with what
 the bridge actually discovered, **in manifest order**, because the order a skill
@@ -253,6 +254,9 @@ author chose is the order the catalogue is read in.
   question will answer it from the model's memory instead, and the transcript
   will look completely ordinary. A closed set where every entry is optional and
   none was discovered is refused for the same reason.
+* A closed set that names a **code-plane tool** — a shell, an interpreter, a `pip
+  install` — is refused unless the manifest also declares `sandbox: bwrap`. See
+  `sandbox` below.
 
 **Prompt text.** The operational frontmatter fields and the whole Markdown body,
 appended to the personality's system message — who you are, then what you are
@@ -299,6 +303,49 @@ the framework drives whatever platform it is pointed at, and it cannot know what
 that platform is called.
 
 TAIPAN's five skills each declare `sdk_import: taipan`.
+
+**`sandbox` — the code plane never arrives by accident.** A closed set that names
+a tool which runs code *the model composed* must also declare `sandbox: bwrap`, or
+the resolve refuses, naming the tool, the missing declaration and the fix:
+
+```yaml
+allowed_tools: [governed_read, run_shell_command]
+sandbox: bwrap
+```
+
+A governed mission that can run arbitrary code on the host without isolation is
+the hazard TAIPAN's `HOSTED_SDK_CODE_PLANE_DESIGN.md` names. It is not a hazard a
+hosted platform should discover from a transcript, so it is a refusal at the door
+— before the model is asked anything, because a mission that has already run has
+already run whatever it ran.
+
+* **Which tools those are is derived from scopes, not typed out.** Any descriptor
+  asking for `shell.exec`, `python.exec` or `pip.install` (`core/tools/
+  descriptors.py`) — today `run_shell_command`, `run_python_code` and
+  `install_project`, and whatever is registered next, on the day it is registered.
+  A bridged spelling counts: `mcp.run_python_code` is caught by the same
+  `same_tool` rule the closed set is matched with. `verify` is deliberately out:
+  it ends in a subprocess too, but the command is the one the *repository*
+  configured, and the line this draws is who wrote the code that runs.
+* **An optional entry counts.** `run_shell_command?` is a manifest that permits
+  running shell commands; whether the gate applies must not depend on what a
+  server happened to advertise this morning, or one file is governed on one host
+  and ungoverned on the next.
+* **Declaring it is half. Getting it is the other half.** At mission time the
+  resolve is told what the `ToolBus` is actually isolating with; a manifest that
+  says `bwrap` and gets a bus running `none` — bwrap not installed, or the sandbox
+  opted out of — is refused, because a manifest that asked for isolation and did
+  not get it asked for nothing. A library caller that resolves without naming a
+  bus is not told anything about isolation: unstated is not `none`.
+* **`sandbox: none`** is the explicit *no isolation was asked for*. Accepted and
+  inert for a manifest with no code-plane tool; refused, with that value quoted
+  back, for one that has them. Any other value is refused when the file loads —
+  `sandbox: firejail` asks for isolation this framework has no backend for, and
+  reading it as good enough is how a declaration becomes decoration.
+* It is **rendered into the prompt** (`Sandbox: bwrap`) like any other operational
+  field, and unlike the structural keys. Network is denied inside the namespace,
+  and an agent that has not been told reads `ENETUNREACH` as a broken tool and
+  spends a turn retrying it.
 
 ### Without a manifest
 

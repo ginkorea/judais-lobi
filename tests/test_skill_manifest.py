@@ -12,16 +12,23 @@ transcript looks like every other transcript.
 import os
 import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from core.runtime.skills import (
+    CODE_PLANE_SCOPES,
     SkillManifest,
     SkillManifestError,
     SkillToolsUnavailable,
     available_skills,
+    code_plane_tools,
     load_skill,
+    sandbox_name,
 )
+from core.tools.bus import ToolBus
+from core.tools.descriptors import ALL_DESCRIPTORS
+from core.tools.sandbox import BwrapSandbox
 
 MANIFEST = textwrap.dedent("""\
     ---
@@ -427,6 +434,335 @@ class TestSdkImport:
         with pytest.raises(SkillManifestError) as exc:
             load_skill(path)
         assert "sdk_import" in str(exc.value)
+
+
+class TestTheCodePlaneGate:
+    """`run_shell` and `run_python` never reach a hosted mission by accident.
+
+    A manifest whose closed set names a tool that runs code the *model*
+    composed has to say `sandbox: bwrap` beside it, and the bus it runs
+    on has to actually be bwrap. Both halves, because either one alone
+    is a mission that looks governed and is not: a declaration nobody
+    checks against the host, or a host nobody asked about.
+
+    The hazard is the one TAIPAN's `HOSTED_SDK_CODE_PLANE_DESIGN.md`
+    names: a governed mission that can run arbitrary code on the host
+    without isolation.
+    """
+
+    def shell_skill(self, tmp_path, extra=""):
+        return write(tmp_path, f"""\
+            ---
+            name: code-plane
+            allowed_tools: [governed_read, run_shell_command]
+            when_to_use: Something that needs a shell.
+            {extra}
+            ---
+            Body.
+            """)
+
+    # ── the set is derived, not typed ───────────────────────────────────
+
+    def test_the_code_plane_set_is_derived_from_the_scopes(self):
+        """Not a hand-list of names. A fourth tool that asks for
+        `shell.exec` tomorrow is a code plane the day it is registered,
+        without anyone remembering to come back here."""
+        derived = {
+            d.tool_name for d in ALL_DESCRIPTORS
+            if (set(d.required_scopes or ())
+                | {s for v in (d.action_scopes or {}).values() for s in v})
+            & CODE_PLANE_SCOPES
+        }
+        assert set(code_plane_tools()) == derived
+
+    def test_the_three_tools_that_run_code_today_are_in_it(self):
+        assert set(code_plane_tools()) == {
+            "run_shell_command", "run_python_code", "install_project",
+        }
+
+    def test_each_one_carries_the_scopes_that_put_it_there(self):
+        assert code_plane_tools()["install_project"] == (
+            "pip.install", "python.exec")
+
+    def test_a_tool_that_does_not_run_the_models_code_is_not_in_it(self):
+        """`verify` ends in a subprocess too, and is deliberately out:
+        the command it runs is the one the repository configured."""
+        assert "fs" not in code_plane_tools()
+        assert "verify" not in code_plane_tools()
+
+    # ── the declaration half ────────────────────────────────────────────
+
+    def test_a_code_plane_tool_without_a_declaration_is_refused(
+            self, tmp_path):
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(self.shell_skill(tmp_path)).resolve(
+                ["governed_read", "run_shell_command"])
+        assert "run_shell_command" in str(exc.value)
+
+    def test_the_refusal_names_the_missing_declaration_and_the_fix(
+            self, tmp_path):
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(self.shell_skill(tmp_path)).resolve(
+                ["governed_read", "run_shell_command"])
+        message = str(exc.value)
+        assert "declares no `sandbox:`" in message
+        assert "add `sandbox: bwrap`" in message
+        assert "take the tool out of `allowed_tools`" in message
+
+    def test_the_refusal_names_every_code_plane_tool_at_once(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: all-three
+            allowed_tools:
+              - run_shell_command
+              - run_python_code
+              - install_project
+            when_to_use: Everything at once.
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(path).resolve(
+                ["run_shell_command", "run_python_code", "install_project"])
+        message = str(exc.value)
+        assert "run_shell_command" in message
+        assert "run_python_code" in message
+        assert "install_project" in message
+
+    def test_a_namespaced_spelling_is_caught_too(self, tmp_path):
+        """A code plane reached through a bridge is still a code plane,
+        and `same_tool` is the harness's one answer to that."""
+        path = write(tmp_path, """\
+            ---
+            name: bridged
+            allowed_tools: [mcp.run_python_code]
+            when_to_use: Through a server.
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(path).resolve(["mcp.run_python_code"])
+        assert "mcp.run_python_code" in str(exc.value)
+
+    def test_an_optional_code_plane_tool_still_needs_the_declaration(
+            self, tmp_path):
+        """DECIDED: `?` marks what the host may not offer, not what the
+        manifest may not do. Gating on what was discovered would make
+        one file governed on one host and ungoverned on the next."""
+        path = write(tmp_path, """\
+            ---
+            name: maybe-shell
+            allowed_tools: [governed_read, "run_shell_command?"]
+            when_to_use: A shell if there is one.
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(path).resolve(["governed_read"])
+        assert "run_shell_command" in str(exc.value)
+
+    def test_the_declaration_is_checked_even_when_no_bus_was_named(
+            self, tmp_path):
+        """It reads the manifest and nothing else, so a library caller
+        that passes no sandbox is not exempt from it."""
+        with pytest.raises(SkillToolsUnavailable):
+            load_skill(self.shell_skill(tmp_path)).resolve(
+                ["governed_read", "run_shell_command"])
+
+    def test_sandbox_none_does_not_satisfy_a_code_plane_manifest(
+            self, tmp_path):
+        path = self.shell_skill(tmp_path, extra="sandbox: none")
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(path).resolve(
+                ["governed_read", "run_shell_command"], sandbox="none")
+        assert "declares `sandbox: none`" in str(exc.value)
+
+    def test_declared_and_isolated_resolves(self, tmp_path):
+        path = self.shell_skill(tmp_path, extra="sandbox: bwrap")
+        assert load_skill(path).resolve(
+            ["governed_read", "run_shell_command"], sandbox="bwrap",
+        ) == ["governed_read", "run_shell_command"]
+
+    # ── the isolation half ──────────────────────────────────────────────
+
+    def test_declared_bwrap_on_an_unisolated_bus_is_refused(self, tmp_path):
+        """The manifest asked for isolation and did not get it. A hosted
+        platform must not learn that from the transcript."""
+        path = self.shell_skill(tmp_path, extra="sandbox: bwrap")
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(path).resolve(
+                ["governed_read", "run_shell_command"], sandbox="none")
+        message = str(exc.value)
+        assert "declares `sandbox: bwrap`" in message
+        assert "the tool bus is running 'none'" in message
+        assert "the isolation it asked for is not" in message
+
+    def test_the_isolation_half_holds_without_a_code_plane_tool(
+            self, tmp_path):
+        """`sandbox: bwrap` is a statement about the run, not a property
+        of the tool list: a manifest that asked for it and was given
+        `none` is refused whatever its closed set holds."""
+        path = write(tmp_path, """\
+            ---
+            name: isolated-anyway
+            allowed_tools: [governed_read]
+            sandbox: bwrap
+            when_to_use: Isolation for its own sake.
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(path).resolve(["governed_read"], sandbox="none")
+        assert "isolation" in str(exc.value)
+
+    def test_a_caller_that_did_not_say_is_not_told_it_is_unisolated(
+            self, tmp_path):
+        """Unstated is not `none`. A library caller holding no bus is
+        told nothing rather than told something false."""
+        path = self.shell_skill(tmp_path, extra="sandbox: bwrap")
+        assert load_skill(path).resolve(
+            ["governed_read", "run_shell_command"],
+        ) == ["governed_read", "run_shell_command"]
+
+    def test_an_isolation_refusal_does_not_lecture_about_the_closed_set(
+            self, tmp_path):
+        """The discovered list and the sentence about narrowing answer a
+        missing *tool*. On a refusal that is only about isolation they
+        point the reader at the wrong file."""
+        path = self.shell_skill(tmp_path, extra="sandbox: bwrap")
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(path).resolve(
+                ["governed_read", "run_shell_command"], sandbox="none")
+        assert "not narrowed" not in str(exc.value)
+
+    def test_both_kinds_of_problem_arrive_in_one_refusal(self, tmp_path):
+        """The idiom of this loader: an operator edits the file once."""
+        path = write(tmp_path, """\
+            ---
+            name: two-problems
+            allowed_tools: [run_shell_command, catalog_get_asset]
+            when_to_use: A shell and a missing tool.
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(path).resolve(["run_shell_command"])
+        message = str(exc.value)
+        assert "add `sandbox: bwrap`" in message
+        assert "catalog_get_asset" in message
+        assert "not narrowed" in message
+
+    # ── the ordinary manifest is untouched ──────────────────────────────
+
+    def test_a_manifest_with_no_code_plane_tools_is_unaffected(
+            self, manifest_file):
+        assert load_skill(manifest_file).resolve(
+            ["mcp.catalog_search_assets", "mcp.catalog_get_asset"],
+            sandbox="none",
+        ) == ["mcp.catalog_search_assets", "mcp.catalog_get_asset"]
+
+    def test_sandbox_none_there_is_accepted_and_inert(self, tmp_path):
+        """A manifest may say out loud that it asked for nothing."""
+        path = write(tmp_path, """\
+            ---
+            name: plainly-unisolated
+            allowed_tools: [governed_read]
+            sandbox: none
+            when_to_use: No code, no isolation.
+            ---
+            Body.
+            """)
+        manifest = load_skill(path)
+        assert manifest.sandbox == "none"
+        assert manifest.resolve(["governed_read"], sandbox="none") == [
+            "governed_read"]
+
+    # ── the field itself ────────────────────────────────────────────────
+
+    def test_the_declared_value_is_carried(self, tmp_path):
+        path = self.shell_skill(tmp_path, extra="sandbox: bwrap")
+        assert load_skill(path).sandbox == "bwrap"
+
+    def test_absence_is_empty_and_is_not_none(self, manifest_file):
+        assert load_skill(manifest_file).sandbox == ""
+
+    def test_it_travels_in_a_skill_block_too(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: blocked
+            skill:
+              allowed_tools: [run_shell_command]
+              sandbox: bwrap
+              when_to_use: Something.
+            ---
+            Body.
+            """)
+        assert load_skill(path).resolve(
+            ["run_shell_command"], sandbox="bwrap") == ["run_shell_command"]
+
+    def test_a_value_nobody_implements_is_refused_at_load(self, tmp_path):
+        """`sandbox: firejail` asks for isolation this framework does
+        not have, and reading it as good enough is how a declaration
+        becomes decoration."""
+        path = self.shell_skill(tmp_path, extra="sandbox: firejail")
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        message = str(exc.value)
+        assert "'firejail'" in message
+        assert "`bwrap`" in message
+
+    def test_the_refusal_for_a_bad_value_joins_the_others(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            allowed_tools: [alpha, alpha]
+            sandbox: 3
+            when_to_use: Three problems.
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        message = str(exc.value)
+        assert "skill_id" in message
+        assert "twice" in message
+        assert "`sandbox:`" in message
+
+    def test_the_declaration_reaches_the_model(self, tmp_path):
+        """The model is told it is inside bwrap. Network is denied in
+        there, and an agent that has not been told reads ENETUNREACH as
+        a broken tool and spends a turn retrying it."""
+        path = self.shell_skill(tmp_path, extra="sandbox: bwrap")
+        assert "Sandbox: bwrap" in load_skill(path).prompt
+
+
+class TestTheSandboxSeam:
+    """`sandbox_name` — how a manifest finds out what it is running on.
+
+    Deliberately the smallest seam available: the runner a `ToolBus`
+    will wrap a subprocess in. A flag that did not take effect and a
+    bwrap that is not installed have to look identical here, because to
+    the manifest that asked for isolation they are the same thing.
+    """
+
+    def test_a_plain_bus_is_unisolated_and_says_so(self):
+        assert sandbox_name(ToolBus()) == "none"
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    def test_a_bwrap_bus_is_named_bwrap(self, _which):
+        assert sandbox_name(ToolBus(sandbox=BwrapSandbox())) == "bwrap"
+
+    def test_nothing_at_all_is_unstated_rather_than_unisolated(self):
+        """`""` is not `"none"`: one is silence, the other is an answer."""
+        assert sandbox_name(None) == ""
+
+    def test_a_backend_nobody_has_written_yet_names_itself(self):
+        class GvisorSandbox:
+            pass
+
+        class Bus:
+            sandbox = GvisorSandbox()
+
+        assert sandbox_name(Bus()) == "gvisor"
 
 
 # ---------------------------------------------------------------------------
