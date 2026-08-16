@@ -493,6 +493,22 @@ class TestTheDocumentAndTheModuleAgree:
             assert set(re.findall(r"`([^`]+)`", cell)) == set(c.FIELDS[event]), \
                 event
 
+    def test_the_optional_fields_of_every_event(self):
+        """The other half of the fields, and the half that is prose.
+
+        An optional field is the only kind this repo may add without
+        bumping the schema, which makes it the kind most likely to be
+        added to the module and not to the page a consumer is sent to —
+        and a field nobody documented is a field nobody reads with a
+        default. Named in the Events section, wherever in it the sentence
+        reads best; only the name is asserted.
+        """
+        section = _md_section("Events")
+        for event, optional in c.OPTIONAL.items():
+            for name in optional:
+                assert f"`{name}`" in section, \
+                    f"{event}.{name} is optional and undocumented"
+
     def test_the_stated_version(self):
         assert f"SCHEMA_VERSION == {c.SCHEMA_VERSION}" in CONTRACT_MD.read_text()
 

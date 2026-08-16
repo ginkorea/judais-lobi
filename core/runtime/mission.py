@@ -29,6 +29,12 @@ The loop is deliberately small and its refusals are deliberately loud:
   whole of it stays in a per-mission store the model can read one field
   of.  See :mod:`core.runtime.results` for why an unbounded paste is a
   correctness problem and not a tidiness one;
+* the **conversation** is bounded too, when the caller supplies a
+  window: bounding each result says nothing about the sum of them, and
+  the sum is what meets ``max_model_len``.  Oldest round trips go first,
+  the persona, catalogue, seeded turns, objective and newest result stay,
+  and the drop is a record on the stream rather than a shorter prompt
+  nobody mentioned.  See :class:`~core.runtime.context_window.MissionWindow`;
 * an answer is **checked against the run's own tool output** when the
   skill supplied a grammar for it.  See :mod:`core.runtime.grounding`.
 
@@ -43,8 +49,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from core.runtime.context_window import (
+    Compaction, MissionWindow, default_compaction_note,
+)
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission_stream import (
@@ -346,6 +355,29 @@ class MissionRunner:
 
         A mission on a local model is minutes long, and a caller holding
         only :meth:`run` has nothing to show for any of them.
+    window:
+        A :class:`~core.runtime.context_window.MissionWindow`, or ``None``
+        for a loop that sends whatever it has accumulated.
+
+        ``None`` is what this loop did until now, and what it did was
+        grow one message list across every step of the budget and hand
+        the whole of it to the backend each time.  Each result is
+        bounded (``MAX_RESULT_BYTES``) and each is at most one step's
+        worth, so nothing here is individually large; the sum is.  Eight
+        steps of bounded results is a quarter of a megabyte of prompt,
+        and against a served model with a real ``max_model_len`` the end
+        of that is a 400 from the server or a silent eviction inside it
+        — the second being the dangerous one, because the model then
+        answers from a conversation it can no longer fully see and
+        nothing in the answer says which half went.
+
+        With a window, the compactable middle is dropped oldest-first
+        before each step, the persona/catalogue/history/objective prefix
+        and the newest round trip survive, and the drop is announced on
+        the stream as ``step_started.compacted``.  Nothing is lost to the
+        *run*: the whole of every result stays in :attr:`store`, which is
+        what the grounding validator reads and what the model can still
+        address by handle.
 
     The store tool is offered **in addition to** ``tool_names``, and
     that is not a hole in a closed set: it reaches nothing outside the
@@ -368,6 +400,7 @@ class MissionRunner:
         gated: Sequence[str] = (),
         history: Sequence[Dict[str, str]] = (),
         observer: Optional[Observer] = None,
+        window: Optional[MissionWindow] = None,
     ):
         self._chat = chat_fn
         self._bus = bus
@@ -385,6 +418,7 @@ class MissionRunner:
         # this line.
         self._history = validate_history(history)
         self._observer = observer
+        self._window = window
 
     @property
     def store(self) -> MissionResultStore:
@@ -484,6 +518,54 @@ class MissionRunner:
             {"role": "user", "content": objective},
         ]
 
+    # ── keeping the conversation inside the window ──────────────────────
+
+    @property
+    def pinned(self) -> int:
+        """How many leading messages a compaction may never drop.
+
+        Exactly what :meth:`seed` returns — the system turn, every seeded
+        history turn, and the objective — counted the same way it builds
+        them, because the two must move together: a prefix that grew a
+        message and a count that did not is a compaction that eats the
+        objective and an agent that answers a question nobody asked.
+        """
+        return 2 + len(self._history)
+
+    def _compaction_note(self, dropped_turns: int, freed_chars: int) -> str:
+        """The default notice, plus where the dropped bytes still are.
+
+        The generic sentence says the work was done and the paste was
+        removed.  Only the runner knows the store's name, and naming it
+        here is the same teaching move as
+        :meth:`_say_it_is_unchanged`: the moment the model loses a result
+        from the transcript is the moment to tell it that the result is
+        still addressable, because a rule stated 2,000 tokens upstream in
+        a persona does not survive to the turn it binds.
+        """
+        note = default_compaction_note(dropped_turns, freed_chars)
+        if not self._store_tool:
+            return note
+        return (
+            f"{note} Every result of this mission is still readable: call "
+            f'{self._store_tool}(handle="…", path="…") with the handle you '
+            f"were given when it arrived."
+        )
+
+    def _fit(
+        self, messages: List[Dict[str, str]],
+    ) -> Tuple[List[Dict[str, str]], Optional[Compaction]]:
+        """``(messages to send, what was dropped or None)``.
+
+        No window is the loop as it ran before there was one: the list
+        goes out whole.
+        """
+        if self._window is None:
+            return messages, None
+        return self._window.fit(
+            messages, pinned=self.pinned, note=self._compaction_note,
+        )
+
     # ── the loop ────────────────────────────────────────────────────────
 
     def run(self, objective: str) -> MissionTranscript:
@@ -538,7 +620,13 @@ class MissionRunner:
         repairs = 0
 
         for index in range(self._max_steps):
-            self._emit(STEP_STARTED, index=index)
+            # Before the ask, not after the reply: what is compacted is
+            # what this step is about to send, and a watcher told about it
+            # afterwards has already rendered the turn it applied to.
+            messages, compacted = self._fit(messages)
+            self._emit(STEP_STARTED, index=index,
+                       **({"compacted": compacted.as_record()}
+                          if compacted is not None else {}))
             reply = str(self._chat(messages) or "")
             step = MissionStep(index=index, raw_reply=reply)
             messages.append({"role": "assistant", "content": reply})

@@ -219,6 +219,7 @@ def _run_mission(elf, args, name, style):
     This function joins them in that order — who you are, then what you
     are doing — and supplies neither.
     """
+    from core.runtime.context_window import MissionWindow
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
     from core.runtime.mission_stream import close_on_sigterm, open_sink
@@ -419,6 +420,33 @@ def _run_mission(elf, args, name, style):
                     f"chat messages ahead of the objective",
                     style=style,
                 )
+            # Built here and injected, rather than reached for inside the
+            # loop: a library caller constructing a MissionRunner gets the
+            # same bound by passing one, and this function stays the place
+            # where a deployment's model, provider and endpoint meet.
+            #
+            # The client goes in unread: `capabilities` on the local
+            # backend is a `GET /models` and the window defers it, so a
+            # library caller pays for the probe only if it compacts.
+            # Here it is paid immediately and on purpose — the line below
+            # is the one place an operator finds out, BEFORE an
+            # 11,000-second mission rather than after it, whether the
+            # harness knows the endpoint's real window or is running on a
+            # declared default. The probe is cached and the same server is
+            # about to be asked a question anyway.
+            window = MissionWindow(
+                provider=getattr(elf, "provider", "") or "",
+                model=elf.model,
+                client=elf.client,
+            )
+            console.print(
+                f"🪟 context: {window.limit_tokens} input tokens of "
+                f"{window.profile.max_context_tokens} "
+                f"({window.profile.source}) — older tool round-trips are "
+                f"compacted out before the model is asked, and the whole of "
+                f"every result stays in the mission store",
+                style=style,
+            )
             if getattr(args, "swarm", False):
                 from core.runtime.swarm import SwarmRunner
                 console.print(
@@ -440,6 +468,7 @@ def _run_mission(elf, args, name, style):
                     # the platform is called to `import`. Without it the
                     # planner is not offered the code+sdk rung at all.
                     sdk_import=manifest.sdk_import if manifest else "",
+                    window=window,
                 )
             else:
                 runner = MissionRunner(
@@ -450,6 +479,7 @@ def _run_mission(elf, args, name, style):
                     gated=gated,
                     history=history,
                     observer=sink,
+                    window=window,
                 )
             transcript = runner.run(args.message)
     except (McpUnavailable, McpConnectionError) as exc:

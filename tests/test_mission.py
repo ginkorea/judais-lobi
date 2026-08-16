@@ -5,6 +5,9 @@ import json
 import pytest
 
 from core.contracts.schemas import PolicyPack
+from core.runtime import contract
+from core.runtime.context_window import ContextConfig, MissionWindow
+from core.runtime.contract import conforms
 from core.runtime.grounding import GroundingConfig, GroundingValidator
 from core.runtime.mission import MissionRunner, MissionTranscript
 from core.runtime.results import RESULT_TOOL
@@ -931,3 +934,202 @@ class TestTheRefusalNamesTheNearMiss:
             model, b, ["mcp.runs_list", "local.runs_list"],
             max_steps=4).run("go")
         assert "almost certainly mean" not in transcript.steps[0].error
+
+
+# ---------------------------------------------------------------------------
+# The conversation is bounded against the model's real context window
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def paged_bus():
+    """One tool that returns a fresh, sizeable page every time.
+
+    Fresh on purpose: a byte-identical re-fetch is collapsed to one line by
+    the store (see `TestAnUnchangedResultIsNotPastedTwice`), and a mission
+    whose every result is the same never grows the conversation these tests
+    are about.
+    """
+    b = ToolBus(capability_engine=CapabilityEngine(
+        PolicyPack(allowed_scopes=["*"])))
+    pages = {"n": 0}
+
+    def page(**_kw):
+        pages["n"] += 1
+        return (0, f"page {pages['n']} — asset.{pages['n']:06x} "
+                   + "z" * 800, "")
+
+    b.register(ToolDescriptor(tool_name="catalog.page",
+                              description="One page of the catalogue."), page)
+    return b
+
+
+def _paging_model(rounds, answer='{"answer": "ok"}'):
+    return ScriptedModel(*([tool_call("catalog.page")] * rounds), answer)
+
+
+def _small_window(**kwargs):
+    """A window a handful of 800-byte results does not fit inside."""
+    return MissionWindow(
+        config=ContextConfig(max_context_tokens=1200, max_output_tokens=200),
+        **kwargs,
+    )
+
+
+class TestTheConversationIsBounded:
+    """A mission's message list grew across every step of the budget and was
+    handed to the backend whole. Each result is bounded and no single one is
+    large; the sum is, and against a served model with a real
+    ``max_model_len`` the end of it is a 400 or a silent eviction — the
+    second being the dangerous one, because the model then answers from a
+    conversation it can no longer fully see and the answer does not say so.
+    """
+
+    def test_every_request_stays_inside_the_window(self, paged_bus):
+        window = _small_window()
+        model = _paging_model(6)
+        MissionRunner(model, paged_bus, ["catalog.page"], max_steps=8,
+                      window=window).run("go")
+        assert max(window.estimate(sent) for sent in model.seen) \
+            <= window.limit_tokens
+
+    def test_without_a_window_it_still_grows_past_the_same_limit(
+            self, paged_bus):
+        """The behaviour the parameter changes, stated as the thing it was.
+
+        ``None`` is not a smaller bound — it is no bound, which is what the
+        loop did before and what a caller passing nothing still gets."""
+        window = _small_window()
+        model = _paging_model(6)
+        MissionRunner(model, paged_bus, ["catalog.page"],
+                      max_steps=8).run("go")
+        assert max(window.estimate(sent) for sent in model.seen) \
+            > window.limit_tokens
+
+    def test_the_catalogue_survives(self, paged_bus):
+        """An agent that has forgotten which tools exist is a worse failure
+        than the one being fixed."""
+        model = _paging_model(6)
+        MissionRunner(model, paged_bus, ["catalog.page"], max_steps=8,
+                      window=_small_window()).run("go")
+        system = model.seen[-1][0]
+        assert system["role"] == "system"
+        assert "catalog.page: One page of the catalogue." in system["content"]
+
+    def test_the_seeded_history_and_the_objective_survive(self, paged_bus):
+        """The analyst's prior turns are the conversation being continued,
+        and the objective is the question. Neither is compactable."""
+        model = _paging_model(6)
+        MissionRunner(model, paged_bus, ["catalog.page"], max_steps=8,
+                      history=HISTORY, window=_small_window()).run("go")
+        sent = model.seen[-1]
+        assert sent[1:3] == HISTORY
+        assert sent[3] == {"role": "user", "content": "go"}
+
+    def test_the_newest_result_survives(self, paged_bus):
+        """It is what the next reply is made out of."""
+        model = _paging_model(6)
+        MissionRunner(model, paged_bus, ["catalog.page"], max_steps=8,
+                      window=_small_window()).run("go")
+        assert "page 6" in model.seen[-1][-1]["content"]
+
+    def test_the_oldest_round_trips_are_the_ones_that_go(self, paged_bus):
+        model = _paging_model(6)
+        MissionRunner(model, paged_bus, ["catalog.page"], max_steps=8,
+                      window=_small_window()).run("go")
+        assert "page 1" not in "".join(m["content"] for m in model.seen[-1])
+
+    def test_the_model_is_told_the_conversation_was_shortened(self,
+                                                              paged_bus):
+        """A silently shortened conversation is worse than a short one: the
+        model cannot see anything is missing, so it re-runs a call it already
+        made and spends a step of eight rediscovering it."""
+        model = _paging_model(6)
+        MissionRunner(model, paged_bus, ["catalog.page"], max_steps=8,
+                      window=_small_window()).run("go")
+        notice = next(m["content"] for m in model.seen[-1]
+                      if "[context]" in m["content"])
+        assert "Do not repeat a call" in notice
+        assert f'{RESULT_TOOL}(handle=' in notice
+
+    def test_a_mission_that_fits_is_never_compacted(self, bus):
+        model = ScriptedModel(tool_call("catalog.search", q="taiwan"),
+                              '{"answer": "ok"}')
+        events = []
+        MissionRunner(model, bus, ["catalog.search"], window=_small_window(),
+                      observer=events.append).run("go")
+        assert all("compacted" not in e for e in events)
+        assert "[context]" not in "".join(m["content"] for m in model.seen[-1])
+
+
+class TestTheCompactionIsVisible:
+    def test_the_step_it_happened_on_says_so(self, paged_bus):
+        events = []
+        MissionRunner(_paging_model(6), paged_bus, ["catalog.page"],
+                      max_steps=8, window=_small_window(),
+                      observer=events.append).run("go")
+        compacted = [e for e in events
+                     if e["event"] == "step_started" and "compacted" in e]
+        assert compacted
+        first = compacted[0]["compacted"]
+        assert first["dropped_turns"] >= 1
+        assert first["freed_chars"] > 0
+        assert first["tokens_before"] > first["tokens_after"]
+        assert first["limit_tokens"] == _small_window().limit_tokens
+
+    def test_the_record_still_conforms_to_the_contract(self, paged_bus):
+        """An optional field is a minor change, and the check a consumer
+        runs must still pass over the whole stream."""
+        events = []
+        MissionRunner(_paging_model(6), paged_bus, ["catalog.page"],
+                      max_steps=8, window=_small_window(),
+                      observer=events.append).run("go")
+        assert [p for e in events for p in conforms(e)] == []
+        assert "compacted" in contract.OPTIONAL[contract.STEP_STARTED]
+
+    def test_the_steps_that_dropped_nothing_are_silent(self, paged_bus):
+        """Absent, not zero: a consumer reads the field with a default and a
+        run that never compacted must look like the run it is."""
+        events = []
+        MissionRunner(_paging_model(6), paged_bus, ["catalog.page"],
+                      max_steps=8, window=_small_window(),
+                      observer=events.append).run("go")
+        steps = [e for e in events if e["event"] == "step_started"]
+        assert "compacted" not in steps[0]
+
+
+class TestGroundingStillSeesEveryResult:
+    """Compaction removes a *paste*, never evidence.
+
+    The validator reads the mission's result store, and the store is
+    written on dispatch, so an answer citing a page whose text left the
+    conversation is still an answer with a tool result behind it. The
+    opposite would be the worst outcome available here: a truthful answer
+    refused, a repair turn spent, and a true sentence deleted — which is
+    exactly what the three-spellings defect did on 10 August.
+    """
+
+    def test_an_identifier_from_a_dropped_result_is_still_grounded(
+            self, paged_bus):
+        model = ScriptedModel(*([tool_call("catalog.page")] * 6),
+                              '{"answer": "The first page is asset.000001."}')
+        transcript = MissionRunner(
+            model, paged_bus, ["catalog.page"], max_steps=8,
+            window=_small_window(),
+            validator=GroundingValidator.from_config(
+                GroundingConfig(identifier_pattern=ID_PATTERN)),
+        ).run("go")
+        assert "asset.000001" not in "".join(
+            m["content"] for m in model.seen[-1])
+        assert transcript.grounding.grounded
+        assert transcript.grounding.repairs == 0
+        assert transcript.outcome == "answered"
+
+    def test_the_store_keeps_every_result_the_conversation_lost(
+            self, paged_bus):
+        runner = MissionRunner(
+            _paging_model(6), paged_bus, ["catalog.page"], max_steps=8,
+            window=_small_window(),
+        )
+        runner.run("go")
+        assert len(runner.store.evidence_texts()) == 6

@@ -56,6 +56,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
@@ -291,6 +292,11 @@ class SwarmRunner:
         does not know this name and must not guess it: it drives whatever
         platform it is pointed at, and a manifest is where a platform
         describes itself.
+    window:
+        Passed straight through to every :class:`MissionRunner` this
+        builds; see that class's ``window`` parameter.  A staged mission
+        runs more steps than a direct one, not fewer, so it is the path
+        that needs bounding most.
     """
 
     def __init__(
@@ -311,6 +317,7 @@ class SwarmRunner:
         retries_per_step: int = 1,
         summary_chars: int = 1_200,
         sdk_import: str = "",
+        window: Optional[MissionWindow] = None,
     ):
         self._chat = chat_fn
         self._plain_chat = plain_chat_fn or chat_fn
@@ -322,6 +329,12 @@ class SwarmRunner:
         self._gated = list(gated)
         self._history = validate_history(history)
         self._observer = observer
+        # Handed to every MissionRunner this builds and to nothing else.
+        # A rung's execution is an ordinary mission loop and grows the same
+        # unbounded message list; the router, planner, gate and synthesizer
+        # each build one short list of their own and send it once, so there
+        # is nothing there for a window to bound.
+        self._window = window
         self._max_plan_steps = max(1, int(max_plan_steps))
         self._step_budget = max(1, int(step_budget))
         self._retries = max(0, int(retries_per_step))
@@ -379,6 +392,7 @@ class SwarmRunner:
             gated=self._gated,
             history=history,
             observer=observer,
+            window=self._window,
         )
 
     def _direct(self, objective: str) -> MissionTranscript:
@@ -390,6 +404,7 @@ class SwarmRunner:
             gated=self._gated,
             history=self._history,
             observer=self._observer,
+            window=self._window,
         )
         return runner.run(objective)
 
