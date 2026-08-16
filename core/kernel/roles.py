@@ -71,7 +71,8 @@ from core.kernel.budgets import BudgetConfig
 from core.kernel.orchestrator import PhaseResult
 from core.kernel.state import SessionState
 from core.runtime.context_window import (
-    Compaction, ContextConfig, MissionWindow, ModelContextProfile,
+    COMPACTION_MARK, Compaction, ContextConfig, MissionWindow,
+    ModelContextProfile,
 )
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
@@ -90,7 +91,8 @@ TRANSCRIPT_TURNS = 6
 ROLE_MIN_TAIL = 1
 
 
-def role_compaction_note(dropped_turns: int, freed_chars: int) -> str:
+def role_compaction_note(dropped_turns: int, freed_chars: int,
+                         dropped_results: int = 0) -> str:
     """What a role is told in place of the trace lines that were dropped.
 
     Said out loud for the reason the mission's note is: a phase handed a
@@ -98,10 +100,15 @@ def role_compaction_note(dropped_turns: int, freed_chars: int) -> str:
     the coding loop's answer to "I cannot see the test output" is to run
     the tests again — a phase out of a budget of thirty spent
     rediscovering something it was told and then had taken away.
+
+    *dropped_results* is the third argument every note callable is handed
+    by :meth:`~core.runtime.context_window.MissionWindow.fit`.  It is
+    counted and not said here: a role's trace is phases talking, and the
+    window's tool/chat distinction has nothing to name in it.
     """
     return (
-        f"[context] Earlier phases of this task were removed from this "
-        f"prompt so that it fits the model's context window: "
+        f"{COMPACTION_MARK} Earlier phases of this task were removed from "
+        f"this prompt so that it fits the model's context window: "
         f"{dropped_turns} model turn(s), {freed_chars} characters. Those "
         f"phases ran and their artifacts are on disk — what is gone is the "
         f"paste of them, not the work. Do not repeat a step merely because "

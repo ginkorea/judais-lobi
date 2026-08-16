@@ -4,7 +4,8 @@ import sys
 from types import SimpleNamespace
 
 from core.runtime.context_window import (
-    ContextConfig, ContextWindowManager, MissionWindow,
+    EVICTION_ORDER, ContextConfig, ContextWindowManager, MissionWindow,
+    round_trip_kind, round_trips,
 )
 
 
@@ -203,6 +204,156 @@ def test_the_record_counts_turns_and_messages_separately():
     record = compaction.as_record()
     assert record["tokens_before"] > record["tokens_after"]
     assert record["limit_tokens"] == _window().limit_tokens
+
+
+# ── what goes first: tool output, not the conversation ───────────────────────
+
+
+def _mixed_conversation(tool_rounds=6, result_chars=400):
+    """A pinned prefix, two turns somebody said, then tool round trips.
+
+    The said turns are the OLDEST compactable thing here, so a policy that
+    drops by age alone takes them first — and they are the cheapest
+    messages in the list and the ones a follow-up needs to resolve
+    ("the second headline").  The tool output is thirty times the size and
+    is already in the mission's result store under a handle.
+    """
+    messages = [{"role": "system", "content": "persona + catalogue"},
+                {"role": "user", "content": "the objective"}]
+    messages += [{"role": "assistant", "content": "which one do you mean?"},
+                 {"role": "user", "content": "the second headline"}]
+    for i in range(tool_rounds):
+        messages.append({"role": "assistant", "content": f'{{"tool": "t{i}"}}'})
+        messages.append({"role": "user", "content": f"Result of t{i}: "
+                                                    + "x" * result_chars})
+    return messages
+
+
+def _native_conversation(rounds=4, calls=3, result_chars=300):
+    """The native tool-call shape: one model turn, N `tool` messages.
+
+    One assistant turn asking for three tools in parallel is answered by
+    three messages, so a round trip here is FOUR messages and not two.
+    """
+    messages = [{"role": "system", "content": "persona + catalogue"},
+                {"role": "user", "content": "the objective"}]
+    for i in range(rounds):
+        messages.append({
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": f"c{i}-{j}", "type": "function",
+                            "function": {"name": f"t{j}", "arguments": "{}"}}
+                           for j in range(calls)],
+        })
+        for j in range(calls):
+            messages.append({"role": "tool", "tool_call_id": f"c{i}-{j}",
+                             "content": f"round {i} call {j}: "
+                                        + "y" * result_chars})
+    return messages
+
+
+def _every_result_still_has_its_call(messages):
+    """No `tool` message without the model turn that asked for it above it."""
+    called = False
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant":
+            called = True
+        elif role == "tool":
+            if not called:
+                return False
+        else:
+            called = False
+    return True
+
+
+def test_tool_output_is_dropped_before_the_turns_somebody_said():
+    """The whole of the policy, in one conversation.
+
+    Both are "the oldest thing here". Only one of them is also in the
+    result store, and only one of them is what a follow-up refers to.
+    """
+    messages = _mixed_conversation()
+    fitted, compaction = _window().fit(messages, pinned=2)
+    kept = "".join(str(m.get("content") or "") for m in fitted)
+    assert "the second headline" in kept
+    assert "which one do you mean?" in kept
+    assert "Result of t0" not in kept
+    assert compaction.dropped_results >= 1
+
+
+def test_the_said_turns_go_too_once_the_tool_output_has_run_out():
+    """Last, not never: a window that cannot fit the conversation drops it.
+
+    The floor is the pinned prefix and the newest round trip, and nothing
+    below that is protected from a window small enough.
+    """
+    window = MissionWindow(config=ContextConfig(
+        max_context_tokens=300, max_output_tokens=100))
+    fitted, _ = window.fit(_mixed_conversation(), pinned=2)
+    kept = "".join(str(m.get("content") or "") for m in fitted)
+    assert "the second headline" not in kept
+
+
+def test_a_native_round_trip_is_dropped_whole_and_never_split():
+    """Four messages, not two: a stride is the wrong unit.
+
+    A fixed stride takes the model turn and one of its three answers, and
+    leaves the model tool output for a call it can no longer see it made.
+    """
+    fitted, compaction = _window().fit(_native_conversation(), pinned=2)
+    assert _every_result_still_has_its_call(fitted)
+    assert compaction.dropped_messages % 4 == 0
+    assert compaction.dropped_results == compaction.dropped_messages // 4
+
+
+def test_the_newest_native_round_trip_survives_entire():
+    messages = _native_conversation()
+    fitted, _ = _window().fit(messages, pinned=2)
+    assert fitted[-4:] == messages[-4:]
+
+
+def test_round_trips_group_both_protocols_and_lose_nothing():
+    grouped = round_trips([
+        {"role": "assistant", "content": '{"tool": "a"}'},
+        {"role": "user", "content": "Result of a"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "content": "one"},
+        {"role": "tool", "content": "two"},
+        {"role": "assistant", "content": '{"answer": "done"}'},
+    ])
+    assert [len(group) for group in grouped] == [2, 3, 1]
+    assert [round_trip_kind(group) for group in grouped] == [
+        "tool", "tool", "chat"]
+
+
+def test_a_message_no_model_turn_precedes_is_its_own_group_and_goes_first():
+    """Half a round trip reads as an answer to a question never asked."""
+    grouped = round_trips([
+        {"role": "user", "content": "[context] an earlier notice"},
+        {"role": "user", "content": "a result whose call is gone"},
+        {"role": "assistant", "content": '{"tool": "a"}'},
+        {"role": "user", "content": "Result of a"},
+    ])
+    assert [round_trip_kind(group) for group in grouped] == [
+        "note", "orphan", "tool"]
+    assert [EVICTION_ORDER.index(round_trip_kind(g)) for g in grouped] \
+        == sorted(EVICTION_ORDER.index(round_trip_kind(g)) for g in grouped)
+
+
+def test_the_notice_says_how_many_of_the_dropped_turns_were_tool_results():
+    fitted, compaction = _window().fit(_mission_messages(8), pinned=2)
+    notice = next(m["content"] for m in fitted if "[context]" in m["content"])
+    assert compaction.dropped_results >= 1
+    assert f"{compaction.dropped_results} of them tool result(s)" in notice
+
+
+def test_the_record_carries_the_tool_count_beside_the_turn_count():
+    """Additive on `compacted`: a watcher told eleven turns went cannot
+    tell that from eleven governed listings going."""
+    _, compaction = _window().fit(_mission_messages(8), pinned=2)
+    record = compaction.as_record()
+    assert record["dropped_results"] == compaction.dropped_results
+    assert record["dropped_turns"] == compaction.dropped_turns
 
 
 def test_no_reported_context_size_falls_back_to_the_declared_default():

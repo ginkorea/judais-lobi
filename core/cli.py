@@ -664,13 +664,18 @@ def _mission(elf, args, name, style):
         return elf.client.chat(model=elf.model, messages=messages,
                                stream=False, **extra)
 
-    def plain_chat_fn(messages):
+    def plain_chat_fn(messages, **extra):
         # No tool schemas, deliberately: the swarm's router, planner, gate
         # and synthesizer must answer their question in bare JSON or prose,
         # and a harmony model with a function namespace declared will answer
         # a yes/no question with a tool call.
+        #
+        # `**extra` is the ONE thing a caller may add, and today that is
+        # `response_format` from `SwarmRunner._json_reply`. Sampling is
+        # applied after it so a role cannot quietly re-pin a temperature
+        # this run's operator chose.
         return elf.client.chat(model=elf.model, messages=messages,
-                               stream=False, **dict(sampling))
+                               stream=False, **extra, **dict(sampling))
 
     def usage_fn():
         # The side channel beside `chat`. Read straight after each of the
@@ -903,6 +908,14 @@ def _mission(elf, args, name, style):
                     history=history,
                     observer=sink,
                     plain_chat_fn=plain_chat_fn,
+                    # Asked of the CLIENT, because the client is what knows
+                    # which backend it is and the swarm holds only a
+                    # function. `getattr` twice: a library caller's client
+                    # need never have heard of capabilities, and a backend
+                    # that cannot constrain its decoder is the default.
+                    json_mode=bool(getattr(
+                        getattr(elf.client, "capabilities", None),
+                        "supports_json_mode", False)),
                     # The manifest is the only thing here that knows what
                     # the platform is called to `import`. Without it the
                     # planner is not offered the code+sdk rung at all.

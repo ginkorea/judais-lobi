@@ -691,6 +691,51 @@ def with_trace(ctx, lines=6, size=400):
     return ctx
 
 
+class TestTheRolePromptIsTheSameBytesEveryTime:
+    """`compose` is a prefix too, and it is already in the right order.
+
+    System (persona + phase + rules), then the task, then the transcript:
+    most-constant-first, exactly what `MissionRunner.seed` documents for
+    the mission loop.  What this class pins is that nothing in it is a
+    clock, a counter or a set rendered in whatever order it iterated — a
+    served endpoint's prefix cache is keyed on bytes, and one unordered
+    `keys` line would cost a deployment the whole of it.
+    """
+
+    def test_the_same_state_composes_the_same_bytes_twice(self):
+        role, state = PlanRole(), SessionState(task_description="add paging")
+        ctx = with_trace(make_ctx())
+        schema = ctx.schema_for("PLAN")
+        first = role.compose(state, ctx, schema)
+        second = role.compose(state, ctx, schema)
+        assert json.dumps(first) == json.dumps(second)
+
+    def test_two_contexts_with_the_same_history_compose_the_same_bytes(self):
+        role, state = PlanRole(), SessionState(task_description="add paging")
+        schema = make_ctx().schema_for("PLAN")
+        assert (json.dumps(role.compose(state, with_trace(make_ctx()), schema))
+                == json.dumps(role.compose(state, with_trace(make_ctx()),
+                                           schema)))
+
+    def test_the_order_is_system_then_task_then_transcript(self):
+        role, state = PlanRole(), SessionState(task_description="add paging")
+        ctx = with_trace(make_ctx())
+        composed = role.compose(state, ctx, ctx.schema_for("PLAN"))
+        assert composed[0]["role"] == "system"
+        assert composed[1]["content"].startswith("Task: add paging")
+        assert composed[2:] == ctx.transcript()
+
+    def test_the_json_contract_lists_its_keys_in_a_declared_order(self):
+        """`model_fields` and `extra_keys` are both ordered.  A set here
+        would rewrite the system turn on every process."""
+        role, state = PlanRole(), SessionState(task_description="add paging")
+        ctx = make_ctx()
+        schema = ctx.schema_for("PLAN")
+        system = role.compose(state, ctx, schema)[0]["content"]
+        keys = ", ".join([*schema.model_fields, *role.extra_keys])
+        assert keys in system
+
+
 class TestTheEffectiveLimit:
     """`min(per-role budget, resolved profile input budget)`, and no more.
 

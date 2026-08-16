@@ -86,7 +86,7 @@ from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
     AWAITING_APPROVAL, CANCELLED, MissionRunner, MissionTranscript,
     _finished_record, _grounding_record, _profile_field, _run_field,
-    audit_ref_of, persist_record, sandbox_of, validate_history,
+    audit_ref_of, persist_record, sandbox_of, stacked, validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -369,6 +369,17 @@ class SwarmRunner:
         synthesis).  A harmony model with tools declared will answer a
         yes/no question with a tool call; without them it answers the
         question.  Defaults to ``chat_fn``.
+
+        When ``json_mode`` is set it is additionally called as
+        ``plain_chat_fn(messages, response_format=…)`` for the three roles
+        that must return an object, so it has to accept keyword extras;
+        the CLI's does.  Never for the synthesizer, which writes prose.
+    json_mode:
+        Whether this backend can be told to emit syntactically valid JSON
+        — ``BackendCapabilities.supports_json_mode``, read by the CALLER
+        off the client it built, because the swarm holds a function and
+        not a client.  ``False`` is every backend that cannot, and is the
+        behaviour this class had before the flag existed.
     max_plan_steps:
         Hard cap on plan length.  Five, because the endpoint is serial at
         59 tok/s and a 20-step plan is a hang wearing a plan's clothes.
@@ -444,7 +455,8 @@ class SwarmRunner:
         approval: Optional[ApprovalTicket] = None,
         history: Sequence[Dict[str, str]] = (),
         observer: Optional[Observer] = None,
-        plain_chat_fn: Optional[Callable[[List[Dict[str, str]]], Any]] = None,
+        plain_chat_fn: Optional[Callable[..., Any]] = None,
+        json_mode: bool = False,
         max_plan_steps: int = 5,
         step_budget: int = 4,
         retries_per_step: int = 1,
@@ -460,6 +472,10 @@ class SwarmRunner:
     ):
         self._chat = chat_fn
         self._plain_chat = plain_chat_fn or chat_fn
+        # Only ever consulted by `_json_reply`, and only ever set by a
+        # caller that also handed in a `plain_chat_fn` able to take the
+        # keyword: a runner given a bare `chat_fn` keeps the old call shape.
+        self._json_mode = bool(json_mode) and plain_chat_fn is not None
         self._bus = bus
         self._tool_names = list(tool_names)
         self._system_message = system_message
@@ -825,9 +841,14 @@ class SwarmRunner:
         a small question) has no such recovery.
         """
         tools = ", ".join(self._tool_names) or "(none)"
+        # Constant first, this run's tool set after it, the objective last —
+        # `MissionRunner.seed`'s ordering discipline applied to a role that
+        # is called once per turn rather than once per step.  Through
+        # `stacked` so that every system turn this package builds is
+        # assembled the same way, down to the whitespace.
         messages: List[Dict[str, str]] = [
-            {"role": "system",
-             "content": TRIAGE_PROMPT + f"\nTools that exist here: {tools}"},
+            {"role": "system", "content": stacked(
+                TRIAGE_PROMPT, f"Tools that exist here: {tools}")},
             *[dict(turn) for turn in self._history[-2:]],
             {"role": "user", "content": objective},
         ]
@@ -869,12 +890,17 @@ class SwarmRunner:
         of repeating it, and the failure is stated so the new plan routes
         around what did not work.
         """
-        system = "\n\n".join(part for part in (
-            self._system_message.strip(),
+        # Persona, then the role's constant instruction, then this run's
+        # catalogue: the same most-constant-first order `MissionRunner.seed`
+        # documents, so a redraw re-sends a prefix the endpoint has already
+        # cached.  Everything that differs between the first plan and a
+        # redraw — what succeeded, what failed — is in the user turn below.
+        system = stacked(
+            self._system_message,
             PLAN_PROMPT.format(max_steps=self._max_plan_steps,
                                rungs=self._plan_rung_lines()),
             "Tools that exist here:\n" + self._short_catalogue(),
-        ) if part)
+        )
         user_parts = [objective]
         if carried:
             done = "\n".join(f"- {sid}: {summary}"
@@ -1156,9 +1182,10 @@ class SwarmRunner:
                 break
             stage.begin_stage()
             runner = self._runner(
-                system_message="\n\n".join(part for part in (
-                    self._system_message.strip(), EXECUTE_PROMPT.strip(),
-                ) if part),
+                # The persona LEADS and the executor's paragraph follows it,
+                # so every sub-mission of every staged turn opens with the
+                # same bytes the direct path opens with.
+                system_message=stacked(self._system_message, EXECUTE_PROMPT),
                 max_steps=allowance,
                 observer=stage,
             )
@@ -1279,9 +1306,8 @@ class SwarmRunner:
                 lines.append(f"- {step.id} ({step.goal}): FAILED — "
                              f"{outcome.why}")
         messages: List[Dict[str, str]] = [
-            {"role": "system", "content": "\n\n".join(part for part in (
-                self._system_message.strip(), SYNTHESIZE_PROMPT.strip(),
-            ) if part)},
+            {"role": "system", "content": stacked(
+                self._system_message, SYNTHESIZE_PROMPT)},
             *[dict(turn) for turn in self._history[-2:]],
             {"role": "user",
              "content": f"Objective: {objective}\n\nStep results:\n"
@@ -1378,17 +1404,46 @@ class SwarmRunner:
                 + f" … [cut at {self._summary_chars} characters]")
 
     def _json_reply(self, messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
-        """One JSON object from the plain backend, or ``None``.  Never raises."""
+        """One JSON object from the plain backend, or ``None``.  Never raises.
+
+        The router, the planner and every gate come through here, and all
+        three are asked for an object in prose: *"Reply with exactly one
+        JSON object and nothing else"*.  A 20B obeys that most of the
+        time, which is the problem — the times it wraps the object in a
+        sentence, ``json.loads`` fails and the caller falls open (the
+        router to DIRECT, the gate to pass).  The fall-open is correct
+        behaviour and it is also **a second explanation for every bad
+        decision this path makes**.
+
+        So where the backend has the grammar constraint —
+        ``BackendCapabilities.supports_json_mode``, true on openai, local
+        and mistral, and probed working on the reference deployment's vLLM
+        0.14.1 — the request carries ``response_format={"type":
+        "json_object"}`` and the decoder cannot emit anything but a valid
+        object.  Free: no extra tokens, no extra call.
+
+        **This does not improve anybody's judgement and is not expected
+        to.**  The A/B in ``ROADMAP.md`` §2.5 has the router staging a
+        ``[quick web]`` request; a router that stages a quick lookup while
+        emitting perfectly-formed JSON stages it just the same.  What this
+        removes is the confound: a staged quick lookup after this is a
+        routing decision that was actually made, not a reply nobody could
+        parse.  Routing heuristics are untouched here on purpose.
+
+        The synthesizer does NOT come through here — it writes prose, and
+        a grammar that forbids prose would forbid the answer.
+        """
+        extra = ({"response_format": {"type": "json_object"}}
+                 if self._json_mode else {})
         try:
-            reply = str(self._plain_chat(messages) or "")
+            reply = str(self._plain_chat(messages, **extra) or "")
         except Exception:
             # Nothing to fold: `last_usage` is cleared at the start of
             # every call, so a call that raised reports nothing and adding
             # it would be adding None.
             return None
-        # The router, the planner and every gate come through here. Folded
-        # even when the reply turns out to be unparseable below — a call
-        # that produced garbage was still billed.
+        # Folded even when the reply turns out to be unparseable below — a
+        # call that produced garbage was still billed.
         self._spent()
         text = _FENCE.sub("", reply.strip()).strip()
         if not text:

@@ -165,11 +165,23 @@ The harness says which of these applied on the console rather than replaying
 in silence.
 
 `compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,
-tokens_after, limit_tokens, profile}` and is present only on the steps where
-older tool round-trips had to be dropped from the conversation to keep it
-inside the model's context window. The persona, the tool catalogue, the seeded
-history turns, the objective and the newest round trip are never dropped. The
-counts describe that one step, not a running total.
+tokens_after, limit_tokens, profile, dropped_results}` and is present only on
+the steps where older tool round-trips had to be dropped from the conversation
+to keep it inside the model's context window. The persona, the tool catalogue,
+the seeded history turns, the objective and the newest round trip are never
+dropped. The counts describe that one step, not a running total.
+
+`dropped_results` — a key added after `profile`, so a consumer that predates it
+reads the record exactly as before — is how many of `dropped_turns` were TOOL
+round trips: one model decision and the output that answered it, whether that
+answer arrived as one rendered result or as several `tool` messages. It is
+named separately because those are what go **first**. Tool output is the bulk
+of a long mission and it is the only part of the conversation that is also
+somewhere else — the mission's result store still holds every byte of it under
+a handle the model can still read — while a turn somebody actually said is
+cheap and is what a follow-up question refers back to. So the eviction order is
+stale notice, stranded half round trip, tool round trip oldest-first, and only
+then the oldest said turn.
 
 It is on the stream because the alternative is the failure it prevents: an
 agent whose earlier evidence quietly left its prompt looks, from outside,

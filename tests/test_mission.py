@@ -1,6 +1,7 @@
 # tests/test_mission.py — the loop where the model chooses the tool
 
 import json
+import re
 
 import pytest
 
@@ -158,6 +159,82 @@ class TestHistorySeeding:
         started = next(e for e in events if e["event"] == "mission_started")
         assert started["sandbox"] == bus.sandbox_name
         assert started["sandbox"] in ("bwrap", "none")
+
+
+class TestTheStablePrefix:
+    """The prefix is the same bytes on every step of every run, or it is not
+    a prefix.
+
+    A served endpoint (vLLM, TRT-LLM) caches the KV of a request's leading
+    tokens and reuses it for the next request that begins with the same
+    BYTES.  This harness re-sends persona, protocol and catalogue on every
+    step of every mission, so the longest byte-stable prefix is the
+    cheapest optimisation available to a deployment and it costs nothing
+    but discipline.  One timestamp, one run id, one set rendered in
+    whatever order it iterated, and the whole thing is worth nothing —
+    which is the failure this class exists to make loud.  See
+    `MissionRunner.seed` for the order and the reasons.
+    """
+
+    def _runner(self, bus, **kwargs):
+        kwargs.setdefault("system_message", "You are Tai.")
+        kwargs.setdefault("history", HISTORY)
+        return MissionRunner(ScriptedModel(), bus,
+                             ["catalog.search", "catalog.get"], **kwargs)
+
+    def test_the_sections_are_in_most_constant_first_order(self, bus):
+        """Persona, then protocol, then catalogue.
+
+        Persona and skill prose are one string for the whole deployment;
+        the protocol is a module constant; the catalogue changes the moment
+        a mission is offered a different tool set, so it is last of the
+        three — and it has to be, because the protocol's own text says
+        "the catalogue below".
+        """
+        system = self._runner(bus).seed("find things")[0]["content"]
+        assert (system.index("You are Tai.")
+                < system.index("Reply with exactly one JSON object")
+                < system.index("Tool catalogue:"))
+
+    def test_two_runners_with_the_same_mission_seed_identical_bytes(self, bus):
+        """Nothing here is a clock, a counter, or an iteration order."""
+        first = self._runner(bus).seed("find things")
+        second = self._runner(bus).seed("find things")
+        assert json.dumps(first) == json.dumps(second)
+
+    def test_nothing_run_specific_reaches_the_prefix(self, bus):
+        """A run id, an audit reference, a sandbox name or a date in the
+        prefix moves the bytes under the cache on every single run."""
+        runner = self._runner(bus, run_id="run-9f3c1e2a")
+        prefix = json.dumps(runner.seed("find things")[:runner.pinned])
+        assert "run-9f3c1e2a" not in prefix
+        for word in ("audit_ref", "sandbox", "bwrap", "run_id"):
+            assert word not in prefix
+        assert not re.search(r"\d{4}-\d{2}-\d{2}", prefix)
+        assert not re.search(r"\b1[6-9]\d{8}\b", prefix)   # a unix timestamp
+
+    def test_the_prefix_of_the_second_step_is_the_prefix_of_the_first(
+            self, bus):
+        """What the loop appends goes after the objective, never above it."""
+        model = ScriptedModel(tool_call("catalog.search", q="taiwan"),
+                              '{"answer": "done"}')
+        runner = MissionRunner(model, bus, ["catalog.search"],
+                               system_message="You are Tai.", history=HISTORY)
+        runner.run("find things")
+        pinned = runner.pinned
+        assert len(model.seen) == 2
+        assert model.seen[1][:pinned] == model.seen[0][:pinned]
+        assert model.seen[0][pinned - 1] == {"role": "user",
+                                             "content": "find things"}
+
+    def test_the_objective_is_still_the_last_pinned_message_after_history(
+            self, bus):
+        """`pinned` and `seed` must move together or a compaction eats the
+        question."""
+        runner = self._runner(bus)
+        seeded = runner.seed("find things")
+        assert runner.pinned == len(seeded)
+        assert seeded[runner.pinned - 1]["content"] == "find things"
 
 
 class TestHistoryValidation:
@@ -1469,6 +1546,43 @@ class TestTheConversationIsBounded:
         assert "Do not repeat a call" in notice
         assert f'{RESULT_TOOL}(handle=' in notice
 
+    def test_the_notice_lands_after_the_objective_and_never_above_it(
+            self, paged_bus):
+        """Per-step material below the prefix, always.
+
+        A notice inserted above the objective would move the bytes of
+        every request from the step it first appeared on, which is the one
+        way to make a byte-stable prefix worth nothing — and it would put
+        a sentence about bookkeeping between the persona and the question.
+        """
+        model = _paging_model(6)
+        runner = MissionRunner(model, paged_bus, ["catalog.page"],
+                               max_steps=8, history=HISTORY,
+                               window=_small_window())
+        runner.run("go")
+        sent = model.seen[-1]
+        pinned = runner.pinned
+        assert sent[:pinned] == model.seen[0][:pinned]
+        assert sent[pinned - 1] == {"role": "user", "content": "go"}
+        assert "[context]" in sent[pinned]["content"]
+
+    def test_the_notice_names_the_tool_results_and_points_at_the_store(
+            self, paged_bus):
+        """What was dropped, and where it still is.
+
+        The pointer is the store's own index and not a handle range: a
+        refused reply is a round trip that stored nothing, so counting
+        round trips from outside would slide every later handle by one and
+        hand the model a confident, wrong `r5`.
+        """
+        model = _paging_model(6)
+        MissionRunner(model, paged_bus, ["catalog.page"], max_steps=8,
+                      window=_small_window()).run("go")
+        notice = next(m["content"] for m in model.seen[-1]
+                      if "[context]" in m["content"])
+        assert "tool result(s)" in notice
+        assert f"call {RESULT_TOOL}() with no handle" in notice
+
     def test_a_mission_that_fits_is_never_compacted(self, bus):
         model = ScriptedModel(tool_call("catalog.search", q="taiwan"),
                               '{"answer": "ok"}')
@@ -1493,6 +1607,19 @@ class TestTheCompactionIsVisible:
         assert first["freed_chars"] > 0
         assert first["tokens_before"] > first["tokens_after"]
         assert first["limit_tokens"] == _small_window().limit_tokens
+
+    def test_the_record_says_how_many_of_them_were_tool_results(
+            self, paged_bus):
+        """"Eleven turns went" and "eleven governed listings went" are
+        different sentences to somebody reading a shortened mission."""
+        events = []
+        MissionRunner(_paging_model(6), paged_bus, ["catalog.page"],
+                      max_steps=8, window=_small_window(),
+                      observer=events.append).run("go")
+        first = next(e["compacted"] for e in events
+                     if e["event"] == "step_started" and "compacted" in e)
+        assert first["dropped_results"] >= 1
+        assert first["dropped_results"] <= first["dropped_turns"]
 
     def test_the_record_still_conforms_to_the_contract(self, paged_bus):
         """An optional field is a minor change, and the check a consumer

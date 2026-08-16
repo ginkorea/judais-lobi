@@ -38,10 +38,12 @@ The loop is deliberately small and its refusals are deliberately loud:
   correctness problem and not a tidiness one;
 * the **conversation** is bounded too, when the caller supplies a
   window: bounding each result says nothing about the sum of them, and
-  the sum is what meets ``max_model_len``.  Oldest round trips go first,
-  the persona, catalogue, seeded turns, objective and newest result stay,
-  and the drop is a record on the stream rather than a shorter prompt
-  nobody mentioned.  See :class:`~core.runtime.context_window.MissionWindow`;
+  the sum is what meets ``max_model_len``.  **Tool round trips go before
+  turns somebody said** — the output is still in the result store and the
+  said turn is what a follow-up refers to — the persona, catalogue,
+  seeded turns, objective and newest round trip stay, and the drop is a
+  record on the stream rather than a shorter prompt nobody mentioned.
+  See :class:`~core.runtime.context_window.MissionWindow`;
 * an answer is **checked against the run's own tool output** when the
   skill supplied a grammar for it.  See :mod:`core.runtime.grounding`.
 
@@ -152,6 +154,24 @@ tool per reply. Base every statement on a tool result you actually \
 received; if the tools cannot support a statement, say so in the answer \
 instead of asserting it.
 """
+
+def stacked(*parts: str) -> str:
+    """The ONE way this harness stacks prompt sections into a system turn.
+
+    Blank line between sections, empty sections dropped, every section
+    stripped.  Trivial, and it has one owner for a reason that is not
+    tidiness: a served endpoint's prefix cache is keyed on **bytes**, so
+    two assembly sites that disagree about a trailing newline produce two
+    prefixes where the deployment was paying for one.  ``seed`` below and
+    the swarm's four role prompts all come through here, so the persona a
+    turn opens with is byte-identical whichever role is speaking.
+
+    Sections are ordered most-constant-first everywhere it is used — see
+    :meth:`MissionRunner.seed` for what that order is and why the
+    catalogue is last of the three.
+    """
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
@@ -907,16 +927,46 @@ class MissionRunner:
         Fresh dicts each call: the loop appends to the list this returns,
         and a runner run twice must not find its history aliased to a
         previous run's messages.
+
+        **THE ORDER IS THE POINT, AND IT IS MOST-CONSTANT-FIRST.**  A
+        served endpoint (vLLM, TRT-LLM) caches the KV of a prompt's
+        *prefix* and reuses it for the next request that begins with the
+        same bytes.  This harness re-sends the whole system turn on every
+        step of every mission, so the longest byte-stable prefix is the
+        cheapest thing available and it costs nothing but discipline:
+
+        1. the **persona**, and behind it the skill's operational prose —
+           one deployment, one string, the same for every mission it ever
+           runs, and the same for every sub-mission of a staged one (the
+           executor's extra paragraph is appended, not prepended, by
+           :meth:`~core.runtime.swarm.SwarmRunner._execute_step`);
+        2. the **protocol** — a module constant, the same for every run of
+           every version of this package;
+        3. the **catalogue** — the same for every step of one mission, and
+           different the moment a mission is offered a different tool set,
+           which is why it is last of the three.  It also has to follow the
+           protocol, whose text says "the catalogue below";
+        4. the seeded ``--history`` turns, then the objective, which is
+           where this turn stops being like the last one.
+
+        Everything the step produces goes strictly **after** the objective:
+        the loop appends, and :meth:`_fit`'s compaction notice is inserted
+        after the pinned prefix that this method defines.  A notice, a
+        resumption sentence or a timestamp placed above the objective would
+        move the bytes under the cache on every single step, which is the
+        one way to make the whole arrangement worth nothing.
+
+        Nothing here is run-specific and nothing here is a clock: no run
+        id, no ``audit_ref``, no sandbox name, no date.  Two runs of the
+        same mission against the same bus produce byte-identical messages
+        up to and including the objective, and there is a test that says so.
         """
-        system = "\n\n".join(
-            part for part in (
-                self._system_message.strip(),
-                PROTOCOL.strip(),
-                "Tool catalogue:\n" + self.catalogue(),
-            ) if part
-        )
         return [
-            {"role": "system", "content": system},
+            {"role": "system", "content": stacked(
+                self._system_message,
+                PROTOCOL,
+                "Tool catalogue:\n" + self.catalogue(),
+            )},
             *(dict(turn) for turn in self._history),
             {"role": "user", "content": objective},
         ]
@@ -935,7 +985,8 @@ class MissionRunner:
         """
         return 2 + len(self._history)
 
-    def _compaction_note(self, dropped_turns: int, freed_chars: int) -> str:
+    def _compaction_note(self, dropped_turns: int, freed_chars: int,
+                         dropped_results: int = 0) -> str:
         """The default notice, plus where the dropped bytes still are.
 
         The generic sentence says the work was done and the paste was
@@ -945,14 +996,31 @@ class MissionRunner:
         from the transcript is the moment to tell it that the result is
         still addressable, because a rule stated 2,000 tokens upstream in
         a persona does not survive to the turn it binds.
+
+        *dropped_results* is how many of the dropped turns were tool round
+        trips, which is the window's count and the reason the policy
+        prefers them: they are the only kind of message in this
+        conversation that is **also somewhere else**.  The pointer is the
+        store's own index rather than a handle range, and that is
+        deliberate.  Numbering the handles from the outside would mean
+        counting round trips and assuming each one stored a result — and a
+        refused reply is a round trip that stored nothing, so the first
+        rejected tool name would slide every later handle by one and hand
+        the model a confident, wrong ``r5``.  ``{tool}()`` with no handle
+        lists exactly what the store holds, which cannot be wrong.
         """
-        note = default_compaction_note(dropped_turns, freed_chars)
+        note = default_compaction_note(dropped_turns, freed_chars,
+                                       dropped_results)
         if not self._store_tool:
             return note
+        gone = (f" The results whose text was removed here are still in that "
+                f"store: call {self._store_tool}() with no handle for the "
+                f"list of everything this mission has stored."
+                if dropped_results else "")
         return (
             f"{note} Every result of this mission is still readable: call "
             f'{self._store_tool}(handle="…", path="…") with the handle you '
-            f"were given when it arrived."
+            f"were given when it arrived.{gone}"
         )
 
     def _fit(
