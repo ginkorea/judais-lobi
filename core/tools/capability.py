@@ -77,7 +77,7 @@ class CapabilityEngine:
             return CapabilityVerdict(
                 allowed=False,
                 denied_scopes=denied,
-                reason=f"denied scopes: {', '.join(denied)}",
+                reason=self._denial_reason(denied),
             )
 
         # Consume invocation-scoped grants
@@ -153,6 +153,25 @@ class CapabilityEngine:
         from core.policy.profiles import policy_for_profile
         self._policy = policy_for_profile(profile)
         self._current_profile = profile.value
+
+    def _denial_reason(self, denied: List[str]) -> str:
+        """A refusal that names the missing scope *and* the fix.
+
+        The message the model and the user see for a ``capability_denied``
+        result. It used to be ``"denied scopes: shell.exec"`` — true, and
+        useless: it named the fault and not the fix, so an operator whose
+        ``lobi --shell`` was refused had no way, from the message, to learn
+        that ``--profile dev`` grants it. :func:`core.policy.profiles.
+        denial_reason` derives the lowest profile that includes each missing
+        scope from ``PROFILE_SCOPES`` — never a hand-maintained list — so
+        the named fix cannot drift from the table that decides the grant.
+
+        Imported lazily for the same reason :meth:`set_profile` is: the
+        policy package pulls this module in, and the import is only ever
+        needed on the denial path.
+        """
+        from core.policy.profiles import denial_reason
+        return denial_reason(denied, current_profile=self._current_profile)
 
     def _is_scope_in_policy(self, scope: str) -> bool:
         """Check if scope is allowed by the static policy.

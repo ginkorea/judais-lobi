@@ -64,6 +64,24 @@ from core.runtime.mission_stream import (
 from core.runtime.results import RESULT_TOOL, MissionResultStore
 from core.tools.descriptors import same_tool, summarize_input_schema
 
+
+def _profile_field(bus: Any) -> Dict[str, Any]:
+    """``{"profile": name}`` when the bus knows its capability profile, else
+    ``{}``.
+
+    The ``profile`` on ``mission_started`` is the OPTIONAL field that lets a
+    watcher see, in the opening frame, which capability profile a run is
+    governed by — a deny-by-default ``safe`` mission and a ``god`` one look
+    identical on the wire otherwise. Absent (not ``null``) when the bus was
+    built from a raw capability engine that never recorded a profile name, so
+    "profile" is a fact the stream states only when there is one to state.
+    One owner: the swarm's opening frame reads it from here too.
+    """
+    engine = getattr(bus, "capability_engine", None)
+    name = getattr(engine, "current_profile", None) if engine is not None else None
+    return {"profile": name} if name else {}
+
+
 #: The whole protocol between the loop and the model.  Kept in one string
 #: because a contract split across three f-strings is a contract that
 #: drifts from the parser below it.
@@ -563,7 +581,7 @@ class MissionRunner:
         self._emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
                    objective=objective, catalogue=list(offered),
                    gated=self.gated, max_steps=self._max_steps,
-                   history=len(self._history))
+                   history=len(self._history), **_profile_field(self._bus))
         try:
             return self._loop(objective, offered, transcript)
         finally:

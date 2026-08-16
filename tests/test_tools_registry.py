@@ -1,13 +1,14 @@
 # tests/test_tools_registry.py
 
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from core.tools import Tools
 from core.tools.tool import Tool
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
-from core.contracts.schemas import PolicyPack
+from core.contracts.schemas import PolicyPack, ProfileMode
 
 
 def _setup_mocks(MockWeb, MockResearch, MockFetch, MockShell, MockInstall, MockPython, spec=False):
@@ -90,7 +91,13 @@ class TestToolsRegistry:
     def test_run_tool(self, MockResearch, MockWeb, MockFetch, MockShell, MockInstall, MockPython):
         _setup_mocks(MockWeb, MockResearch, MockFetch, MockShell, MockInstall, MockPython, spec=True)
         MockShell.return_value.return_value = "shell output"
-        tools = Tools(elfenv="/tmp/fake", memory=None, enable_voice=False)
+        # `shell.exec` is not in the deny-by-default SAFE profile Tools() now
+        # builds, so dispatching a shell command needs the intent stated:
+        # GOD grants everything, which is what this registry test means by
+        # "run the tool and give me its result". A SAFE default here would
+        # return the capability_denied tuple instead — which is the subject
+        # of test_capability / test_profiles, not of this dispatch test.
+        tools = Tools(elfenv="/tmp/fake", memory=None, profile=ProfileMode.GOD)
         result = tools.run("run_shell_command", "echo hi")
         assert result == (0, "shell output", "")
 
@@ -170,3 +177,56 @@ class TestToolsToolBusIntegration:
         desc = tools.bus.describe_tool("run_shell_command")
         assert desc["name"] == "run_shell_command"
         assert "shell.exec" in desc["required_scopes"]
+
+
+class TestToolsProfileDefault:
+    """Deny-by-default: `Tools()` builds the SAFE profile, not allow-all.
+
+    These do not mock the tool constructors — they only inspect the engine
+    the bus was built with, so the real descriptors and their scopes apply.
+    """
+
+    def test_default_is_safe_not_wildcard(self):
+        tools = Tools(elfenv=Path("/tmp/fake"), memory=None)
+        engine = tools.bus.capability_engine
+        assert engine.current_profile == "safe"
+        # shell.exec is a DEV scope; under the default it is denied.
+        assert engine.check("run_shell_command", ["shell.exec"]).allowed is False
+        # fs.read is SAFE; it is allowed.
+        assert engine.check("fs", ["fs.read"]).allowed is True
+
+    def test_default_opens_the_mcp_plane(self):
+        # A `--mission --skill` run over MCP must keep working under the
+        # default: bridged tools carry `mcp.call`, which is a SAFE scope.
+        tools = Tools(elfenv=Path("/tmp/fake"), memory=None)
+        engine = tools.bus.capability_engine
+        assert engine.check("mcp.governed_read", ["mcp.call"]).allowed is True
+
+    def test_profile_kwarg_opts_up(self):
+        tools = Tools(elfenv=Path("/tmp/fake"), memory=None, profile=ProfileMode.DEV)
+        engine = tools.bus.capability_engine
+        assert engine.current_profile == "dev"
+        assert engine.check("run_shell_command", ["shell.exec"]).allowed is True
+
+    def test_god_profile_grants_everything(self):
+        tools = Tools(elfenv=Path("/tmp/fake"), memory=None, profile=ProfileMode.GOD)
+        engine = tools.bus.capability_engine
+        assert engine.check("t", ["anything.at.all"]).allowed is True
+
+    def test_engine_and_profile_together_is_refused(self):
+        engine = CapabilityEngine(PolicyPack(allowed_scopes=["*"]))
+        with pytest.raises(ValueError, match="both capability_engine.* and profile"):
+            Tools(elfenv=Path("/tmp/fake"), memory=None,
+                  capability_engine=engine, profile=ProfileMode.DEV)
+
+    def test_shell_dispatch_under_default_is_denied_naming_the_fix(self):
+        # End to end through the bus: the tuple a denied shell tool returns
+        # carries the refusal that names shell.exec and --profile dev.
+        import json
+        tools = Tools(elfenv=Path("/tmp/fake"), memory=None)
+        rc, out, err = tools.run("run_shell_command", "ls -la")
+        assert rc == -1
+        denial = json.loads(err)
+        assert denial["error"] == "capability_denied"
+        assert "shell.exec" in denial["missing_scopes"]
+        assert "--profile dev" in denial["message"]

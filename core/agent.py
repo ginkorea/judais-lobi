@@ -7,7 +7,7 @@ from typing import Optional, Tuple, Any, List, Dict
 
 from dotenv import load_dotenv
 
-from core.contracts.schemas import PersonalityConfig, PolicyPack
+from core.contracts.schemas import PersonalityConfig, PolicyPack, ProfileMode
 from core.unified_client import UnifiedClient
 from core.memory import UnifiedMemory
 from core.tools import Tools
@@ -34,6 +34,7 @@ class Agent:
         client=None,
         memory=None,
         tools=None,
+        profile: Optional[ProfileMode] = None,
     ):
         self._config = config
 
@@ -55,7 +56,8 @@ class Agent:
             Path.home() / f".{self.personality}_memory.db"
         )
         self.tools = tools if tools is not None else Tools(
-            elfenv=self.env, memory=self.memory, enable_voice=False
+            elfenv=self.env, memory=self.memory, enable_voice=False,
+            profile=profile,
         )
 
         self._context_manager = ContextWindowManager(project_root=Path.cwd())

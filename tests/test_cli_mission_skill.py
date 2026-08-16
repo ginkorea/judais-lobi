@@ -626,3 +626,52 @@ class TestTheMissionWiring:
         run_cli(MockClass, "--swarm")
 
         assert captured["sdk_import"] == ""
+
+
+class TestTheSafeDefaultGovernsTheMission:
+    """Deny-by-default reaches the mission path.
+
+    The other tests here run against a wildcard bus, which is the right
+    isolation for what they check. These two build the bus at the SAFE
+    profile — the real default — and assert the two halves of Phase 1: an
+    MCP mission still completes under it (bridged tools carry `mcp.call`,
+    a SAFE scope), and a tool whose scope SAFE does not grant is refused on
+    the stream with the scope named.
+    """
+
+    def _make_safe(self, agent):
+        from core.contracts.schemas import ProfileMode
+        engine = CapabilityEngine()
+        engine.set_profile(ProfileMode.SAFE)
+        agent.tools.bus = ToolBus(capability_engine=engine)
+
+    def test_an_mcp_mission_completes_under_the_safe_default(self, elf, skill_file, capsys):
+        import json
+        MockClass, agent = elf
+        self._make_safe(agent)
+        run_cli(MockClass, "--skill", str(skill_file), "--events", "-")
+        out = capsys.readouterr().out
+        records = [json.loads(line) for line in out.splitlines()
+                   if line.startswith('{') and '"event"' in line]
+        # The point: the governed_read call (scope mcp.call) was actually
+        # dispatched and NOT refused under SAFE — the answer text alone would
+        # be there whether or not the tool ran, so assert on the tool_result.
+        tool_results = [r for r in records
+                        if r.get("event") == "tool_result"
+                        and r.get("tool") == "mcp.governed_read"]
+        assert tool_results, "the mcp tool was never dispatched"
+        assert tool_results[0]["ok"] is True
+        assert "capability_denied" not in out
+
+    def test_the_opening_frame_names_the_profile(self, elf, skill_file, capsys):
+        import json
+        MockClass, agent = elf
+        self._make_safe(agent)
+        # --events '-' writes the NDJSON stream to stdout alongside the prose;
+        # the mission_started frame carries the OPTIONAL `profile` field.
+        run_cli(MockClass, "--skill", str(skill_file), "--events", "-")
+        out = capsys.readouterr().out
+        started = [json.loads(line) for line in out.splitlines()
+                   if line.startswith('{') and '"mission_started"' in line]
+        assert started
+        assert started[0].get("profile") == "safe"

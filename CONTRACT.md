@@ -51,10 +51,18 @@ direct loop and from `--swarm` alike. Index them without a default.
 Optional, and therefore to be read with a default: `plan` on `step_started`
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
-only when the model got as far as naming one), and `compacted` on
-`step_started`. `plan` rode `mission_started` until 0.8.x: that record is now
-emitted before triage — which is itself a call to the model — so at the time
-it is written there is no plan and there may never be one.
+only when the model got as far as naming one), `compacted` on
+`step_started`, and `profile` on `mission_started`. `plan` rode
+`mission_started` until 0.8.x: that record is now emitted before triage —
+which is itself a call to the model — so at the time it is written there is no
+plan and there may never be one.
+
+`profile` is the capability profile the run is governed by — one of `safe`,
+`dev`, `ops`, `god`. Deny-by-default means `safe` unless `--profile` (or
+`JUDAIS_LOBI_PROFILE`) opted up, and a watcher reading the opening frame can
+tell a read-only mission from one that can write, execute or reach the open
+network. Absent, rather than `null`, when the bus was built from a raw
+capability engine that never recorded a profile name.
 
 `compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,
 tokens_after, limit_tokens, profile}` and is present only on the steps where
@@ -117,6 +125,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--mission-steps` — the tool-turn budget; arrives back as `max_steps`.
 - `--provider` — which backend.
 - `--model` — which model on it.
+- `--profile` — the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. Arrives back as `profile`.
 - `--skill` — the skill manifest: tool subset, prompt, grounding grammar.
 - `--swarm` — triage first, then stage the mission if it needs staging.
 - `--events` — where the NDJSON goes. See above.
@@ -140,6 +149,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `MISSION_SWARM` — the environment form of `--swarm`.
 - `MISSION_EVENTS` — the environment form of `--events`.
 - `MISSION_HISTORY` — the environment form of `--history`.
+- `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 
 ## The exit contract
 

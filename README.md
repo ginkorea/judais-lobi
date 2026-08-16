@@ -54,8 +54,12 @@ Frontier models are expensive, rate-limited, and increasingly censored. If you w
    `export OPENAI_API_KEY=sk-...`
 3. Run a task:
    `lobi "summarize this repo"`
-4. Use tools explicitly:
-   `lobi --shell "ls -la"`
+4. Use tools explicitly. Tools are deny-by-default: the `safe` profile can read
+   the filesystem and git but not run a shell, so running a command needs the
+   `dev` profile —
+   `lobi --profile dev --shell "ls -la"` (`--profile safe|dev|ops|god`, or
+   `JUDAIS_LOBI_PROFILE`; without it, `lobi --shell` refuses and names
+   `shell.exec` and the profile that grants it).
 
 Three commands are installed, one per agent. They take the same flags; only the
 personality differs.
