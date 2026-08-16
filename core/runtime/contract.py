@@ -126,6 +126,10 @@ TOOL_RESULT = "tool_result"
 #:
 #: The arguments travel verbatim, because what a person approves has to be the
 #: bytes that would run.
+#:
+#: ``approval_id`` when this deployment keeps durable approval records: the
+#: name of the file the request was written to, which is what a decision is
+#: addressed to afterwards.  See :data:`OPTIONAL`.
 GATE_REQUESTED = "gate_requested"
 
 #: The model finished.  ``text`` and ``outcome``.  One event, after any
@@ -332,6 +336,25 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: Absent is the normal case, and a local endpoint has no cost unless
     #: somebody priced it.
     MISSION_FINISHED: ("usage",),
+    #: ``approval_id`` — the id of the durable record this request was
+    #: written to, when the deployment keeps them (it does by default;
+    #: ``JUDAIS_LOBI_APPROVALS=none`` turns them off, and then this field is
+    #: absent).  A gate is answered from outside the run that asked — a
+    #: different process, sometimes a different day — so the request has to
+    #: have a name that outlives the process, and this is it.
+    #:
+    #: What a consumer does with it: show it beside the proposed call, and
+    #: carry it back on the turn that resumes, as ``--approval <id>``.  The
+    #: decision itself is not made through this stream and is not made by
+    #: this harness; only an approved, unspent record widens a later run's
+    #: gated set, and it widens it by exactly one tool for exactly one run —
+    #: which a consumer sees as that tool's ABSENCE from ``mission_started``'s
+    #: ``gated``, not as a field of its own.
+    #:
+    #: Absent — not ``null`` — when nothing was written, which is either an
+    #: explicit opt-out or a directory the harness could not write, and the
+    #: second says so in ``reason``.
+    GATE_REQUESTED: ("approval_id",),
 }
 
 
@@ -361,7 +384,8 @@ OUTCOMES: tuple[str, ...] = (
 CLI_FLAGS: tuple[str, ...] = (
     "--mission", "--mcp-url", "--mission-steps", "--provider", "--model",
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
-    "--history", "--gate-tool", "--temperature", "--top-p", "--seed",
+    "--history", "--gate-tool", "--approval", "--temperature", "--top-p",
+    "--seed",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -386,7 +410,13 @@ CLI_FLAGS: tuple[str, ...] = (
 #: opening frame's ``audit_ref`` says what happened; ``JUDAIS_LOBI_RUNS`` does
 #: the same for the durable transcript — a path moves the run directories,
 #: ``none``/``off`` keeps none at all, and either way ``run_id`` on the
-#: opening frame is present exactly when there is one to name.
+#: opening frame is present exactly when there is one to name;
+#: ``JUDAIS_LOBI_APPROVALS``
+#: moves the directory of durable approval records (a path) or turns them off
+#: (``none``/``off``), and off means a gate carries no ``approval_id`` and so
+#: produces nothing anybody can decide against; ``MISSION_APPROVAL`` is the
+#: environment form of ``--approval``, the id of a decision already made that
+#: this run is carrying.
 #:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
@@ -396,8 +426,10 @@ ENV_VARS: tuple[str, ...] = (
     "ELF_PERSONALITY", "TAI_PERSONALITY",
     "LOCAL_API_BASE", "LOCAL_MODEL",
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
+    "MISSION_APPROVAL",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
     "JUDAIS_LOBI_RUNS",
+    "JUDAIS_LOBI_APPROVALS",
 )
 
 

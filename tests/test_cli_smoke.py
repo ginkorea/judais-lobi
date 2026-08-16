@@ -125,3 +125,36 @@ class TestCLISmoke:
         mock_elf.run_campaign_from_description.return_value = MagicMock(status="completed")
         _main(MockClass)
         mock_elf.run_campaign_from_description.assert_called_once()
+
+    def test_answering_a_gate_builds_no_agent_at_all(self, tmp_path,
+                                                     monkeypatch):
+        """A run that could answer its own gate would not be a gate. The
+        cheapest guarantee is that the answering path shares nothing with the
+        running one: no Elf, no memory, no tool bus, no model."""
+        from core.cli import _main
+        from core.runtime.approvals import (
+            APPROVALS_ENV, APPROVED, ApprovalStore,
+        )
+
+        root = tmp_path / "approvals"
+        monkeypatch.setenv(APPROVALS_ENV, str(root))
+        approval_id = ApprovalStore(root).request(tool="mcp.cancel_job")
+
+        MockClass, _mock_elf = self._make_mock_elf_class()
+        with patch("sys.argv", ["test", "--mission", "--approve", approval_id,
+                                "--decided-by", "dana"]):
+            _main(MockClass)
+
+        assert ApprovalStore(root).get(approval_id).state == APPROVED
+        MockClass.assert_not_called()
+
+    @patch("sys.argv", ["test"])
+    def test_no_message_is_refused_in_this_repos_own_words(self):
+        """`message` is optional so that `--approve` need not pretend to be a
+        conversation. Every other path still refuses without one."""
+        from core.cli import _main
+        MockClass, _mock_elf = self._make_mock_elf_class()
+        with pytest.raises(SystemExit) as exc:
+            _main(MockClass)
+        assert "a message is required" in str(exc.value)
+        MockClass.assert_not_called()

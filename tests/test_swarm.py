@@ -1163,7 +1163,10 @@ class TestTheRunIsRecorded:
         runner = swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "ok"}'),
                        bus, run_store=store, run_id=run_id)
         built = runner._runner(system_message="x", max_steps=2)
-        assert built._run_store is None and built.run_id == ""
+        assert built._run_store is None
+        # The id itself IS handed down: an approval request a sub-mission
+        # writes must name the run that asked, and there is one id per turn.
+        assert built.run_id == run_id
 
     def test_the_id_is_readable_off_the_runner(self, bus, tmp_path):
         store = self.store(tmp_path)
@@ -1347,3 +1350,110 @@ class TestCostOnTheStagedPath:
         sink, meter = Sink(), FlatMeter()
         _staged_swarm(bus, sink, meter)
         assert "cost" not in sink.of("mission_finished")[-1]["usage"]
+
+
+# ── the durable approval, through the staged path ────────────────────────
+
+
+class TestTheStagedGateWritesTheSameRecord:
+    """A sub-runner IS a `MissionRunner`, so it writes the request itself.
+
+    What has to hold is that nothing between it and the watcher drops or
+    rewrites the id: `_StageObserver` renumbers `index` and passes gate
+    records through, and the whole turn's `awaiting` is the sub-mission's.
+    A second copy of the id anywhere would be the arrangement that once let
+    the swarm ship six grounding fields where the direct path emitted ten.
+    """
+
+    def _staged_gate(self, bus, store):
+        sink = Sink()
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "cancel the job", "rung": "tool"},
+                 {"id": "s2", "goal": "report", "rung": "tool",
+                  "needs": ["s1"]}))
+        executor = ScriptedModel(tool_call("run_code", job="j1"))
+        runner = swarm(plain, executor, bus, gated=["run_code"],
+                       approvals=store, run_id="r-swarm", observer=sink)
+        return runner.run("cancel it"), sink
+
+    def test_the_id_reaches_the_watcher_and_the_transcript_unchanged(
+            self, bus, tmp_path):
+        from core.runtime.approvals import PENDING, ApprovalStore
+
+        store = ApprovalStore(tmp_path / "approvals")
+        transcript, sink = self._staged_gate(bus, store)
+
+        assert transcript.outcome == AWAITING_APPROVAL
+        gate = sink.of("gate_requested")[0]
+        approval_id = gate["approval_id"]
+        assert transcript.awaiting["approval_id"] == approval_id
+        recorded = store.get(approval_id)
+        assert recorded.state == PENDING
+        assert recorded.tool == "run_code"
+        assert recorded.arguments == {"job": "j1"}
+        assert recorded.run_id == "r-swarm"
+        # One request for one gate, not one per sub-mission attempt.
+        assert len(store.pending()) == 1
+
+    def test_the_objective_recorded_is_the_turns_own(self, bus, tmp_path):
+        """A person deciding an hour later is deciding for the TURN, not for
+        whatever sentence the planner handed one executor."""
+        from core.runtime.approvals import ApprovalStore
+
+        store = ApprovalStore(tmp_path / "approvals")
+        _t, sink = self._staged_gate(bus, store)
+        recorded = store.get(sink.of("gate_requested")[0]["approval_id"])
+        assert "cancel the job" in recorded.objective
+
+    def test_without_a_store_the_staged_path_is_what_it_was(self, bus):
+        transcript, sink = self._staged_gate(bus, None)
+        assert transcript.awaiting == {"tool": "run_code",
+                                       "arguments": {"job": "j1"}}
+        assert "approval_id" not in sink.of("gate_requested")[0]
+
+
+class TestAnApprovalWidensTheWholeStagedTurn:
+    def _approved(self, tmp_path, tool="run_code"):
+        from core.runtime.approvals import ApprovalStore, resolve
+
+        store = ApprovalStore(tmp_path / "approvals")
+        approval_id = store.request(tool=tool, arguments={"job": "j1"})
+        store.decide(approval_id, approve=True, decided_by="dana")
+        return store, approval_id, resolve(store, approval_id)
+
+    def test_the_opening_frame_gates_everything_but_the_approved_tool(
+            self, bus, tmp_path):
+        """A consumer must not be able to tell which route ran from the
+        opening frame, and the widening is the tool's ABSENCE from `gated`."""
+        _store, _id, ticket = self._approved(tmp_path)
+        sink = Sink()
+        plain = ScriptedModel(DIRECT)
+        executor = ScriptedModel('{"answer": "ok"}')
+        swarm(plain, executor, bus, gated=["catalog.search", "run_code"],
+              approval=ticket, observer=sink).run("go")
+
+        assert sink.of("mission_started")[0]["gated"] == ["catalog.search"]
+
+    def test_a_staged_turn_dispatches_it_and_spends_one_decision(
+            self, bus, calls, tmp_path):
+        from core.runtime.approvals import SPENT
+
+        store, approval_id, ticket = self._approved(tmp_path)
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "cancel the job", "rung": "tool"},
+                 {"id": "s2", "goal": "report", "rung": "tool",
+                  "needs": ["s1"]}),
+            '{"grounded": true}', '{"grounded": true}',
+            "The job was cancelled.")
+        executor = ScriptedModel(
+            tool_call("run_code", job="j1"), '{"answer": "cancelled"}',
+            tool_call("run_code", job="j1"), '{"answer": "reported"}')
+        transcript = swarm(plain, executor, bus, gated=["run_code"],
+                           approval=ticket).run("cancel it")
+
+        assert transcript.outcome != AWAITING_APPROVAL
+        # Called in two sub-missions, and the ticket is one decision.
+        assert [name for name, _ in calls].count("run_code") == 2
+        assert store.get(approval_id).state == SPENT

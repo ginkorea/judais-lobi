@@ -139,6 +139,7 @@ person's surface and may move.
 | `--events` | `MISSION_EVENTS` | where the NDJSON account goes: `-`, `fd:N`, or a path |
 | `--history` | `MISSION_HISTORY` | a JSON file of prior conversation turns |
 | `--gate-tool` | — | a tool to offer and refuse to call. Repeatable |
+| `--approval` | `MISSION_APPROVAL` | an approval id somebody already decided. Lifts that one tool out of the gated set, for this run only |
 | `--temperature` | — | sampling. Unset sends **nothing** and the server's own default applies |
 | `--top-p` | — | nucleus sampling. Unset sends nothing |
 | `--seed` | — | a seed where the server honours one. Not a determinism guarantee |
@@ -153,7 +154,10 @@ moves the audit file (a path) or silences it (`none`/`off`); either way
 `mission_started.audit_ref` says which. `JUDAIS_LOBI_RUNS` does the same for
 the durable transcript — a path moves the run directories, `none`/`off` keeps
 none at all, and `mission_started.run_id` is present exactly when there is one
-to name.
+to name. `JUDAIS_LOBI_APPROVALS` does the same
+for the durable approval records — a path moves the directory, `none`/`off`
+keeps none, and then a gate stops a mission and leaves nothing anybody can
+decide against, which the console says out loud.
 
 ### A skill manifest — `--skill`
 
@@ -301,11 +305,50 @@ not made: the mission emits `gate_requested` carrying the proposed arguments
 **verbatim** — what a person approves has to be the bytes that would run — and
 ends at outcome `awaiting_approval`.
 
-**There is deliberately no flag that answers a gate.** A harness that could
-approve its own proposal has a gate that is a formality. Whoever is driving the
-mission resumes by spawning a new one with that tool dropped from its
-`--gate-tool` list, which widens the closed set by exactly one tool, for exactly
-one turn, after exactly one person said so.
+**No flag on a mission run answers a gate.** A harness that could approve its
+own proposal has a gate that is a formality, and there is no code path in
+`MissionRunner` or `SwarmRunner` that can move a record to *approved* — a test
+greps for it.
+
+What there *is* is the other half: the request is written down, and the answer
+arrives from outside the run.
+
+```
+# the mission stops, and says what it stopped on
+judais --mission --gate-tool mcp.cancel_job "wind down job j-91"
+  ⏸️  Waiting on a person: Tai proposed mcp.cancel_job({'job': 'j-91'}) …
+     approval ap_4b1f7c02e9d38a55 — decide it with: …
+
+# somebody who is not this process decides
+judais --mission --approve ap_4b1f7c02e9d38a55 --decided-by dana --note "queue is drained"
+
+# and the work resumes, once
+judais --mission --approval ap_4b1f7c02e9d38a55 --gate-tool mcp.cancel_job "wind down job j-91"
+```
+
+Each request is a JSON file under `.judais-lobi/approvals/` (moved or silenced
+by `JUDAIS_LOBI_APPROVALS`) holding the tool, the arguments verbatim, the
+objective and the run that asked; its id rides `gate_requested.approval_id`.
+`--approve`/`--refuse` build no agent, ask no model and emit no events — they
+call `ApprovalStore.decide` and exit — and they refuse a decision that names
+nobody. `--decided-by` is free text: this framework has no principal system and
+will not invent one, so *who counts as a person* is the platform's question; a
+platform that knows the answer calls `core.runtime.approvals.ApprovalStore`
+directly instead of these flags.
+
+`--approval <id>` then widens the closed set by **exactly one tool, for exactly
+one run, after exactly one person said so**, and the approval is spent the
+moment that tool is dispatched — a run that never calls it leaves the decision
+unspent rather than burning it on nothing. A pending, refused, spent or
+abandoned record is refused at the door, naming the state: nothing defaults or
+expires into a yes, and a spent approval is not a second one. A consumer reading
+the stream sees the widening as that tool's **absence from
+`mission_started.gated`**; there is no separate field announcing it.
+
+`ApprovalStore.reconcile(live_run_ids)` marks pending requests whose run is gone
+as `abandoned`, which is a *refusal*. It is provided and not yet wired to
+startup: nothing in this repo can say which runs are alive until run durability
+lands, and a liveness check that guessed would abandon live requests.
 
 Name a gated tool the way the resolved catalogue names it: unlike
 `allowed_tools`, gate names are matched by exact membership in the resolved set,

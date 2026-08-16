@@ -593,6 +593,7 @@ _FLAG_VALUES = {
     "--events": "-",
     "--history": "thread.json",
     "--gate-tool": "compute_cancel_job",
+    "--approval": "ap_0f3c9d2b1a4e5f60",
     "--temperature": "0.2",
     "--top-p": "0.9",
     "--seed": "7",
