@@ -1170,3 +1170,214 @@ class TestTheRunIsRecorded:
         run_id = store.create().run_id
         assert swarm(ScriptedModel(), ScriptedModel(), bus,
                      run_store=store, run_id=run_id).run_id == run_id
+
+
+class TestTheStagedRunIsCheckpointed:
+    """The plan and each step's outcome, in the run's metadata, as it goes.
+
+    A checkpoint written when the plan *finishes* is a checkpoint that never
+    exists for the run that needed one. So: the plan before the first step
+    runs, and each step's verdict the moment it is reached — which is what a
+    restart reads instead of replaying the whole log, and what the resume
+    door reads to refuse a staged run by name rather than half-continuing it.
+    """
+
+    def store(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def staged(self, bus, store, run_id):
+        plain = ScriptedModel(
+            STAGED, TWO_STEP_PLAN, '{"pass": true}',
+            "Final: corpus.abc123 charted in chart.png")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        return swarm(plain, executor, bus,
+                     run_store=store, run_id=run_id).run("find it and chart it")
+
+    def test_the_plan_is_written_before_any_step_of_it_runs(self, bus,
+                                                            tmp_path):
+        """Asserted with an executor that kills the run: the checkpoint has
+        to be there even though no step ever completed."""
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        plain = ScriptedModel(STAGED, TWO_STEP_PLAN)
+
+        def dies(messages):
+            raise RuntimeError("the model server went away")
+
+        with pytest.raises(RuntimeError):
+            swarm(plain, dies, bus, run_store=store,
+                  run_id=run_id).run("find it and chart it")
+        assert [s["id"] for s in store.meta(run_id).meta["plan"]] == \
+            ["s1", "s2"]
+        assert store.meta(run_id).meta["steps_done"] == []
+
+    def test_each_step_lands_as_it_finishes(self, bus, tmp_path):
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        self.staged(bus, store, run_id)
+        assert store.meta(run_id).meta["steps_done"] == [
+            {"id": "s1", "outcome": "ok", "summary": "found corpus.abc123"},
+            {"id": "s2", "outcome": "ok", "summary": "chart.png written"},
+        ]
+
+    def test_a_failed_step_records_why_in_the_same_field(self, bus, tmp_path):
+        """One field answering "what came of this step". Two fields only one
+        of which is ever populated is two fields to read wrong."""
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"},
+                 {"id": "s2", "goal": "count", "rung": "code",
+                  "needs": ["s1"]}),
+            "final answer")
+        executor = ScriptedModel(
+            '{"answer": "I remember abc123"}',      # no tool call: gate fails
+            '{"answer": "still remembering"}')      # and the retry does not
+        swarm(plain, executor, bus, run_store=store,
+              run_id=run_id).run("search then count")
+        done = store.meta(run_id).meta["steps_done"]
+        assert done[0]["id"] == "s1"
+        assert done[0]["outcome"] == "failed"
+        assert "no successful tool call" in done[0]["summary"]
+
+    def test_a_step_stopped_for_a_person_is_checkpointed_too(self, bus,
+                                                             tmp_path):
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        plain = ScriptedModel(STAGED, TWO_STEP_PLAN)
+        executor = ScriptedModel(tool_call("catalog.search", q="corpus"))
+        transcript = swarm(plain, executor, bus, gated=["catalog.search"],
+                           run_store=store, run_id=run_id).run("find it")
+        assert transcript.outcome == AWAITING_APPROVAL
+        assert store.meta(run_id).meta["steps_done"] == [
+            {"id": "s1", "outcome": AWAITING_APPROVAL,
+             "summary": "awaiting a person's decision"}]
+
+    def test_a_redraw_replaces_the_plan_rather_than_appending_to_it(
+            self, bus, tmp_path):
+        """What is checkpointed has to be the plan the steps arriving next
+        belong to — the same reason ``_StageObserver.announce`` is called
+        again on a redraw."""
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"},
+                 {"id": "s2", "goal": "count", "rung": "code",
+                  "needs": ["s1"]}),
+            plan({"id": "r1", "goal": "search again", "rung": "tool"}),
+            "final answer")
+        executor = ScriptedModel(
+            '{"answer": "no tool"}', '{"answer": "still no tool"}',
+            tool_call("catalog.search", q="x"), '{"answer": "found abc123"}')
+        swarm(plain, executor, bus, run_store=store,
+              run_id=run_id).run("search then count")
+        assert [s["id"] for s in store.meta(run_id).meta["plan"]] == ["r1"]
+
+    def test_the_checkpoint_never_rewinds_the_sequence_counter(self, bus,
+                                                               tmp_path):
+        """``update_meta`` and never ``save``.
+
+        This runner holds no ``Run`` and must not start: saving a record read
+        before a step would stamp a ``last_seq`` the step's own records have
+        moved on, the next append would reuse numbers a reader had already
+        passed, and the transcript would render blank. That is the bug
+        ``core.durable`` was written around, and the checkpoint is the one
+        caller most likely to reproduce it.
+        """
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        self.staged(bus, store, run_id)
+        seqs = [e["seq"] for e in store.since(run_id)]
+        assert seqs == sorted(set(seqs)) == list(range(1, len(seqs) + 1))
+        assert store.meta(run_id).last_seq == seqs[-1]
+
+    def test_the_checkpoint_never_calls_save(self, bus):
+        """The structural half of the rule above, because the arithmetic half
+        cannot see it.
+
+        A ``save`` that re-reads immediately before writing keeps the counter
+        right, so a sequence assertion passes over one — and then the next
+        author moves the read up to where the plan is drawn, holds the record
+        across two sub-missions, and the counter rewinds. ``save`` is a
+        method for a caller that is already holding a ``Run``; this runner
+        holds none and must never become one that does.
+        """
+        class Watched:
+            def __init__(self):
+                self.facts = {}
+
+            def append(self, run_id, record):
+                return {"seq": 1}
+
+            def update_meta(self, run_id, **facts):
+                self.facts.update(facts)
+
+            def meta(self, run_id):
+                raise AssertionError(
+                    "the swarm read a Run it would then have to write back")
+
+            def save(self, run):
+                raise AssertionError(
+                    "the swarm saved a held Run; that is the reused-sequence "
+                    "bug core.durable was written around")
+
+        store = Watched()
+        plain = ScriptedModel(
+            STAGED, TWO_STEP_PLAN, '{"pass": true}', "Final: done")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        assert swarm(plain, executor, bus, run_store=store,
+                     run_id="run_abcd1234").run("find it").completed
+        assert [e["id"] for e in store.facts["steps_done"]] == ["s1", "s2"]
+
+    def test_a_direct_route_checkpoints_no_plan_because_it_has_none(
+            self, bus, tmp_path):
+        """And that absence is what the resume door reads: a run with a
+        checkpointed plan is a staged run and is refused; one without is an
+        ordinary loop and replays."""
+        store = self.store(tmp_path)
+        run_id = store.create().run_id
+        swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "ok"}'),
+              bus, run_store=store, run_id=run_id).run("q")
+        assert "plan" not in store.meta(run_id).meta
+
+    def test_a_swarm_with_no_store_checkpoints_nothing_and_still_runs(
+            self, bus):
+        plain = ScriptedModel(
+            STAGED, TWO_STEP_PLAN, '{"pass": true}', "Final: done")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        assert swarm(plain, executor, bus).run("find it").completed
+
+    def test_a_store_that_cannot_write_does_not_fail_the_mission(self, bus):
+        """The same promise ``persist_record`` makes. A staged mission must
+        not die because the disk it was being indexed on filled up."""
+        class Broken:
+            def update_meta(self, run_id, **facts):
+                raise OSError("no space left on device")
+
+            def append(self, run_id, record):
+                return {"seq": 1}
+
+        plain = ScriptedModel(
+            STAGED, TWO_STEP_PLAN, '{"pass": true}', "Final: done")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        assert swarm(plain, executor, bus, run_store=Broken(),
+                     run_id="run_abcd1234").run("find it").completed

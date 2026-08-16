@@ -1665,3 +1665,165 @@ class TestTheRunIsRecorded:
         runner = MissionRunner(ScriptedModel(), bus, ["catalog.search"],
                                run_store=store, run_id=run_id)
         assert runner.run_id == run_id
+
+
+class TestTheRunIsResumed:
+    """What ``run(objective, resumption)`` changes, and what it must not.
+
+    The replay itself lives in ``tests/test_resume.py``; this is the loop's
+    own half of the seam — that a resumed run is the SAME mission on the
+    stream, that the step budget is a total for the run rather than a fresh
+    allowance for this process, and that with no resumption every line of it
+    behaves exactly as it did before any of this existed.
+    """
+
+    def _resumption(self, *, next_index=1, tail=(), steps=(), from_seq=3):
+        """A resumption built by hand.
+
+        By hand rather than through ``rebuild``, deliberately: this class is
+        about what the LOOP does with one, and a fixture that had to record
+        a real run first would fail for reasons belonging to the replay.
+        """
+        from core.runtime.resume import Resumption
+
+        made = Resumption(run_id="run_abcd1234", objective="go",
+                          from_seq=from_seq, next_index=next_index)
+        made.tail.extend(dict(turn) for turn in tail)
+        made.steps.extend(steps)
+        return made
+
+    def _store(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def test_a_resumed_run_emits_no_second_opening(self, bus):
+        seen = []
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", observer=seen.append,
+        ).run("go", self._resumption())
+        assert [r["event"] for r in seen] == \
+            ["step_started", "answer", "mission_finished"]
+
+    def test_the_first_step_carries_resumed_and_the_rest_do_not(self, bus):
+        seen = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="a"),
+                          '{"answer": "ok"}'),
+            bus, ["catalog.search"], store_tool="", observer=seen.append,
+            max_steps=4,
+        ).run("go", self._resumption(from_seq=7))
+        started = [r for r in seen if r["event"] == "step_started"]
+        assert len(started) == 2
+        assert started[0]["resumed"] == {"from_seq": 7, "steps_replayed": 0}
+        assert "resumed" not in started[1]
+
+    def test_a_cold_run_says_nothing_about_being_resumed(self, bus):
+        """Absent, not false: a consumer must be able to tell "this stream
+        continues an earlier one" from "this one does not"."""
+        seen = []
+        MissionRunner(ScriptedModel('{"answer": "ok"}'), bus,
+                      ["catalog.search"], store_tool="",
+                      observer=seen.append).run("go")
+        assert "resumed" not in seen[1]
+
+    def test_the_tail_is_appended_after_the_seed(self, bus):
+        model = ScriptedModel('{"answer": "ok"}')
+        tail = [{"role": "assistant", "content": "earlier"},
+                {"role": "user", "content": "Result of catalog.search (ok):"}]
+        MissionRunner(model, bus, ["catalog.search"], store_tool="",
+                      ).run("go", self._resumption(tail=tail))
+        shown = model.seen[0]
+        assert shown[0]["role"] == "system"
+        assert shown[1] == {"role": "user", "content": "go"}
+        assert shown[2:] == tail
+
+    def test_the_index_starts_where_the_recorded_stretch_left_off(self, bus):
+        seen = []
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", observer=seen.append, max_steps=6,
+        ).run("go", self._resumption(next_index=4))
+        assert seen[0]["index"] == 4
+
+    def test_max_steps_is_the_total_for_the_run_and_not_a_fresh_allowance(
+            self, bus):
+        """A cap a resume resets is a cap anybody can widen by killing the
+        run. Three recorded steps against a total of three leaves none."""
+        model = ScriptedModel('{"answer": "ok"}')
+        transcript = MissionRunner(
+            model, bus, ["catalog.search"], store_tool="", max_steps=3,
+        ).run("go", self._resumption(next_index=3))
+        assert transcript.outcome == "budget_exhausted"
+        assert model.seen == []
+
+    def test_a_run_with_nothing_left_still_closes_its_stream(self, bus):
+        """And says nothing about being resumed, because it never reached a
+        ``step_started`` to say it on."""
+        seen = []
+        MissionRunner(ScriptedModel(), bus, ["catalog.search"], store_tool="",
+                      observer=seen.append, max_steps=2,
+                      ).run("go", self._resumption(next_index=2))
+        assert [r["event"] for r in seen] == ["mission_finished"]
+        assert seen[0]["outcome"] == "budget_exhausted"
+
+    def test_the_replayed_steps_are_on_the_transcript(self, bus):
+        from core.runtime.mission import MissionStep
+
+        earlier = MissionStep(index=0, raw_reply="x", tool="catalog.search")
+        transcript = MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", max_steps=4,
+        ).run("go", self._resumption(steps=[earlier]))
+        assert transcript.steps[0] is earlier
+        assert len(transcript.steps) == 2
+
+    def test_the_finishing_counts_are_totals_for_the_run(self, bus):
+        """``steps`` and ``max_steps`` stay comparable across a resume, which
+        they only do if both count the whole run."""
+        from core.runtime.mission import MissionStep
+
+        seen = []
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", observer=seen.append, max_steps=5,
+        ).run("go", self._resumption(
+            next_index=2, steps=[MissionStep(index=0, raw_reply="a"),
+                                 MissionStep(index=1, raw_reply="b")]))
+        assert (seen[-1]["steps"], seen[-1]["max_steps"]) == (3, 5)
+
+    def test_the_runner_adopts_the_replayed_result_store(self, bus):
+        """Adopted rather than copied into: the handles the model was given
+        have to keep addressing the same results, and two stores would mean
+        ``mission_result`` read one and the grounding validator the other."""
+        resumption = self._resumption()
+        resumption.store.record("catalog.search", {"q": "a"},
+                                text="hits for a")
+        runner = MissionRunner(ScriptedModel('{"answer": "ok"}'), bus,
+                               ["catalog.search"], store_tool="", max_steps=4)
+        runner.run("go", resumption)
+        assert runner.store is resumption.store
+        assert runner.store.get("r1").text == "hits for a"
+
+    def test_a_cold_run_still_clears_the_store_between_runs(self, bus):
+        """The line the resumption branch had to step around. A runner used
+        twice must not offer the second run a handle into the first."""
+        runner = MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="a"),
+                          '{"answer": "ok"}', '{"answer": "ok"}'),
+            bus, ["catalog.search"], store_tool="")
+        runner.run("go")
+        assert len(runner.store) == 1
+        runner.run("again")
+        assert len(runner.store) == 0
+
+    def test_the_resumed_records_go_to_the_same_log(self, bus, tmp_path):
+        store = self._store(tmp_path)
+        run_id = store.create().run_id
+        store.append(run_id, {"event": "mission_started"})
+        MissionRunner(
+            ScriptedModel('{"answer": "ok"}'), bus, ["catalog.search"],
+            store_tool="", run_store=store, run_id=run_id, max_steps=4,
+        ).run("go", self._resumption())
+        assert [r["event"] for r in store.records(run_id)] == \
+            ["mission_started", "step_started", "answer", "mission_finished"]

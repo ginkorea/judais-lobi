@@ -142,6 +142,7 @@ person's surface and may move.
 | `--temperature` | — | sampling. Unset sends **nothing** and the server's own default applies |
 | `--top-p` | — | nucleus sampling. Unset sends nothing |
 | `--seed` | — | a seed where the server honours one. Not a determinism guarantee |
+| `--resume` | `MISSION_RESUME` | carry on a recorded mission by its run id. The objective comes off the record, so the message may be omitted |
 
 The rest of the published environment: `MCP_CLIENT_NAME` is what this client
 calls itself in the MCP `initialize` handshake — set it to the agent's name, or a
@@ -153,7 +154,59 @@ moves the audit file (a path) or silences it (`none`/`off`); either way
 `mission_started.audit_ref` says which. `JUDAIS_LOBI_RUNS` does the same for
 the durable transcript — a path moves the run directories, `none`/`off` keeps
 none at all, and `mission_started.run_id` is present exactly when there is one
-to name.
+to name. `MISSION_RESUME` is the environment form of `--resume`.
+
+### Resuming a mission — `--resume`
+
+A run that was killed — the machine went down, somebody stopped the process,
+the model server went away mid-step — left a numbered log behind. `--resume`
+reads it back and carries on:
+
+```bash
+judais --mission --resume run_20260815T131102-9f3a1c04 \
+       --mcp-stdio 'python -m some_mcp_server'
+```
+
+The objective comes off the recorded run, so the message is omitted; passing
+one that is not the recorded objective is refused naming both, because a
+resume of the wrong run looks exactly like a run continuing. So is an id the
+store never minted, and so is a run that already finished — with one
+exception: a run that ended `awaiting_approval` is waiting on a *person*, not
+on this harness, and is resumable.
+
+What comes back is the transcript's steps, the mission result store (its
+handles keep addressing the same results), and the model's message list
+rebuilt from the recorded `tool_call`/`tool_result` pairs and
+`reply_rejected` problems. The records go on being appended to the **same**
+run directory, and there is no second `mission_started` — a resumed run is
+the same mission. The first new `step_started` carries
+`resumed: {from_seq, steps_replayed}` instead.
+
+`max_steps` counts the whole run: recorded steps included. Without
+`--mission-steps` the resumed stretch is held to the total the run started
+with, so killing and resuming cannot buy extra steps; with it, the number is
+read as that many *further* steps.
+
+Two things do not come back, and the harness says so on the console rather
+than replaying in silence: the typed payload of a tool result
+(`structuredContent` was never on the wire, so `mission_result(path=…)`
+refuses a field path into a replayed result, though grounding still sees the
+replayed text) and the text of a rejected reply (`reply_rejected` carries the
+refusal — the reply is the thing that did not parse).
+
+A staged (`--swarm`) mission checkpoints its plan and each step's outcome into
+the run's `meta.json` as it goes, and **is refused** by `--resume` today: the
+refusal names the steps that are done. Resuming it with the direct loop would
+restart the plan rather than continue it.
+
+Every mission also **reconciles orphans** on the way in: a run in the store
+with no `mission_finished` whose metadata has not been touched for 60 seconds
+gets one appended (`incomplete`), so a follower's stream closes and a reader
+of `since()` is told the truth. The staleness is a guard, not an
+optimisation — a mission thinking for forty seconds has no `mission_finished`
+either, and closing its log out from under it would send the answer to nobody.
+The credential is deliberately **not** persisted: `MCP_TOKEN` is read from the
+environment of the resuming process, exactly as on a fresh run.
 
 ### A skill manifest — `--skill`
 
@@ -532,6 +585,7 @@ Tools are dumb executors behind a capability-gated bus. The kernel decides every
 * **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard).
 * **`core/policy/god_mode.py`** — `GodModeSession` with TTL auto-downgrade, panic switch (instant revocation to SAFE), and full audit trail.
 * **`core/policy/audit.py`** — Append-only JSONL `AuditLogger`, **attached to every `Tools()` bus by default**: one file per run at `.judais-lobi/audit/<run-id>.jsonl` under the working directory, named on the mission stream as `mission_started.audit_ref`, moved or silenced by `JUDAIS_LOBI_AUDIT=<path>|none|off` (silencing is announced, and travels as `audit_ref: null`). Every dispatch is a line — allowed, denied, panicked, unknown or thrown — with the redacted arguments, the decision and its reason, exit code, duration and bytes out. Redaction covers shapes (OpenAI, GitHub, AWS, Slack, `Bearer …`, `*_KEY`/`*_TOKEN`/`*_SECRET` assignments) *and* the values of the credential-named environment variables this process was given, because a token handed to a tool as an argument has no shape to match.
+* **`core/runtime/resume.py`** — Picking a recorded mission back up, and closing the ones nobody will. Three separate things: the **door** (`open_for_resume` — an unknown id, a run that already finished, an objective that is not the recorded one, a staged run whose plan is checkpointed; every refusal answered before a server is dialled), the **replay** (`rebuild` — the recorded stream read back into the transcript's steps, the mission result store and the model's message list, rendering each replayed result through the runner's own `_render_result` so there is one owner of what a result reads like), and **reconciliation** (`reconcile_orphans` — a run with no `mission_finished` whose metadata has been untouched for `ORPHAN_STALE_S` gets one appended, so a follower's stream closes; the staleness rule is stated rather than assumed, because a mission that is merely thinking has no `mission_finished` either). What a replay cannot give back is written down as sentences (`LOST_*`) and shown, not swallowed.
 * **`core/durable.py`** — The durability primitive, importing nothing else in this tree: `atomic_write_text`/`atomic_write_json` (tempfile in the same directory → flush → fsync → `os.replace`), `fsync_append`, and `RunStore` — one directory per run under `.judais-lobi/runs/<run-id>/` holding an fsync'd append-only `events.jsonl` of `{seq, at, record}` envelopes and a `meta.json` replaced atomically. Every record a mission emits is appended there before it reaches the `--events` sink, so the sink is a client of the log rather than a second copy; `since(cursor)` and `follow(cursor, stop=…)` are what a replay and a live subscriber read it back with. `seq` is monotonic per run and is persisted, and `RunStore.CALLER_OWNED` is why: writing a whole stale record back over a live one is how a reference platform came to reuse sequence numbers and show a blank transcript for a run whose records were on disk the whole time. `SessionManager` and `AuditLogger` are clients of this module, not second implementations of it.
 * **`core/tools/sandbox.py`** — `NoneSandbox` (dev/debug) and `BwrapSandbox` (Tier-1 production) behind a common `SandboxRunner` interface. `BwrapSandbox` keeps every field of the `SandboxProfile` it is given: the host root read-only with the working directory (and `allowed_write_paths`) re-bound writable, a private tmpfs `/tmp`, the network namespace unshared unless the profile says `allow_network`, and `max_cpu_seconds` / `max_memory_bytes` / `max_processes` applied as rlimits on the bwrap process and inherited by what runs inside it. `NoneSandbox` is still the default; it enforces nothing and says so.
 
