@@ -574,7 +574,7 @@ As of Phase 7.4:
 * **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
 * **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
 
-Local inference has landed (`--provider local`). Phase 8b focuses on retrieval discipline. See `ROADMAP.md`.
+Local inference has landed (`--provider local`), and Phase 8 closed at 0.8.3 — `PHASE_8.md` records where each of its milestones ended up.
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
