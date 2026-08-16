@@ -5,7 +5,8 @@ import json
 import pytest
 
 from core.contracts.schemas import PolicyPack
-from core.runtime.mission import AWAITING_APPROVAL
+from core.runtime.grounding import GroundingConfig, GroundingValidator
+from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
 from core.runtime.swarm import SwarmRunner
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
@@ -77,6 +78,90 @@ class Sink:
 
     def of(self, event):
         return [r for r in self.records if r.get("event") == event]
+
+
+# ── the stream opens before anything is asked ────────────────────────────
+
+
+class TestTheStreamOpensFirst:
+    """`mission_started` before the router's own call, not after it.
+
+    The contract's silence clause says the opening record is emitted before
+    the model is asked, and triage IS a call to the model.  A staged turn
+    used to spend a router round-trip and a planner round-trip with nothing
+    at all on the wire — minutes of it against a cold endpoint — and an
+    empty stream is the one thing a consumer is told to report as a harness
+    that never started.  It reported it that way because the contract said
+    to, about a harness that had in fact run and asked.
+    """
+
+    def test_the_router_is_asked_only_after_the_mission_is_announced(self, bus):
+        sink = Sink()
+        heard = []
+
+        def plain(messages):
+            heard.append([r["event"] for r in sink.records])
+            return DIRECT
+
+        executor = ScriptedModel('{"answer": "done"}')
+        swarm(plain, executor, bus, observer=sink).run("what is trending?")
+        assert heard[0] == ["mission_started"]
+
+    def test_a_router_killed_mid_call_leaves_a_stream_that_opened_and_closed(
+            self, bus):
+        """An ordinary exception out of the router is caught and falls open to
+        the direct path, which announces the mission itself; what reaches here
+        is the failure that cannot be caught.  The stream is opened before it
+        and closed after it — announcing early and never closing would trade
+        an honest silence for the spinner an analyst cannot leave.
+        """
+        sink = Sink()
+
+        def plain(messages):
+            raise KeyboardInterrupt("the endpoint went away mid-call")
+
+        executor = ScriptedModel('{"answer": "never reached"}')
+        with pytest.raises(KeyboardInterrupt):
+            swarm(plain, executor, bus, observer=sink).run("anything")
+        assert [r["event"] for r in sink.records] == ["mission_started",
+                                                      "mission_finished"]
+        assert sink.records[-1]["outcome"] == "incomplete"
+
+    def test_the_direct_route_does_not_announce_the_mission_twice(self, bus):
+        """The direct path is a whole `MissionRunner` and used to open the
+        stream itself.  Two openings for one turn is two missions in a pane.
+        """
+        sink = Sink()
+        swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "done"}'),
+              bus, observer=sink).run("what is trending?")
+        assert len(sink.of("mission_started")) == 1
+        assert len(sink.of("mission_finished")) == 1
+        assert sink.records[-1]["event"] == "mission_finished"
+
+    def test_the_opening_record_is_the_one_a_plain_mission_would_have_sent(
+            self, bus):
+        """Same record whichever way the router went.
+
+        A consumer able to tell the two routes apart from the opening frame
+        would be reading an internal decision of this harness off a contract
+        that promises it one vocabulary — and the staged path's record did
+        differ: `gated` was every name the caller passed rather than the
+        offered ones in catalogue order.
+        """
+        history = [{"role": "user", "content": "headlines?"},
+                   {"role": "assistant", "content": "#1, #2"}]
+        gated = ["run_code", "a.tool.nobody.offers"]
+        swarmed, plain_mission = Sink(), Sink()
+        swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "a"}'), bus,
+              gated=gated, history=history, max_steps=5,
+              observer=swarmed).run("q")
+        MissionRunner(ScriptedModel('{"answer": "a"}'), bus,
+                      ["catalog.search", "run_code"],
+                      system_message="You are Tai.", max_steps=5,
+                      gated=gated, history=history,
+                      observer=plain_mission).run("q")
+        assert (swarmed.of("mission_started")[0]
+                == plain_mission.of("mission_started")[0])
 
 
 # ── TRIAGE: small stays small ────────────────────────────────────────────
@@ -265,11 +350,57 @@ class TestStagedHappyPath:
         assert indexes == sorted(indexes)
         assert sink.records[-1]["event"] == "mission_finished"
 
-    def test_the_plan_rides_on_mission_started_for_a_watcher(self, bus, calls):
+    def test_the_plan_rides_on_the_first_step_started_for_a_watcher(
+            self, bus, calls):
+        """It cannot ride `mission_started` any more: that record is written
+        before triage, and at that moment there is no plan and there may never
+        be one.  The first `step_started` is the next thing a watcher hears
+        and the moment the plan starts being true."""
         sink = Sink()
         self.run_it(bus, calls, sink=sink)
-        started = sink.of("mission_started")[0]
-        assert [s["id"] for s in started["plan"]] == ["s1", "s2"]
+        assert "plan" not in sink.of("mission_started")[0]
+        first_step = sink.of("step_started")[0]
+        assert [s["id"] for s in first_step["plan"]] == ["s1", "s2"]
+        assert [s["rung"] for s in first_step["plan"]] == ["tool", "code"]
+
+    def test_no_later_step_repeats_the_plan(self, bus, calls):
+        """Once, on the step it belongs to. A field that arrived on every
+        step would be a plan a watcher had to diff to notice a redraw."""
+        sink = Sink()
+        self.run_it(bus, calls, sink=sink)
+        assert [i for i, r in enumerate(sink.of("step_started"))
+                if "plan" in r] == [0]
+
+
+class TestThePlanWaitsForAStep:
+    """`plan` is declared optional on `step_started` and on nothing else.
+
+    Every sub-mission emits its `step_started` before anything else, so on
+    every path that runs today the plan lands on one and the rule is
+    invisible.  It is asserted here against the filter itself rather than
+    left to that ordering: a field an event does not declare is a field a
+    consumer meets and has no sentence for, and the ordering is a property
+    of the runner underneath, which is not this object's to promise.
+    """
+
+    def _observer(self, emitted):
+        from core.runtime.swarm import _StageObserver
+
+        return _StageObserver(
+            lambda event, **fields: emitted.append((event, fields)))
+
+    def test_a_record_that_is_not_a_step_does_not_take_the_plan(self):
+        from core.runtime.swarm import PlanStep
+
+        emitted = []
+        stage = self._observer(emitted)
+        stage.announce([PlanStep(id="s1", goal="find it", rung="tool")])
+        stage({"event": "tool_call", "index": 0, "tool": "catalog.search",
+               "arguments": {}})
+        stage({"event": "step_started", "index": 1})
+        assert [event for event, _ in emitted] == ["tool_call", "step_started"]
+        assert "plan" not in emitted[0][1]
+        assert [s["id"] for s in emitted[1][1]["plan"]] == ["s1"]
 
 
 class TestRungSdk:
@@ -419,6 +550,26 @@ class TestGateAndRetry:
         assert "The previous plan failed" in replan_request
         assert "s1" in replan_request
 
+    def test_a_redrawn_plan_is_announced_on_the_step_it_starts(self, bus):
+        """A watcher still holding the abandoned plan renders the steps of the
+        new one against the goals of the old."""
+        sink = Sink()
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"},
+                 {"id": "s2", "goal": "count", "rung": "code", "needs": ["s1"]}),
+            plan({"id": "r1", "goal": "search another way", "rung": "tool"}),
+            "final after replan")
+        executor = ScriptedModel(
+            '{"answer": "no tool 1"}',               # s1 attempt 1: gate fails
+            '{"answer": "no tool 2"}',               # s1 retry: gate fails
+            tool_call("catalog.search", q="other"),  # r1 from the new plan
+            '{"answer": "found it"}')
+        swarm(plain, executor, bus, observer=sink).run("q")
+        announced = [[s["id"] for s in r["plan"]]
+                     for r in sink.of("step_started") if "plan" in r]
+        assert announced == [["s1", "s2"], ["r1"]]
+
     def test_a_replanned_failure_surfaces_as_an_honest_partial_answer(self, bus):
         plain = ScriptedModel(
             STAGED,
@@ -456,6 +607,57 @@ class TestGateAndRetry:
             tool_call("catalog.search", q="y"), '{"answer": "done"}')
         transcript = swarm(plain, executor, bus).run("q")
         assert transcript.outcome == "answered"
+
+
+# ── grounding: a repair turn is work, and work is said out loud ──────────
+
+
+class TestTheRepairTurnIsVisible:
+    """A repair turn is a whole extra round-trip to the model and, from
+    outside, looks exactly like a stall.  The direct path has said so since
+    `repairing` was written down; the staged path spent its repair turns in
+    silence and emitted only the verdict, minutes later, with nothing in
+    between to tell a watcher the wait from a hang.
+    """
+
+    def _repairing_run(self, bus, sink):
+        validator = GroundingValidator.from_config(
+            GroundingConfig.from_mapping(
+                {"number_pattern": r"\d+\.\d{2,}", "max_repairs": 1}))
+        plain = ScriptedModel(
+            STAGED, TWO_STEP_PLAN,
+            '{"pass": true}',                       # LLM gate over s1's done
+            "the score is 80.847",                  # synthesis: unsupported
+            "the score is 80.848")                  # the repair turn: still is
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        return swarm(plain, executor, bus, validator=validator,
+                     observer=sink).run("score the corpus")
+
+    def test_the_interim_report_says_it_is_repairing_and_the_verdict_does_not(
+            self, bus):
+        sink = Sink()
+        transcript = self._repairing_run(bus, sink)
+        assert transcript.outcome == "answered_with_caveat"
+        assert [r["repairing"] for r in sink.of("grounding")] == [True, False]
+
+    def test_the_interim_report_names_what_it_caught(self, bus):
+        """`80.847` rather than "1 figure was unsupported": the count sends a
+        reader looking, the token tells them where."""
+        sink = Sink()
+        self._repairing_run(bus, sink)
+        interim = sink.of("grounding")[0]
+        assert interim["unsupported"] == ["80.847"]
+        assert interim["repairs"] == 1
+
+    def test_the_interim_report_arrives_before_the_answer_it_delayed(self, bus):
+        sink = Sink()
+        self._repairing_run(bus, sink)
+        events = [r["event"] for r in sink.records]
+        assert events.index("grounding") < events.index("answer")
 
 
 # ── the approval gate ends the whole turn, holding the proposed call ─────

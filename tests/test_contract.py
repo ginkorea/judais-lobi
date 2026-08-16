@@ -111,14 +111,20 @@ def _faults(records):
     return problems
 
 
-def _staged(validator=None):
+def _staged(validator=None,
+            syntheses=("the synthesized answer, which names abc123",)):
     """A two-step staged mission over a real bus, and what it emitted.
 
     Factored out because the staged path is a second emitter and drifted
-    once already, so it is exercised twice from here: once as it runs for
-    a caller with no grounding grammar, and once with one — the branch
-    that emits a ``grounding`` record at all, and therefore the only
-    branch in which its shape is a fact rather than a hope.
+    once already, so it is exercised three times from here: once as it runs
+    for a caller with no grounding grammar, once with one — the branch that
+    emits a ``grounding`` record at all, and therefore the only branch in
+    which its shape is a fact rather than a hope — and once with a synthesis
+    the validator refuses, which is the repair turn.
+
+    ``syntheses`` is what the synthesizer says, in order: one reply for an
+    answer nobody argues with, and a second for the repair turn a validator
+    that refused the first will ask for.
     """
     from core.contracts.schemas import PolicyPack
     from core.runtime.swarm import SwarmRunner
@@ -140,7 +146,7 @@ def _staged(validator=None):
             {"id": "s1", "goal": "search", "rung": "tool"},
             {"id": "s2", "goal": "search again", "rung": "tool",
              "needs": ["s1"]}]}),
-        "the synthesized answer, which names abc123")
+        *syntheses)
     executor = _replies(
         json.dumps({"tool": "catalog.search", "arguments": {"q": "x"}}),
         json.dumps({"answer": "abc123"}),
@@ -224,6 +230,70 @@ class TestAMissionConformsToItsOwnContract:
         seen = _staged()
         assert [r["event"] for r in seen][0] == ms.MISSION_STARTED
         assert _faults(seen) == []
+
+    def test_a_swarm_opens_its_stream_before_the_router_is_asked(self):
+        """The silence clause is a promise about the FIRST call to the model,
+        and under ``--swarm`` that is the router's own — not the first step's.
+
+        A router that fails in an ordinary way falls open to the direct path,
+        which announces the mission itself, so the failure that reaches this
+        line is one nothing catches. Before the announcement was moved ahead
+        of triage it produced a stream with NOTHING in it, and a consumer
+        reading that stream is instructed by this very contract to report a
+        harness that never started — about a harness that had run, asked, and
+        died waiting for an answer.
+        """
+        from core.runtime.swarm import SwarmRunner
+
+        def killed(messages):
+            raise KeyboardInterrupt("the endpoint went away mid-call")
+
+        seen = []
+        runner = SwarmRunner(_replies(), _Bus(), ["catalog_search_assets"],
+                             plain_chat_fn=killed, observer=seen.append)
+        with pytest.raises(KeyboardInterrupt):
+            runner.run("what do we hold")
+        assert [r["event"] for r in seen] == [ms.MISSION_STARTED,
+                                              ms.MISSION_FINISHED]
+        assert seen[-1]["outcome"] == "incomplete"
+        assert _faults(seen) == []
+
+    def test_a_staged_swarm_that_repaired_said_so_while_it_was_repairing(self):
+        """``repairing`` was written down as a fact about this harness and was
+        true of one of its two loops.
+
+        The staged path spent its repair turns without a word and emitted only
+        the verdict, which from outside is a stall followed by an answer. Both
+        records here, both whole, and both out of the renderer the direct path
+        uses rather than a second hand-listing beside the emit — the mistake
+        that made this record six fields long the last time.
+        """
+        from core.runtime.grounding import GroundingConfig, GroundingValidator
+
+        validator = GroundingValidator.from_config(GroundingConfig.from_mapping(
+            {"number_pattern": r"\d+\.\d{2,}", "max_repairs": 1}))
+        seen = _staged(validator, syntheses=("the score is 80.847",
+                                             "the score is 80.848"))
+        assert _faults(seen) == []
+        grounding = [r for r in seen if r["event"] == ms.GROUNDING]
+        assert [r["repairing"] for r in grounding] == [True, False]
+        for record in grounding:
+            assert set(record) - {"event"} == (
+                set(c.FIELDS[ms.GROUNDING])
+                | set(c.OPTIONAL.get(ms.GROUNDING, ())))
+
+    def test_a_staged_swarms_plan_travels_as_a_declared_field(self):
+        """It rode ``mission_started`` until that record moved ahead of
+        triage. A plan cannot travel on a record written before anything asked
+        for one, so it rides the first ``step_started`` the plan produces —
+        and ``_faults`` above is what holds it to being *declared* there
+        rather than merely present."""
+        seen = _staged()
+        carrying = [r for r in seen
+                    if r["event"] == ms.STEP_STARTED and "plan" in r]
+        assert len(carrying) == 1
+        assert [s["id"] for s in carrying[0]["plan"]] == ["s1", "s2"]
+        assert "plan" not in seen[0]
 
     def test_a_staged_swarms_grounding_record_is_the_whole_record(self):
         """The drift itself, pinned where it happened.
