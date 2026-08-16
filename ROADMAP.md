@@ -252,10 +252,6 @@ Property 5.
 - **Async core, sync façade.** The MCP client already runs a loop thread; make
   the run loop `async` so tool calls, streaming and cancellation are natural,
   and keep `judais` synchronous at the CLI edge.
-- **Model state as first-class events** (`cold/asking/queued/loading/loaded/
-  failed/absent`). A deployment learned that "queued" is not "loading" and that
-  a browser must be able to say which; a single runtime is where that channel
-  can exist once.
 - Delete or promote what is left vestigial: the second vector index, if FAISS
   is required at all. (`curl`-Mistral went in 0.8.2; `tools/recon/*` and
   `bootstrap.py` are gone — nothing imported either, and the recon pair wanted
@@ -287,6 +283,9 @@ Property 6.
 - **Library API first**: `from judais_lobi import Run, Personality, Skill,
   Tools`, speaking the same contract the CLI speaks; the CLI becomes a thin
   client of it.
+- **Model-state events** as a first-class channel — `cold`, `asking`, `queued`,
+  `loading`, `loaded`, `failed`, `absent`. A deployment learned that "queued"
+  is not "loading" and that a browser must be able to say which.
 - A `judais-lobi[server]` extra: an SSE endpoint over the stream store, with
   the operational rules a real deployment paid for — stream cap below the
   connection ceiling, heartbeat inside the socket write timeout, no refusal
