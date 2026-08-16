@@ -140,6 +140,22 @@ def isolate_audit(monkeypatch, tmp_path):
     monkeypatch.setenv(AUDIT_ENV, str(tmp_path / "audit" / "default.jsonl"))
 
 
+@pytest.fixture(autouse=True)
+def isolate_runs(monkeypatch, tmp_path):
+    """Point the durable run store at this test's tmp dir.
+
+    Autouse for exactly the reason :func:`isolate_audit` is: the litter
+    comes from tests that never mention a run store at all — anything
+    that goes through ``judais --mission`` now opens one under
+    ``.judais-lobi/runs/`` in the working directory, which during a test
+    run is the repository. A test that wants no store at all sets
+    ``JUDAIS_LOBI_RUNS=none``; a test that wants to read what was written
+    reads ``tmp_path / "runs"``.
+    """
+    from core.durable import RUNS_ENV
+    monkeypatch.setenv(RUNS_ENV, str(tmp_path / "runs"))
+
+
 
 
 # ---------------------------------------------------------------------------

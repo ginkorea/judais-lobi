@@ -1,5 +1,23 @@
 # core/sessions/manager.py — Session artifact persistence
 
+"""Where a coding session's artifacts, grants, traces and pins are written.
+
+Every write here goes through :func:`core.durable.atomic_write_text`, and
+that is the whole of what this module knows about durability — it is a
+*client* of the primitive, not a second implementation of it.  It used to
+be ``path.write_text(...)``: truncate the file, then write it, with a
+window in between during which the artifact on disk is neither the old one
+nor the new one.  A phase that crashed mid-write left a half-parsed JSON
+file where a contract had been, and the rollback that exists to recover
+from exactly that reads the same directory.
+
+The layout is unchanged and deliberately so: the atomicity of a write is
+not a reason to move where it lands.  Checkpoints are still a directory
+copy — a snapshot of a tree is not one file and ``os.replace`` has nothing
+to say about it — and they are only ever taken between phases, which is
+the point at which nothing is being written.
+"""
+
 import json
 import shutil
 import uuid
@@ -7,6 +25,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from pydantic import BaseModel
+
+from core.durable import atomic_write_text
 
 
 #: Where a prompt compaction is written, in every session layout there is.
@@ -34,8 +54,7 @@ def write_context_warning(session_dir: Path, record: dict) -> Path:
     warnings_dir.mkdir(parents=True, exist_ok=True)
     seq = len(list(warnings_dir.glob("context_warn_*.json")))
     path = warnings_dir / f"context_warn_{seq:03d}.json"
-    path.write_text(json.dumps(record, indent=2))
-    return path
+    return atomic_write_text(path, json.dumps(record, indent=2))
 
 
 def load_context_warnings(session_dir: Path) -> List[dict]:
@@ -93,8 +112,7 @@ class SessionManager:
         schema_name = type(artifact).__name__
         filename = f"{sequence:03d}_{phase_name}_{schema_name}.json"
         path = self._artifacts_dir / filename
-        path.write_text(artifact.model_dump_json(indent=2))
-        return path
+        return atomic_write_text(path, artifact.model_dump_json(indent=2))
 
     def load_latest_artifact(self, phase_name: str) -> Optional[dict]:
         """Load the latest artifact for a given phase name, or None."""
@@ -150,8 +168,7 @@ class SessionManager:
         seq = len(existing)
         filename = f"grant_{seq:03d}.json"
         path = self._grants_dir / filename
-        path.write_text(grant.model_dump_json(indent=2))
-        return path
+        return atomic_write_text(path, grant.model_dump_json(indent=2))
 
     def load_grants(self) -> List[dict]:
         """Load all grants from disk in sequence order."""
@@ -170,8 +187,7 @@ class SessionManager:
         seq = len(existing)
         filename = f"trace_{seq:03d}.json"
         path = traces_dir / filename
-        path.write_text(trace.model_dump_json(indent=2))
-        return path
+        return atomic_write_text(path, trace.model_dump_json(indent=2))
 
     def load_tool_traces(self) -> List[dict]:
         """Load all tool traces from disk."""
@@ -191,5 +207,4 @@ class SessionManager:
         seq = len(existing)
         filename = f"pin_{seq:03d}.json"
         path = self._memory_pins_dir / filename
-        path.write_text(pin.model_dump_json(indent=2))
-        return path
+        return atomic_write_text(path, pin.model_dump_json(indent=2))

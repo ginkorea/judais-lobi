@@ -513,7 +513,7 @@ the objective. A chat-tuned model attends to those and skims past the same text
 pasted into the message: measured 12 August 2026, "tell me more about #2"
 web-searched `#2` literally while the list sat two lines up in the prompt.
 
-### The exit contract, in four lines
+### The exit contract, in five lines
 
 * **Zero events is a failure.** `mission_started` is emitted before the model is
   asked and before the tool plane is touched — before the *first* call, which
@@ -528,6 +528,18 @@ web-searched `#2` literally while the list sat two lines up in the prompt.
   is restored and the signal re-raised — so what was already written survives,
   and the exit status is still the signal's rather than a spurious clean exit. A
   consumer that asked a turn to wind up sees it wound up.
+* **A run leaves a directory.** `mission_started.run_id` names it, and under
+  the harness's `.judais-lobi/runs/<run-id>/` there is an fsync'd append-only
+  `events.jsonl` holding every record that went on the stream — appended
+  *before* the sink saw it, so the sink is a client of the log rather than a
+  second copy. Each line is a `{seq, at, record}` envelope; `seq` is monotonic
+  per run and is the cursor a replay resumes from, and the record inside is
+  byte-identical to what came off the pipe. A log without a `mission_finished`
+  is an orphan: a mission that died rather than one that answered. The field is
+  **absent** when `JUDAIS_LOBI_RUNS=none|off` told the harness to keep nothing,
+  and `JUDAIS_LOBI_RUNS=<path>` moves the directories somewhere a platform can
+  collect them. No credential is written there — not `MCP_TOKEN`, and not a
+  transport that might carry one in a URL or a command line.
 * **stderr carries the diagnostic**, and its tail is what to show when a mission
   produced no events or stopped without an answer. It is a traceback, and the
   harness **scrubs it before writing it** — home directories, that host's name,

@@ -13,6 +13,7 @@ from core.contracts.schemas import (
     FinalReport,
     PermissionGrant,
     MemoryPin,
+    ToolTrace,
 )
 
 
@@ -200,3 +201,71 @@ class TestMemoryPins:
         p2 = sm.write_memory_pin(pin2)
         assert p1.name == "pin_000.json"
         assert p2.name == "pin_001.json"
+
+
+# ---------------------------------------------------------------------------
+# Durability
+# ---------------------------------------------------------------------------
+
+class TestEveryWriteIsAtomic:
+    """The manager is a client of `core.durable`, not a second store.
+
+    `path.write_text` truncates the file and then fills it, so a phase that
+    died in between left a half-parsed artifact where a contract had been —
+    and the rollback that exists to recover from exactly that reads the same
+    directory.
+    """
+
+    def _explode(self, monkeypatch):
+        import os
+
+        def boom(src, dst):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(os, "replace", boom)
+
+    def test_a_failed_artifact_write_leaves_the_previous_one_whole(
+            self, sm, monkeypatch):
+        sm.write_artifact("INTAKE", 0, TaskContract(task_id="t1",
+                                                    description="first"))
+        self._explode(monkeypatch)
+        with pytest.raises(OSError):
+            sm.write_artifact("INTAKE", 0, TaskContract(task_id="t2",
+                                                        description="second"))
+        assert sm.load_latest_artifact("INTAKE")["task_id"] == "t1"
+
+    def test_a_failed_write_leaves_no_staging_file_in_the_directory(
+            self, sm, monkeypatch):
+        self._explode(monkeypatch)
+        with pytest.raises(OSError):
+            sm.write_grant(PermissionGrant(tool_name="run_shell_command",
+                                           scope="*"))
+        assert list((sm.session_dir / "grants").iterdir()) == []
+
+    @pytest.mark.parametrize("write", [
+        lambda sm: sm.write_artifact("INTAKE", 0,
+                                     TaskContract(task_id="t", description="d")),
+        lambda sm: sm.write_grant(
+            PermissionGrant(tool_name="run_shell_command", scope="*")),
+        lambda sm: sm.write_memory_pin(MemoryPin(
+            embedding_backend="openai", model_name="text-embedding-3-large",
+            query="what color", chunk_ids=[1], similarity_scores=[0.9])),
+        lambda sm: sm.write_context_warning({"dropped_turns": 1}),
+        lambda sm: sm.write_tool_trace(ToolTrace(tool_name="run_shell_command")),
+    ])
+    def test_no_write_here_truncates_a_file_of_its_own(self, sm, monkeypatch,
+                                                       write):
+        """Every one of them, because the one that is missed is the one that
+        loses an artifact."""
+        import core.sessions.manager as manager
+
+        seen = []
+        real = manager.atomic_write_text
+
+        def watch(path, text, **kw):
+            seen.append(Path(path))
+            return real(path, text, **kw)
+
+        monkeypatch.setattr(manager, "atomic_write_text", watch)
+        written = write(sm)
+        assert seen == [written]

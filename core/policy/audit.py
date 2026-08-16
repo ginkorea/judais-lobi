@@ -53,6 +53,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from core.durable import fsync_append
 from core.redact import (
     MIN_SECRET_CHARS, SECRET_ENV_SUFFIXES, scrub_secrets, secret_values,
 )
@@ -152,14 +153,22 @@ class AuditLogger:
         The parent directory is created on the first write and not at
         construction: a logger nobody logs to must not leave a directory
         behind, which is exactly what a test suite constructing a default
-        registry would otherwise scatter through the repository.
+        registry would otherwise scatter through the repository.  That is
+        :func:`core.durable.fsync_append`'s rule now, and one owner of it.
+
+        **And the line is on the disk before this returns.**  A buffered
+        append returns as soon as the bytes are in the kernel, which is
+        fine for a log nobody reads until later and wrong for this one:
+        the audit file is what a run has to show for itself when the run
+        did not survive, and the entries worth having are exactly the ones
+        written in the minutes before a machine went down.  The
+        ``fsync`` costs a syscall per dispatch — a dispatch that already
+        cost a subprocess or a round trip to a server.
         """
         data = entry.model_dump()
         data["detail"] = self._redact(data.get("detail", ""))
         data["timestamp"] = data["timestamp"].isoformat()
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(data, default=str) + "\n")
+        fsync_append(self._path, json.dumps(data, default=str))
 
     def tail(self, n: int = 20) -> List[dict]:
         """Read the last *n* entries from the audit log."""

@@ -150,7 +150,10 @@ anything scoring the agent from the audit trail measures it as having called
 nothing. `ELF_PERSONALITY` and `TAI_PERSONALITY` point at persona files;
 `LOCAL_API_BASE` and `LOCAL_MODEL` aim the local backend. `JUDAIS_LOBI_AUDIT`
 moves the audit file (a path) or silences it (`none`/`off`); either way
-`mission_started.audit_ref` says which.
+`mission_started.audit_ref` says which. `JUDAIS_LOBI_RUNS` does the same for
+the durable transcript — a path moves the run directories, `none`/`off` keeps
+none at all, and `mission_started.run_id` is present exactly when there is one
+to name.
 
 ### A skill manifest — `--skill`
 
@@ -529,6 +532,7 @@ Tools are dumb executors behind a capability-gated bus. The kernel decides every
 * **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard).
 * **`core/policy/god_mode.py`** — `GodModeSession` with TTL auto-downgrade, panic switch (instant revocation to SAFE), and full audit trail.
 * **`core/policy/audit.py`** — Append-only JSONL `AuditLogger`, **attached to every `Tools()` bus by default**: one file per run at `.judais-lobi/audit/<run-id>.jsonl` under the working directory, named on the mission stream as `mission_started.audit_ref`, moved or silenced by `JUDAIS_LOBI_AUDIT=<path>|none|off` (silencing is announced, and travels as `audit_ref: null`). Every dispatch is a line — allowed, denied, panicked, unknown or thrown — with the redacted arguments, the decision and its reason, exit code, duration and bytes out. Redaction covers shapes (OpenAI, GitHub, AWS, Slack, `Bearer …`, `*_KEY`/`*_TOKEN`/`*_SECRET` assignments) *and* the values of the credential-named environment variables this process was given, because a token handed to a tool as an argument has no shape to match.
+* **`core/durable.py`** — The durability primitive, importing nothing else in this tree: `atomic_write_text`/`atomic_write_json` (tempfile in the same directory → flush → fsync → `os.replace`), `fsync_append`, and `RunStore` — one directory per run under `.judais-lobi/runs/<run-id>/` holding an fsync'd append-only `events.jsonl` of `{seq, at, record}` envelopes and a `meta.json` replaced atomically. Every record a mission emits is appended there before it reaches the `--events` sink, so the sink is a client of the log rather than a second copy; `since(cursor)` and `follow(cursor, stop=…)` are what a replay and a live subscriber read it back with. `seq` is monotonic per run and is persisted, and `RunStore.CALLER_OWNED` is why: writing a whole stale record back over a live one is how a reference platform came to reuse sequence numbers and show a blank transcript for a run whose records were on disk the whole time. `SessionManager` and `AuditLogger` are clients of this module, not second implementations of it.
 * **`core/tools/sandbox.py`** — `NoneSandbox` (dev/debug) and `BwrapSandbox` (Tier-1 production) behind a common `SandboxRunner` interface. `BwrapSandbox` keeps every field of the `SandboxProfile` it is given: the host root read-only with the working directory (and `allowed_write_paths`) re-bound writable, a private tmpfs `/tmp`, the network namespace unshared unless the profile says `allow_network`, and `max_cpu_seconds` / `max_memory_bytes` / `max_processes` applied as rlimits on the bwrap process and inherited by what runs inside it. `NoneSandbox` is still the default; it enforces nothing and says so.
 
 3 consolidated multi-action tools replaced 21 separate descriptors. Git is the spine, not nice-to-have.

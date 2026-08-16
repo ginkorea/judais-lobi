@@ -314,3 +314,35 @@ class TestWhereTheFileGoes:
         monkeypatch.setenv(AUDIT_ENV, "off")
         monkeypatch.chdir(tmp_path)
         assert AuditLogger().path.parent == tmp_path / ".judais-lobi" / "audit"
+
+
+class TestTheLineIsOnTheDisk:
+    """An audit entry that is still in a buffer is not a record of anything.
+
+    The file exists so a run that did not survive can still say what it
+    called, which makes the last entries written before a machine went down
+    exactly the ones worth having — and exactly the ones a buffered append
+    loses. One owner for the write: :func:`core.durable.fsync_append`.
+    """
+
+    def test_every_entry_is_fsynced(self, audit_log, monkeypatch):
+        import os
+
+        synced = []
+        real = os.fsync
+        monkeypatch.setattr(
+            os, "fsync", lambda fd: synced.append(fd) or real(fd))
+        audit_log.log(AuditEntry(event_type="tool_dispatch"))
+        assert len(synced) == 1
+
+    def test_the_write_goes_through_the_one_owner(self, audit_log,
+                                                  monkeypatch):
+        """Not a second copy of open-write-flush-fsync in this module."""
+        import core.policy.audit as audit_module
+
+        calls = []
+        monkeypatch.setattr(audit_module, "fsync_append",
+                            lambda path, line: calls.append((path, line)))
+        audit_log.log(AuditEntry(event_type="tool_dispatch"))
+        assert len(calls) == 1
+        assert json.loads(calls[0][1])["event_type"] == "tool_dispatch"

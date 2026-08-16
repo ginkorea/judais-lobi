@@ -842,3 +842,102 @@ class TestTheAuditIsAnnounced:
         assert "No space left on device" in captured.err
         # And the mission still answered.
         assert "asset.5f21" in captured.out
+
+
+class TestTheRunIsRecorded:
+    """`--mission` leaves a durable transcript, and says where it is.
+
+    The event sink is a subscriber that may not be there — no `--events`, a
+    pipe that broke, a pane that closed. The run directory is what is left
+    afterwards, and a consumer that wants to replay or resume needs its id
+    off the opening frame rather than guessed off a timestamp.
+    """
+
+    def runs(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def test_the_console_says_which_run_this_is(self, elf, capsys, tmp_path):
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "no tools needed"}']
+        run_cli(MockClass)
+        listed = self.runs(tmp_path).list()
+        assert len(listed) == 1
+        assert listed[0].run_id in capsys.readouterr().out
+
+    def test_the_opening_frame_names_it_and_the_log_matches_the_stream(
+            self, elf, tmp_path):
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "no tools needed"}']
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--events", str(events))
+        streamed = [json.loads(line)
+                    for line in events.read_text().strip().splitlines()]
+        store = self.runs(tmp_path)
+        run_id = store.list()[0].run_id
+        assert streamed[0]["run_id"] == run_id
+        assert store.records(run_id) == streamed
+
+    def test_the_metadata_indexes_the_run_without_a_replay(self, elf, tmp_path):
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "no tools needed"}']
+        run_cli(MockClass)
+        meta = self.runs(tmp_path).list()[0].meta
+        assert meta["objective"] == "what exists?"
+        assert "mcp.governed_read" in meta["catalogue"]
+
+    def test_the_run_directory_holds_no_credential(self, elf, tmp_path,
+                                                   monkeypatch):
+        """A run directory outlives the process it recorded. The value of
+        MCP_TOKEN written into it is a token on somebody's disk next month,
+        so the transport is deliberately not among the flags that are kept."""
+        secret = "mcp-tok-4f19a7c2e8b6"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        MockClass, agent = elf
+        agent.replies = [json.dumps({"answer": f"the token is {secret}"})]
+        run_cli(MockClass)
+        written = "".join(path.read_text(encoding="utf-8", errors="replace")
+                          for path in (tmp_path / "runs").rglob("*")
+                          if path.is_file())
+        assert written
+        assert secret not in written
+
+    def test_a_token_passed_as_a_flag_is_not_kept_either(self, elf, tmp_path):
+        secret = "mcp-tok-0b3d9155aa42"
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "ok"}']
+        run_cli(MockClass, "--mcp-token", secret)
+        written = "".join(path.read_text(encoding="utf-8", errors="replace")
+                          for path in (tmp_path / "runs").rglob("*")
+                          if path.is_file())
+        assert secret not in written
+
+    def test_the_flags_that_are_kept_are_the_ones_that_were_given(
+            self, elf, tmp_path):
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "ok"}']
+        run_cli(MockClass, "--mission-steps", "3")
+        flags = self.runs(tmp_path).list()[0].meta["flags"]
+        assert flags["mission_steps"] == 3
+        # `--swarm` was not passed. Its default is a *false* value rather than
+        # `None`, which is the case a "skip what was not given" rule gets
+        # wrong: a file recording every default is one in which the setting
+        # somebody chose is invisible.
+        assert "swarm" not in flags
+        assert "gate_tool" not in flags
+
+    def test_off_keeps_nothing_and_says_so(self, elf, capsys, tmp_path,
+                                           monkeypatch):
+        """Explicitly, like a disabled audit log: keeping no transcript is a
+        decision, not something to discover later from an empty directory."""
+        from core.durable import RUNS_ENV
+
+        monkeypatch.setenv(RUNS_ENV, "off")
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "no tools needed"}']
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--events", str(events))
+        assert "NOT RECORDED" in capsys.readouterr().out
+        assert not (tmp_path / "runs").exists()
+        opening = json.loads(events.read_text().splitlines()[0])
+        assert "run_id" not in opening

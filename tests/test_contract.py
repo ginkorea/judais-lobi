@@ -77,11 +77,12 @@ def _replies(*texts):
 
 
 def _run(replies, *, gated=(), tools=("catalog_search_assets",), max_steps=4,
-         validator=None):
+         validator=None, store=None, run_id=""):
     seen = []
     runner = MissionRunner(
         _replies(*replies), _Bus(), list(tools), max_steps=max_steps,
         gated=gated, validator=validator, observer=seen.append, store_tool="",
+        run_store=store, run_id=run_id,
     )
     return runner.run("what do we hold"), seen
 
@@ -118,7 +119,8 @@ def _faults(records):
 
 
 def _staged(validator=None,
-            syntheses=("the synthesized answer, which names abc123",)):
+            syntheses=("the synthesized answer, which names abc123",),
+            store=None, run_id=""):
     """A two-step staged mission over a real bus, and what it emitted.
 
     Factored out because the staged path is a second emitter and drifted
@@ -160,7 +162,8 @@ def _staged(validator=None,
         json.dumps({"answer": "abc123 again"}))
     SwarmRunner(executor, bus, ["catalog.search"],
                 system_message="You are Tai.", plain_chat_fn=plain,
-                validator=validator, observer=seen.append).run("search twice")
+                validator=validator, observer=seen.append,
+                run_store=store, run_id=run_id).run("search twice")
     return seen
 
 
@@ -252,6 +255,41 @@ class TestAMissionConformsToItsOwnContract:
         for stream in (direct, staged):
             opening = next(r for r in stream if r["event"] == ms.MISSION_STARTED)
             assert "audit_ref" in opening
+
+    def test_both_emitters_name_the_run_they_are_recorded_in(self, tmp_path):
+        """``run_id`` is optional, which makes it exactly the kind of field
+        that lands on one emitter and not the other — and a consumer that
+        found a transcript for direct turns and none for staged ones would
+        have no way to tell a swarm that kept no record from a swarm whose
+        record it was never told the name of.
+
+        Both, and absent on both when nothing is being recorded, which is the
+        half that makes the presence of the field mean something.
+        """
+        from core.durable import RunStore
+
+        store = RunStore(tmp_path / "runs")
+        direct_id = store.create().run_id
+        staged_id = store.create().run_id
+        streams = {
+            direct_id: _run([json.dumps({"answer": "done"})],
+                            store=store, run_id=direct_id)[1],
+            staged_id: _staged(store=store, run_id=staged_id),
+        }
+        for run_id, stream in streams.items():
+            opening = next(r for r in stream
+                           if r["event"] == ms.MISSION_STARTED)
+            assert opening["run_id"] == run_id
+            assert _faults(stream) == []
+            # The sink is a client of the log: same records, same order.
+            assert store.records(run_id) == stream
+
+    def test_neither_emitter_invents_a_run_that_is_not_being_recorded(self):
+        _, direct = _run([json.dumps({"answer": "done"})])
+        for stream in (direct, _staged()):
+            opening = next(r for r in stream
+                           if r["event"] == ms.MISSION_STARTED)
+            assert "run_id" not in opening
 
     def test_a_swarm_opens_its_stream_before_the_router_is_asked(self):
         """The silence clause is a promise about the FIRST call to the model,

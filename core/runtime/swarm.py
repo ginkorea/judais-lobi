@@ -64,13 +64,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from core.durable import RunStore
 from core.redact import scrub_record
 from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
     AWAITING_APPROVAL, MissionRunner, MissionTranscript, _grounding_record,
-    _profile_field, audit_ref_of, sandbox_of, validate_history,
+    _profile_field, _run_field, audit_ref_of, persist_record, sandbox_of,
+    validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -253,15 +255,25 @@ class _OpenedAlready:
     emphatically included.  That record comes out of the sub-runner's own
     ``finally`` holding the step count this object does not have, and dropping
     it here would trade a doubled opening for a stream that never closes.
+
+    Untouched, and through :meth:`SwarmRunner._emit` rather than straight to
+    the observer, exactly as :class:`_StageObserver` does.  There is one
+    choke point per runner and it is where the durable transcript is written;
+    a direct path that handed its records to the observer around it would put
+    a run's own answer on a pane and not in its log.  Re-scrubbing what a
+    sub-runner already scrubbed costs a pass and changes nothing —
+    :func:`~core.redact.scrub_record` is idempotent.
     """
 
-    def __init__(self, observer: Observer):
-        self._observer = observer
+    def __init__(self, emit: Callable[..., None]):
+        self._emit = emit
 
     def __call__(self, record: Dict[str, Any]) -> None:
         if record.get("event") == MISSION_STARTED:
             return
-        self._observer(record)
+        fields = dict(record)
+        event = fields.pop("event", "")
+        self._emit(event, **fields)
 
 
 class _StageObserver:
@@ -364,6 +376,14 @@ class SwarmRunner:
         builds; see that class's ``window`` parameter.  A staged mission
         runs more steps than a direct one, not fewer, so it is the path
         that needs bounding most.
+    run_store, run_id:
+        The durable transcript, exactly as
+        :class:`~core.runtime.mission.MissionRunner` takes it — and
+        **not** passed through to the sub-missions this builds.  Their
+        records already arrive here to be renumbered and filtered; a
+        sub-runner writing to the same run as well would put every step
+        in the log twice, once under its own index and once under the
+        global one.  One turn is one run.
     """
 
     def __init__(
@@ -385,6 +405,8 @@ class SwarmRunner:
         summary_chars: int = 1_200,
         sdk_import: str = "",
         window: Optional[MissionWindow] = None,
+        run_store: Optional[RunStore] = None,
+        run_id: str = "",
     ):
         self._chat = chat_fn
         self._plain_chat = plain_chat_fn or chat_fn
@@ -396,6 +418,14 @@ class SwarmRunner:
         self._gated = list(gated)
         self._history = validate_history(history)
         self._observer = observer
+        # The durable transcript, and it stays HERE. Every record a
+        # sub-mission emits reaches this runner's `_emit` — through
+        # `_StageObserver` on the staged path and `_OpenedAlready` on the
+        # direct one — so a sub-runner given a store of its own would append
+        # the same record twice, once under its own index and once under the
+        # renumbered one. One run, one log, one writer.
+        self._run_store = run_store
+        self._run_id = str(run_id or "")
         # Handed to every MissionRunner this builds and to nothing else.
         # A rung's execution is an ordinary mission loop and grows the same
         # unbounded message list; the router, planner, gate and synthesizer
@@ -433,12 +463,34 @@ class SwarmRunner:
         idempotent, so a sub-mission's record that arrives here already
         scrubbed is unharmed by being scrubbed again.
         """
+        if not self._recording:
+            return
+        record = scrub_record({"event": event, **fields})
+        # The store first, then the watcher, for the reason
+        # :meth:`MissionRunner._emit` gives: the sink is a client of the
+        # durable log rather than a second truth beside it.
+        persist_record(self._run_store, self._run_id, record)
         if self._observer is None:
             return
         try:
-            self._observer(scrub_record({"event": event, **fields}))
+            self._observer(record)
         except Exception:                       # pragma: no cover - defensive
             pass
+
+    @property
+    def _recording(self) -> bool:
+        """Whether anything at all is listening — a watcher or a disk.
+
+        Asked before a record is built rather than only before it is sent,
+        because a swarm with neither must run exactly as it ran before
+        either existed.
+        """
+        return self._observer is not None or self._run_store is not None
+
+    @property
+    def run_id(self) -> str:
+        """The run this swarm's records are recorded under, or ``""``."""
+        return self._run_id
 
     # ── the one entry point ─────────────────────────────────────────────
 
@@ -505,6 +557,10 @@ class SwarmRunner:
             # the same property, so the two paths cannot disagree about
             # whether this mission's tool subprocesses were isolated.
             "sandbox": sandbox_of(self._bus),
+            # Same OPTIONAL `run_id` field, from the same owner, for the
+            # same reason as `profile` below it: the route this turn took
+            # must not be readable off the opening frame.
+            **_run_field(self._run_id),
             # Same OPTIONAL `profile` field the direct path's MissionRunner
             # emits, from the same owner — a consumer must not be able to tell
             # which route ran from the opening frame.
@@ -541,8 +597,8 @@ class SwarmRunner:
             validator=self._validator,
             gated=self._gated,
             history=self._history,
-            observer=(_OpenedAlready(self._observer)
-                      if self._observer is not None else None),
+            observer=(_OpenedAlready(self._emit)
+                      if self._recording else None),
             window=self._window,
         )
         return runner.run(objective)
