@@ -70,8 +70,27 @@ def same_tool(one: Any, other: Any) -> bool:
 
 @dataclass(frozen=True)
 class SandboxProfile:
-    """Filesystem and resource constraints for sandbox execution."""
+    """Filesystem, network and resource constraints for sandbox execution.
+
+    Every field is something a backend has to *keep*, not a hint it may
+    read: :class:`~core.tools.sandbox.BwrapSandbox` turns each one into a
+    bwrap argument or an rlimit, and a field no backend honours is a field
+    that should not be declared here at all.
+
+    :attr:`allow_network` is the field that exists because the backend was
+    louder than the profile. ``BwrapSandbox`` passed ``--unshare-net``
+    unconditionally, so the day the sandbox is switched on by default
+    every networked tool breaks at once — and not with a refusal naming
+    the reason, which is the only kind of failure this framework wants,
+    but with a DNS error raised three libraries deep inside
+    ``perform_web_search``. It is deny-by-default because that is the
+    right default for ``run_shell_command``; a tool that reaches the
+    network says so in its own descriptor's profile, next to the scopes
+    it asks for, and the tools that stay silent are offline by
+    construction rather than by nobody having thought about it.
+    """
     workspace_writable: bool = True
+    allow_network: bool = False
     allowed_read_paths: List[str] = field(default_factory=list)
     allowed_write_paths: List[str] = field(default_factory=list)
     max_cpu_seconds: Optional[int] = None
@@ -194,9 +213,15 @@ PYTHON_DESCRIPTOR = ToolDescriptor(
     description="Runs Python code in elfenv and returns (exit_code, stdout, stderr).",
 )
 
+#: ``pip install`` is a network client wearing a subprocess. It is the one
+#: tool here whose need for the network is invisible in its scopes —
+#: ``pip.install`` reads like a filesystem effect — and it is the tool a
+#: sandbox would break most confusingly, with pip's own retry banner
+#: repeated five times before it gave up.
 INSTALL_DESCRIPTOR = ToolDescriptor(
     tool_name="install_project",
     required_scopes=["python.exec", "pip.install"],
+    sandbox_profile=SandboxProfile(allow_network=True),
     description="Installs a Python project via pip.",
 )
 
@@ -205,6 +230,7 @@ WEB_SEARCH_DESCRIPTOR = ToolDescriptor(
     required_scopes=["http.read"],
     requires_network=True,
     network_scopes=["http.read"],
+    sandbox_profile=SandboxProfile(allow_network=True),
     description="Performs a DuckDuckGo web search.",
 )
 
@@ -213,6 +239,7 @@ WEB_RESEARCH_DESCRIPTOR = ToolDescriptor(
     required_scopes=["http.read"],
     requires_network=True,
     network_scopes=["http.read"],
+    sandbox_profile=SandboxProfile(allow_network=True),
     description="Searches the web and fetches top pages into a research pack.",
 )
 
@@ -221,12 +248,19 @@ FETCH_PAGE_DESCRIPTOR = ToolDescriptor(
     required_scopes=["http.read"],
     requires_network=True,
     network_scopes=["http.read"],
+    sandbox_profile=SandboxProfile(allow_network=True),
     description="Fetches and extracts text from a URL.",
 )
 
+#: The crawl reads local files; the *indexing* half of it calls an
+#: embedding endpoint, so the tool reaches the network even though every
+#: input it names is a path. Its ``requires_network`` says otherwise and
+#: is left alone here deliberately — that flag gates a capability check,
+#: and flipping it is a governance change, not a sandbox one.
 RAG_CRAWLER_DESCRIPTOR = ToolDescriptor(
     tool_name="rag_crawl",
     required_scopes=["fs.read"],
+    sandbox_profile=SandboxProfile(allow_network=True),
     description="Crawls files and indexes into RAG.",
 )
 
@@ -253,6 +287,12 @@ FS_DESCRIPTOR = ToolDescriptor(
     description="Filesystem operations: read, write, delete, list, stat.",
 )
 
+#: Not ``allow_network=True``: a profile is per *tool* and git's need for
+#: the network is per *action*. ``push``/``pull``/``fetch`` are in
+#: :data:`SKIP_SANDBOX_ACTIONS` and never see a sandbox at all, so opening
+#: the namespace here would buy nothing and hand ``git status`` a network
+#: it has no use for. When profiles become per-action, this is the first
+#: descriptor to revisit.
 GIT_DESCRIPTOR = ToolDescriptor(
     tool_name="git",
     required_scopes=["git.read", "git.write", "git.push", "git.fetch"],

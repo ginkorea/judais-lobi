@@ -21,6 +21,7 @@ class TestSandboxProfile:
     def test_default_values(self):
         p = SandboxProfile()
         assert p.workspace_writable is True
+        assert p.allow_network is False
         assert p.allowed_read_paths == []
         assert p.allowed_write_paths == []
         assert p.max_cpu_seconds is None
@@ -30,6 +31,7 @@ class TestSandboxProfile:
     def test_custom_values(self):
         p = SandboxProfile(
             workspace_writable=False,
+            allow_network=True,
             allowed_read_paths=["/etc"],
             allowed_write_paths=["/tmp"],
             max_cpu_seconds=60,
@@ -37,6 +39,7 @@ class TestSandboxProfile:
             max_processes=10,
         )
         assert p.workspace_writable is False
+        assert p.allow_network is True
         assert p.allowed_read_paths == ["/etc"]
         assert p.max_cpu_seconds == 60
         assert p.max_memory_bytes == 1_073_741_824
@@ -131,3 +134,55 @@ class TestPrebuiltDescriptors:
     def test_all_descriptors_have_descriptions(self):
         for d in ALL_DESCRIPTORS:
             assert d.description, f"{d.tool_name} has no description"
+
+
+class TestWhichToolsGetTheNetwork:
+    """A sandbox that is on by default takes the network away by default.
+
+    So the descriptor is where a tool has to *say* it needs one, and the
+    only interesting property of that list is that it is neither too long
+    (a sandbox that grants the network to ``run_shell_command`` has
+    stopped being one) nor too short (a web search that cannot resolve a
+    name fails in a library, not in a refusal).
+    """
+
+    #: Written out rather than derived, because deriving it from the
+    #: descriptors would make this test agree with whatever they say.
+    ALLOWED = {
+        "perform_web_search",
+        "perform_web_research",
+        "fetch_page_content",
+        "install_project",
+        "rag_crawl",
+    }
+
+    def test_exactly_these_tools_ask_for_the_network(self):
+        asking = {
+            d.tool_name for d in ALL_DESCRIPTORS
+            if d.sandbox_profile.allow_network
+        }
+        assert asking == self.ALLOWED
+
+    @pytest.mark.parametrize("descriptor", ALL_DESCRIPTORS,
+                             ids=lambda d: d.tool_name)
+    def test_a_tool_that_declares_network_gets_a_profile_that_allows_it(
+        self, descriptor,
+    ):
+        """``requires_network`` gates a capability check and
+        ``allow_network`` opens a namespace; a tool that has the first
+        and not the second is a tool the bus lets through and the sandbox
+        silently strangles."""
+        if descriptor.requires_network:
+            assert descriptor.sandbox_profile.allow_network, (
+                f"{descriptor.tool_name} declares requires_network but its "
+                "sandbox profile denies it"
+            )
+
+    def test_the_shell_and_the_interpreter_do_not(self):
+        assert SHELL_DESCRIPTOR.sandbox_profile.allow_network is False
+        assert PYTHON_DESCRIPTOR.sandbox_profile.allow_network is False
+
+    def test_pip_does(self):
+        """The one whose scopes (``pip.install``) read like a filesystem
+        effect and whose implementation is an HTTP client."""
+        assert INSTALL_DESCRIPTOR.sandbox_profile.allow_network is True
