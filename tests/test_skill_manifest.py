@@ -28,7 +28,7 @@ from core.runtime.skills import (
 )
 from core.tools.bus import ToolBus
 from core.tools.descriptors import ALL_DESCRIPTORS
-from core.tools.sandbox import BwrapSandbox
+from core.tools.sandbox import BwrapSandbox, NoneSandbox
 
 MANIFEST = textwrap.dedent("""\
     ---
@@ -744,8 +744,14 @@ class TestTheSandboxSeam:
     the manifest that asked for isolation they are the same thing.
     """
 
-    def test_a_plain_bus_is_unisolated_and_says_so(self):
-        assert sandbox_name(ToolBus()) == "none"
+    def test_a_none_bus_is_unisolated_and_says_so(self):
+        # Explicit, because a bare ``ToolBus()`` is bwrap wherever bubblewrap
+        # exists (0.8.3): the unisolated case has to be asked for by name.
+        assert sandbox_name(ToolBus(sandbox=NoneSandbox())) == "none"
+
+    def test_a_bare_bus_names_whatever_select_sandbox_chose(self):
+        from core.tools.sandbox import select_sandbox
+        assert sandbox_name(ToolBus()) == select_sandbox()[1]
 
     @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
     def test_a_bwrap_bus_is_named_bwrap(self, _which):
