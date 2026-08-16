@@ -723,6 +723,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/runtime/contract.py` — the seam a consumer pins, as data
 * `core/runtime/mission.py`, `mission_stream.py`, `swarm.py` — the mission loop, its NDJSON account, and staged decomposition
 * `core/runtime/skills.py` — the `SKILL.md` loader: closed tool set, prompt, grounding grammar, `sdk_import`
+* `core/runtime/agui.py` — optional, import-free translator from the mission stream to AG-UI event frames (`translate` for a replay, `Translator` for a live follower); dicts only, no SDK. See `PLATFORMS.md` §"AG-UI"
 * `core/contracts/` — Pydantic v2 contract models for all session data
 * `core/sessions/` — SessionManager for disk artifact persistence
 * `core/kernel/` — state machine, budgets, orchestrator, workflow templates (`workflows.py`)
