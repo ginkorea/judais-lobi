@@ -110,6 +110,11 @@ def isolate_env(monkeypatch):
         "ANTHROPIC_API_KEY",
         "GOOGLE_API_KEY",
         "ELF_PROVIDER",
+        # Deny-by-default: an ambient profile opt-up would silently change
+        # what the default-profile tests measure. Removed so "the default"
+        # means SAFE everywhere, and a test that wants another profile sets
+        # it explicitly.
+        "JUDAIS_LOBI_PROFILE",
     ):
         monkeypatch.delenv(var, raising=False)
 

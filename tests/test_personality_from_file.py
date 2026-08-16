@@ -423,53 +423,75 @@ class TestCliWiring:
         from argparse import Namespace
         from core.cli import _build_agent
 
+        from core.contracts.schemas import ProfileMode
+
         built = {}
 
         class Lobi:
-            def __init__(self, model=None, provider=None, sandbox_request=None):
+            def __init__(self, model=None, provider=None, sandbox_request=None,
+                         profile=None):
                 built["model"], built["provider"] = model, provider
+                built["profile"] = profile
 
+        # No --profile and no env: deny-by-default resolves to SAFE, and it
+        # reaches the agent as the `profile` kwarg.
         agent, name = _build_agent(
-            Lobi, Namespace(personality=None, model="m", provider="openai"),
+            Lobi,
+            Namespace(personality=None, model="m", provider="openai", profile=None),
         )
         assert name == "Lobi"
         assert isinstance(agent, Lobi)
-        assert built == {"model": "m", "provider": "openai"}
+        assert built == {"model": "m", "provider": "openai",
+                         "profile": ProfileMode.SAFE}
 
     def test_the_flag_swaps_only_the_config(self, toml_file, monkeypatch):
         from argparse import Namespace
         import core.agent as agent_module
         from core.cli import _build_agent
 
+        from core.contracts.schemas import ProfileMode
+
         seen = {}
 
         class FakeAgent:
-            def __init__(self, config, model=None, provider=None, sandbox_request=None):
-                seen.update(config=config, model=model, provider=provider)
+            def __init__(self, config, model=None, provider=None,
+                         sandbox_request=None, profile=None):
+                seen.update(config=config, model=model, provider=provider,
+                            profile=profile)
 
         monkeypatch.setattr(agent_module, "Agent", FakeAgent)
 
         _agent, name = _build_agent(
-            object, Namespace(personality=toml_file, model=None, provider=None),
+            object,
+            Namespace(personality=toml_file, model=None, provider=None,
+                      profile=None),
         )
         assert name == "tai"
         assert seen["config"].system_message == "You are Tai."
         assert seen["provider"] == "local"
         assert seen["model"] == "gpt-oss-20b"
+        assert seen["profile"] == ProfileMode.SAFE
 
     def test_an_explicit_model_beats_the_file(self, toml_file, monkeypatch):
         from argparse import Namespace
         import core.agent as agent_module
         from core.cli import _build_agent
 
+        from core.contracts.schemas import ProfileMode
+
         seen = {}
 
         class FakeAgent:
-            def __init__(self, config, model=None, provider=None, sandbox_request=None):
-                seen.update(model=model, provider=provider)
+            def __init__(self, config, model=None, provider=None,
+                         sandbox_request=None, profile=None):
+                seen.update(model=model, provider=provider, profile=profile)
 
         monkeypatch.setattr(agent_module, "Agent", FakeAgent)
+        # --profile dev opts up, and beats the (unset) env; it reaches Agent.
         _build_agent(
-            object, Namespace(personality=toml_file, model="other", provider="openai"),
+            object,
+            Namespace(personality=toml_file, model="other", provider="openai",
+                      profile="dev"),
         )
-        assert seen == {"model": "other", "provider": "openai"}
+        assert seen == {"model": "other", "provider": "openai",
+                        "profile": ProfileMode.DEV}

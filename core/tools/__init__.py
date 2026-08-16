@@ -15,7 +15,7 @@ from typing import Callable, List, Optional, Union
 from core.tools.bus import ToolBus, ToolResult
 from core.tools.capability import CapabilityEngine
 from core.tools.sandbox import SandboxRunner, NoneSandbox, select_sandbox
-from core.contracts.schemas import PolicyPack
+from core.contracts.schemas import PolicyPack, ProfileMode
 from core.tools.descriptors import (
     SHELL_DESCRIPTOR,
     PYTHON_DESCRIPTOR,
@@ -55,13 +55,31 @@ class Tools:
         capability_engine: Optional[CapabilityEngine] = None,
         sandbox: Optional[SandboxRunner] = None,
         sandbox_request: Optional[str] = None,
+        profile: Optional[ProfileMode] = None,
     ):
         self.elfenv = elfenv
         self.registry: dict[str, Union[Tool, Callable[[], Tool]]] = {}
 
         if capability_engine is None:
-            capability_engine = CapabilityEngine(
-                PolicyPack(allowed_scopes=["*"])
+            # Deny-by-default (Phase 1): no more allow-everything bus. With
+            # no explicit engine and no profile the run gets SAFE — read the
+            # filesystem, read git, run the verifiers, call an MCP server the
+            # operator connected — and nothing that writes, executes or
+            # reaches the open network until `profile=` (or `--profile` /
+            # `JUDAIS_LOBI_PROFILE`, resolved in `core.policy.profiles.
+            # select_profile`) opts up. `set_profile` records the name too,
+            # so a refusal can say which profile was in force.
+            capability_engine = CapabilityEngine()
+            capability_engine.set_profile(profile or ProfileMode.SAFE)
+        elif profile is not None:
+            # An explicit engine and an explicit profile is a contradiction:
+            # the engine already carries its policy, and silently letting the
+            # profile win (or lose) is the kind of quiet override this
+            # framework refuses at the door.
+            raise ValueError(
+                "Tools() got both capability_engine= and profile=; pass one. "
+                "The engine already carries a policy; apply the profile to it "
+                "with engine.set_profile(...) if that is what you meant."
             )
 
         # Safe by default. A caller that passes a concrete ``sandbox`` gets

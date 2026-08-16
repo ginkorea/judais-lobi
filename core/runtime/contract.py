@@ -203,7 +203,16 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: touches no sandbox whatever this says.  Optional because a consumer
     #: from before it existed must still read the record; present on both the
     #: direct and the staged path.
-    MISSION_STARTED: ("sandbox",),
+    #:
+    #: ``profile`` — the capability profile the run is governed by, one of
+    #: :class:`~core.contracts.schemas.ProfileMode`'s values (``safe``,
+    #: ``dev``, ``ops``, ``god``).  Deny-by-default means ``safe`` unless
+    #: ``--profile`` / ``JUDAIS_LOBI_PROFILE`` opted up, and a watcher reading
+    #: the opening frame can see which — a ``safe`` mission and a ``god`` one
+    #: are otherwise indistinguishable on the wire.  Absent (not ``null``)
+    #: when the bus was built from a raw capability engine that never recorded
+    #: a profile name, so it is read with a default like every OPTIONAL field.
+    MISSION_STARTED: ("sandbox", "profile"),
     #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
     #: first ``step_started`` that plan produces.  Absent on a direct
     #: mission, which has no plan to show, and absent on every later step.
@@ -262,7 +271,7 @@ OUTCOMES: tuple[str, ...] = (
 #: that says so; the rest of the CLI is a person's surface and may move.
 CLI_FLAGS: tuple[str, ...] = (
     "--mission", "--mcp-url", "--mission-steps", "--provider", "--model",
-    "--skill", "--swarm", "--events", "--history", "--gate-tool",
+    "--profile", "--skill", "--swarm", "--events", "--history", "--gate-tool",
     "--temperature", "--top-p", "--seed",
 )
 
@@ -277,7 +286,10 @@ CLI_FLAGS: tuple[str, ...] = (
 #: ``LOCAL_API_BASE`` and ``LOCAL_MODEL`` aim the local backend;
 #: ``MISSION_SKILL``, ``MISSION_SWARM``, ``MISSION_EVENTS`` and
 #: ``MISSION_HISTORY`` are the environment forms of ``--skill``, ``--swarm``,
-#: ``--events`` and ``--history``.
+#: ``--events`` and ``--history``; ``JUDAIS_LOBI_PROFILE`` is the environment
+#: form of ``--profile`` — the capability profile the run is governed by, and
+#: since the default is now the deny-by-default ``safe`` profile, the variable
+#: a consumer sets when a hosted mission needs more than read-only.
 #:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
@@ -287,6 +299,7 @@ ENV_VARS: tuple[str, ...] = (
     "ELF_PERSONALITY", "TAI_PERSONALITY",
     "LOCAL_API_BASE", "LOCAL_MODEL",
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
+    "JUDAIS_LOBI_PROFILE",
 )
 
 

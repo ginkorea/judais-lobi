@@ -191,3 +191,60 @@ class TestToolTracePersistence:
             session_mgr.write_tool_trace(trace)
         traces = session_mgr.load_tool_traces()
         assert len(traces) == 3
+
+
+class TestManifestAndProfileCompose:
+    """The effective allow is the manifest's closed set ∩ the profile's scopes.
+
+    A tool outside either is a refusal that names which of the two refused it:
+    the manifest refuses a tool it did not name (or the server did not offer)
+    and names the tool; the profile refuses a tool whose scope it does not
+    grant and names the scope and the profile that would.
+    """
+
+    def _safe_bus(self):
+        from core.contracts.schemas import ProfileMode
+        engine = CapabilityEngine()
+        engine.set_profile(ProfileMode.SAFE)
+        return ToolBus(capability_engine=engine)
+
+    def test_the_profile_opens_the_mcp_plane_under_the_default(self):
+        # A bridged MCP tool carries the single scope `mcp.call`, which is a
+        # SAFE scope, so a `--mission` over MCP works under deny-by-default.
+        from core.tools.mcp_client import McpToolBridge
+        bus = self._safe_bus()
+        desc = ToolDescriptor(
+            tool_name="mcp.governed_read",
+            required_scopes=list(McpToolBridge.DEFAULT_SCOPES),
+        )
+        bus.register(desc, lambda **kw: (0, "read", ""))
+        result = bus.dispatch("mcp.governed_read", asset_id="asset.5f21")
+        assert result.exit_code == 0
+        assert result.stdout == "read"
+
+    def test_the_profile_refuses_a_scope_it_does_not_grant_and_names_it(self):
+        import json
+        from core.tools.descriptors import SHELL_DESCRIPTOR
+        bus = self._safe_bus()
+        bus.register(SHELL_DESCRIPTOR, lambda cmd: (0, "ran", ""))
+        result = bus.dispatch("run_shell_command", "ls")
+        assert result.exit_code == -1
+        denial = json.loads(result.stderr)
+        assert denial["error"] == "capability_denied"
+        assert "shell.exec" in denial["missing_scopes"]
+        # The profile half names itself: the scope AND how to grant it.
+        assert "shell.exec" in denial["message"]
+        assert "--profile dev" in denial["message"]
+        assert "safe" in denial["message"]
+
+    def test_the_manifest_refuses_a_tool_it_did_not_name_and_names_it(self):
+        from core.runtime.skills import SkillManifest, SkillToolsUnavailable
+        manifest = SkillManifest(
+            name="recon",
+            allowed_tools=("governed_read",),
+        )
+        # The closed set names `governed_read`; the server offered only
+        # `run_shell`. The manifest half names itself: it names the tool.
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            manifest.resolve(["mcp.run_shell"])
+        assert "governed_read" in str(exc.value)

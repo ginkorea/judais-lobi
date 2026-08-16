@@ -5,6 +5,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.markdown import Markdown
 
+from core.contracts.schemas import ProfileMode
 from core.runtime.provider_config import PROVIDERS
 
 GREEN = "\033[92m"
@@ -39,6 +40,8 @@ def _build_agent(AgentClass, args):
     variable set (see :func:`_personality_default`), this is the line
     that was here before.
     """
+    from core.policy.profiles import select_profile
+
     # ``--unsandboxed`` resolves to the one word ``select_sandbox`` reads as
     # the opt-out; no flag leaves it ``None``, so ``JUDAIS_LOBI_SANDBOX`` and
     # then the auto path (bwrap when present) still decide. Flag beats env
@@ -46,10 +49,19 @@ def _build_agent(AgentClass, args):
     # env lookup.
     sandbox_request = "none" if getattr(args, "unsandboxed", False) else None
 
+    # flag > env > default(SAFE), resolved in one place. An unknown value is
+    # a refusal at the door — an operator who typed `--profile dveloper`
+    # believes they opted up, and a silent fall-through to SAFE would run the
+    # agent under fewer permissions than they asked for while saying nothing.
+    try:
+        profile = select_profile(getattr(args, "profile", None))
+    except ValueError as exc:
+        raise SystemExit(f"--profile: {exc}")
+
     if not getattr(args, "personality", None):
         return (
             AgentClass(model=args.model, provider=args.provider,
-                       sandbox_request=sandbox_request),
+                       sandbox_request=sandbox_request, profile=profile),
             AgentClass.__name__,
         )
 
@@ -62,6 +74,7 @@ def _build_agent(AgentClass, args):
         model=args.model or config.default_model,
         provider=args.provider or config.default_provider,
         sandbox_request=sandbox_request,
+        profile=profile,
     )
     return agent, config.name
 
@@ -589,6 +602,16 @@ def _main(AgentClass):
                         help="Force provider backend "
                              "('local' = an OpenAI-compatible endpoint at "
                              "LOCAL_API_BASE serving LOCAL_MODEL)")
+    parser.add_argument("--profile", type=str,
+                        choices=[m.value for m in ProfileMode],
+                        default=None,
+                        help="Capability profile: deny-by-default is 'safe' "
+                             "(read fs/git, run verifiers, call a connected "
+                             "MCP server). 'dev' adds write + shell/python "
+                             "exec, 'ops' adds deploy/network, 'god' is "
+                             "wildcard. Unset falls back to JUDAIS_LOBI_PROFILE "
+                             "then 'safe'; a flag beats the env var "
+                             "(env: JUDAIS_LOBI_PROFILE)")
     # Both published names, in the published order — see
     # `_personality_default` and `TAI_PERSONALITY_ENV` below.
     parser.add_argument("--personality", type=Path,

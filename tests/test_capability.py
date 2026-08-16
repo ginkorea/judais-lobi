@@ -258,3 +258,40 @@ class TestScopeConstraints:
         engine.clear_scope_constraints()
         result = engine.check("tool", ["shell.exec"])
         assert result.allowed is True
+
+
+class TestDenialReasonNamesTheFix:
+    """A refusal names which scope was missing and which profile grants it.
+
+    The message the ToolBus renders into `capability_denied.message` is the
+    engine verdict's `reason`; before deny-by-default it named only the fault
+    ("denied scopes: shell.exec"). Now it names the fix too.
+    """
+
+    def test_reason_names_scope_and_lowest_profile(self):
+        from core.contracts.schemas import ProfileMode
+        from core.policy.profiles import policy_for_profile
+
+        engine = CapabilityEngine()
+        engine.set_profile(ProfileMode.SAFE)
+        verdict = engine.check("run_shell_command", ["shell.exec"])
+        assert verdict.allowed is False
+        assert "shell.exec" in verdict.reason
+        assert "--profile dev" in verdict.reason
+
+    def test_reason_names_the_profile_in_force(self):
+        from core.contracts.schemas import ProfileMode
+
+        engine = CapabilityEngine()
+        engine.set_profile(ProfileMode.SAFE)
+        verdict = engine.check("run_shell_command", ["shell.exec"])
+        assert "safe" in verdict.reason
+
+    def test_ops_scope_names_ops(self):
+        from core.contracts.schemas import ProfileMode
+
+        engine = CapabilityEngine()
+        engine.set_profile(ProfileMode.SAFE)
+        verdict = engine.check("git", ["git.push"])
+        assert "git.push" in verdict.reason
+        assert "--profile ops" in verdict.reason

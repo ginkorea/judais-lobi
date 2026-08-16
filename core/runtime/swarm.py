@@ -69,7 +69,7 @@ from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission import (
     AWAITING_APPROVAL, MissionRunner, MissionTranscript, _grounding_record,
-    validate_history,
+    _profile_field, validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -494,6 +494,10 @@ class SwarmRunner:
             # the same property, so the two paths cannot disagree about
             # whether this mission's tool subprocesses were isolated.
             "sandbox": self._bus.sandbox_name,
+            # Same OPTIONAL `profile` field the direct path's MissionRunner
+            # emits, from the same owner — a consumer must not be able to tell
+            # which route ran from the opening frame.
+            **_profile_field(self._bus),
         }
 
     # ── DIRECT: the path that already worked, untouched ─────────────────

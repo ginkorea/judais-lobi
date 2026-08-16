@@ -2,7 +2,16 @@
 
 import pytest
 from core.contracts.schemas import ProfileMode, PolicyPack, PermissionGrant
-from core.policy.profiles import PROFILE_SCOPES, policy_for_profile
+from core.policy.profiles import (
+    DEFAULT_PROFILE,
+    PROFILE_ENV_VAR,
+    PROFILE_SCOPES,
+    denial_reason,
+    lowest_profile_for_scope,
+    policy_for_profile,
+    scope_grant_hint,
+    select_profile,
+)
 from core.tools.capability import CapabilityEngine
 
 
@@ -152,3 +161,142 @@ class TestRevokeAllGrants:
         engine.revoke_all_grants()
         verdict = engine.check("t", ["x.y"])
         assert verdict.allowed is False
+
+
+class TestMcpCallInSafe:
+    """`mcp.call` lives in SAFE, so a `--mission` over MCP works under the
+    deny-by-default profile. The plane is chosen by the operator connecting a
+    server and gated per-tool by the manifest and the server itself; the scope
+    would gate nothing those two do not.
+    """
+
+    def test_mcp_call_is_a_safe_scope(self):
+        assert "mcp.call" in PROFILE_SCOPES[ProfileMode.SAFE]
+
+    def test_safe_policy_grants_mcp_call(self):
+        engine = CapabilityEngine(policy_for_profile(ProfileMode.SAFE))
+        assert engine.check("mcp.governed_read", ["mcp.call"]).allowed is True
+
+    def test_safe_still_refuses_shell(self):
+        # The whole point: SAFE opens the MCP plane and nothing that executes.
+        engine = CapabilityEngine(policy_for_profile(ProfileMode.SAFE))
+        assert engine.check("run_shell_command", ["shell.exec"]).allowed is False
+
+
+class TestSelectProfile:
+    """flag > env > default(SAFE), resolved in one place."""
+
+    def test_default_is_safe(self, monkeypatch):
+        monkeypatch.delenv(PROFILE_ENV_VAR, raising=False)
+        assert select_profile(None) is ProfileMode.SAFE
+        assert DEFAULT_PROFILE is ProfileMode.SAFE
+
+    def test_flag_opts_up(self, monkeypatch):
+        monkeypatch.delenv(PROFILE_ENV_VAR, raising=False)
+        assert select_profile("dev") is ProfileMode.DEV
+        assert select_profile("ops") is ProfileMode.OPS
+
+    def test_env_respected_when_no_flag(self, monkeypatch):
+        monkeypatch.setenv(PROFILE_ENV_VAR, "ops")
+        assert select_profile(None) is ProfileMode.OPS
+
+    def test_flag_beats_env(self, monkeypatch):
+        monkeypatch.setenv(PROFILE_ENV_VAR, "god")
+        assert select_profile("dev") is ProfileMode.DEV
+
+    def test_empty_flag_and_env_falls_to_default(self, monkeypatch):
+        monkeypatch.delenv(PROFILE_ENV_VAR, raising=False)
+        assert select_profile("") is ProfileMode.SAFE
+        monkeypatch.setenv(PROFILE_ENV_VAR, "   ")
+        assert select_profile(None) is ProfileMode.SAFE
+
+    def test_case_insensitive(self, monkeypatch):
+        monkeypatch.delenv(PROFILE_ENV_VAR, raising=False)
+        assert select_profile("DEV") is ProfileMode.DEV
+
+    def test_unknown_value_is_refused_naming_choices(self, monkeypatch):
+        monkeypatch.delenv(PROFILE_ENV_VAR, raising=False)
+        with pytest.raises(ValueError) as exc:
+            select_profile("dveloper")
+        msg = str(exc.value)
+        assert "dveloper" in msg
+        assert "safe" in msg and "dev" in msg and "god" in msg
+
+
+class TestLowestProfileForScope:
+    def test_safe_scope_resolves_to_safe(self):
+        assert lowest_profile_for_scope("fs.read") is ProfileMode.SAFE
+        assert lowest_profile_for_scope("mcp.call") is ProfileMode.SAFE
+
+    def test_dev_scope_resolves_to_dev(self):
+        assert lowest_profile_for_scope("shell.exec") is ProfileMode.DEV
+
+    def test_ops_scope_resolves_to_ops(self):
+        assert lowest_profile_for_scope("git.push") is ProfileMode.OPS
+
+    def test_unplaced_scope_resolves_to_god_wildcard(self):
+        # A scope named in no narrower profile is reachable only through GOD's
+        # "*". This is what would have been silently true of `mcp.call` had it
+        # not been placed in SAFE — unreachable even under `ops`.
+        assert lowest_profile_for_scope("nuke.launch") is ProfileMode.GOD
+
+    def test_every_descriptor_scope_is_placed_below_god(self):
+        """No descriptor scope may be reachable only through the wildcard.
+
+        A scope in no explicit profile is unreachable even under `ops`, which
+        is a bug. This walks every scope any tool descriptor declares — plus
+        the bridged `mcp.call` — and asserts each resolves to a profile
+        narrower than GOD.
+        """
+        from core.tools.descriptors import ALL_DESCRIPTORS
+        from core.tools.mcp_client import McpToolBridge
+
+        scopes = set(McpToolBridge.DEFAULT_SCOPES)
+        for desc in ALL_DESCRIPTORS:
+            scopes.update(desc.required_scopes)
+            for action_scopes in desc.action_scopes.values():
+                scopes.update(action_scopes)
+
+        unplaced = {s for s in scopes
+                    if lowest_profile_for_scope(s) is ProfileMode.GOD}
+        assert unplaced == set(), (
+            f"scopes reachable only through GOD's wildcard: {sorted(unplaced)}"
+        )
+
+
+class TestScopeGrantHint:
+    def test_dev_scope_names_dev(self):
+        hint = scope_grant_hint("shell.exec")
+        assert "--profile dev" in hint
+        assert f"{PROFILE_ENV_VAR}=dev" in hint
+
+    def test_ops_scope_names_ops(self):
+        assert "--profile ops" in scope_grant_hint("git.push")
+
+    def test_a_default_scope_has_no_hint(self):
+        # Nothing to opt into — a refusal for a SAFE scope is not about profile.
+        assert scope_grant_hint("fs.read") == ""
+        assert scope_grant_hint("mcp.call") == ""
+
+    def test_lowest_profile_is_named_not_god(self):
+        # shell.exec is in DEV and (cumulatively) OPS and GOD; the hint names
+        # the *lowest* that grants it.
+        assert "dev" in scope_grant_hint("shell.exec")
+        assert "ops" not in scope_grant_hint("shell.exec")
+
+
+class TestDenialReason:
+    def test_names_scope_and_lowest_profile(self):
+        reason = denial_reason(["shell.exec"], current_profile="safe")
+        assert "shell.exec" in reason
+        assert "--profile dev" in reason
+        assert "safe" in reason  # the profile in force is named
+
+    def test_multiple_scopes_each_named(self):
+        reason = denial_reason(["shell.exec", "git.push"])
+        assert "shell.exec needs --profile dev" in reason
+        assert "git.push needs --profile ops" in reason
+
+    def test_current_profile_optional(self):
+        reason = denial_reason(["shell.exec"])
+        assert "shell.exec needs --profile dev" in reason

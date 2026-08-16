@@ -466,6 +466,7 @@ _FLAG_VALUES = {
     "--mcp-url": "http://127.0.0.1:8000/mcp",
     "--mission-steps": "6",
     "--model": "gpt-oss-20b",
+    "--profile": "dev",
     "--skill": "skill.yaml",
     "--events": "-",
     "--history": "thread.json",
