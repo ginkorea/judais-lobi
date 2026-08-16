@@ -17,7 +17,6 @@ setup(
         "python-dotenv>=1.1.0",
         "beautifulsoup4>=4.13.4",
         "requests>=2.32.3",
-        "faiss-cpu>=1.11.0",
         "numpy>=1.26.4",
         "httpx>=0.28.1",
         "httpcore>=1.0.9",
@@ -38,6 +37,14 @@ setup(
     ],
     extras_require={
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
+        # The vector index, which core/memory/memory.py treats as
+        # optional and always did: `_make_index` imports faiss inside a
+        # try, falls back to the numpy inner-product index next to it,
+        # and `JUDAIS_LOBI_FAISS_BACKEND=numpy` asks for the fallback
+        # outright. A compiled wheel every install paid for and no code
+        # path required. Install it when the long-term memory is large
+        # enough for the difference to matter.
+        "faiss": ["faiss-cpu>=1.11.0"],
         # An extra, not a hard dependency: the SDK pulls ~20 wheels including
         # compiled ones, and `judais --help` has to keep working without them.
         # core/tools/mcp_client.py is the only importer, and imports it lazily.
@@ -91,7 +98,10 @@ setup(
         ],
     },
     author="Josh Gompert",
-    description="JudAIs & Lobi v0.8.1 — Terminal agents and a governed mission runtime over a unified OpenAI/Mistral backend, with memory and tools",
+    # `Summary:` in the built metadata. The version belongs to VERSION
+    # above; retyped here it agreed for exactly as long as whoever
+    # bumped one remembered the other.
+    description=f"JudAIs & Lobi v{VERSION} — Terminal agents and a governed mission runtime over a unified OpenAI/Mistral backend, with memory and tools",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/judais-lobi",

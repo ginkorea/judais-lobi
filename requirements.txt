@@ -1,17 +1,18 @@
 # Derived from setup.py `install_requires` — mirror it exactly, nothing more.
 # Optional stacks are extras, not requirements: install them by name, e.g.
 # `pip install -e '.[mission]'` (the mission path: MCP client + pyyaml), or
-# `.[voice]`, `.[critic]`, `.[treesitter]`, `.[dev]`. This file used to pin
-# the whole voice/TTS stack — torch included — as hard requirements while
-# omitting mcp entirely, so a plain install pulled gigabytes it did not need
-# and still could not run a mission.
+# `.[voice]`, `.[critic]`, `.[treesitter]`, `.[faiss]`, `.[dev]`. This file
+# used to pin the whole voice/TTS stack — torch included — as hard
+# requirements while omitting mcp entirely, so a plain install pulled
+# gigabytes it did not need and still could not run a mission. `faiss-cpu`
+# was the same mistake in miniature: a compiled wheel on every install for an
+# index `core/memory/memory.py` falls back from without complaint.
 openai>=1.0.0
 mistralai>=1.0.0
 rich>=14.0.0
 python-dotenv>=1.1.0
 beautifulsoup4>=4.13.4
 requests>=2.32.3
-faiss-cpu>=1.11.0
 numpy>=1.26.4
 httpx>=0.28.1
 httpcore>=1.0.9

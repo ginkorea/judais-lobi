@@ -151,8 +151,10 @@ close; swarm grounding through the shared renderer; pool checkout by tag;
 - **Async core, sync façade.** The MCP client already runs a loop thread; make
   the run loop `async` so tool calls, streaming and cancellation are natural,
   and keep `judais` sync at the CLI edge.
-- Delete or promote the vestigial: `kv_prefix.py`, `tools/recon/*`,
-  `bootstrap.py`, the second vector index if FAISS is required, `curl`-Mistral.
+- Delete or promote the vestigial: `kv_prefix.py`, the second vector index if
+  FAISS is required, `curl`-Mistral. (`tools/recon/*` and `bootstrap.py` are
+  gone: nothing imported either, and the recon pair wanted selenium and
+  undetected_chromedriver that no extra declared.)
 
 ### Phase 5 — providers and streaming (0.13)
 - One HTTP client (httpx) for every hosted provider; retry/backoff policy per

@@ -38,9 +38,46 @@ def _setup_kwargs() -> dict:
     raise AssertionError("setup.py has no setup() call")
 
 
+def _version() -> str:
+    """The single assignment every other statement of the version derives
+    from — ``version=VERSION`` and, since this test, ``description`` too."""
+    tree = ast.parse(SETUP_PY.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(target, "id", "") == "VERSION" for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("setup.py has no VERSION assignment")
+
+
+def _summary() -> str:
+    """The ``Summary:`` line a built wheel carries.
+
+    Rendered from the ``description`` expression with ``VERSION`` bound the
+    way setup.py binds it, rather than built for real: this file refuses to
+    import setup.py at all, and a build here would need network and a
+    backend to answer a question the source already answers. Any other name
+    in that expression raises ``NameError``, which is the right complaint.
+    """
+    node = _setup_kwargs()["description"]
+    return eval(compile(ast.Expression(node), str(SETUP_PY), "eval"),
+                {"__builtins__": {}, "VERSION": _version()})
+
+
 def _requires() -> list:
     return [ast.literal_eval(item)
             for item in _setup_kwargs()["install_requires"].elts]
+
+
+def _packages_exclude() -> list:
+    """The names passed to ``find_packages(exclude=…)``, or ``[]``."""
+    call = _setup_kwargs()["packages"]
+    if not (isinstance(call, ast.Call)
+            and getattr(call.func, "id", "") == "find_packages"):
+        raise AssertionError("packages= is not a find_packages() call")
+    for kw in call.keywords:
+        if kw.arg == "exclude":
+            return list(ast.literal_eval(kw.value))
+    return []
 
 
 def _requirements_lines() -> list:
@@ -116,9 +153,47 @@ class TestRequirementsMirrorsSetupPy:
 
     def test_no_optional_stack_leaked_back_in(self):
         """It used to pin the whole voice/TTS stack — torch included — as
-        hard requirements while omitting mcp entirely."""
+        hard requirements while omitting mcp entirely. `faiss-cpu` was the
+        same mistake in miniature: `_make_index` imports faiss inside a try
+        and returns `NumpyIndex` when it is not there, so no code path ever
+        required the compiled wheel every install was paying for."""
         names = {re.split(r"[<>=;\[ ]", line)[0] for line in _requirements_lines()}
-        assert not names & {"torch", "TTS", "torchaudio", "mcp", "pyyaml"}
+        assert not names & {"torch", "TTS", "torchaudio", "mcp", "pyyaml",
+                            "faiss-cpu"}
+
+    def test_the_optional_ones_are_reachable_as_extras(self):
+        """Dropped from `install_requires` and named nowhere is not optional,
+        it is gone. Each of these is somebody's deliberate install."""
+        extras = ast.literal_eval(_setup_kwargs()["extras_require"])
+        offered = {re.split(r"[<>=;\[ ]", item)[0]
+                   for items in extras.values() for item in items}
+        assert {"faiss-cpu", "mcp", "pyyaml", "torch"} <= offered
+
+
+class TestTheSummaryDoesNotKeepItsOwnVersion:
+    """``description`` becomes ``Summary:`` in the built metadata and it
+    opens with the version number — a number ``VERSION`` on line 3 already
+    owns. Written out twice it stays true only while whoever bumps one
+    remembers the other, and the Makefile's rebuild banner had already lost
+    that game by three releases when it was found still saying v0.7.2.
+    """
+
+    def test_the_summary_carries_the_version(self):
+        assert f"v{_version()}" in _summary(), _summary()
+
+    def test_it_is_derived_and_not_retyped(self):
+        """An f-string over ``VERSION``, not a literal that happens to
+        agree today — a literal passes the check above until the next bump
+        and then ships a wheel that misdescribes itself."""
+        node = _setup_kwargs()["description"]
+        assert isinstance(node, ast.JoinedStr), (
+            "description is a constant string; the version in it is a "
+            "second copy of VERSION")
+        interpolated = {value.value.id
+                        for value in node.values
+                        if isinstance(value, ast.FormattedValue)
+                        and isinstance(value.value, ast.Name)}
+        assert "VERSION" in interpolated, interpolated
 
 
 class TestTheWheelDoesNotShipTheTests:
@@ -129,11 +204,27 @@ class TestTheWheelDoesNotShipTheTests:
     pins it in the same AST the other checks read."""
 
     def test_find_packages_excludes_tests(self):
-        call = _setup_kwargs()["packages"]
-        assert isinstance(call, ast.Call) and call.func.id == "find_packages"
-        excluded = [ast.literal_eval(kw.value)
-                    for kw in call.keywords if kw.arg == "exclude"]
-        assert excluded, "find_packages() with no exclude ships tests/"
-        (names,) = excluded
+        names = _packages_exclude()
+        assert names, "find_packages() with no exclude ships tests/"
         assert "tests" in names and "tests.*" in names
+
+    def test_the_top_level_names_are_the_three_this_package_owns(self):
+        """The exclusion fixes the one directory that was caught. This is
+        the rule it was an instance of: everything with an ``__init__.py``
+        at the root goes into site-packages under its own name, so any new
+        one — a scratch package, a parked experiment, a second `tests` by
+        another name — ships to every installer until somebody notices.
+
+        setuptools is not importable in the test environment, so the
+        discovery ``find_packages()`` would do is redone here: root
+        directories carrying an ``__init__.py``, less what ``exclude``
+        names. Dotted directories are skipped the way setuptools skips
+        them — a `.venv` is not a candidate package.
+        """
+        excluded = {name.split(".")[0] for name in _packages_exclude()}
+        found = {child.name for child in REPO.iterdir()
+                 if child.is_dir()
+                 and not child.name.startswith(".")
+                 and (child / "__init__.py").exists()}
+        assert found - excluded == {"core", "judais", "lobi"}, sorted(found)
 

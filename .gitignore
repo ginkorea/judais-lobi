@@ -14,8 +14,11 @@ build/
 dist/
 
 # Ignore test/output artifacts
-speech.wav
+*.wav
 *.log
+.coverage
+.coverage.*
+htmlcov/
 
 # Ignore local dev configs or checkpoints
 .cadence/
