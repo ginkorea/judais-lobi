@@ -24,6 +24,7 @@ import pytest
 from core.contracts.schemas import PolicyPack
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
+from core.tools.sandbox import NoneSandbox
 
 pytest.importorskip("mcp", reason="the MCP client is an optional extra")
 
@@ -65,8 +66,13 @@ def elf():
     agent.text_color = "cyan"
     agent.client.provider = "local"
     agent.system_message = "You are Tai."
+    # An explicitly unisolated bus: this fixture predates the sandbox
+    # being on by default, and the tests below that reason about "a host
+    # without bwrap" need the bus to SAY none rather than inherit whatever
+    # `select_sandbox` finds on the machine running the suite.
     agent.tools.bus = ToolBus(
         capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
+        sandbox=NoneSandbox(),
     )
     agent.replies = [
         json.dumps({"tool": "mcp.governed_read", "arguments": {"asset_id": "asset.5f21"}}),
