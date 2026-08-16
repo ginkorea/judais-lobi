@@ -91,7 +91,10 @@ setup(
         ],
     },
     author="Josh Gompert",
-    description="JudAIs & Lobi v0.8.1 — Terminal agents and a governed mission runtime over a unified OpenAI/Mistral backend, with memory and tools",
+    # `Summary:` in the built metadata. The version belongs to VERSION
+    # above; retyped here it agreed for exactly as long as whoever
+    # bumped one remembered the other.
+    description=f"JudAIs & Lobi v{VERSION} — Terminal agents and a governed mission runtime over a unified OpenAI/Mistral backend, with memory and tools",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/judais-lobi",

@@ -38,6 +38,31 @@ def _setup_kwargs() -> dict:
     raise AssertionError("setup.py has no setup() call")
 
 
+def _version() -> str:
+    """The single assignment every other statement of the version derives
+    from — ``version=VERSION`` and, since this test, ``description`` too."""
+    tree = ast.parse(SETUP_PY.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(target, "id", "") == "VERSION" for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("setup.py has no VERSION assignment")
+
+
+def _summary() -> str:
+    """The ``Summary:`` line a built wheel carries.
+
+    Rendered from the ``description`` expression with ``VERSION`` bound the
+    way setup.py binds it, rather than built for real: this file refuses to
+    import setup.py at all, and a build here would need network and a
+    backend to answer a question the source already answers. Any other name
+    in that expression raises ``NameError``, which is the right complaint.
+    """
+    node = _setup_kwargs()["description"]
+    return eval(compile(ast.Expression(node), str(SETUP_PY), "eval"),
+                {"__builtins__": {}, "VERSION": _version()})
+
+
 def _requires() -> list:
     return [ast.literal_eval(item)
             for item in _setup_kwargs()["install_requires"].elts]
@@ -119,6 +144,32 @@ class TestRequirementsMirrorsSetupPy:
         hard requirements while omitting mcp entirely."""
         names = {re.split(r"[<>=;\[ ]", line)[0] for line in _requirements_lines()}
         assert not names & {"torch", "TTS", "torchaudio", "mcp", "pyyaml"}
+
+
+class TestTheSummaryDoesNotKeepItsOwnVersion:
+    """``description`` becomes ``Summary:`` in the built metadata and it
+    opens with the version number — a number ``VERSION`` on line 3 already
+    owns. Written out twice it stays true only while whoever bumps one
+    remembers the other, and the Makefile's rebuild banner had already lost
+    that game by three releases when it was found still saying v0.7.2.
+    """
+
+    def test_the_summary_carries_the_version(self):
+        assert f"v{_version()}" in _summary(), _summary()
+
+    def test_it_is_derived_and_not_retyped(self):
+        """An f-string over ``VERSION``, not a literal that happens to
+        agree today — a literal passes the check above until the next bump
+        and then ships a wheel that misdescribes itself."""
+        node = _setup_kwargs()["description"]
+        assert isinstance(node, ast.JoinedStr), (
+            "description is a constant string; the version in it is a "
+            "second copy of VERSION")
+        interpolated = {value.value.id
+                        for value in node.values
+                        if isinstance(value, ast.FormattedValue)
+                        and isinstance(value.value, ast.Name)}
+        assert "VERSION" in interpolated, interpolated
 
 
 class TestTheWheelDoesNotShipTheTests:
