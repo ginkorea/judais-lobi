@@ -833,3 +833,124 @@ class TestBudget:
         assert transcript.outcome == "answered_with_caveat"
         synth_request = plain.seen[-1][-1]["content"]
         assert "budget was exhausted" in synth_request
+
+
+# ── what the swarm says about the host it ran on ─────────────────────────
+
+
+LEAK_PATH = "/home/testuser/data/mission.log"
+LEAK_TOKEN = "hunter2-hunter2-hunter2"
+
+
+@pytest.fixture
+def leaky_env(monkeypatch):
+    monkeypatch.setenv("MISSION_API_KEY", LEAK_TOKEN)
+    return "MISSION_API_KEY"
+
+
+@pytest.fixture
+def leaky_bus(calls):
+    """The ordinary two-tool bus, except that ``catalog.search`` warns about
+    a file in somebody's home directory with a credential in the message —
+    and still returns the identifier an answer will cite."""
+    b = ToolBus(capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])))
+
+    def search(**kw):
+        calls.append(("catalog.search", dict(kw)))
+        return (0, "corpus abc123 (id corpus.abc123)",
+                f"warn: cache {LEAK_PATH} unreadable, key {LEAK_TOKEN}")
+
+    def run_code(**kw):
+        calls.append(("run_code", dict(kw)))
+        return (0, "wrote chart.png; printed 42", "")
+
+    b.register(ToolDescriptor(tool_name="catalog.search",
+                              description="Search. Second sentence."), search)
+    b.register(ToolDescriptor(tool_name="run_code",
+                              description="Run. Second sentence."), run_code)
+    return b
+
+
+class TestTheSwarmStreamDoesNotNameTheHost:
+    """The swarm has two emitters — its own and every sub-mission's — and a
+    redactor installed at one of them covers half a turn.  The sub-missions
+    go out through `MissionRunner._emit`; the opening, the synthesized answer
+    and the swarm's own grounding verdict do not, and those are exactly the
+    records a pane renders largest.
+    """
+
+    def test_a_sub_missions_tool_error_arrives_scrubbed(self, leaky_bus, leaky_env):
+        sink = Sink()
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "find the corpus", "rung": "tool"},
+                 {"id": "s2", "goal": "chart it", "rung": "tool",
+                  "needs": ["s1"]}),
+            "corpus.abc123 was charted")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        swarm(plain, executor, leaky_bus, observer=sink).run("chart the corpus")
+        error = sink.of("tool_result")[0]["error"]
+        assert "<home>/data/mission.log" in error
+        assert f"<redacted:{leaky_env}>" in error
+        assert LEAK_PATH not in json.dumps(sink.records)
+        assert LEAK_TOKEN not in json.dumps(sink.records)
+
+    def test_the_evidence_survives_the_stage_observer(self, leaky_bus, leaky_env):
+        """The staged path renumbers every record on its way through
+        `_StageObserver` and emits it again.  `output` has to come out the far
+        end byte for byte or the pane and the mission store disagree about
+        what the model was given."""
+        sink = Sink()
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "find the corpus", "rung": "tool"},
+                 {"id": "s2", "goal": "chart it", "rung": "tool",
+                  "needs": ["s1"]}),
+            "corpus.abc123 was charted")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        transcript = swarm(plain, executor, leaky_bus,
+                           observer=sink).run("chart the corpus")
+        assert sink.of("tool_result")[0]["output"] == \
+            "corpus abc123 (id corpus.abc123)"
+        assert sink.of("tool_result")[0]["arguments"] == {"q": "corpus"}
+        assert "corpus.abc123" in transcript.answer
+
+    def test_the_swarms_own_answer_is_scrubbed(self, bus, leaky_env):
+        """The synthesized answer never passes through a `MissionRunner`, so
+        it is the record a redactor installed only on the direct path would
+        miss."""
+        sink = Sink()
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "a", "rung": "tool"},
+                 {"id": "s2", "goal": "b", "rung": "tool", "needs": ["s1"]}),
+            f"the run failed: {LEAK_PATH} ({LEAK_TOKEN})")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="a"), '{"answer": "a done"}',
+            tool_call("run_code", code="b"), '{"answer": "b done"}')
+        swarm(plain, executor, bus, observer=sink).run("q")
+        assert sink.of("answer")[0]["text"] == (
+            f"the run failed: <home>/data/mission.log (<redacted:{leaky_env}>)")
+
+    def test_the_direct_route_under_the_swarm_is_scrubbed_once(
+            self, leaky_bus, leaky_env):
+        """A direct sub-mission's records are scrubbed by its own runner and
+        again by the swarm's `_emit`.  Scrubbing has to be idempotent or the
+        second pass eats the first one's tokens."""
+        sink = Sink()
+        swarm(ScriptedModel(DIRECT),
+              ScriptedModel(tool_call("catalog.search", q="a"),
+                            '{"answer": "found corpus.abc123"}'),
+              leaky_bus, observer=sink).run("q")
+        error = sink.of("tool_result")[0]["error"]
+        assert error.count("<home>") == 1
+        assert error == ("warn: cache <home>/data/mission.log unreadable, "
+                         f"key <redacted:{leaky_env}>")

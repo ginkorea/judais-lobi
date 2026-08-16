@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.bounding import MAX_RESULT_BYTES, bound_result
+from core.redact import scrub_record
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
 )
@@ -445,11 +446,21 @@ class MissionRunner:
         observer that throws is dropped rather than propagated — the
         alternative is a browser tab closing and taking an 11,000 s
         submission with it.
+
+        **And it is the choke point for redaction.**  Every record leaves
+        through here, so :func:`core.redact.scrub_record` is applied here and
+        no emitter below can forget it: an exception rendered into ``error``
+        or ``problem`` stops naming this host's home directory, this host, or
+        a credential in this process's environment before a watcher ever sees
+        it.  ``output`` and ``arguments`` are deliberately untouched — see
+        :data:`core.redact.WHY_VERBATIM`, and in particular that the grounding
+        validator checks an answer against the store's copy of a result, which
+        a rewritten stream copy would no longer match.
         """
         if self._observer is None:
             return
         try:
-            self._observer({"event": event, **fields})
+            self._observer(scrub_record({"event": event, **fields}))
         except Exception:                       # pragma: no cover - defensive
             pass
 

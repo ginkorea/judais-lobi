@@ -64,6 +64,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from core.redact import scrub_record
 from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
@@ -422,10 +423,20 @@ class SwarmRunner:
     # ── telling a watcher ───────────────────────────────────────────────
 
     def _emit(self, event: str, **fields: Any) -> None:
+        """The staged path's choke point, redaction included.
+
+        Same contract as :meth:`MissionRunner._emit`, and scrubbing here for
+        the same reason: the records this runner writes itself — the opening,
+        the synthesized answer, the swarm's own grounding verdict — never pass
+        through a :class:`MissionRunner`, so a redactor installed only there
+        would cover the sub-missions and miss the swarm.  Scrubbing is
+        idempotent, so a sub-mission's record that arrives here already
+        scrubbed is unharmed by being scrubbed again.
+        """
         if self._observer is None:
             return
         try:
-            self._observer({"event": event, **fields})
+            self._observer(scrub_record({"event": event, **fields}))
         except Exception:                       # pragma: no cover - defensive
             pass
 
