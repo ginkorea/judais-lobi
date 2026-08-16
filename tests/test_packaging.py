@@ -68,6 +68,18 @@ def _requires() -> list:
             for item in _setup_kwargs()["install_requires"].elts]
 
 
+def _packages_exclude() -> list:
+    """The names passed to ``find_packages(exclude=…)``, or ``[]``."""
+    call = _setup_kwargs()["packages"]
+    if not (isinstance(call, ast.Call)
+            and getattr(call.func, "id", "") == "find_packages"):
+        raise AssertionError("packages= is not a find_packages() call")
+    for kw in call.keywords:
+        if kw.arg == "exclude":
+            return list(ast.literal_eval(kw.value))
+    return []
+
+
 def _requirements_lines() -> list:
     return [line.strip()
             for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines()
@@ -192,11 +204,27 @@ class TestTheWheelDoesNotShipTheTests:
     pins it in the same AST the other checks read."""
 
     def test_find_packages_excludes_tests(self):
-        call = _setup_kwargs()["packages"]
-        assert isinstance(call, ast.Call) and call.func.id == "find_packages"
-        excluded = [ast.literal_eval(kw.value)
-                    for kw in call.keywords if kw.arg == "exclude"]
-        assert excluded, "find_packages() with no exclude ships tests/"
-        (names,) = excluded
+        names = _packages_exclude()
+        assert names, "find_packages() with no exclude ships tests/"
         assert "tests" in names and "tests.*" in names
+
+    def test_the_top_level_names_are_the_three_this_package_owns(self):
+        """The exclusion fixes the one directory that was caught. This is
+        the rule it was an instance of: everything with an ``__init__.py``
+        at the root goes into site-packages under its own name, so any new
+        one — a scratch package, a parked experiment, a second `tests` by
+        another name — ships to every installer until somebody notices.
+
+        setuptools is not importable in the test environment, so the
+        discovery ``find_packages()`` would do is redone here: root
+        directories carrying an ``__init__.py``, less what ``exclude``
+        names. Dotted directories are skipped the way setuptools skips
+        them — a `.venv` is not a candidate package.
+        """
+        excluded = {name.split(".")[0] for name in _packages_exclude()}
+        found = {child.name for child in REPO.iterdir()
+                 if child.is_dir()
+                 and not child.name.startswith(".")
+                 and (child / "__init__.py").exists()}
+        assert found - excluded == {"core", "judais", "lobi"}, sorted(found)
 
