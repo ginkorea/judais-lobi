@@ -6,6 +6,7 @@
 import time
 from dataclasses import dataclass
 
+from core.bounding import MAX_RESULT_BYTES
 from core.kernel.state import SessionState
 
 
@@ -15,7 +16,9 @@ class BudgetConfig:
     max_phase_retries: int = 3
     max_total_iterations: int = 30
     max_time_per_phase_seconds: float = 300.0
-    max_tool_output_bytes_in_context: int = 32_768
+    #: Default is ``core.bounding.MAX_RESULT_BYTES``: this is a knob a
+    #: deployment may turn down, not a second opinion on the number.
+    max_tool_output_bytes_in_context: int = MAX_RESULT_BYTES
     max_context_tokens_per_role: int = 16_384
     max_candidates: int = 5
 

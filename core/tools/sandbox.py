@@ -14,7 +14,23 @@ from core.tools.descriptors import SandboxProfile
 
 
 class SandboxRunner(Protocol):
-    """Protocol for sandboxed command execution."""
+    """Protocol for sandboxed command execution.
+
+    ``shell`` and ``executable`` are part of the protocol because the
+    caller knows them and the sandbox cannot infer them.  ``ToolBus``
+    installs a sandbox runner in place of ``executor.run_subprocess``,
+    which is handed both by every tool that calls it; the runner used to
+    drop them on the floor and each sandbox re-derived shell mode from
+    ``isinstance(cmd, str)`` and hard-coded ``/bin/bash``.  That silently
+    overrode a tool configured with a different interpreter and made a
+    caller's explicit ``shell=False`` mean nothing.
+
+    ``shell=None`` keeps the old inference — a string is a shell command,
+    a list is an argv — so a direct caller that never had an opinion does
+    not have to grow one.  ``shell`` decides the string case only: an argv
+    is run as an argv whatever the flag says, because joining one into a
+    script would re-quote arguments the caller had already separated.
+    """
     def execute(
         self,
         cmd: Union[str, List[str]],
@@ -22,7 +38,22 @@ class SandboxRunner(Protocol):
         profile: Optional[SandboxProfile] = None,
         timeout: Optional[int] = None,
         env: Optional[dict] = None,
+        shell: Optional[bool] = None,
+        executable: Optional[str] = None,
     ) -> Tuple[int, str, str]: ...
+
+
+def _shell_mode(cmd: Union[str, List[str]], shell: Optional[bool]) -> bool:
+    """Whether *cmd* runs under an interpreter.
+
+    An argv never does: it arrived already split, and re-joining it into a
+    shell script would hand the quoting back to the shell. For a string the
+    caller decides, and ``None`` means the old inference — a string is a
+    script.
+    """
+    if not isinstance(cmd, str):
+        return False
+    return True if shell is None else bool(shell)
 
 
 class NoneSandbox:
@@ -35,8 +66,10 @@ class NoneSandbox:
         profile: Optional[SandboxProfile] = None,
         timeout: Optional[int] = None,
         env: Optional[dict] = None,
+        shell: Optional[bool] = None,
+        executable: Optional[str] = None,
     ) -> Tuple[int, str, str]:
-        shell_mode = isinstance(cmd, str)
+        shell_mode = _shell_mode(cmd, shell)
         run_env = {**os.environ, **(env or {})}
         try:
             result = subprocess.run(
@@ -45,7 +78,7 @@ class NoneSandbox:
                 text=True,
                 capture_output=True,
                 timeout=timeout or 120,
-                executable="/bin/bash" if shell_mode else None,
+                executable=(executable or "/bin/bash") if shell_mode else None,
                 env=run_env,
             )
             return (
@@ -115,12 +148,16 @@ class BwrapSandbox:
         profile: Optional[SandboxProfile] = None,
         timeout: Optional[int] = None,
         env: Optional[dict] = None,
+        shell: Optional[bool] = None,
+        executable: Optional[str] = None,
     ) -> Tuple[int, str, str]:
         profile = profile or SandboxProfile()
         bwrap_args = self._build_bwrap_args(profile)
 
-        if isinstance(cmd, str):
-            full_cmd = bwrap_args + ["/bin/bash", "-c", cmd]
+        if _shell_mode(cmd, shell):
+            full_cmd = bwrap_args + [executable or "/bin/bash", "-c", cmd]
+        elif isinstance(cmd, str):
+            full_cmd = bwrap_args + [cmd]
         else:
             full_cmd = bwrap_args + list(cmd)
 

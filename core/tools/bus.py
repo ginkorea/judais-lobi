@@ -281,9 +281,30 @@ class ToolBus:
         return True
 
     def _build_sandbox_runner(self, profile: SandboxProfile) -> Callable:
-        def _runner(cmd, *, shell: bool = False, timeout: int = 120,
+        """A ``run_subprocess``-shaped callable that runs inside the sandbox.
+
+        ``shell`` and ``executable`` are forwarded, not swallowed.  This
+        accepted both from :func:`core.tools.executor.run_subprocess` and
+        dropped them, leaving each sandbox to re-derive shell mode from
+        ``isinstance(cmd, str)`` and to hard-code ``/bin/bash`` — so a
+        tool configured with another interpreter got bash without being
+        told, and an explicit ``shell=False`` on a string command was
+        ignored.  Sandboxing a command must not change which command it
+        is.
+        """
+        # ``shell=None`` rather than ``False``: ``run_subprocess`` always
+        # passes the flag, but a caller that installs this runner directly
+        # and never had an opinion should keep the sandbox's inference
+        # rather than be told, by a default, that nothing is a shell.
+        def _runner(cmd, *, shell: Optional[bool] = None, timeout: int = 120,
                     executable: Optional[str] = None, **_kwargs):
-            return self._sandbox.execute(cmd, profile=profile, timeout=timeout)
+            return self._sandbox.execute(
+                cmd,
+                profile=profile,
+                timeout=timeout,
+                shell=shell,
+                executable=executable,
+            )
         return _runner
 
     def _apply_subprocess_runner(self, executor: Callable, runner: Callable):

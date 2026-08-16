@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from core.bounding import MAX_RESULT_BYTES
 from core.context.formatter import estimate_tokens
 from core.runtime.gpu import GPUProfile, detect_gpu_profile, vram_to_context_cap
 from core.tools.config_loader import load_project_config
@@ -25,7 +26,7 @@ class ModelContextProfile:
 class ContextConfig:
     max_context_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
-    max_tool_output_bytes_in_context: int = 32_768
+    max_tool_output_bytes_in_context: int = MAX_RESULT_BYTES
     min_tail_messages: int = 6
     max_summary_chars: int = 2400
     provider_defaults: Dict[str, int] = field(default_factory=dict)
@@ -38,7 +39,9 @@ class ContextConfig:
         return ContextConfig(
             max_context_tokens=ctx.get("max_context_tokens"),
             max_output_tokens=ctx.get("max_output_tokens"),
-            max_tool_output_bytes_in_context=int(ctx.get("max_tool_output_bytes_in_context", 32768)),
+            max_tool_output_bytes_in_context=int(
+                ctx.get("max_tool_output_bytes_in_context", MAX_RESULT_BYTES)
+            ),
             min_tail_messages=int(ctx.get("min_tail_messages", 6)),
             max_summary_chars=int(ctx.get("max_summary_chars", 2400)),
             provider_defaults=dict(ctx.get("provider_defaults", {}) or {}),

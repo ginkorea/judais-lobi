@@ -591,6 +591,29 @@ class TestBudgets:
         assert len(ctx.trace[0]) < 200
         assert "truncated" in ctx.trace[0]
 
+    def test_the_end_of_a_capped_trace_line_survives(self):
+        """The cap used to keep the head and drop everything after it.
+
+        A trace line is a tool result rendered for a later phase to read,
+        and a tool result puts its totals at the end — a head-only cut
+        kept the invocation and threw away the counts CRITIQUE and FIX
+        are looking for. Both ends now, through the one shared cut.
+        """
+        ctx = make_ctx(budget=BudgetConfig(max_tool_output_bytes_in_context=50))
+        ctx.remember("HEAD" + "y" * 10_000 + "TAIL: 3 failed")
+        assert ctx.trace[0].startswith("HEAD")
+        assert ctx.trace[0].endswith("TAIL: 3 failed")
+
+    def test_a_capped_trace_line_says_how_much_went(self):
+        ctx = make_ctx(budget=BudgetConfig(max_tool_output_bytes_in_context=50))
+        ctx.remember("y" * 10_000)
+        assert "30 head + 20 tail bytes of 10000" in ctx.trace[0]
+
+    def test_a_trace_line_inside_the_cap_is_untouched(self):
+        ctx = make_ctx(budget=BudgetConfig(max_tool_output_bytes_in_context=50))
+        ctx.remember("short line")
+        assert ctx.trace[0] == "short line"
+
 
 # ---------------------------------------------------------------------------
 # End to end, through the real orchestrator

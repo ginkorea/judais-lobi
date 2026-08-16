@@ -207,11 +207,13 @@ class Tools:
             arg_summary = ", ".join(map(str, args))
             kwarg_summary = ", ".join(f"{k}={v}" for k, v in kwargs.items())
             arg_text = "; ".join(filter(None, [arg_summary, kwarg_summary]))
+            from core.bounding import MAX_RESULT_BYTES
             from core.runtime.context_window import ContextConfig
             from core.tools.tool_output import build_tool_output_record
 
             ctx = ContextConfig.from_project()
-            max_bytes = int(getattr(ctx, "max_tool_output_bytes_in_context", 32768))
+            max_bytes = int(getattr(
+                ctx, "max_tool_output_bytes_in_context", MAX_RESULT_BYTES))
             record = build_tool_output_record(name, tuple_result, max_bytes=max_bytes)
             elf.history.append({
                 "role": "assistant",
