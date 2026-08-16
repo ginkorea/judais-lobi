@@ -1,11 +1,15 @@
 # tests/test_agent.py — Tests for the Agent class (replaces test_elf.py)
 
-import pytest
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from core.agent import Agent
 from core.contracts.schemas import PersonalityConfig
+from judais.judais import JUDAIS_CONFIG
+from lobi.lobi import LOBI_CONFIG
 from tests.conftest import FakeUnifiedClient
 
 
@@ -20,6 +24,70 @@ STUB_CONFIG = PersonalityConfig(
 
 
 class TestAgentConstruction:
+    @pytest.mark.parametrize(
+        ("config", "env_dir_name", "key_name", "key_value"),
+        [
+            (
+                JUDAIS_CONFIG,
+                ".judais_env",
+                "MISTRAL_API_KEY",
+                "mistral-test-key",
+            ),
+            (LOBI_CONFIG, ".lobi_env", "OPENAI_API_KEY", "openai-test-key"),
+        ],
+    )
+    def test_loads_nested_personality_env_file(
+        self,
+        config,
+        env_dir_name,
+        key_name,
+        key_value,
+        tmp_path,
+        monkeypatch,
+        fake_client,
+        memory,
+        fake_tools,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        env_dir = tmp_path / env_dir_name
+        env_dir.mkdir()
+        (env_dir / ".elf_env").write_text(
+            f"{key_name}={key_value}\n", encoding="utf-8"
+        )
+        monkeypatch.delenv(key_name, raising=False)
+
+        Agent(
+            config=config,
+            model="test-model",
+            provider="openai",
+            debug=False,
+            client=fake_client,
+            memory=memory,
+            tools=fake_tools,
+        )
+
+        assert os.environ[key_name] == key_value
+
+    def test_still_loads_direct_personality_env_file(
+        self, tmp_path, monkeypatch, fake_client, memory, fake_tools
+    ):
+        env_file = tmp_path / "custom.env"
+        env_file.write_text("CUSTOM_AGENT_KEY=loaded\n", encoding="utf-8")
+        monkeypatch.delenv("CUSTOM_AGENT_KEY", raising=False)
+        config = STUB_CONFIG.model_copy(update={"env_path": str(env_file)})
+
+        Agent(
+            config=config,
+            model="test-model",
+            provider="openai",
+            debug=False,
+            client=fake_client,
+            memory=memory,
+            tools=fake_tools,
+        )
+
+        assert os.environ["CUSTOM_AGENT_KEY"] == "loaded"
+
     def test_di_injection(self, fake_client, memory, fake_tools):
         agent = Agent(
             config=STUB_CONFIG,
