@@ -252,6 +252,19 @@ self-report.
   version of this rule exists in a deployment's personality file and says in
   its own comment that it belongs here.
 - Decide `god_mode` and the preflight hook: measured and wired, or deleted.
+- **First regression cases, from the reference deployment's A/B of 16 Aug
+  2026** (same pane, same 10-scenario behavioural driver, 0.9.0): direct 10/10,
+  `--swarm` 9/10. The one failure was the suite's simplest prompt — a
+  "[quick web] give me 5 short bullets" listing — and it names two swarm
+  defects the harness must catch: (1) the **router staged a request one tool
+  call answers** (documented as biased to DIRECT; on a 20B model it was not),
+  so "a `[quick web]` listing must not be staged" is a case; (2) the
+  **synthesizer refused with partial results in hand** ("cannot provide …
+  steps were halted") where the direct loop would have answered with a caveat
+  — the staged path's answer-with-caveat posture must be at least as strong as
+  the direct one's. Both belong to the swarm, and staged-run `--resume`
+  (§2.4's residual) stays behind them in priority until the harness scores
+  swarm as the better default.
 
 ### 2.6 Phase 11 — one runtime (0.12)
 
