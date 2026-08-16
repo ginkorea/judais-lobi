@@ -539,6 +539,71 @@ at all, and `local` in particular has no cost until somebody prices it. This
 repo ships no price list and never will — prices move, they differ per account,
 and a wrong number is worse than none because somebody bills from it.
 
+### AG-UI, if the platform's frontend speaks it
+
+`core/runtime/agui.py` turns these records into AG-UI event frames. It is
+**optional and import-free** — dicts only, no AG-UI SDK, and nothing in this
+repo imports it — so it costs a deployment that does not want it nothing at
+all. Two entry points:
+
+```python
+from core.runtime.agui import Translator, translate
+
+# a whole run, or a replay out of RunStore.since(0): pure, deterministic
+for frame in translate(records, thread_id=thread, run_id=run):
+    send(frame)
+
+# a live follower: feed() as each line arrives, close() at EOF
+t = Translator(thread_id=thread, run_id=run)
+for record in stream:
+    for frame in t.feed(record):
+        send(frame)
+for frame in t.close():          # closes what is open; RUN_ERROR if the
+    send(frame)                  # harness died without `mission_finished`
+```
+
+It takes wire records **or** `{seq, at, record}` store envelopes, so a replay
+and a live pane are one code path. The mapping:
+
+| record | frames |
+| --- | --- |
+| `mission_started` | `RUN_STARTED` + `CUSTOM mission.opening` (the posture) |
+| `step_started` | `STEP_STARTED`, and a `CUSTOM mission.<field>` per optional field (`compacted`, `resumed`, `plan`, …) |
+| `reply_rejected` | `CUSTOM mission.reply_rejected`, `mechanics: true` — **never** a `TEXT_MESSAGE` |
+| `tool_call` | `TOOL_CALL_START` + `TOOL_CALL_ARGS` |
+| `tool_result` | `TOOL_CALL_END` + `TOOL_CALL_RESULT` (output verbatim) |
+| `gate_requested` | `CUSTOM mission.gate_requested` (arguments verbatim) |
+| `answer` | `TEXT_MESSAGE_START` / `CONTENT`×N / `END` + `CUSTOM mission.answer` |
+| `grounding` | `CUSTOM mission.grounding`, carrying the `messageId` it judges |
+| `mission_finished` | `RUN_FINISHED`, or `RUN_ERROR` — see below |
+| anything else | dropped, per the compatibility rule |
+
+Three behaviours are the point of the module rather than incidental to it, and
+a platform writing its own translator should copy them:
+
+* **A rejected reply is mechanics, not content.** The loop's correction prompt
+  rendered as prose reads as the agent saying something incoherent. It goes out
+  marked, and whether to buffer the rejections and flush them only for a turn
+  that ended without an answer is the platform's policy.
+* **The grounding verdict rides the answer's own frames** — inline on every
+  `TEXT_MESSAGE_CONTENT` and on `mission.grounding` as the `messageId` of the
+  message it judges, so a renderer badges the answer rather than drawing a
+  sibling a reconnect can separate from it. An interim `repairing: true` report
+  is emitted and does **not** close the message.
+* **One answer, several bounded frames.** `answer_deltas` splits at line
+  boundaries and never inside a fence. When the harness emits `answer_delta`
+  records the deltas are relayed as they arrive and the `answer` record is the
+  authoritative replacement; when it does not, the module fans the text out
+  itself, so the incremental path is exercised on every run.
+
+**`RUN_ERROR` versus `RUN_FINISHED`.** `incomplete` with **no** `reason` is a
+crash — the record comes out of a `finally` holding the outcome nothing got
+round to setting — and becomes `RUN_ERROR`; the diagnostic is the tail of
+stderr. `incomplete` **with** a reason is `RUN_FINISHED` (plus `cancelled:
+true` when somebody pressed stop), because rendering a person's own decision as
+a failure tells them something went wrong with the thing they asked for. Every
+other outcome, `budget_exhausted` included, finishes.
+
 ### Pinning the contract
 
 ```python

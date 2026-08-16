@@ -297,10 +297,21 @@ Properties 4 and 6.
 - **`answer_delta` at the source.** A deployment fans one `answer` record into
   bounded deltas client-side; emit real deltas here instead. Keep the design
   lesson that made that work: the grounding verdict rides the answer's own
-  frames, never a sibling event. Ship the AG-UI translator as an optional
-  `core.runtime.agui` so the next browser does not rewrite it.
+  frames, never a sibling event. ~~Ship the AG-UI translator as an optional
+  `core.runtime.agui` so the next browser does not rewrite it.~~ **Shipped:**
+  `core/runtime/agui.py` — `translate()` over a whole run or a `RunStore`
+  replay, `Translator.feed/close` for a live follower, dicts only and no AG-UI
+  SDK. Every event of `contract.EVENTS` is mapped and a test fails when the
+  contract grows one that is not; the verdict rides the answer's frames and
+  names the `messageId` it judges; an interim `repairing` report does not close
+  the message; `answer_delta` is relayed when the contract declares it and
+  fanned out from the `answer` record when it does not. `PLATFORMS.md`
+  §"AG-UI" is the driver's copy.
 - **Reply-rejection buffering.** A rejected reply is mechanics, not content;
-  a consumer must be able to render it as such.
+  a consumer must be able to render it as such. **The marking shipped** with
+  the translator (`CUSTOM mission.reply_rejected`, `mechanics: true`, never a
+  `TEXT_MESSAGE`); holding a rejection back until the turn's fate is known
+  stays the consumer's policy, which is the half this repo must not decide.
 - ~~Wire the probed constrained-decoding path (`response_format`,
   `tool_choice=required`) behind a capability flag, measured by Phase 10.~~
   **Pulled forward and shipped in 0.11.0** on the reference deployment's
