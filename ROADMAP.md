@@ -16,7 +16,7 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v0.10.0**, 16 Aug 2026. 2,853 tests collected; ~23.2k non-test lines in
+**v0.11.0**, 16 Aug 2026. 3,059 tests collected; ~23.2k non-test lines in
 `core/`+`judais/`+`lobi/`, ~26k lines of tests.
 
 For two weeks this framework ran in production as **Tai**, the mission agent
@@ -104,7 +104,7 @@ merges. Version bump every phase.
 | 9 | Durable and bounded (0.10) | ✅ 0.10.0 — properties 2 and 3, less the residuals in §2.4 |
 | 10 | Measurable (0.11) | property 4; absorbs February's Phase 10 |
 | 11 | One runtime (0.12) | property 5 |
-| 12 | Providers and streaming (0.13) | properties 4 and 6 |
+| 12 | Providers and streaming (0.13) | properties 4 and 6 — constrained decoding shipped early in 0.11.0 (`--protocol native`, default off) |
 | 13 | Embeddable (1.0) | property 6 |
 
 ### 2.2 As built
@@ -301,8 +301,21 @@ Properties 4 and 6.
   `core.runtime.agui` so the next browser does not rewrite it.
 - **Reply-rejection buffering.** A rejected reply is mechanics, not content;
   a consumer must be able to render it as such.
-- Wire the probed constrained-decoding path (`response_format`,
-  `tool_choice=required`) behind a capability flag, measured by Phase 10.
+- ~~Wire the probed constrained-decoding path (`response_format`,
+  `tool_choice=required`) behind a capability flag, measured by Phase 10.~~
+  **Pulled forward and shipped in 0.11.0** on the reference deployment's
+  evidence (2 of 4 turns burned on shape errors): `--protocol native` /
+  `MISSION_PROTOCOL` — `tool_choice="required"` over the declared tools plus a
+  synthetic `mission_answer` function, so an unknown name or unparseable
+  arguments are unrepresentable; several calls per step (`call` ordinal on
+  `tool_call`/`tool_result`); JSON-schema validation of arguments before
+  dispatch (`core/runtime/schema_check.py`, both protocols); OpenAI message
+  shapes; native runs resume; `protocol` on `mission_started`. Every backend
+  exposes `last_tool_calls`; the swarm's router/planner/gates ask for
+  `response_format=json_object` where the backend has JSON mode; the prompt
+  prefix is byte-stable and most-constant-first, and the window evicts tool
+  round trips before user turns. **Default stays `json`** until Phase 10's
+  harness scores the two — that measurement, not this bullet, flips it.
 
 ### 2.8 Phase 13 — embeddable (1.0)
 

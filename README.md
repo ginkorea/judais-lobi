@@ -583,9 +583,16 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.10.0 — 2853 tests collected.** Mission mode, skill manifests, the grounding
+**v0.11.0 — 3059 tests collected.** Mission mode, skill manifests, the grounding
 validator, `--swarm`, the NDJSON mission stream and the published contract are
-all in this release. 0.10.0 is **durable and bounded**: every mission leaves a
+all in this release. 0.11.0 adds **native tool calling behind a flag**:
+`--protocol native` constrains the decoder to the declared functions plus a
+synthetic `mission_answer` (unknown names and unparseable arguments become
+unrepresentable), allows several calls per step, validates arguments against
+the tool's schema before dispatch, and announces itself as `protocol` on
+`mission_started` — default stays `json` until the eval harness scores it;
+the prompt prefix is byte-stable for prefix caching and the context window
+evicts tool round trips before user turns. 0.10.0 was **durable and bounded**: every mission leaves a
 numbered, fsync'd log behind (`core/durable.py`, `run_id` on `mission_started`)
 and `--resume <run-id>` picks a killed one back up from it; `--mission-seconds`
 bounds the wall clock and `budget_exhausted` names which budget ran out;
@@ -604,7 +611,7 @@ reaches the stream. The kernel's role prompts are bounded by the same context
 window the mission uses, and Phase 8 is closed. `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
 how a platform deploys this framework as its own agent.
 
-`ROADMAP.md` is the one roadmap: §1 is where the framework stands at 0.10.0
+`ROADMAP.md` is the one roadmap: §1 is where the framework stands at 0.11.0
 and what is still missing, §2 is Phases 9–13, and §5 is the history — the
 Feb 2026 blueprint, the Phase 8 disposition, and what two weeks in production
 taught. `NEXT_STEPS.md` and `PHASE_8.md` were folded into it on 15 Aug 2026.
@@ -707,7 +714,7 @@ If you are **running this from another program**, read:
 
 If you want to understand **where this is going**, read:
 
-* 🗺️ `ROADMAP.md` — the only roadmap: where 0.10.0 stands (§1), Phases 9–13
+* 🗺️ `ROADMAP.md` — the only roadmap: where 0.11.0 stands (§1), Phases 9–13
   (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 
 If you want to understand the **current implementation**, inspect:
