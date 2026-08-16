@@ -6,7 +6,9 @@ import pytest
 
 from core.contracts.schemas import PolicyPack
 from core.runtime.grounding import GroundingConfig, GroundingValidator
-from core.runtime.mission import AWAITING_APPROVAL, MissionRunner
+from core.runtime.mission import (
+    ANSWER_TOOL, AWAITING_APPROVAL, NATIVE_PROTOCOL, MissionRunner,
+)
 from core.runtime.swarm import SwarmRunner
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
@@ -2120,3 +2122,111 @@ class TestEveryRoleOpensWithTheSameBytes:
 
         assert stacked("a", "", "  b  ", None) == "a\n\nb"
         assert stacked("a\n", "\nb") == "a\n\nb"
+
+
+# ---------------------------------------------------------------------------
+# The protocol is the turn's, not the sub-mission's
+# ---------------------------------------------------------------------------
+
+
+class NativeModel:
+    """The executor half of a native turn: the reply is the call.
+
+    A local copy rather than an import from ``test_mission``, for the
+    reason ``ScriptedModel`` is a local copy: a test file that reaches into
+    another test file for its fakes makes the second one impossible to
+    change.
+    """
+
+    def __init__(self, *turns):
+        self.turns = [t if isinstance(t, list) else [t] for t in turns]
+        self.seen = []
+        self.last_tool_calls = []
+
+    def __call__(self, messages):
+        self.seen.append([dict(m) for m in messages])
+        calls = self.turns.pop(0) if self.turns else [self.answer("done")]
+        self.last_tool_calls = list(calls)
+        return ""
+
+    def tool_calls(self):
+        return list(self.last_tool_calls)
+
+    @staticmethod
+    def call(name, _id=None, **arguments):
+        return {"id": _id or f"c_{name}", "name": name,
+                "arguments": arguments}
+
+    @classmethod
+    def answer(cls, text, _id=None):
+        return cls.call(ANSWER_TOOL, _id, text=text)
+
+
+class TestTheProtocolReachesEverySubMission:
+    """A staged turn that spoke one protocol at the top and another
+    underneath would be a turn whose opening frame is false of most of its
+    records.
+
+    The swarm's OWN calls are the exception, and deliberately: the router,
+    the planner, each gate and the synthesizer go through
+    ``plain_chat_fn``, which declares no tools at all — a yes/no question
+    answered with a tool call is the failure that function exists to
+    prevent.
+    """
+
+    def _native(self, bus, executor, plain, **kw):
+        return SwarmRunner(
+            executor, bus, ["catalog.search", "run_code"],
+            system_message="You are Tai.", plain_chat_fn=plain,
+            protocol=NATIVE_PROTOCOL, tool_calls_fn=executor.tool_calls, **kw)
+
+    def test_the_direct_route_runs_the_native_loop(self, bus, calls):
+        executor = NativeModel(
+            NativeModel.call("catalog.search", "c0", q="corpus"),
+            NativeModel.answer("found corpus.abc123"))
+        transcript = self._native(
+            bus, executor, ScriptedModel(DIRECT)).run("find it")
+        assert transcript.answer == "found corpus.abc123"
+        assert [name for name, _kw in calls] == ["catalog.search"]
+
+    def test_a_staged_rung_runs_it_too(self, bus, calls):
+        executor = NativeModel(
+            [NativeModel.call("catalog.search", "c0", q="corpus"),
+             NativeModel.call("run_code", "c1", code="plot()")],
+            NativeModel.answer("found corpus.abc123 and wrote chart.png"))
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"}),
+            '{"pass": true}', "Final: corpus.abc123")
+        transcript = self._native(bus, executor, plain).run("find it")
+        assert transcript.completed
+        # Both calls of one native turn reached the bus, through the
+        # sub-mission the swarm built.
+        assert [name for name, _kw in calls] == ["catalog.search", "run_code"]
+
+    def test_the_opening_frame_announces_it_from_the_same_owner(self, bus):
+        events = []
+        executor = NativeModel(NativeModel.answer("done"))
+        self._native(bus, executor, ScriptedModel(DIRECT),
+                     observer=events.append).run("go")
+        started = [r for r in events if r["event"] == "mission_started"]
+        assert len(started) == 1
+        assert started[0]["protocol"] == NATIVE_PROTOCOL
+
+    def test_an_ordinary_staged_turn_says_nothing_about_a_protocol(self, bus):
+        events = []
+        plain = ScriptedModel(DIRECT)
+        SwarmRunner(ScriptedModel('{"answer": "ok"}'), bus,
+                    ["catalog.search"], plain_chat_fn=plain,
+                    observer=events.append).run("go")
+        assert "protocol" not in [r for r in events
+                                  if r["event"] == "mission_started"][0]
+
+    def test_the_swarms_own_roles_are_still_asked_in_prose(self, bus):
+        """`plain_chat_fn` is untouched by the protocol: the router is not
+        a mission and has no tools to call."""
+        plain = ScriptedModel(DIRECT)
+        executor = NativeModel(NativeModel.answer("done"))
+        self._native(bus, executor, plain).run("go")
+        assert plain.calls == 1
+        assert all("tool_calls" not in m for m in plain.seen[0])

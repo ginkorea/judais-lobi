@@ -109,14 +109,18 @@ REPLY_REJECTED = "reply_rejected"
 #: ``tool``, ``arguments``.  **Emitted before the call**, which is what lets a
 #: watcher show what is about to happen rather than only what happened.
 #:
-#: It may carry ``usage`` — what the model call that *chose* this tool cost.
-#: See :data:`OPTIONAL`.
+#: It may carry ``usage`` — what the model call that *chose* this tool cost —
+#: and ``call``, which call of this step it is when the model asked for
+#: several in one turn.  See :data:`OPTIONAL`.
 TOOL_CALL = "tool_call"
 
 #: The bus answered.  ``index``, ``tool``, ``arguments``, ``ok``, ``exit_code``,
 #: ``output`` (stdout, whole — bounding is what the *model* is shown, not what a
 #: watcher is), ``error`` (stderr), ``handle`` (the mission store's handle for
 #: the full result), ``truncated``.
+#:
+#: It may carry ``call`` — which call of the step this is, when the step made
+#: more than one.  See :data:`OPTIONAL`.
 TOOL_RESULT = "tool_result"
 
 #: The model named a tool this deployment offers **and gates**: the call was not
@@ -263,7 +267,26 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: envelope is the store's numbering and never travels on the wire.
     #: A log whose last record is ``mission_finished`` is a run that
     #: closed; a log without one is an orphan.
-    MISSION_STARTED: ("sandbox", "profile", "audit_ref", "run_id"),
+    #:
+    #: ``protocol`` — how the model was asked to decide, and it appears
+    #: **only when that is not the default**: ``"native"`` for a run
+    #: started with ``--protocol native``, absent for every other run,
+    #: which a consumer reads as ``"json"``.  Absence is the point — it is
+    #: what keeps every stream ever recorded byte-identical while the
+    #: field is added — and it is the same rule ``reason`` and ``budget``
+    #: follow: a field states a fact only when there is one to state.
+    #:
+    #: Under ``json`` the model writes one JSON object per reply and this
+    #: harness parses it.  Under ``native`` the request declares the
+    #: offered tools as functions plus a synthetic ``mission_answer``, asks
+    #: for ``tool_choice="required"`` and ``parallel_tool_calls=true``, and
+    #: the reply is read out of the provider's own ``tool_calls`` — so a
+    #: reply that does not parse, and a tool name nobody offers, are
+    #: unrepresentable rather than caught.  What a consumer sees change:
+    #: one turn may produce several ``tool_call``/``tool_result`` pairs
+    #: under one ``index``, distinguished by ``call``.
+    MISSION_STARTED: ("sandbox", "profile", "audit_ref", "run_id",
+                      "protocol"),
     #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
     #: first ``step_started`` that plan produces.  Absent on a direct
     #: mission, which has no plan to show, and absent on every later step.
@@ -342,7 +365,30 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: for a number that fits in an existing frame.  An optional field is read
     #: with a default by a consumer that wants it and ignored by one that does
     #: not — the same route ``compacted`` and ``plan`` took.
-    TOOL_CALL: ("usage",),
+    #:
+    #: ``call`` — which call of this step, 0-based, in the order the model
+    #: emitted them.  **Absent on the first call and absent for every call
+    #: of a ``json`` run**, so a consumer that has never heard of it reads
+    #: the stream it always read; present from the second call of a
+    #: ``native`` turn, where one model turn may dispatch several tools.
+    #:
+    #: ``index`` still numbers the **model turn** and is what
+    #: ``--mission-steps`` counts, so two records with the same ``index``
+    #: and different ``call`` are two dispatches the model asked for in one
+    #: breath — not two steps.  A call the harness refused before
+    #: dispatching it (a schema violation, a name nobody offers) still uses
+    #: up its ordinal: the number describes what the model emitted, not
+    #: what ran, so a consumer counting gaps is reading a refusal and not a
+    #: lost record.
+    #:
+    #: ``usage`` rides the FIRST record of a turn only, whichever record
+    #: that is, because it is the cost of one model call and a turn that
+    #: dispatched three tools did not pay for it three times.
+    TOOL_CALL: ("usage", "call"),
+    #: ``call`` — as on ``tool_call``, and the same ordinal: the pair
+    #: belongs together and a consumer matching a result to its call under
+    #: a shared ``index`` needs both halves numbered the same way.
+    TOOL_RESULT: ("call",),
     #: ``usage`` — as above: the cost of the call that wrote ``text``.
     ANSWER: ("usage",),
     #: ``usage`` — the whole run's, and the only place a TOTAL appears:
@@ -460,7 +506,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--provider", "--model",
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
     "--history", "--gate-tool", "--approval", "--resume", "--temperature",
-    "--top-p", "--seed",
+    "--top-p", "--seed", "--protocol",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -498,7 +544,14 @@ CLI_FLAGS: tuple[str, ...] = (
 #: this run is carrying;
 #: ``MISSION_RESUME`` is the environment form of ``--resume``, the run id of
 #: a recorded mission to carry on from — the objective comes off that run's
-#: own record, so the positional message may be omitted with it.
+#: own record, so the positional message may be omitted with it;
+#: ``MISSION_PROTOCOL`` is the environment form of ``--protocol`` — ``json``
+#: (the default, and the loop as it has always run) or ``native``, which
+#: declares the tools as functions and constrains the decoder to them.
+#: ``native`` is refused at the door on a backend whose capabilities do not
+#: declare both ``supports_tool_calls`` and ``supports_tool_choice_required``,
+#: because a mission that silently fell back to prose would be measured as
+#: the protocol it was not running.
 #:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
@@ -511,6 +564,7 @@ ENV_VARS: tuple[str, ...] = (
     "MISSION_APPROVAL",
     "MISSION_SECONDS",
     "MISSION_RESUME",
+    "MISSION_PROTOCOL",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",

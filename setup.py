@@ -54,7 +54,15 @@ setup(
         # turns into `SystemExit`. So the failure is loud and nothing runs
         # ungoverned — the extra exists to spare an operator discovering
         # that at the door and installing the second half by hand.
-        "mission": ["mcp>=1.25,<2", "pyyaml>=6.0"],
+        #
+        # `jsonschema` is the third: core/runtime/schema_check.py validates
+        # a call's arguments against the tool's own schema before
+        # dispatching it, and soft-imports this. Without it the check falls
+        # back to `required`/`type`/`enum` at the top level and says nothing
+        # about anything nested — a real floor rather than a crash, which is
+        # why it is an extra and not a hard dependency, and why it is IN the
+        # extra a platform installs rather than left to be discovered.
+        "mission": ["mcp>=1.25,<2", "pyyaml>=6.0", "jsonschema>=4"],
         "critic": [
             "anthropic>=0.30.0",
             "google-generativeai>=0.7.0",
