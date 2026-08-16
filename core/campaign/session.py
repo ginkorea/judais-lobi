@@ -10,6 +10,8 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from core.sessions.manager import load_context_warnings, write_context_warning
+
 
 class CampaignSession:
     def __init__(self, base_dir: Path, campaign_id: Optional[str] = None):
@@ -98,6 +100,19 @@ class StepSessionManager:
     def load_all_artifacts(self):
         files = sorted(self._artifacts_dir.glob("*.json"))
         return [json.loads(f.read_text()) for f in files]
+
+    def write_context_warning(self, record: dict) -> Path:
+        """Record one prompt compaction, beside the step's artifacts.
+
+        Through the same function :class:`~core.sessions.manager.SessionManager`
+        uses, because this class is that one's subset for a campaign step:
+        a second copy of where the record goes is how a step's records end
+        up somewhere nothing reads them back.
+        """
+        return write_context_warning(self._session_dir, record)
+
+    def load_context_warnings(self):
+        return load_context_warnings(self._session_dir)
 
     def checkpoint(self, label: str) -> Path:
         checkpoint_dir = self._checkpoints_dir / label / "artifacts"

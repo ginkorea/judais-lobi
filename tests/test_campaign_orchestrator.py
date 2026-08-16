@@ -14,6 +14,28 @@ def dispatcher_factory(step):
     return StubDispatcher()
 
 
+def test_a_step_records_a_compaction_beside_its_artifacts(tmp_path):
+    """`StepSessionManager` is `SessionManager`'s subset for one step, and
+    a step whose prompts had to be shortened has to be able to say so.
+
+    Written after the checkpoint and read after the rollback, because that
+    is the sequence a failed RUN produces: the record lives beside the
+    artifacts the rollback replaces, not among them.
+    """
+    from core.campaign.session import CampaignSession, StepSessionManager
+
+    session = CampaignSession(tmp_path, campaign_id="camp")
+    manager = StepSessionManager(session.step_dir("s1"))
+    manager.checkpoint("pre_PATCH_000")
+    path = manager.write_context_warning({"phase": "PATCH", "dropped_turns": 2})
+    manager.rollback("pre_PATCH_000")
+
+    assert path.exists()
+    assert path.name == "context_warn_000.json"
+    assert manager.load_context_warnings() == [
+        {"phase": "PATCH", "dropped_turns": 2}]
+
+
 def test_campaign_orchestrator_runs(tmp_path):
     steps = [
         MissionStep(

@@ -363,10 +363,24 @@ class Agent:
         """
         from core.kernel.budgets import BudgetConfig
         from core.kernel.roles import LLMRoleDispatcher
+        from core.runtime.context_window import MissionWindow
 
         def chat_fn(messages):
             return self.client.chat(model=self.model, messages=messages,
                                     stream=False)
+
+        # The same three inputs, the same class and the same lazy probe as
+        # the CLI's mission path: provider, model, client. Built here so a
+        # library caller of `run_task`/`run_campaign` is bounded against the
+        # endpoint's real window without having to know that it should ask
+        # for it — and read lazily, so constructing an Agent still costs no
+        # `GET /models`. A client with no `capabilities` (every test double)
+        # simply falls back to the declared defaults.
+        window = MissionWindow(
+            provider=getattr(self, "provider", "") or "",
+            model=self.model,
+            client=self.client,
+        )
 
         return LLMRoleDispatcher(
             chat_fn=chat_fn,
@@ -374,6 +388,7 @@ class Agent:
             workflow=workflow,
             budget=budget or BudgetConfig(),
             system_message=self.system_message,
+            window=window,
         )
 
     # =======================

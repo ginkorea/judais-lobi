@@ -10,6 +10,7 @@ artifact — and that a run whose model answers properly still completes.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +27,7 @@ from core.kernel.roles import (
     LLMRoleDispatcher,
     PatchRole,
     PhaseRole,
+    PlanRole,
     RepoMapRole,
     RoleContext,
     RoleMisdeclared,
@@ -36,6 +38,7 @@ from core.kernel.roles import (
 )
 from core.kernel.state import Phase, SessionState
 from core.kernel.workflows import get_coding_workflow
+from core.runtime.context_window import Compaction, MissionWindow
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
 from core.tools.descriptors import ToolDescriptor
@@ -613,6 +616,333 @@ class TestBudgets:
         ctx = make_ctx(budget=BudgetConfig(max_tool_output_bytes_in_context=50))
         ctx.remember("short line")
         assert ctx.trace[0] == "short line"
+
+
+# ---------------------------------------------------------------------------
+# The window: a role's prompt is bounded against the model's real one
+# ---------------------------------------------------------------------------
+
+class Endpoint:
+    """A client that states its window, and counts who asked.
+
+    The count is the point of the double.  `MissionWindow` reads
+    `capabilities` lazily and remembers the answer because on a local
+    backend reading it is a `GET /models` against a server that may still
+    be loading weights; a kernel that resolved the profile again per phase
+    would pay for that ten times a session and could disagree with the
+    mission loop about how big the window is.
+    """
+
+    def __init__(self, max_context_tokens=4_000, max_output_tokens=1_000):
+        self.reads = 0
+        self._caps = SimpleNamespace(
+            max_context_tokens=max_context_tokens,
+            max_output_tokens=max_output_tokens,
+        )
+
+    @property
+    def capabilities(self):
+        self.reads += 1
+        return self._caps
+
+
+def make_window(input_tokens, *, reserve=1_000, client=None):
+    """A window whose *input* budget — the reserve already taken out — is
+    exactly ``input_tokens``, built the way the CLI builds the mission's."""
+    return MissionWindow(
+        provider="openai", model="m",
+        client=client or Endpoint(input_tokens + reserve, reserve),
+    )
+
+
+def capturing(reply=GOOD_SCRIPT["PLAN"]):
+    """A chat function that keeps every message list it was handed."""
+
+    def chat(messages):
+        chat.sent.append(messages)
+        return reply
+
+    chat.sent = []
+    return chat
+
+
+def capturing_script(script=None):
+    """The same, over `ScriptedModel`, for tests that need two phases."""
+    model = ScriptedModel(script if script is not None else GOOD_SCRIPT)
+
+    def chat(messages):
+        chat.sent.append(messages)
+        return model(messages)
+
+    chat.sent = []
+    return chat
+
+
+def with_trace(ctx, lines=6, size=400):
+    """Six trace lines, alternating model reply and tool result.
+
+    Newest is a tool result, because that is what a role's transcript ends
+    with in every phase that dispatches — and it is the message the window
+    is forbidden to drop.
+    """
+    for i in range(lines):
+        ctx.remember(f"[STEP{i}] " + "z" * size,
+                     speaker="assistant" if i % 2 == 0 else "user")
+    return ctx
+
+
+class TestTheEffectiveLimit:
+    """`min(per-role budget, resolved profile input budget)`, and no more.
+
+    Two numbers, and neither may raise the other: the budget is a choice
+    about spend, the profile is a fact about the endpoint.
+    """
+
+    def test_the_per_role_budget_wins_when_it_is_smaller(self):
+        ctx = make_ctx(window=make_window(3_000),
+                       budget=BudgetConfig(max_context_tokens_per_role=1_000))
+        assert ctx.prompt_window.limit_tokens == 1_000
+
+    def test_the_model_profile_wins_when_it_is_smaller(self):
+        """A generous budget cannot buy room the server will refuse."""
+        ctx = make_ctx(window=make_window(3_000),
+                       budget=BudgetConfig(max_context_tokens_per_role=100_000))
+        assert ctx.prompt_window.limit_tokens == 3_000
+
+    def test_the_endpoint_is_read_once_however_many_phases_ask(self):
+        endpoint = Endpoint(4_000, 1_000)
+        ctx = make_ctx(window=make_window(0, client=endpoint))
+        assert ctx.prompt_window.limit_tokens == 3_000
+        assert ctx.prompt_window.limit_tokens == 3_000
+        assert endpoint.reads == 1
+
+    def test_no_window_is_the_per_role_budget_and_nothing_is_probed(self):
+        """The library default, and what every fake client gets.
+
+        No window means no model profile — not a fabricated one and not a
+        probe of an endpoint nobody offered.
+        """
+        ctx = make_ctx(budget=BudgetConfig(max_context_tokens_per_role=777))
+        assert ctx.prompt_window.limit_tokens == 777
+        assert ctx.prompt_window.profile.source == "per_role_budget"
+
+
+class TestThePromptIsFittedToTheWindow:
+    """PHASE_8 B2: an agentic phase's prompt goes through the window owner.
+
+    The trace used to be folded into the task's own message, so the whole
+    prompt was two messages: when it did not fit there was nothing to drop,
+    only something to cut by a character count that called itself "not an
+    accounting system".  It is now the same policy the mission loop uses —
+    pin the role prompt and the task, drop the oldest round trips whole,
+    leave a note where they were — over the same estimate.
+    """
+
+    def _sent(self, input_tokens, task="add pagination"):
+        chat = capturing()
+        ctx = with_trace(make_ctx(chat, window=make_window(input_tokens)))
+        PlanRole().run(SessionState(task_description=task), ctx)
+        return chat.sent[0], ctx
+
+    def test_a_trace_that_would_overflow_is_sent_under_the_cap(self):
+        sent, ctx = self._sent(600)
+        assert ctx.prompt_window.estimate(sent) <= ctx.prompt_window.limit_tokens
+
+    def test_the_role_prompt_and_the_task_survive(self):
+        """Pinned, and not by luck: a phase that has forgotten which phase
+        it is or what was asked is a worse failure than a long prompt."""
+        sent, _ctx = self._sent(600)
+        assert "Phase PLAN." in sent[0]["content"]
+        assert "steps" in sent[0]["content"]          # the JSON contract
+        assert any("Task: add pagination" in m["content"] for m in sent)
+
+    def test_the_newest_result_survives_and_the_oldest_goes(self):
+        sent, _ctx = self._sent(600)
+        assert any("[STEP5]" in m["content"] for m in sent)
+        assert not any("[STEP0]" in m["content"] for m in sent)
+
+    def test_the_tail_still_begins_with_the_model_own_turn(self):
+        """Whole round trips, so no result is left without its call."""
+        sent, _ctx = self._sent(600)
+        kept = [m for m in sent if "[STEP" in m["content"]]
+        assert kept[0]["role"] == "assistant"
+
+    def test_the_model_is_told_that_something_went(self):
+        """A silently shortened prompt makes a phase re-run a tool it
+        already ran, out of a budget of thirty."""
+        sent, _ctx = self._sent(600)
+        assert any("[context]" in m["content"] for m in sent)
+        assert any("Do not repeat a step" in m["content"] for m in sent)
+
+    def test_the_compaction_is_counted_where_the_phase_can_report_it(self):
+        _sent, ctx = self._sent(600)
+        assert len(ctx.compactions) == 1
+        compaction = ctx.compactions[0]
+        assert compaction.dropped_messages == 4
+        assert compaction.dropped_turns == 2
+        assert compaction.limit_tokens == 600
+        assert compaction.tokens_after < compaction.tokens_before
+
+    def test_draining_leaves_the_next_phase_counting_only_its_own(self):
+        """Per phase, never a running total.  A reader adding the records
+        up must not count the first phase's compaction once for every
+        phase that came after it."""
+        ctx = with_trace(make_ctx(capturing(), window=make_window(600)))
+        PlanRole().run(SessionState(task_description="add pagination"), ctx)
+        assert len(ctx.drain_compactions()) == 1
+        assert ctx.drain_compactions() == []
+
+    def test_a_prompt_that_fits_is_left_alone(self):
+        sent, ctx = self._sent(800)
+        assert ctx.compactions == []
+        assert any("[STEP0]" in m["content"] for m in sent)
+        assert not any("[context]" in m["content"] for m in sent)
+
+    def test_an_earlier_phase_reply_arrives_as_the_model_own_turn(self):
+        """`remember` records who spoke, and a model reply is not a tool
+        result.  The window drops round trips by reading exactly these
+        roles, so a reply filed as tool output makes the next drop take
+        half a round trip — a result whose call is gone.
+        """
+        chat = capturing_script()
+        dispatcher = LLMRoleDispatcher(chat_fn=chat, tool_bus=make_bus())
+        state = SessionState(task_description="add pagination")
+        dispatcher.dispatch("INTAKE", state)
+        dispatcher.dispatch("PLAN", state)
+
+        carried = [m for m in chat.sent[1] if "[INTAKE]" in m["content"]]
+        assert carried
+        assert all(m["role"] == "assistant" for m in carried)
+
+    def test_a_tool_result_arrives_as_the_turn_the_role_was_given(self):
+        chat = capturing_script()
+        dispatcher = LLMRoleDispatcher(chat_fn=chat, tool_bus=make_bus())
+        state = SessionState(task_description="add pagination")
+        dispatcher.dispatch("REPO_MAP", state)
+        dispatcher.dispatch("PLAN", state)
+
+        carried = [m for m in chat.sent[0] if "[REPO_MAP]" in m["content"]]
+        assert carried
+        assert all(m["role"] == "user" for m in carried)
+
+    def test_the_transcript_reaches_the_model_as_its_own_turns(self):
+        sent, _ctx = self._sent(800)
+        assert [m["role"] for m in sent] == [
+            "system", "user",
+            "assistant", "user", "assistant", "user", "assistant", "user",
+        ]
+
+
+class TestNoWindowLeavesTheOldBehaviour:
+    """`window=None` is what a caller with a stubbed client has always had.
+
+    The per-role budget is then the only limit and nothing is probed to
+    find another one.
+    """
+
+    def test_the_whole_transcript_goes_and_nothing_is_recorded(self):
+        chat = capturing()
+        ctx = with_trace(make_ctx(chat))
+        PlanRole().run(SessionState(task_description="add pagination"), ctx)
+        sent = chat.sent[0]
+        assert len(sent) == 8                       # role prompt, task, six
+        assert any("[STEP0]" in m["content"] for m in sent)
+        assert ctx.compactions == []
+
+    def test_the_character_cap_follows_the_limit_that_actually_applies(self):
+        """It used to be the per-role budget times four whatever the
+        endpoint said.  A message no window is allowed to drop — the task
+        itself — is now cut at the smaller of the two.
+        """
+        chat = capturing()
+        ctx = make_ctx(chat, window=make_window(50),
+                       budget=BudgetConfig(max_context_tokens_per_role=100_000))
+        PlanRole().run(SessionState(task_description="q" * 10_000), ctx)
+        task = chat.sent[0][1]["content"]
+        assert len(task) <= 50 * 4 + 80
+        assert "truncated" in task
+
+
+class TestTheCompactionIsRecorded:
+    """A compaction the session did not write down is the silent
+    truncation the window was built to replace."""
+
+    def _run(self, tmp_path, input_tokens=120):
+        from core.sessions.manager import SessionManager
+
+        workflow = get_coding_workflow()
+        bus = make_bus()
+        manager = SessionManager(tmp_path)
+        Orchestrator(
+            dispatcher=LLMRoleDispatcher(
+                chat_fn=ScriptedModel(GOOD_SCRIPT), tool_bus=bus,
+                workflow=workflow, window=make_window(input_tokens)),
+            workflow=workflow, tool_bus=bus, session_manager=manager,
+        ).run("add pagination")
+        return manager
+
+    def test_a_run_that_compacts_leaves_a_record_per_compaction(self, tmp_path):
+        records = self._run(tmp_path).load_context_warnings()
+        assert records
+        assert all(r["dropped_messages"] >= 1 for r in records)
+
+    def test_the_record_is_the_mission_shape_plus_where_it_happened(self, tmp_path):
+        """One shape, owned by `Compaction`.  A watcher that has learned to
+        read the mission stream's `compacted` field reads this too — and if
+        that dataclass grows a field, this record grows it as well rather
+        than becoming a second, staler answer."""
+        records = self._run(tmp_path).load_context_warnings()
+        expected = set(Compaction(0, 0, 0, 0, 0, 0, "x").as_record()) | {"phase"}
+        assert set(records[0]) == expected
+        assert records[0]["limit_tokens"] == 120
+        assert records[0]["profile"] == "backend"
+        assert records[0]["phase"] in {role.phase for role in default_roles()}
+
+    def test_a_phase_that_compacted_and_then_failed_still_leaves_it(
+        self, tmp_path,
+    ):
+        """The most interesting compaction there is.
+
+        Recorded before the phase's artifact is validated, because a record
+        kept only on success is missing exactly when someone goes looking
+        for why the phase went wrong.
+        """
+        from core.sessions.manager import SessionManager
+
+        workflow = get_coding_workflow()
+        bus = make_bus()
+        manager = SessionManager(tmp_path)
+        state = Orchestrator(
+            dispatcher=LLMRoleDispatcher(
+                chat_fn=ScriptedModel({**GOOD_SCRIPT, "PLAN": "no JSON here"}),
+                tool_bus=bus, workflow=workflow, window=make_window(120)),
+            workflow=workflow, tool_bus=bus, session_manager=manager,
+            budget=BudgetConfig(max_phase_retries=1),
+        ).run("add pagination")
+
+        assert state.current_phase == Phase.HALTED
+        assert "PLAN" in state.halt_reason
+        assert "PLAN" in {r["phase"] for r in manager.load_context_warnings()}
+
+    def test_a_run_that_fits_records_nothing(self, tmp_path):
+        assert self._run(tmp_path, input_tokens=100_000).load_context_warnings() == []
+
+    def test_the_record_outlives_the_rollback_that_undoes_the_artifacts(
+        self, tmp_path,
+    ):
+        """Beside the artifacts, not among them.  The orchestrator restores
+        the artifacts directory when RUN fails, and a rollback must not
+        un-say that a prompt had to be shortened on the way there."""
+        from core.sessions.manager import SessionManager
+
+        manager = SessionManager(tmp_path)
+        manager.checkpoint("pre_PATCH_000")
+        path = manager.write_context_warning({"phase": "PATCH"})
+        manager.rollback("pre_PATCH_000")
+
+        assert path.exists()
+        assert path.name == "context_warn_000.json"
+        assert manager.load_context_warnings() == [{"phase": "PATCH"}]
 
 
 # ---------------------------------------------------------------------------

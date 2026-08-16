@@ -70,8 +70,121 @@ from core.bounding import bound_result
 from core.kernel.budgets import BudgetConfig
 from core.kernel.orchestrator import PhaseResult
 from core.kernel.state import SessionState
+from core.runtime.context_window import (
+    Compaction, ContextConfig, MissionWindow, ModelContextProfile,
+)
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
+
+#: Trace lines a role's prompt is offered. The window below decides how
+#: many of them actually go — this is only how far back a role looks.
+TRANSCRIPT_TURNS = 6
+
+#: The newest trace line a role's prompt will never drop. One, not two:
+#: the last thing in a role's transcript is the result the next reply is
+#: made of, and a prompt that has evicted it asks the model to continue
+#: from work it can no longer see. Compare
+#: :data:`~core.runtime.context_window.MISSION_MIN_TAIL`, which keeps the
+#: whole round trip because a mission's transcript *is* the conversation;
+#: a role's is working memory the phase rebuilds every turn.
+ROLE_MIN_TAIL = 1
+
+
+def role_compaction_note(dropped_turns: int, freed_chars: int) -> str:
+    """What a role is told in place of the trace lines that were dropped.
+
+    Said out loud for the reason the mission's note is: a phase handed a
+    silently shortened transcript cannot see that anything is missing, and
+    the coding loop's answer to "I cannot see the test output" is to run
+    the tests again — a phase out of a budget of thirty spent
+    rediscovering something it was told and then had taken away.
+    """
+    return (
+        f"[context] Earlier phases of this task were removed from this "
+        f"prompt so that it fits the model's context window: "
+        f"{dropped_turns} model turn(s), {freed_chars} characters. Those "
+        f"phases ran and their artifacts are on disk — what is gone is the "
+        f"paste of them, not the work. Do not repeat a step merely because "
+        f"its output is no longer above."
+    )
+
+
+class RoleWindow(MissionWindow):
+    """The window one role's prompt is fitted to. The smaller limit wins.
+
+    Two numbers meet here. ``BudgetConfig.max_context_tokens_per_role`` is
+    what a deployment is willing to spend on a single phase; the resolved
+    profile's ``max_input_tokens`` is what the endpoint will actually
+    accept. **The smaller of the two wins**, and the asymmetry is the
+    point: the per-role budget is a *choice* and exceeding it only costs
+    money, while the profile is a *fact* and exceeding it is a request the
+    server refuses — so neither number may be raised by the other.
+
+    *base* is a window the caller already built (the CLI builds one for the
+    mission path from the same provider, model and client). Its profile is
+    reused rather than resolved a second time, so a role prompt never costs
+    a second ``GET /models`` and never disagrees with the mission loop
+    about how big the window is. With no base there is no model profile at
+    all: nothing is probed, and the per-role budget is the whole limit —
+    which is what a library caller gets until it passes one, and what every
+    test that injects a fake client gets without asking.
+
+    Everything else — the estimate, the pinned prefix, dropping the oldest
+    round trips whole, the note left in their place — is
+    :class:`~core.runtime.context_window.MissionWindow`'s, unchanged.
+    """
+
+    def __init__(self, base: Optional[MissionWindow] = None, *,
+                 per_role_tokens: int = 0,
+                 min_tail_messages: int = ROLE_MIN_TAIL):
+        # An empty ContextConfig rather than the default one: with a base
+        # the manager is never consulted, and without a base there is no
+        # profile to resolve, so `ContextConfig.from_project()` would be a
+        # project-file read whose answer nothing ever looks at.
+        super().__init__(config=ContextConfig(),
+                         min_tail_messages=min_tail_messages)
+        self._base = base
+        self._per_role = max(0, int(per_role_tokens))
+
+    @property
+    def profile(self) -> ModelContextProfile:
+        if self._base is None:
+            return ModelContextProfile(self._per_role, 0,
+                                       source="per_role_budget")
+        return self._base.profile
+
+    @property
+    def limit_tokens(self) -> int:
+        """Input tokens one role turn may fill: the smaller of the two."""
+        model_limit = self.profile.max_input_tokens
+        if self._per_role <= 0:
+            return model_limit
+        if model_limit <= 0:
+            return self._per_role
+        return min(self._per_role, model_limit)
+
+
+def _truncate_messages(messages: List[Dict[str, str]],
+                       cap_chars: int) -> List[Dict[str, str]]:
+    """Cut any single message longer than *cap_chars*, saying so in it.
+
+    What is left of the guard :meth:`RoleContext.ask` used to be, kept for
+    the one thing the window cannot do: shrink a message it is not allowed
+    to drop. A message that is on its own larger than the whole window — a
+    repository pasted into the task, a tool result that reached the trace
+    ahead of the byte bound — would otherwise be sent entire no matter what
+    the accounting said.
+    """
+    trimmed = []
+    for message in messages:
+        content = message.get("content") or ""
+        if len(content) > cap_chars:
+            content = (
+                content[:cap_chars]
+                + f"\n[...truncated at the {cap_chars}-character prompt limit]"
+            )
+        trimmed.append({**message, "content": content})
+    return trimmed
 
 
 class RoleMisdeclared(TypeError):
@@ -123,36 +236,96 @@ class RoleContext:
     workflow: Any = None
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     system_message: str = ""
-    #: Everything the roles said and were told, in order. The transcript is
-    #: the session's working memory; artifacts are its output.
-    trace: List[str] = field(default_factory=list)
+    #: Everything the roles said and were told, in order, with who said it.
+    #: The transcript is the session's working memory; artifacts are its
+    #: output. One list, and not a list of lines beside a list of speakers,
+    #: because two lists holding halves of one fact drift the first time
+    #: something appends to only one of them.
+    turns: List[Dict[str, str]] = field(default_factory=list)
+    #: The window this session's model actually has, as the caller built it
+    #: — a :class:`~core.runtime.context_window.MissionWindow`, the same
+    #: class and the same three inputs the CLI's mission path uses. ``None``
+    #: means no model profile is known and nothing will be probed to find
+    #: one; the per-role budget is then the whole limit.
+    window: Optional[MissionWindow] = None
+    #: Every compaction this context has made, oldest first. Drained by the
+    #: dispatcher onto the :class:`PhaseResult`, so the orchestrator can
+    #: write it where the phase's other records go.
+    compactions: List[Compaction] = field(default_factory=list)
+    _window: Optional[RoleWindow] = field(default=None, init=False,
+                                          repr=False, compare=False)
+
+    @property
+    def trace(self) -> List[str]:
+        """The transcript as the lines it has always been.
+
+        Read-only, deliberately: :meth:`remember` is the only writer, and
+        it is the only place that knows who said the line.
+        """
+        return [turn["content"] for turn in self.turns]
+
+    @property
+    def prompt_window(self) -> RoleWindow:
+        """The effective window: :attr:`window` narrowed by the budget."""
+        if self._window is None:
+            self._window = RoleWindow(
+                self.window,
+                per_role_tokens=self.budget.max_context_tokens_per_role,
+            )
+        return self._window
 
     def schema_for(self, phase: str) -> Optional[Type]:
         if self.workflow is None:
             return None
         return self.workflow.phase_schemas.get(phase)
 
-    def ask(self, messages: List[Dict[str, str]]) -> str:
-        """One turn at the model, capped by the per-role context budget.
+    def ask(self, messages: List[Dict[str, str]], *,
+            pinned: Optional[int] = None) -> str:
+        """One turn at the model, bounded by the window a role may fill.
 
-        The cap is characters against ``max_context_tokens_per_role``
-        times four. A rough conversion on purpose: the exact tokeniser
-        belongs to whichever backend is loaded, and this is a guardrail
-        against a role pasting a whole repository into a prompt, not an
-        accounting system. ``ContextWindowManager`` does the real thing
-        on the chat path.
+        Two bounds, answering two different questions.
+
+        The **window** decides what is sent. :class:`RoleWindow` — the
+        smaller of the per-role budget and the model's real input budget —
+        estimates the list with this repository's one estimator, drops the
+        oldest trace round trips whole, and leaves
+        :func:`role_compaction_note` where they were. Every drop is
+        appended to :attr:`compactions`, so a shorter prompt is something
+        the session recorded rather than something that happened to it.
+
+        The **character cap** is the per-message backstop this whole method
+        used to be. It is kept for what the window cannot do — shrink a
+        message it is not allowed to drop — and it is now four characters
+        to the token against the *effective* limit, not against the
+        per-role budget alone as it was.
+
+        *pinned* is how many messages at the front are not compactable.
+        ``None`` pins all of them: a caller that has not said which part of
+        its prompt is history is not one whose history may be dropped.
         """
-        cap = self.budget.max_context_tokens_per_role * 4
-        trimmed = []
-        for message in messages:
-            content = message.get("content") or ""
-            if len(content) > cap:
-                content = (
-                    content[:cap]
-                    + f"\n[...truncated at the {cap}-character per-role budget]"
-                )
-            trimmed.append({**message, "content": content})
-        return str(self.chat(trimmed) or "")
+        window = self.prompt_window
+        limit = window.limit_tokens
+        prompt = (_truncate_messages(messages, limit * 4) if limit > 0
+                  else list(messages))
+        fitted, compaction = window.fit(
+            prompt,
+            pinned=len(prompt) if pinned is None else pinned,
+            note=role_compaction_note,
+        )
+        if compaction is not None:
+            self.compactions.append(compaction)
+        return str(self.chat(fitted) or "")
+
+    def drain_compactions(self) -> List[Compaction]:
+        """Take the compactions made since the last drain, and forget them.
+
+        Drained rather than read so that a phase's record carries the
+        compactions *that phase* made. A running total on the context would
+        make every later phase's record a superset of every earlier one's,
+        and a reader counting them would count the first phase's ten times.
+        """
+        drained, self.compactions = self.compactions, []
+        return drained
 
     def dispatch(self, tool: str, *args: Any, **kwargs: Any):
         """Run a tool through the bus. The only way out of a role."""
@@ -163,7 +336,7 @@ class RoleContext:
             )
         return self.tool_bus.dispatch(tool, *args, **kwargs)
 
-    def remember(self, line: str) -> None:
+    def remember(self, line: str, *, speaker: str = "user") -> None:
         """One trace line, bounded to the tool-output budget.
 
         Head *and* tail, through :func:`core.bounding.bound_result`, and
@@ -172,12 +345,32 @@ class RoleContext:
         its totals at the end — a head-only cut kept the invocation and
         threw away the counts, which is the half the FIX and CRITIQUE
         phases are looking for.
+
+        *speaker* is who the line came from, recorded here because here is
+        the only place that knows: ``"assistant"`` for a reply the model
+        wrote, ``"user"`` — the default, and the conservative one — for a
+        result a tool produced. :meth:`transcript` needs it to hand the
+        window whole round trips to drop, and of the two ways to get it
+        wrong, a tool result mislabelled as the model's own words is the
+        one that changes what the model believes it said.
         """
         line, _ = bound_result(line, self.budget.max_tool_output_bytes_in_context)
-        self.trace.append(line)
+        self.turns.append({"role": speaker, "content": line})
 
-    def recent(self, n: int = 6) -> str:
-        return "\n\n".join(self.trace[-n:])
+    def recent(self, n: int = TRANSCRIPT_TURNS) -> str:
+        return "\n\n".join(turn["content"] for turn in self.turns[-n:])
+
+    def transcript(self, n: int = TRANSCRIPT_TURNS) -> List[Dict[str, str]]:
+        """The last *n* trace lines as chat messages.
+
+        The same lines :meth:`recent` renders, one message each instead of
+        one blob. Separate messages because that is what gives the window
+        something to drop: folded into a single turn, "what has happened so
+        far" is one message that either fits whole or is cut mid-sentence by
+        a character count, and the phase whose tool result was in the middle
+        of it never learns that it went.
+        """
+        return [dict(turn) for turn in self.turns[-n:]]
 
 
 # ---------------------------------------------------------------------------
@@ -354,27 +547,45 @@ class LLMPhaseRole(PhaseRole):
 
     def produce(self, state: SessionState, ctx: RoleContext) -> Any:
         schema = ctx.schema_for(self.phase)
-        reply = ctx.ask(self.compose(state, ctx, schema))
-        ctx.remember(f"[{self.phase}] {reply}")
+        messages = self.compose(state, ctx, schema)
+        # What :meth:`compose` put in front of the transcript is what this
+        # phase cannot do without — the role prompt and the task — so that
+        # is what the window pins. Counted rather than declared as a
+        # constant so that a subclass which adds a message to the prefix
+        # gets it pinned without having to know it had to say so.
+        history = ctx.transcript()
+        pinned = max(0, len(messages) - len(history))
+        reply = ctx.ask(messages, pinned=pinned)
+        ctx.remember(f"[{self.phase}] {reply}", speaker="assistant")
         if schema is None:
             return reply
         return self._parse(reply, schema)
 
     def compose(self, state: SessionState, ctx: RoleContext,
                 schema: Optional[Type]) -> List[Dict[str, str]]:
-        """The messages for this turn. Override to add phase context."""
+        """The messages for this turn. Override to add phase context.
+
+        The role prompt and the task first, then the transcript as one
+        message per line. The transcript used to be folded into the task's
+        own message, which made the prompt two messages long and therefore
+        indivisible: when it did not fit there was nothing to drop, only
+        something to cut in half. As separate turns the window can drop the
+        oldest round trips whole and say so — and the model sees its own
+        earlier replies as its own, which is what they were.
+        """
         system = ctx.system_message or "You are an autonomous engineering agent."
         rules = self.instruction
         if schema is not None:
             keys = ", ".join([*schema.model_fields, *self.extra_keys])
             rules = f"{rules}\n\n{self.JSON_CONTRACT.format(keys=keys)}"
+        history = ctx.transcript()
         user = f"Task: {state.task_description}"
-        recent = ctx.recent()
-        if recent:
-            user += f"\n\nWhat has happened so far:\n{recent}"
+        if history:
+            user += "\n\nWhat has happened so far is in the turns below."
         return [
             {"role": "system", "content": f"{system}\n\nPhase {self.phase}.\n{rules}"},
             {"role": "user", "content": user},
+            *history,
         ]
 
     def _parse(self, reply: str, schema: Type) -> Any:
@@ -734,10 +945,11 @@ class FixRole(LLMPhaseRole):
     is already correct, and the run halts on a patch that worked.
 
     So this phase reads the failure and says what it means. Its reply
-    goes into the trace, and the PATCH turn that follows is composed
-    with ``ctx.recent()`` — the diagnosis is how the next attempt knows
-    what went wrong. One phase writes to disk, and it is the one the
-    checkpoint brackets.
+    goes into the trace, and the PATCH turn that follows is composed with
+    ``ctx.transcript()`` — the diagnosis is how the next attempt knows
+    what went wrong, and it is the newest turn in that transcript, which
+    is the one the window will never drop. One phase writes to disk, and
+    it is the one the checkpoint brackets.
     """
 
     phase = "FIX"
@@ -902,7 +1114,15 @@ class LLMRoleDispatcher:
         budget: Optional[BudgetConfig] = None,
         system_message: str = "",
         roles: Optional[List[PhaseRole]] = None,
+        window: Optional[MissionWindow] = None,
     ):
+        """*window* is the model's real context window, built by the caller
+        from the provider, model and client it is about to use — the same
+        object the CLI's mission path builds. ``None`` leaves the per-role
+        budget as the only limit and probes nothing, which is what a caller
+        with a stubbed client wants and what every caller got before there
+        was a window to pass.
+        """
         if workflow is None:
             from core.kernel.workflows import get_coding_workflow
             workflow = get_coding_workflow()
@@ -912,6 +1132,7 @@ class LLMRoleDispatcher:
             workflow=workflow,
             budget=budget or BudgetConfig(),
             system_message=system_message,
+            window=window,
         )
         self._roles: Dict[str, PhaseRole] = {
             role.phase: role for role in (roles if roles is not None
@@ -938,6 +1159,11 @@ class LLMRoleDispatcher:
                 ),
             )
         result = role.run(state, self._ctx)
+        # Carried out on the result rather than left on the context: the
+        # orchestrator is the half of this that has a session manager, and
+        # a compaction nobody wrote down is the silent truncation the
+        # window exists to replace.
+        result.compactions = self._ctx.drain_compactions()
 
         # RUN's report is what CRITIQUE scores and what the orchestrator's
         # rollback keys on, so it is kept where the next phase can find it.
