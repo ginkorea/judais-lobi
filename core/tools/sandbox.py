@@ -40,6 +40,7 @@ class SandboxRunner(Protocol):
         env: Optional[dict] = None,
         shell: Optional[bool] = None,
         executable: Optional[str] = None,
+        stdin: Optional[str] = None,
     ) -> Tuple[int, str, str]: ...
 
 
@@ -56,8 +57,55 @@ def _shell_mode(cmd: Union[str, List[str]], shell: Optional[bool]) -> bool:
     return True if shell is None else bool(shell)
 
 
+#: The environment every sandboxed child gets no matter which tool asked or
+#: which backend runs it: the names a program needs to *be a program at all*
+#: — find its interpreter (``PATH``), find its config and the venv under it
+#: (``HOME``), render text (``LANG``, ``TERM``) and put its scratch files
+#: where the sandbox expects them (``TMPDIR``).  Everything else the host
+#: exported — every API key, every token, every ``AWS_*`` — is left behind,
+#: because a subprocess a model chose to run is the last place a secret the
+#: model never needed should turn up.  ``LC_*`` is a family, not a name, so
+#: it is matched by prefix in :func:`build_sandbox_env`.
+_ENV_ALLOWLIST: Tuple[str, ...] = ("PATH", "HOME", "LANG", "TERM", "TMPDIR")
+_ENV_ALLOWLIST_PREFIXES: Tuple[str, ...] = ("LC_",)
+
+
+def build_sandbox_env(profile: Optional[SandboxProfile] = None) -> dict:
+    """The child environment for *profile*: the allow-list plus its names.
+
+    Read here, in the parent, from the parent's own ``os.environ`` — this
+    is the *one* place the sandbox layer reads it, so "what a sandboxed
+    child can see of the host environment" is one list in one function and
+    not a merge repeated in two backends.  The result is what the bus hands
+    to ``execute(env=…)``, and it means the same thing on either backend
+    because it is computed before either is chosen.
+
+    A name the profile lists but the host never set is simply absent, not
+    an empty string: a tool asking to forward ``HTTPS_PROXY`` on a host
+    that has none should see no proxy, not a proxy of ``""``.
+    """
+    profile = profile or SandboxProfile()
+    names = list(_ENV_ALLOWLIST) + list(profile.env_passthrough)
+    env = {name: os.environ[name] for name in names if name in os.environ}
+    for name, value in os.environ.items():
+        if name.startswith(_ENV_ALLOWLIST_PREFIXES):
+            env[name] = value
+    return env
+
+
 class NoneSandbox:
-    """Passthrough sandbox for dev/test. No isolation."""
+    """Passthrough sandbox for dev/test. No isolation.
+
+    Its one rule about the environment is the rule both backends share and
+    the one this module states once: the child's environment is **exactly**
+    what the caller passes as ``env``.  ``env=None`` is the caller having no
+    opinion, and the child then inherits the parent's full environment — the
+    convenience a direct caller and the tests rely on.  Under the bus, which
+    is the path every tool takes, ``env`` is never ``None``: the bus builds
+    it with :func:`build_sandbox_env`, so a tool's child gets the allow-list
+    and its profile's names and nothing more, here exactly as under bwrap.
+    Neither backend merges in ``os.environ`` of its own accord.
+    """
 
     def execute(
         self,
@@ -68,9 +116,10 @@ class NoneSandbox:
         env: Optional[dict] = None,
         shell: Optional[bool] = None,
         executable: Optional[str] = None,
+        stdin: Optional[str] = None,
     ) -> Tuple[int, str, str]:
         shell_mode = _shell_mode(cmd, shell)
-        run_env = {**os.environ, **(env or {})}
+        run_env = dict(os.environ) if env is None else dict(env)
         try:
             result = subprocess.run(
                 cmd,
@@ -80,6 +129,7 @@ class NoneSandbox:
                 timeout=timeout or 120,
                 executable=(executable or "/bin/bash") if shell_mode else None,
                 env=run_env,
+                input=stdin,
             )
             return (
                 result.returncode,
@@ -150,6 +200,7 @@ class BwrapSandbox:
         env: Optional[dict] = None,
         shell: Optional[bool] = None,
         executable: Optional[str] = None,
+        stdin: Optional[str] = None,
     ) -> Tuple[int, str, str]:
         profile = profile or SandboxProfile()
         bwrap_args = self._build_bwrap_args(profile)
@@ -161,7 +212,14 @@ class BwrapSandbox:
         else:
             full_cmd = bwrap_args + list(cmd)
 
-        run_env = {**os.environ, **(env or {})}
+        # The env rule this module states once (see :class:`NoneSandbox`):
+        # the child's environment is exactly what the caller passed, and
+        # ``None`` means "inherit the parent's". This backend does not
+        # merge in ``os.environ`` on top — under the bus the caller already
+        # handed it the allow-listed set, and merging the host's back in
+        # would put the secrets the sandbox exists to strip right back into
+        # the child.
+        run_env = dict(os.environ) if env is None else dict(env)
         try:
             result = subprocess.run(
                 full_cmd,
@@ -170,6 +228,7 @@ class BwrapSandbox:
                 timeout=timeout or 120,
                 env=run_env,
                 preexec_fn=self._rlimit_preexec(profile),
+                input=stdin,
             )
             return (
                 result.returncode,
@@ -274,11 +333,78 @@ class BwrapSandbox:
         return shutil.which("bwrap") is not None
 
 
+class SandboxUnavailable(RuntimeError):
+    """A sandbox backend was *asked for by name* and cannot be built.
+
+    Raised only for an explicit request — ``--unsandboxed`` never raises,
+    and neither does the auto path, which quietly settles for ``none`` when
+    ``bwrap`` is absent.  It exists so that a caller who says ``bwrap`` and
+    means it hears "this host has no bubblewrap; install it or pass
+    ``--unsandboxed``" rather than being silently downgraded to no
+    isolation at all — the silent downgrade is exactly what the old
+    :func:`get_sandbox` did, and a security control that turns itself off
+    without telling anyone is worse than one that is simply off.
+    """
+
+
+#: The one name every opt-out spells.  ``--unsandboxed`` sets it; so does
+#: ``JUDAIS_LOBI_SANDBOX=none``.  ``bwrap`` forces the sandbox and refuses
+#: rather than fall back.  Anything else (or nothing) is the auto path.
+SANDBOX_ENV_VAR = "JUDAIS_LOBI_SANDBOX"
+
+
+def select_sandbox(requested: Optional[str] = None) -> Tuple[SandboxRunner, str]:
+    """Choose the sandbox and report the name actually chosen.
+
+    The single owner of the decision, so the CLI, a library caller and the
+    tests all reach the same verdict from the same code.  Returns the
+    runner and the string a consumer will see on ``mission_started`` —
+    ``"bwrap"`` or ``"none"``.
+
+    Precedence is **flag > env > auto**: *requested* is what a flag
+    resolved to (``"none"`` for ``--unsandboxed``, ``"bwrap"`` to force,
+    ``None`` for no flag); only when it is ``None`` is
+    :data:`SANDBOX_ENV_VAR` consulted; and only when neither speaks does the
+    auto path run — ``bwrap`` when it is on ``PATH``, ``none`` when it is
+    not.  This is the line that makes the sandbox *on by default*: silence
+    lands on ``bwrap`` wherever bubblewrap exists, and reaching ``none``
+    takes someone saying so.
+
+    ``bwrap`` requested but absent is a :class:`SandboxUnavailable`, not a
+    fallback: an operator who asked for isolation is told it is missing and
+    how to proceed, rather than getting the unsandboxed run they were trying
+    to avoid.
+    """
+    choice = requested if requested is not None else os.environ.get(SANDBOX_ENV_VAR)
+    choice = (choice or "").strip().lower() or None
+
+    if choice == "none":
+        return NoneSandbox(), "none"
+    if choice == "bwrap":
+        if not BwrapSandbox.is_available():
+            raise SandboxUnavailable(
+                "bwrap sandbox was requested but bubblewrap is not on PATH. "
+                "Install bubblewrap (e.g. 'apt install bubblewrap'), or pass "
+                "--unsandboxed / set JUDAIS_LOBI_SANDBOX=none to run without "
+                "isolation."
+            )
+        return BwrapSandbox(), "bwrap"
+
+    # auto: safe by default wherever the tooling exists to be safe.
+    if BwrapSandbox.is_available():
+        return BwrapSandbox(), "bwrap"
+    return NoneSandbox(), "none"
+
+
 def get_sandbox(backend: str = "none") -> SandboxRunner:
-    """Factory function to create a sandbox by name."""
-    if backend == "bwrap":
-        if BwrapSandbox.is_available():
-            return BwrapSandbox()
-        # Fallback to none if bwrap not available
-        return NoneSandbox()
-    return NoneSandbox()
+    """Backward-compatible thin wrapper over :func:`select_sandbox`.
+
+    Kept for callers that only want a runner by name and never cared about
+    the chosen string.  Its historic default was ``"none"`` and stays
+    ``"none"`` — the on-by-default behaviour lives in :func:`select_sandbox`
+    with ``requested=None``, which this function deliberately does not pass
+    on, so an existing caller of ``get_sandbox()`` is not silently switched
+    into a sandbox it never asked for.
+    """
+    runner, _name = select_sandbox(backend)
+    return runner

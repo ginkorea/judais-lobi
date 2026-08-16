@@ -32,11 +32,14 @@ class RunSubprocessTool(Tool, ABC):
         self.executable = kwargs.get("executable", "/bin/bash")
         self.subprocess_runner = kwargs.get("subprocess_runner", None)
 
-    def run(self, cmd, timeout: Optional[int] = None) -> Tuple[int, str, str]:
+    def run(self, cmd, timeout: Optional[int] = None,
+            stdin: Optional[str] = None) -> Tuple[int, str, str]:
         """Execute a command as a subprocess.
 
         Returns: (return_code, stdout, stderr).
-        Delegates to executor.run_subprocess().
+        Delegates to executor.run_subprocess().  ``stdin`` is forwarded to
+        the child's standard input — how :class:`RunPythonTool` hands its
+        program over without it landing in ``argv`` (and ``ps``).
         """
         timeout = timeout or self.timeout
         shell_mode = isinstance(cmd, str)
@@ -45,6 +48,7 @@ class RunSubprocessTool(Tool, ABC):
             shell=shell_mode,
             timeout=timeout,
             executable=self.executable if shell_mode else None,
+            stdin=stdin,
             subprocess_runner=self.subprocess_runner,
         )
 

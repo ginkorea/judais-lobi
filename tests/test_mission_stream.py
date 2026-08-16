@@ -37,6 +37,10 @@ class _Result:
 class _Bus:
     """A bus that records what it was actually asked to run."""
 
+    #: The runners read this to announce `sandbox` on `mission_started`;
+    #: `"none"` keeps this stub off the host's bubblewrap.
+    sandbox_name = "none"
+
     def __init__(self, answers=None):
         self.calls = []
         self.answers = answers or {}

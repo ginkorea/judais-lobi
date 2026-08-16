@@ -191,6 +191,19 @@ FIELDS: dict[str, tuple[str, ...]] = {
 #: default.  Listed rather than left to be discovered, so that "optional" is a
 #: statement this repo made and not an accident of which path happened to run.
 OPTIONAL: dict[str, tuple[str, ...]] = {
+    #: ``sandbox`` — ``"bwrap"`` or ``"none"``, the isolation the tool
+    #: subprocesses of this mission ran under.  ``"bwrap"`` is write
+    #: isolation with the network denied unless a tool declared it and the
+    #: child's environment stripped to a small allow-list; ``"none"`` is no
+    #: isolation, reached only by an explicit opt-out or a host without
+    #: bubblewrap.  It is the framework's default-safe choice announced on
+    #: the opening frame so a consumer knows what a call was run under
+    #: without inferring it from the host — and it describes the subprocess
+    #: plane only: an in-process MCP tool dispatches inside this process and
+    #: touches no sandbox whatever this says.  Optional because a consumer
+    #: from before it existed must still read the record; present on both the
+    #: direct and the staged path.
+    MISSION_STARTED: ("sandbox",),
     #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
     #: first ``step_started`` that plan produces.  Absent on a direct
     #: mission, which has no plan to show, and absent on every later step.

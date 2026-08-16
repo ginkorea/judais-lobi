@@ -57,8 +57,15 @@ class FakeEmbeddingClient:
 # ---------------------------------------------------------------------------
 
 def make_fake_subprocess_runner(rc=0, stdout="ok", stderr=""):
-    """Factory returning a callable (cmd, *, shell, timeout, executable) -> (int, str, str)."""
-    def runner(cmd, *, shell=False, timeout=None, executable=None):
+    """Factory returning a callable (cmd, *, shell, timeout, executable, stdin) -> (int, str, str).
+
+    ``stdin`` is accepted because ``run_python`` now hands its program to
+    the interpreter on standard input, and ``run_subprocess`` forwards a
+    non-``None`` stdin to whatever runner is installed; a fake that could
+    not take the keyword would raise the moment it stood in for the real
+    sandbox under that tool.
+    """
+    def runner(cmd, *, shell=False, timeout=None, executable=None, stdin=None):
         return rc, stdout, stderr
     return runner
 

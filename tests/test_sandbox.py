@@ -13,7 +13,16 @@ from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock
 
-from core.tools.sandbox import NoneSandbox, BwrapSandbox, get_sandbox, SandboxRunner
+from core.tools.sandbox import (
+    NoneSandbox,
+    BwrapSandbox,
+    get_sandbox,
+    select_sandbox,
+    build_sandbox_env,
+    SandboxRunner,
+    SandboxUnavailable,
+    SANDBOX_ENV_VAR,
+)
 from core.tools.descriptors import SandboxProfile
 from core.tools.run_python import RunPythonTool
 
@@ -158,9 +167,9 @@ class TestTheBusForwardsWhatTheToolDecided:
 
         class RecordingSandbox:
             def execute(self, cmd, *, profile=None, timeout=None, env=None,
-                        shell=None, executable=None):
+                        shell=None, executable=None, stdin=None):
                 seen.update(cmd=cmd, shell=shell, executable=executable,
-                            timeout=timeout, profile=profile)
+                            timeout=timeout, profile=profile, stdin=stdin)
                 return 0, "ok", ""
 
         profile = _Profile()
@@ -169,8 +178,54 @@ class TestTheBusForwardsWhatTheToolDecided:
         runner("pytest -q", shell=True, timeout=30, executable="/bin/zsh")
         assert seen == {
             "cmd": "pytest -q", "shell": True, "executable": "/bin/zsh",
-            "timeout": 30, "profile": profile,
+            "timeout": 30, "profile": profile, "stdin": None,
         }
+
+    def test_the_sandbox_runner_threads_stdin_through(self):
+        """``run_python`` hands its program to the runner as stdin; a runner
+        that dropped it would send the interpreter an empty program."""
+        from core.tools.bus import ToolBus
+        from core.tools.descriptors import SandboxProfile as _Profile
+
+        seen = {}
+
+        class RecordingSandbox:
+            def execute(self, cmd, *, profile=None, timeout=None, env=None,
+                        shell=None, executable=None, stdin=None):
+                seen["stdin"] = stdin
+                return 0, "ok", ""
+
+        bus = ToolBus(sandbox=RecordingSandbox())
+        runner = bus._build_sandbox_runner(_Profile())
+        runner(["python", "-"], stdin="print('hi')")
+        assert seen["stdin"] == "print('hi')"
+
+    def test_the_bus_builds_the_child_env_from_the_profile(self, monkeypatch):
+        """The bus hands ``execute`` an env built from the profile's
+        allow-list — the one place the child's environment is decided — so
+        neither backend re-reads ``os.environ`` on its own."""
+        from core.tools.bus import ToolBus
+        from core.tools.descriptors import SandboxProfile as _Profile
+
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("SECRET_TOKEN", "leak-me")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-passed")
+
+        seen = {}
+
+        class RecordingSandbox:
+            def execute(self, cmd, *, profile=None, timeout=None, env=None,
+                        shell=None, executable=None, stdin=None):
+                seen["env"] = env
+                return 0, "ok", ""
+
+        bus = ToolBus(sandbox=RecordingSandbox())
+        runner = bus._build_sandbox_runner(
+            _Profile(env_passthrough=("OPENAI_API_KEY",)))
+        runner("env", shell=True)
+        assert seen["env"]["PATH"] == "/usr/bin"
+        assert seen["env"]["OPENAI_API_KEY"] == "sk-passed"
+        assert "SECRET_TOKEN" not in seen["env"]
 
 
 class TestBwrapSandboxArgBuilding:
@@ -240,23 +295,161 @@ class TestBwrapAvailability:
 
 
 class TestGetSandbox:
+    """The thin backward-compatible wrapper. Its historic ``"none"`` default
+    stays ``"none"`` — it does not inherit :func:`select_sandbox`'s
+    on-by-default auto path, so an old caller of ``get_sandbox()`` is not
+    silently switched into a sandbox it never asked for."""
+
     def test_default_returns_none_sandbox(self):
-        sandbox = get_sandbox()
-        assert isinstance(sandbox, NoneSandbox)
+        assert isinstance(get_sandbox(), NoneSandbox)
 
     def test_explicit_none(self):
-        sandbox = get_sandbox("none")
-        assert isinstance(sandbox, NoneSandbox)
+        assert isinstance(get_sandbox("none"), NoneSandbox)
 
     @patch("core.tools.sandbox.BwrapSandbox.is_available", return_value=False)
-    def test_bwrap_fallback(self, mock_avail):
-        sandbox = get_sandbox("bwrap")
-        assert isinstance(sandbox, NoneSandbox)
+    def test_bwrap_requested_but_absent_now_refuses(self, mock_avail):
+        """The silent downgrade is gone: asking for bwrap by name on a host
+        without it raises rather than handing back no isolation at all."""
+        with pytest.raises(SandboxUnavailable):
+            get_sandbox("bwrap")
 
     @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
     def test_bwrap_when_available(self, mock_which):
-        sandbox = get_sandbox("bwrap")
-        assert isinstance(sandbox, BwrapSandbox)
+        assert isinstance(get_sandbox("bwrap"), BwrapSandbox)
+
+
+class TestSelectSandbox:
+    """The one owner of the decision: flag > env > auto.
+
+    ``select_sandbox`` is what the CLI, a library caller and these tests all
+    reach, so the sandbox a mission runs under is one function's verdict and
+    not four.
+    """
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    def test_auto_picks_bwrap_when_available(self, mock_which, monkeypatch):
+        monkeypatch.delenv(SANDBOX_ENV_VAR, raising=False)
+        runner, name = select_sandbox()
+        assert isinstance(runner, BwrapSandbox)
+        assert name == "bwrap"
+
+    @patch("core.tools.sandbox.shutil.which", return_value=None)
+    def test_auto_falls_to_none_without_bwrap(self, mock_which, monkeypatch):
+        monkeypatch.delenv(SANDBOX_ENV_VAR, raising=False)
+        runner, name = select_sandbox()
+        assert isinstance(runner, NoneSandbox)
+        assert name == "none"
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    def test_explicit_none_beats_an_available_bwrap(self, mock_which):
+        runner, name = select_sandbox("none")
+        assert isinstance(runner, NoneSandbox)
+        assert name == "none"
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    def test_the_flag_beats_the_env(self, mock_which, monkeypatch):
+        """`--unsandboxed` resolves to ``"none"`` and wins over an env that
+        forced bwrap: a passed request never reaches the env lookup."""
+        monkeypatch.setenv(SANDBOX_ENV_VAR, "bwrap")
+        runner, name = select_sandbox("none")
+        assert name == "none"
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    def test_the_env_is_read_when_no_flag(self, mock_which, monkeypatch):
+        monkeypatch.setenv(SANDBOX_ENV_VAR, "none")
+        runner, name = select_sandbox(None)
+        assert name == "none"
+
+    @patch("core.tools.sandbox.BwrapSandbox.is_available", return_value=False)
+    def test_forcing_bwrap_without_it_refuses_with_the_fix_named(self, mock_avail):
+        with pytest.raises(SandboxUnavailable) as exc:
+            select_sandbox("bwrap")
+        assert "--unsandboxed" in str(exc.value)
+        assert "bubblewrap" in str(exc.value)
+
+
+class TestBuildSandboxEnv:
+    """The child sees the allow-list plus the profile's names, and nothing
+    else the host exported."""
+
+    def test_the_allow_list_is_forwarded(self, monkeypatch):
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("HOME", "/home/x")
+        env = build_sandbox_env(SandboxProfile())
+        assert env["PATH"] == "/usr/bin"
+        assert env["HOME"] == "/home/x"
+
+    def test_a_secret_the_host_set_is_left_behind(self, monkeypatch):
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "leak-me")
+        env = build_sandbox_env(SandboxProfile())
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+
+    def test_lc_variables_are_matched_by_prefix(self, monkeypatch):
+        monkeypatch.setenv("LC_ALL", "C.UTF-8")
+        env = build_sandbox_env(SandboxProfile())
+        assert env["LC_ALL"] == "C.UTF-8"
+
+    def test_the_profile_names_are_added(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+        env = build_sandbox_env(SandboxProfile(env_passthrough=("OPENAI_API_KEY",)))
+        assert env["OPENAI_API_KEY"] == "sk-x"
+
+    def test_a_named_variable_the_host_never_set_is_simply_absent(self, monkeypatch):
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        env = build_sandbox_env(SandboxProfile(env_passthrough=("HTTPS_PROXY",)))
+        assert "HTTPS_PROXY" not in env
+
+
+class TestBothBackendsHonourTheSameEnvRule:
+    """The env rule stated once: the child's environment is exactly what the
+    caller passed; ``None`` inherits the parent's. Both backends obey it, so
+    a profile means the same thing on either."""
+
+    def test_none_sandbox_uses_exactly_the_env_it_was_given(self):
+        rc, out, err = NoneSandbox().execute(
+            "echo $ONLY_THIS", shell=True, env={"ONLY_THIS": "here"},
+        )
+        assert rc == 0
+        assert out == "here"
+
+    def test_none_sandbox_does_not_add_a_host_secret(self, monkeypatch):
+        monkeypatch.setenv("HOST_SECRET", "leak")
+        rc, out, err = NoneSandbox().execute(
+            "echo secret=[$HOST_SECRET]", shell=True,
+            env=build_sandbox_env(SandboxProfile()),
+        )
+        assert rc == 0
+        assert out == "secret=[]"
+
+    @pytest.mark.skipif(shutil.which("bwrap") is None,
+                        reason="bwrap is not installed on this host")
+    def test_bwrap_shows_only_the_allow_list_plus_profile_names(self, monkeypatch):
+        monkeypatch.setenv("HOST_SECRET", "leak")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+        env = build_sandbox_env(SandboxProfile(env_passthrough=("OPENAI_API_KEY",)))
+        rc, out, err = BwrapSandbox().execute(
+            ["python3", "-c", "import os; print(sorted(os.environ))"],
+            profile=SandboxProfile(), env=env, timeout=20,
+        )
+        assert rc == 0, err
+        names = set(eval(out))
+        assert "HOST_SECRET" not in names
+        assert "OPENAI_API_KEY" in names
+        assert "PATH" in names
+
+    def test_none_sandbox_shows_only_the_allow_list_plus_profile_names(self, monkeypatch):
+        monkeypatch.setenv("HOST_SECRET", "leak")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+        env = build_sandbox_env(SandboxProfile(env_passthrough=("OPENAI_API_KEY",)))
+        rc, out, err = NoneSandbox().execute(
+            [sys.executable, "-c", "import os; print(sorted(os.environ))"],
+            env=env, timeout=20,
+        )
+        assert rc == 0, err
+        names = set(eval(out))
+        assert "HOST_SECRET" not in names
+        assert "OPENAI_API_KEY" in names
+        assert "PATH" in names
 
 
 class TestBwrapNetworkProfile:
@@ -538,16 +731,19 @@ class TestBwrapForReal:
         assert out == str(expected)
 
 
-def _python_command(code: str):
-    """The argv :class:`RunPythonTool` builds, captured rather than guessed.
+def _python_invocation(code: str):
+    """The ``(argv, stdin)`` :class:`RunPythonTool` builds, captured rather
+    than guessed.
 
     Guessing it would leave these tests passing against a tool that had
-    gone back to a temp file the day somebody changed it back.
+    gone back to a temp file — or back to ``-c`` — the day somebody changed
+    it back. The program travels on stdin now, so both halves are captured.
     """
     seen = {}
 
-    def capture(cmd, *, shell=False, timeout=None, executable=None):
+    def capture(cmd, *, shell=False, timeout=None, executable=None, stdin=None):
         seen["cmd"] = cmd
+        seen["stdin"] = stdin
         return 0, "", ""
 
     tool = RunPythonTool(
@@ -556,7 +752,7 @@ def _python_command(code: str):
         subprocess_runner=capture,
     )
     tool(code)
-    return seen["cmd"]
+    return seen["cmd"], seen["stdin"]
 
 
 #: ``RunPythonTool`` runs ``<elfenv>/bin/python``.  Standing the running
@@ -570,33 +766,36 @@ requires_prefix_python = pytest.mark.skipif(
 
 
 class TestRunPythonCommandUnderTheSandboxes:
-    """The bug this exists for: the tool wrote the script to a host temp
+    """Two bugs this exists for. The tool wrote the script to a host temp
     file and passed its *path*, and ``/tmp`` inside the sandbox is a fresh
-    tmpfs.  Every program the tool was ever given would have come back
-    ``can't open file '/tmp/tmpXXXX.py'``.
+    tmpfs, so every program came back ``can't open file '/tmp/tmpXXXX.py'``.
+    0.8.2 moved it to ``-c <code>``, which put the whole program in ``argv``
+    where any process on the host reads it out of ``ps`` — the leak class
+    0.8.2 had just fixed for the model key. The program is on stdin now:
+    ``argv`` is ``[python, "-"]`` and nothing else.
     """
 
-    def test_the_command_carries_the_code_not_a_path(self):
-        cmd = _python_command("print('carried')")
-        assert cmd[1] == "-c"
-        assert cmd[2] == "print('carried')"
+    def test_the_command_carries_the_code_on_stdin_not_in_argv(self):
+        cmd, stdin = _python_invocation("print('carried')")
+        assert cmd[1] == "-"
+        assert len(cmd) == 2
+        assert stdin == "print('carried')"
         assert not any(str(part).endswith(".py") for part in cmd)
+        assert "print('carried')" not in " ".join(str(p) for p in cmd)
 
     @requires_prefix_python
     def test_none_sandbox_runs_it(self):
-        rc, out, err = NoneSandbox().execute(
-            _python_command("print('temp-free')"), timeout=20,
-        )
+        cmd, stdin = _python_invocation("print('temp-free')")
+        rc, out, err = NoneSandbox().execute(cmd, stdin=stdin, timeout=20)
         assert rc == 0, err
         assert out == "temp-free"
 
     @requires_bwrap
     @requires_prefix_python
     def test_bwrap_runs_it(self):
+        cmd, stdin = _python_invocation("print('temp-free')")
         rc, out, err = BwrapSandbox().execute(
-            _python_command("print('temp-free')"),
-            profile=SandboxProfile(),
-            timeout=20,
+            cmd, stdin=stdin, profile=SandboxProfile(), timeout=20,
         )
         assert rc == 0, err
         assert out == "temp-free"

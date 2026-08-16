@@ -34,6 +34,7 @@ class Agent:
         client=None,
         memory=None,
         tools=None,
+        sandbox_request: Optional[str] = None,
     ):
         self._config = config
 
@@ -55,7 +56,8 @@ class Agent:
             Path.home() / f".{self.personality}_memory.db"
         )
         self.tools = tools if tools is not None else Tools(
-            elfenv=self.env, memory=self.memory, enable_voice=False
+            elfenv=self.env, memory=self.memory, enable_voice=False,
+            sandbox_request=sandbox_request,
         )
 
         self._context_manager = ContextWindowManager(project_root=Path.cwd())

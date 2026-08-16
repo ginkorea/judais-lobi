@@ -354,10 +354,25 @@ class TestToolBusProperties:
         bus = ToolBus(sandbox=sandbox)
         assert bus.sandbox is sandbox
 
-    def test_default_engine_and_sandbox(self):
-        bus = ToolBus()
-        assert isinstance(bus.capability_engine, CapabilityEngine)
+    def test_default_engine_is_a_capability_engine(self):
+        assert isinstance(ToolBus().capability_engine, CapabilityEngine)
+
+    def test_default_sandbox_is_the_safe_default_not_none(self):
+        """A bus handed no sandbox is safe by default: it makes the same
+        choice ``select_sandbox`` does — bwrap where bubblewrap exists — so
+        no isolation is a decision on the record, not the fallthrough. The
+        blunt ``isinstance(..., NoneSandbox)`` this replaced asserted the
+        old unsafe default."""
+        from core.tools.sandbox import select_sandbox
+        _runner, expected = select_sandbox()
+        assert ToolBus().sandbox_name == expected
+
+    def test_an_explicit_none_sandbox_is_honoured(self):
+        """Opting out is still one line: pass ``NoneSandbox()`` and the bus
+        keeps it, auto path untouched."""
+        bus = ToolBus(sandbox=NoneSandbox())
         assert isinstance(bus.sandbox, NoneSandbox)
+        assert bus.sandbox_name == "none"
 
 
 class TestUnregister:

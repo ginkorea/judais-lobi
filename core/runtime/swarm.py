@@ -490,6 +490,10 @@ class SwarmRunner:
             "gated": [name for name in offered if name in self._gated],
             "max_steps": self._max_steps,
             "history": len(self._history),
+            # The bus is the one owner of the string; the direct runner reads
+            # the same property, so the two paths cannot disagree about
+            # whether this mission's tool subprocesses were isolated.
+            "sandbox": self._bus.sandbox_name,
         }
 
     # ── DIRECT: the path that already worked, untouched ─────────────────

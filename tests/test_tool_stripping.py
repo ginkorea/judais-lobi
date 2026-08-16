@@ -78,7 +78,7 @@ class TestRunPythonToolStripped:
 
     def test_no_retry_on_failure(self):
         call_count = 0
-        def counting_runner(cmd, *, shell, timeout, executable):
+        def counting_runner(cmd, *, shell, timeout, executable, stdin=None):
             nonlocal call_count
             call_count += 1
             return 1, "", "SyntaxError"
@@ -119,8 +119,8 @@ class TestRunPythonToolStripped:
     def test_no_temp_file_machinery(self):
         """The script used to be written to a host temp file whose path
         was handed to the interpreter — a path that does not exist inside
-        a sandbox with a tmpfs ``/tmp``.  The code goes in argv now, and
-        there is nothing left to clean up."""
+        a sandbox with a tmpfs ``/tmp``.  The code goes in on stdin now,
+        and there is nothing left to clean up."""
         tool = RunPythonTool(
             elfenv=Path("/tmp/fake_elfenv"),
             skip_venv_setup=True,
@@ -132,8 +132,10 @@ class TestRunPythonToolStripped:
     def test_the_run_writes_nothing_to_the_temp_directory(self):
         seen = {}
 
-        def capturing_runner(cmd, *, shell=False, timeout=None, executable=None):
+        def capturing_runner(cmd, *, shell=False, timeout=None, executable=None,
+                             stdin=None):
             seen["cmd"] = cmd
+            seen["stdin"] = stdin
             seen["during"] = set(os.listdir(tempfile.gettempdir()))
             return 0, "", ""
 
@@ -144,8 +146,12 @@ class TestRunPythonToolStripped:
         )
         before = set(os.listdir(tempfile.gettempdir()))
         tool("print('no file for this')")
-        assert seen["cmd"][1] == "-c"
-        assert seen["cmd"][2] == "print('no file for this')"
+        # The program travels on stdin, not in argv: the command is the
+        # interpreter and a bare ``-`` (read from stdin), and the code is the
+        # stdin the runner was handed.
+        assert seen["cmd"][1] == "-"
+        assert len(seen["cmd"]) == 2
+        assert seen["stdin"] == "print('no file for this')"
         assert seen["during"] - before == set()
 
     def test_no_elf_parameter_required(self):

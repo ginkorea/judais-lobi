@@ -96,6 +96,20 @@ class SandboxProfile:
     max_cpu_seconds: Optional[int] = None
     max_memory_bytes: Optional[int] = None
     max_processes: Optional[int] = None
+    #: Environment variables a child under this profile is allowed to
+    #: inherit *by name*, on top of the fixed allow-list every sandboxed
+    #: child gets (``PATH``, ``HOME``, ``LANG``/``LC_*``, ``TERM``,
+    #: ``TMPDIR``). The bus builds the child's environment from these two
+    #: lists in one place and hands it to ``execute(env=…)``; neither
+    #: backend reads ``os.environ`` on its own except to resolve exactly
+    #: these names. A field, not a hint: it means the same thing on
+    #: ``NoneSandbox`` and ``BwrapSandbox``, so a tool that genuinely needs
+    #: a key — ``OPENAI_API_KEY`` for the embedding endpoint the RAG crawl
+    #: and web research reach, the proxy variables ``pip`` reads — declares
+    #: it here beside the scopes it asks for, and a tool that stays silent
+    #: runs with the host's secrets stripped out by construction rather
+    #: than by nobody having thought about it.
+    env_passthrough: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -218,10 +232,25 @@ PYTHON_DESCRIPTOR = ToolDescriptor(
 #: ``pip.install`` reads like a filesystem effect — and it is the tool a
 #: sandbox would break most confusingly, with pip's own retry banner
 #: repeated five times before it gave up.
+#: ``env_passthrough`` names the variables ``pip`` genuinely reads and the
+#: allow-list would otherwise strip: the proxy set behind which a whole
+#: category of hosts sits, and the index/cache pointers an operator uses to
+#: aim pip at an internal mirror.  It is the one shipped descriptor that
+#: needs a key beyond the fixed allow-list, because it is the one shipped
+#: tool that both shells out *and* reaches the network — the web/RAG tools
+#: reach the network in-process and never touch a sandboxed child, so an
+#: ``env_passthrough`` on them would forward nothing.
 INSTALL_DESCRIPTOR = ToolDescriptor(
     tool_name="install_project",
     required_scopes=["python.exec", "pip.install"],
-    sandbox_profile=SandboxProfile(allow_network=True),
+    sandbox_profile=SandboxProfile(
+        allow_network=True,
+        env_passthrough=(
+            "http_proxy", "https_proxy", "no_proxy",
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+            "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_CACHE_DIR",
+        ),
+    ),
     description="Installs a Python project via pip.",
 )
 

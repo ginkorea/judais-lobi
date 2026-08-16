@@ -26,24 +26,31 @@ class RunPythonTool(RunSubprocessTool):
     def __call__(self, code: str, timeout=None, **kwargs) -> Tuple[int, str, str]:
         """Run *code* with the elfenv python. Returns (rc, out, err).
 
-        The code travels **in the argument list**, not through a file on
-        disk. It used to be written to a host ``NamedTemporaryFile`` and
-        the path passed as ``argv[1]``, which is correct for exactly one
-        executor: the one that shares a filesystem with this process.
-        Under ``BwrapSandbox`` — the executor this framework is switching
-        on by default — ``/tmp`` is a private tmpfs, so the path handed
-        over named nothing at all inside the namespace and the tool
-        answered ``can't open file '/tmp/tmpXXXX.py'`` for every program
-        it was ever given. A temp file also outlives a hard kill; ``-c``
-        has nothing to clean up because it never created anything.
+        The code travels **on standard input** — ``python -`` reads its
+        program from stdin — not on disk and not in ``argv``.
 
-        The cost is the argument-list ceiling (``ARG_MAX``, a couple of
-        megabytes) and a traceback that says ``<string>`` where it used to
-        say a filename — neither of which any caller of this tool reads.
+        Not on disk: it used to be written to a host ``NamedTemporaryFile``
+        and the path passed as ``argv[1]``, which is correct for exactly one
+        executor: the one that shares a filesystem with this process. Under
+        ``BwrapSandbox`` — the sandbox this framework now runs by default —
+        ``/tmp`` is a private tmpfs, so the path handed over named nothing
+        at all inside the namespace and the tool answered ``can't open file
+        '/tmp/tmpXXXX.py'`` for every program it was ever given.
+
+        Not in ``argv`` either: 0.8.2 moved the program to ``-c <code>``,
+        which fixed the temp-file bug but put the whole generated program in
+        the argument list, where any other process on the host can read it
+        out of ``ps`` — the same class of leak 0.8.2 had just fixed for the
+        Mistral key. ``python -`` with the code on stdin is visible to
+        nobody: ``argv`` is two tokens whatever the program says, and
+        stdin is not a process attribute other users can list. A temp file
+        also outlived a hard kill; stdin has nothing to clean up because it
+        created nothing.
         """
         return self.run(
-            [str(self.python_bin), "-c", str(code)],
+            [str(self.python_bin), "-"],
             timeout=timeout or self.timeout,
+            stdin=str(code),
         )
 
     def _detect_missing_dependency(self, err: str) -> Optional[str]:

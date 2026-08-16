@@ -14,7 +14,7 @@ from typing import Callable, List, Optional, Union
 
 from core.tools.bus import ToolBus, ToolResult
 from core.tools.capability import CapabilityEngine
-from core.tools.sandbox import SandboxRunner, NoneSandbox
+from core.tools.sandbox import SandboxRunner, NoneSandbox, select_sandbox
 from core.contracts.schemas import PolicyPack
 from core.tools.descriptors import (
     SHELL_DESCRIPTOR,
@@ -54,6 +54,7 @@ class Tools:
         enable_voice=False,
         capability_engine: Optional[CapabilityEngine] = None,
         sandbox: Optional[SandboxRunner] = None,
+        sandbox_request: Optional[str] = None,
     ):
         self.elfenv = elfenv
         self.registry: dict[str, Union[Tool, Callable[[], Tool]]] = {}
@@ -62,6 +63,17 @@ class Tools:
             capability_engine = CapabilityEngine(
                 PolicyPack(allowed_scopes=["*"])
             )
+
+        # Safe by default. A caller that passes a concrete ``sandbox`` gets
+        # exactly that; a caller that passes none has the choice made by the
+        # one owner, :func:`~core.tools.sandbox.select_sandbox`, honouring an
+        # explicit ``sandbox_request`` (``"none"`` from ``--unsandboxed``,
+        # ``"bwrap"`` to force) over the ``JUDAIS_LOBI_SANDBOX`` env over the
+        # auto path — so a mission on a host with bubblewrap is sandboxed
+        # unless someone opted out on the record. ``sandbox_request="bwrap"``
+        # on a host without bwrap raises rather than silently downgrading.
+        if sandbox is None:
+            sandbox = select_sandbox(sandbox_request)[0]
 
         # Create ToolBus
         self._bus = ToolBus(
