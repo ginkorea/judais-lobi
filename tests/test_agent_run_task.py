@@ -1,5 +1,7 @@
 # tests/test_agent_run_task.py — Tests for Agent.run_task() (replaces test_elf_run_task.py)
 
+from types import SimpleNamespace
+
 import pytest
 from pathlib import Path
 
@@ -75,6 +77,54 @@ class TestAgentRunTask:
         # this halts — but on "no role is registered", not on a mismatch
         # nobody could explain.
         assert state.current_phase == Phase.HALTED
+
+    def test_the_kernel_path_gets_the_window_the_mission_path_gets(
+        self, memory, fake_tools,
+    ):
+        """B2's wiring half: a library caller is bounded without asking.
+
+        The dispatcher's window is built from the agent's own provider,
+        model and client — the three inputs `core/cli.py` builds the
+        mission's window from — so the coding kernel and the mission loop
+        cannot hold two opinions about how big the endpoint's window is.
+        And it is read lazily: constructing the dispatcher must not be the
+        thing that waits on a `GET /models`.
+        """
+        class CountingClient(FakeUnifiedClient):
+            def __init__(self):
+                super().__init__()
+                self.reads = 0
+
+            @property
+            def capabilities(self):
+                self.reads += 1
+                return SimpleNamespace(max_context_tokens=8_192,
+                                       max_output_tokens=1_024)
+
+        client = CountingClient()
+        agent = Agent(config=STUB_CONFIG, debug=False,
+                      client=client, memory=memory, tools=fake_tools)
+
+        window = agent._make_task_dispatcher().context.prompt_window
+        assert client.reads == 0
+        assert window.limit_tokens == 8_192 - 1_024
+        assert window.profile.source == "backend"
+        assert client.reads == 1
+
+    def test_a_budget_cannot_raise_the_limit_the_endpoint_will_refuse(
+        self, fake_client, memory, fake_tools,
+    ):
+        """The effective limit is the smaller of the two, from this side
+        of the wiring as well."""
+        agent = Agent(config=STUB_CONFIG, debug=False,
+                      client=fake_client, memory=memory, tools=fake_tools)
+        window = agent._make_task_dispatcher(
+            budget=BudgetConfig(max_context_tokens_per_role=10_000_000),
+        ).context.prompt_window
+
+        assert window.profile.source != "per_role_budget"
+        assert window.limit_tokens == window.profile.max_input_tokens
+        assert 0 < window.limit_tokens < 10_000_000
 
     def test_existing_chat_unaffected(self, fake_client, memory, fake_tools):
         """Adding run_task() does not break existing chat()."""

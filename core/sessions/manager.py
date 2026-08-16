@@ -9,6 +9,44 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 
+#: Where a prompt compaction is written, in every session layout there is.
+#: Beside the artifacts and not among them: the artifacts directory is what
+#: a checkpoint snapshots and a rollback replaces, and rolling back to
+#: before a failed RUN must not also delete the record that a prompt had to
+#: be shortened on the way there.
+CONTEXT_WARNINGS_DIR = "context_warnings"
+
+
+def write_context_warning(session_dir: Path, record: dict) -> Path:
+    """Write one prompt compaction under *session_dir*. Returns the path.
+
+    A function and not a method because there are two session layouts —
+    :class:`SessionManager` and :class:`~core.campaign.session.StepSessionManager`
+    — and one of them is the other's subset. Two copies of "where the record
+    goes and what it is called" is how the campaign's copy ends up in a
+    different directory than the kernel looks in.
+
+    The dict is the caller's: one shape, owned by
+    :class:`~core.runtime.context_window.Compaction`, written here and never
+    rebuilt here.
+    """
+    warnings_dir = Path(session_dir) / CONTEXT_WARNINGS_DIR
+    warnings_dir.mkdir(parents=True, exist_ok=True)
+    seq = len(list(warnings_dir.glob("context_warn_*.json")))
+    path = warnings_dir / f"context_warn_{seq:03d}.json"
+    path.write_text(json.dumps(record, indent=2))
+    return path
+
+
+def load_context_warnings(session_dir: Path) -> List[dict]:
+    """Every compaction recorded under *session_dir*, in order."""
+    warnings_dir = Path(session_dir) / CONTEXT_WARNINGS_DIR
+    if not warnings_dir.exists():
+        return []
+    return [json.loads(f.read_text())
+            for f in sorted(warnings_dir.glob("context_warn_*.json"))]
+
+
 class SessionManager:
     """Manages session artifacts on disk.
 
@@ -69,6 +107,18 @@ class SessionManager:
         """Load all artifacts in sequence order."""
         files = sorted(self._artifacts_dir.glob("*.json"))
         return [json.loads(f.read_text()) for f in files]
+
+    # ------------------------------------------------------------------
+    # Context compactions
+    # ------------------------------------------------------------------
+
+    def write_context_warning(self, record: dict) -> Path:
+        """Record one prompt compaction. Returns the written file path."""
+        return write_context_warning(self._session_dir, record)
+
+    def load_context_warnings(self) -> List[dict]:
+        """Every compaction recorded in this session, in order."""
+        return load_context_warnings(self._session_dir)
 
     # ------------------------------------------------------------------
     # Checkpoints

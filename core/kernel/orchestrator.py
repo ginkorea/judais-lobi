@@ -4,8 +4,8 @@
 # logic to it. No hardcoded phase names, transitions, or branching rules.
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Optional, Protocol
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Protocol
 
 from core.kernel.state import Phase, SessionState, InvalidTransition
 from core.kernel.budgets import BudgetConfig, BudgetExhausted, check_all_budgets
@@ -20,6 +20,14 @@ class PhaseResult:
     output: Any = None
     error: Optional[str] = None
     needs_fix: bool = False
+    #: Every :class:`~core.runtime.context_window.Compaction` the phase's
+    #: prompts had to make, in order. Empty for a phase whose prompt fitted
+    #: and for a dispatcher that does not bound its prompts at all. Carried
+    #: on the result and not left on the role context because the
+    #: orchestrator is the half of this that holds the session manager, and
+    #: a compaction nobody wrote down is exactly the silent truncation the
+    #: window was built to replace.
+    compactions: List[Any] = field(default_factory=list)
 
 
 class RoleDispatcher(Protocol):
@@ -92,6 +100,7 @@ class Orchestrator:
                     state.artifacts["_last_patch_checkpoint"] = label
 
                 result = self._execute_phase(state)
+                self._record_compactions(state, result)
 
                 # Validate and record artifact if session_manager present
                 if result.success and self._session_manager is not None:
@@ -145,6 +154,47 @@ class Orchestrator:
                 result.error,
             )
         return result
+
+    def _record_compactions(self, state: SessionState,
+                            result: PhaseResult) -> None:
+        """Write down every prompt this phase had to shorten.
+
+        Beside the phase artifacts rather than among them, and before the
+        artifact is validated rather than after: a phase that compacted its
+        prompt and then failed is the most interesting one there is, and a
+        record kept only on success would be missing exactly then. The
+        artifacts directory is also the one the pre-PATCH checkpoint
+        restores, and a rollback must not un-say that a compaction happened.
+
+        The record is :meth:`Compaction.as_record` plus the phase it
+        happened in — the mission stream's fields, unchanged and in one
+        shape, because a watcher that has learned to read one of them
+        should not have to learn a second.
+        """
+        manager = self._session_manager
+        if manager is None or not result.compactions:
+            return
+        write = getattr(manager, "write_context_warning", None)
+        if write is None:
+            # The dispatcher/session-manager pair is a duck-typed protocol
+            # and a manager that cannot record one is a gap in the record,
+            # not a reason to fail a phase that otherwise worked.
+            logger.warning(
+                "%s cannot record %d context compaction(s)",
+                type(manager).__name__, len(result.compactions),
+            )
+            return
+        phase_name = getattr(state.current_phase, "name", state.current_phase)
+        for compaction in result.compactions:
+            record = {"phase": phase_name, **compaction.as_record()}
+            path = write(record)
+            logger.info(
+                "Phase %s compacted its prompt: %d turn(s), %d chars, "
+                "%d -> %d tokens of %d (%s)",
+                phase_name, record["dropped_turns"], record["freed_chars"],
+                record["tokens_before"], record["tokens_after"],
+                record["limit_tokens"], path,
+            )
 
     def _validate_and_record(self, state: SessionState, result: PhaseResult) -> Optional[PhaseResult]:
         """Validate phase output against schema, write artifact if valid.
