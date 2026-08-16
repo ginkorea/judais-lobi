@@ -473,6 +473,90 @@ class TestTheGate:
         assert agent.client.chat.call_count == 0
 
 
+CODE_PLANE_SKILL = textwrap.dedent("""\
+    ---
+    name: recon
+    skill:
+      skill_id: recon
+      when_to_use: Arriving at a mission cold.
+      allowed_tools:
+        - governed_read
+        - run_shell_command
+      output_format: A table.
+    ---
+
+    # Recon
+
+    Start broad, then narrow by facet.
+    """)
+
+
+class TestTheCodePlaneNeverArrivesUnisolated:
+    """The stub server offers `run_shell_command`, and that is the point.
+
+    A hosted platform's MCP server can put a shell on the bus, and a
+    manifest can put that shell in its closed set, and until this gate
+    both of those were ordinary lines in a file nobody would look at
+    twice. The refusal is at the door — before the model is asked
+    anything — because a mission that has already run is a mission that
+    has already run whatever it ran.
+    """
+
+    def skill(self, tmp_path, extra=""):
+        path = tmp_path / "SKILL.md"
+        text = CODE_PLANE_SKILL.replace(
+            "  output_format:", f"{extra}  output_format:")
+        assert extra in text, "the fixture did not take the declaration"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_naming_the_shell_without_a_declaration_stops_the_run(
+            self, elf, tmp_path):
+        MockClass, agent = elf
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(self.skill(tmp_path)))
+        message = str(exc.value)
+        assert "run_shell_command" in message
+        assert "add `sandbox: bwrap`" in message
+        assert agent.client.chat.call_count == 0
+
+    def test_declaring_bwrap_on_a_host_without_it_stops_the_run(
+            self, elf, tmp_path):
+        """The manifest asked for isolation; the bus is a `NoneSandbox`.
+        Told here, at the door, rather than left to be inferred from a
+        transcript of commands that ran on the host."""
+        MockClass, agent = elf
+        path = self.skill(tmp_path, extra="  sandbox: bwrap\n")
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(path))
+        assert "the tool bus is running 'none'" in str(exc.value)
+        assert agent.client.chat.call_count == 0
+
+    @patch("core.tools.sandbox.shutil.which", return_value="/usr/bin/bwrap")
+    def test_declared_and_actually_isolated_runs(self, _which, elf, tmp_path):
+        from core.tools.sandbox import BwrapSandbox
+
+        MockClass, agent = elf
+        agent.tools.bus = ToolBus(
+            capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
+            sandbox=BwrapSandbox(),
+        )
+        run_cli(MockClass, "--skill",
+                str(self.skill(tmp_path, extra="  sandbox: bwrap\n")))
+        system = agent.client.chat.call_args_list[0].kwargs["messages"][0]["content"]
+        assert "mcp.run_shell_command" in system
+        assert "Sandbox: bwrap" in system
+
+    def test_a_manifest_with_no_code_plane_tool_still_runs_unisolated(
+            self, elf, skill_file):
+        """The gate is about the code plane and nothing else. Firing on
+        every manifest would make the default bus unusable and teach an
+        operator to route around the refusal."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert agent.client.chat.call_count >= 1
+
+
 class RecordingSink:
     """What `--events` opens, near enough: an observer that can be closed."""
 

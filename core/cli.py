@@ -182,13 +182,21 @@ def _load_history(args):
         raise SystemExit(f"--history: {path}: {exc}")
 
 
-def _mission_tools(manifest, discovered, style):
+def _mission_tools(manifest, discovered, style, bus=None):
     """The mission's tool subset: the skill's closed set, or everything.
 
     With no manifest this is the whole bridge, which is what the mission
     path did before skills existed.  It is a fallback and not a default
     posture — ``MissionRunner``'s own contract asks for a subset, and a
     governed deployment supplies one in a manifest.
+
+    ``bus`` is passed so the resolve can see what the mission would
+    actually be isolated by: a manifest whose closed set names a
+    code-plane tool has to declare ``sandbox: bwrap``, and a manifest
+    that declares it has to *get* it.  Read through
+    :func:`~core.runtime.skills.sandbox_name`, which is the smallest
+    seam available today (``ToolBus.sandbox``) and the line to rewire
+    when sandbox selection becomes explicit.
     """
     if manifest is None:
         console.print(
@@ -199,10 +207,10 @@ def _mission_tools(manifest, discovered, style):
         )
         return list(discovered)
 
-    from core.runtime.skills import SkillToolsUnavailable
+    from core.runtime.skills import SkillToolsUnavailable, sandbox_name
 
     try:
-        return manifest.resolve(discovered)
+        return manifest.resolve(discovered, sandbox=sandbox_name(bus))
     except SkillToolsUnavailable as exc:
         raise SystemExit(f"--skill: {exc}")
 
@@ -385,7 +393,7 @@ def _run_mission(elf, args, name, style):
                 f"{', '.join(discovered) or '(none)'}",
                 style=style,
             )
-            tool_names = _mission_tools(manifest, discovered, style)
+            tool_names = _mission_tools(manifest, discovered, style, bus)
             declared[:] = _function_schemas(tool_names)
             # The identifier check must not flag the name of a tool this
             # mission offered — the harness wrote that name into the prompt
