@@ -78,10 +78,18 @@ SCHEMA_VERSION = 1
 #: conversation from a cold start without the turns travelling twice), and
 #: ``schema_version``.
 #:
-#: A staged (``--swarm``) mission adds ``plan``; see :data:`OPTIONAL`.
+#: It carries no ``plan``, and a staged mission's is not late in arriving so
+#: much as not yet drawn: this record is emitted before the first call to the
+#: model, and on ``--swarm`` the router and the planner are both such calls.
+#: See :data:`STEP_STARTED` and the ``silence`` clause of
+#: :data:`EXIT_CONTRACT`.
 MISSION_STARTED = "mission_started"
 
 #: A step of the plan/act loop is about to ask the model.  ``index``.
+#:
+#: A staged (``--swarm``) mission adds ``plan`` to the first one each plan
+#: produces — the plan as drawn, and again as redrawn, on the first step it
+#: is about to be worked through.  See :data:`OPTIONAL`.
 STEP_STARTED = "step_started"
 
 #: The model's reply was not a decision this loop could act on — unparseable,
@@ -181,9 +189,17 @@ FIELDS: dict[str, tuple[str, ...]] = {
 #: default.  Listed rather than left to be discovered, so that "optional" is a
 #: statement this repo made and not an accident of which path happened to run.
 OPTIONAL: dict[str, tuple[str, ...]] = {
-    #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan as drawn.
-    #: Absent on a direct mission, which has no plan to show.
-    MISSION_STARTED: ("plan",),
+    #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
+    #: first ``step_started`` that plan produces.  Absent on a direct
+    #: mission, which has no plan to show, and absent on every later step.
+    #:
+    #: It rode ``mission_started`` until the silence clause was made true of
+    #: the staged path as well: that record is now emitted before triage,
+    #: which is itself a model call, and a plan cannot travel on a record
+    #: written before anything asked for one.  Moving an OPTIONAL field is a
+    #: minor change — a consumer reads it with a default or it was never
+    #: reading it as optional.
+    STEP_STARTED: ("plan",),
     #: ``tool`` — the name the model wrote, when it wrote one.  Absent when
     #: the reply was rejected before a name could be read out of it.
     REPLY_REJECTED: ("tool",),
@@ -263,10 +279,12 @@ EXIT_CONTRACT: Mapping[str, str] = MappingProxyType({
     "silence": (
         "A mission that emits ZERO events has failed. `mission_started` is "
         "emitted before the model is asked and before the tool plane is "
-        "touched, so an empty stream is a harness that never got that far — a "
-        "cold model server, a refused token, an unreachable MCP endpoint. It "
-        "is never an empty answer, and a consumer must report it as a failure "
-        "rather than render a blank reply."),
+        "touched — before the FIRST call, which on `--swarm` is the router's "
+        "own and not the first step's — so an empty stream is a harness that "
+        "never got that far: a cold model server, a refused token, an "
+        "unreachable MCP endpoint. It is never an empty answer, and a "
+        "consumer must report it as a failure rather than render a blank "
+        "reply."),
     "finished": (
         "`mission_finished` is emitted from a `finally`, so a mission killed "
         "by an exception still closes its own stream. A stream that simply "

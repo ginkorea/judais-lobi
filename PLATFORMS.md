@@ -463,10 +463,11 @@ web-searched `#2` literally while the list sat two lines up in the prompt.
 ### The exit contract, in four lines
 
 * **Zero events is a failure.** `mission_started` is emitted before the model is
-  asked and before the tool plane is touched, so an empty stream means the
-  harness never got that far — a cold model server, a refused token, an
-  unreachable endpoint. It is never an empty answer. Report it as a failure
-  rather than rendering a blank reply.
+  asked and before the tool plane is touched — before the *first* call, which
+  under `--swarm` is the router's own and not the first step's — so an empty
+  stream means the harness never got that far: a cold model server, a refused
+  token, an unreachable endpoint. It is never an empty answer. Report it as a
+  failure rather than rendering a blank reply.
 * **`mission_finished` always arrives.** It comes out of a `finally`, so a
   mission killed by an exception still closes its own stream; it closes it
   holding `incomplete`, which reads as "stopped, and the reason is on stderr".

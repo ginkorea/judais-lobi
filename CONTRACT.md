@@ -48,11 +48,15 @@ direct loop and from `--swarm` alike. Index them without a default.
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` |
 | `mission_finished` | `outcome`, `steps`, `max_steps` |
 
-Optional, and therefore to be read with a default: `plan` on `mission_started`
-(`[{id, goal, rung}]`, present only on a staged `--swarm` mission), and `tool`
-on `reply_rejected` (present only when the model got as far as naming one).
+Optional, and therefore to be read with a default: `plan` on `step_started`
+(`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
+on the first step of a redrawn one), and `tool` on `reply_rejected` (present
+only when the model got as far as naming one). `plan` rode `mission_started`
+until 0.8.x: that record is now emitted before triage — which is itself a call
+to the model — so at the time it is written there is no plan and there may
+never be one.
 
-Four of these carry more meaning than their names suggest:
+Five of these carry more meaning than their names suggest:
 
 - **`tool_call` is emitted before the call is made.** That is what lets a
   watcher show what is about to happen rather than only what happened.
@@ -61,12 +65,16 @@ Four of these carry more meaning than their names suggest:
 - **`gate_requested` is terminal**, and `arguments` travels verbatim. The
   mission stops holding the exact call it proposed, because what a person
   approves has to be the bytes that would run.
-- **`grounding` is emitted twice when a repair happens.** The interim record has
-  `repairing: true` and is work in progress — show it, do not latch it. The
-  record with `repairing: false` is the verdict. `grounded` says nothing
-  unsupported was found; `verified` says something was found to check at all,
-  and a consumer reading only the first cannot tell a well-cited answer from one
-  that cited nothing.
+- **`grounding` is emitted twice when a repair happens**, on `--swarm` as on
+  the direct path. The interim record has `repairing: true` and is work in
+  progress — show it, do not latch it. The record with `repairing: false` is
+  the verdict. `grounded` says nothing unsupported was found; `verified` says
+  something was found to check at all, and a consumer reading only the first
+  cannot tell a well-cited answer from one that cited nothing.
+- **`step_started` carries the plan on a staged mission**, on the first step of
+  each plan drawn. It is the first thing a watcher hears after the planner has
+  finished, because the record that opens the stream is written before the
+  planner is asked.
 
 `grounding` is absent altogether when no grounding grammar was configured. An
 absent report and a clean one are different facts.
@@ -127,8 +135,9 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - **The event sink is the only machine channel.** A consumer uses `fd:` or a
   path, never `-`, so that the rendering and the records never share bytes.
 - **Zero events is a failure.** `mission_started` is emitted before the model is
-  asked and before the tool plane is touched, so an empty stream means the
-  harness never got that far: a cold model server, a refused token, an
+  asked and before the tool plane is touched — before the *first* call, which
+  under `--swarm` is the router's and not the first step's — so an empty stream
+  means the harness never got that far: a cold model server, a refused token, an
   unreachable endpoint. It is never an empty answer. Report it as a failure
   rather than rendering a blank reply.
 - **`mission_finished` always arrives.** It is emitted from a `finally`, so a

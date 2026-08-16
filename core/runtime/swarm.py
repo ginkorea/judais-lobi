@@ -47,6 +47,14 @@ the audit are exactly the direct path's.  The observer vocabulary is
 mission with more steps, and a sub-mission proposing a gated tool ends
 the whole turn at ``awaiting_approval`` holding the proposed call, the
 same as it always did.
+
+The stream opens before triage.  Triage is a call to the model like any
+other, and the contract's silence clause promises ``mission_started``
+ahead of the first one; a turn that announced itself after the router
+and the planner spent two round-trips saying nothing, which a consumer
+is told to read as a harness that never started.  The plan therefore
+cannot ride that record — it does not exist yet, and may never — so it
+rides the first ``step_started`` it produces.
 """
 
 from __future__ import annotations
@@ -218,6 +226,42 @@ class _StepOutcome:
     why: str = ""
 
 
+def _plan_record(plan: Sequence[PlanStep]) -> List[Dict[str, str]]:
+    """A plan as the observer's ``plan`` field.
+
+    One owner for the shape, because it is now stated from two places — the
+    plan as drawn and the plan as redrawn — and a second hand-listing is how
+    the ``grounding`` record came to carry six of the ten fields its own
+    contract required.
+    """
+    return [{"id": step.id, "goal": step.goal, "rung": step.rung}
+            for step in plan]
+
+
+class _OpenedAlready:
+    """A sub-mission's observer with the sub-mission's opening removed.
+
+    :meth:`SwarmRunner.run` announces the mission before triage, which is the
+    only way the contract's silence clause can hold across a router that is
+    itself a call to the model.  The direct path underneath is a whole
+    :class:`MissionRunner` and would announce it a second time: one turn, two
+    ``mission_started`` records, and a pane that renders two missions.
+
+    Everything else passes through untouched — ``mission_finished``
+    emphatically included.  That record comes out of the sub-runner's own
+    ``finally`` holding the step count this object does not have, and dropping
+    it here would trade a doubled opening for a stream that never closes.
+    """
+
+    def __init__(self, observer: Observer):
+        self._observer = observer
+
+    def __call__(self, record: Dict[str, Any]) -> None:
+        if record.get("event") == MISSION_STARTED:
+            return
+        self._observer(record)
+
+
 class _StageObserver:
     """One watcher for many sub-missions, speaking as a single mission.
 
@@ -227,6 +271,12 @@ class _StageObserver:
     ``index`` into one global sequence, and passes everything else through
     untouched — so the events a watcher sees are indistinguishable in
     vocabulary from a single longer mission.
+
+    It also carries the plan.  The plan cannot ride ``mission_started`` any
+    more — that record is emitted before triage, and at that moment there is
+    no plan and may never be one — so it rides the first ``step_started`` the
+    plan produces, which is the next thing a watcher hears and the moment the
+    plan starts being true.  See :data:`core.runtime.contract.OPTIONAL`.
     """
 
     _PASS = frozenset({
@@ -238,11 +288,21 @@ class _StageObserver:
         self._next_index = 0
         self._offset = 0
         self._seen_high = -1
+        self._pending_plan: Optional[List[Dict[str, str]]] = None
 
     def begin_stage(self) -> None:
         """A new sub-mission is starting; its indexes begin at zero."""
         self._offset = self._next_index
         self._seen_high = -1
+
+    def announce(self, plan: Sequence[PlanStep]) -> None:
+        """Carry this plan on the next ``step_started`` to come through.
+
+        Called once for the plan as drawn and again for a redraw, so what a
+        watcher holds is the plan the steps it is now seeing belong to rather
+        than the one that was abandoned.
+        """
+        self._pending_plan = _plan_record(plan)
 
     def __call__(self, record: Dict[str, Any]) -> None:
         event = record.get("event")
@@ -256,6 +316,12 @@ class _StageObserver:
             fields["index"] = self._offset + local
             self._next_index = max(self._next_index,
                                    self._offset + self._seen_high + 1)
+        if self._pending_plan is not None and event == STEP_STARTED:
+            # On ``step_started`` and nowhere else: ``plan`` is declared
+            # optional on that event alone, and a field an event does not
+            # declare is a field a consumer meets with no sentence for it.
+            fields["plan"] = self._pending_plan
+            self._pending_plan = None
         self._emit(event, **fields)
 
 
@@ -353,10 +419,32 @@ class SwarmRunner:
     # ── the one entry point ─────────────────────────────────────────────
 
     def run(self, objective: str) -> MissionTranscript:
-        if self._route(objective) == "direct":
-            return self._direct(objective)
+        """Announce, triage, then one path or the other.
 
-        plan = self._plan(objective)
+        The announcement is FIRST, before triage — because triage is itself
+        a call to the model, and the contract's silence clause says
+        ``mission_started`` is emitted *before the model is asked*.  It used
+        to come after the router and, on a staged turn, after the planner
+        too: two round-trips of nothing on the wire, which on a cold endpoint
+        is minutes of a stream a consumer is entitled to read as a harness
+        that never started.  A swarm that died in there emitted no events at
+        all and was reported as never having run, while it had in fact run
+        and asked.
+        """
+        self._emit(MISSION_STARTED, **self._opening(objective))
+        try:
+            plan = (self._plan(objective)
+                    if self._route(objective) == "staged" else None)
+        except BaseException:
+            # Neither path below has been reached, so neither path's
+            # ``finally`` will close what was just opened — and a stream that
+            # opens and then stops is the spinner-forever state the
+            # ``finished`` clause exists to prevent.  Announcing early would
+            # otherwise have manufactured that state where there was honest
+            # silence before.
+            self._emit(MISSION_FINISHED, outcome="incomplete", steps=0,
+                       max_steps=self._max_steps)
+            raise
         if plan is None or len(plan) == 1:
             # A plan the planner could not state, or a plan of one step, IS
             # the direct path.  Falling back is the honest move: the direct
@@ -365,6 +453,31 @@ class SwarmRunner:
             # question the machinery exists to serve.
             return self._direct(objective)
         return self._staged(objective, plan)
+
+    @property
+    def _offered(self) -> List[str]:
+        """Every tool name a sub-mission may call: the set, plus the store."""
+        return [*self._tool_names, RESULT_TOOL]
+
+    def _opening(self, objective: str) -> Dict[str, Any]:
+        """The ``mission_started`` fields, whichever way this turn goes.
+
+        Built once for both routes, and built to be the record the direct
+        path's own :class:`MissionRunner` would have emitted: same catalogue,
+        same gated names in catalogue order.  A consumer that could tell from
+        the opening frame which way the router went would be reading an
+        internal decision of this harness off a contract that promises it one
+        vocabulary.
+        """
+        offered = self._offered
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "objective": objective,
+            "catalogue": offered,
+            "gated": [name for name in offered if name in self._gated],
+            "max_steps": self._max_steps,
+            "history": len(self._history),
+        }
 
     # ── DIRECT: the path that already worked, untouched ─────────────────
 
@@ -389,7 +502,8 @@ class SwarmRunner:
             validator=self._validator,
             gated=self._gated,
             history=self._history,
-            observer=self._observer,
+            observer=(_OpenedAlready(self._observer)
+                      if self._observer is not None else None),
         )
         return runner.run(objective)
 
@@ -530,16 +644,12 @@ class SwarmRunner:
     # ── STAGED: execute, gate, iterate, synthesize ──────────────────────
 
     def _staged(self, objective: str, plan: List[PlanStep]) -> MissionTranscript:
-        offered = [*self._tool_names, RESULT_TOOL]
         transcript = MissionTranscript(objective=objective,
-                                       catalogue=list(offered))
-        self._emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
-                   objective=objective, catalogue=offered,
-                   gated=list(self._gated), max_steps=self._max_steps,
-                   history=len(self._history),
-                   plan=[{"id": s.id, "goal": s.goal, "rung": s.rung}
-                         for s in plan])
+                                       catalogue=list(self._offered))
+        # `run` opened the stream before triage; the plan did not exist then.
+        # It travels on the first `step_started` instead.
         stage = _StageObserver(self._emit)
+        stage.announce(plan)
         try:
             outcome = self._work_through(objective, plan, transcript, stage)
         finally:
@@ -593,6 +703,7 @@ class SwarmRunner:
                                            f"({step.goal}): {outcome.why}")
                 if fresh:
                     queue = fresh
+                    stage.announce(fresh)
                     continue
             # Out of moves for this step: the failure is now part of the
             # answer.  The steps still queued are dropped rather than run
@@ -802,6 +913,15 @@ class SwarmRunner:
         repairs = 0
         while not report.grounded and repairs < self._validator.max_repairs:
             repairs += 1
+            # The interim report, through the same renderer the direct path
+            # uses.  A repair turn is a whole extra round-trip to the model
+            # and from outside looks exactly like a stall; the staged path
+            # spent them silently and a watcher saw only the verdict, minutes
+            # later, with no way to tell the wait from a hang.  `repairing`
+            # marks it as work in progress — the record that follows is the
+            # verdict.
+            self._emit(GROUNDING, **_grounding_record(
+                report, repairs=repairs, repairing=True))
             messages.append({"role": "assistant", "content": answer})
             messages.append({"role": "user",
                              "content": self._validator.repair_prompt(report)})
