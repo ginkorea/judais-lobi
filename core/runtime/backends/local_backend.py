@@ -32,7 +32,13 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
-from core.runtime.backends.base import Backend, BackendCapabilities, Usage
+from core.runtime.backends.base import (
+    Backend,
+    BackendCapabilities,
+    ToolCallAccumulator,
+    Usage,
+    tool_calls_from,
+)
 
 DEFAULT_LOCAL_API_BASE = "http://127.0.0.1:8000/v1"
 DEFAULT_LOCAL_MODEL = "local-model"
@@ -100,6 +106,7 @@ class LocalBackend(Backend):
         self._session = session if session is not None else requests
         self._probed: Optional[ServedModel] = None
         self.last_usage = None
+        self.last_tool_calls = []
 
     # ── configuration ────────────────────────────────────────────────────
 
@@ -243,11 +250,27 @@ class LocalBackend(Backend):
         ``OpenAIBackend.chat`` has, because ``core.cli`` branches on
         ``chunk.choices[0].delta.content`` and does not know which
         backend it is draining.
+
+        ``**extra`` goes into the body verbatim, which is how ``tools``,
+        ``tool_choice``, ``parallel_tool_calls`` and ``response_format``
+        reach an OpenAI-compatible server.
+
+        WHAT THE CALLER SENDS DECIDES WHAT COMES BACK.  Native tool calls
+        are always reported on :attr:`last_tool_calls`, whatever was
+        asked.  What changes is the ``str`` this returns: by default a
+        reply that carried tool calls and no text is rendered into the
+        mission protocol's one JSON object — see :meth:`_as_mission_json`,
+        which owns that rule and states it — and a caller **speaking
+        native** gets the content back untouched instead, empty if that is
+        what the model produced.  Speaking native is
+        ``tool_choice="required"`` or ``parallel_tool_calls=True``; see
+        :meth:`_speaking_native`.
         """
         # Cleared before anything is sent: a call that raises must not
-        # leave the previous call's numbers standing for a ledger to count
-        # a second time.
+        # leave the previous call's numbers — or its tool calls — standing
+        # for a ledger to count, or a runner to dispatch, a second time.
         self.last_usage = None
+        self.last_tool_calls = []
         body: Dict[str, Any] = {
             "model": model or self.model,
             # Inbound scrub: see `_strip_harmony`. A history carrying harmony
@@ -388,8 +411,39 @@ class LocalBackend(Backend):
         if not choices:
             return ""
         message = choices[0].get("message") or {}
-        content = message.get("content") or ""
-        return self._strip_harmony(content) or self._as_mission_json(message)
+        # Always, and before the branch: what the model decided is a fact
+        # about the reply, not about the protocol the caller asked for.
+        self.last_tool_calls = tool_calls_from(message.get("tool_calls"))
+        content = self._strip_harmony(message.get("content") or "")
+        if self._speaking_native(body):
+            # No synthesis. The caller reads `last_tool_calls` itself and
+            # a manufactured JSON object would be a second, disagreeing
+            # copy of the same decision. The harmony scrub still runs: it
+            # repairs a server's own parser bug and has nothing to do with
+            # which protocol is being spoken.
+            return content
+        return content or self._as_mission_json(message)
+
+    @staticmethod
+    def _speaking_native(body: Dict[str, Any]) -> bool:
+        """Whether this request asked for tool calls in the provider's own shape.
+
+        THE RULE, IN ONE PLACE.  A caller is speaking native when it sent
+        ``tool_choice="required"`` or ``parallel_tool_calls=True``.  Either
+        one is a request the mission protocol cannot express — the first
+        constrains the decoder to emit a call rather than prose, the second
+        asks for more calls than a one-tool-per-turn loop can dispatch —
+        so a caller that sends one is telling this backend it will read
+        :attr:`last_tool_calls` itself.
+
+        ``tool_choice="auto"`` is NOT native speech, and that is the whole
+        point of naming the rule this way: ``auto`` beside ``tools`` is
+        what every deployed mission has sent since 10 August, it is there
+        to stop vLLM 500ing on its own harmony output, and those runs must
+        keep getting mission JSON back.
+        """
+        return (body.get("tool_choice") == "required"
+                or body.get("parallel_tool_calls") is True)
 
     @staticmethod
     def _as_mission_json(message: Dict[str, Any]) -> str:
@@ -410,6 +464,14 @@ class LocalBackend(Backend):
         purpose — the loop dispatches, appends the result, and asks again —
         and quietly dropping a second call would be worse than never seeing
         it, so the model is told what happened.
+
+        **This is the DEFAULT and not the only mode.** Every call the model
+        made — all of them, in order, arguments parsed — is on
+        :attr:`last_tool_calls` whether or not this ran, so nothing is lost
+        here; what is dropped is only this rendering's view of them. A
+        caller that wants the calls themselves says so in the request and
+        gets the content back unsynthesized instead: see
+        :meth:`_speaking_native`, which owns that rule.
         """
         calls = message.get("tool_calls") or []
         if not calls:
@@ -444,10 +506,18 @@ class LocalBackend(Backend):
         ``choices[0]`` does not exist, and the usage frame is the first
         such frame this backend has ever met.  ``_as_delta`` is untouched
         and still describes exactly what a delta is.
+
+        A third thing is read but never yielded: tool-call fragments.
+        They arrive as pieces of a JSON string spread over many frames,
+        so they are folded into an accumulator on the way past and
+        published on :attr:`last_tool_calls` in the same ``finally`` as
+        the counts — a half-arrived call is not a decision.  The frames
+        themselves still reach the consumer untouched.
         """
         res = self._post(body, stream=True)
         self._raise_for_status(res, body)
         seen: Optional[Usage] = None
+        calls = ToolCallAccumulator()
         try:
             for line in res.iter_lines():
                 if not line:
@@ -468,6 +538,8 @@ class LocalBackend(Backend):
                 found = Usage.from_payload(chunk.get("usage"))
                 if found is not None:
                     seen = found
+                for choice in chunk.get("choices") or []:
+                    calls.add((choice.get("delta") or {}).get("tool_calls"))
                 if not chunk.get("choices"):
                     continue
                 yield self._as_delta(chunk)
@@ -476,6 +548,7 @@ class LocalBackend(Backend):
             # still leaves behind whatever had been reported by then —
             # the abandoned case is the one that has to work.
             self.last_usage = seen
+            self.last_tool_calls = calls.result()
 
     @staticmethod
     def _as_delta(chunk: Dict[str, Any]) -> SimpleNamespace:
@@ -521,6 +594,22 @@ class LocalBackend(Backend):
         honours it, which is why the default is ``True`` and why the old
         stub's ``False`` was wrong rather than cautious.  A server that
         does not, gets ``supports_tool_calls=False`` at construction.
+
+        ``supports_parallel_tool_calls`` and
+        ``supports_tool_choice_required`` follow that same declaration and
+        cannot outrun it: a server told it does not speak ``tools`` must
+        not be reported as speaking a constrained form of them.
+
+        ``tool_choice="required"`` is the one of the two that was actually
+        PROBED — 10 Aug 2026, vLLM 0.14.1 serving ``openai/gpt-oss-20b``,
+        which returned a well-formed native call with ``content`` null.
+        That is why it is ``True`` here rather than cautiously ``False``:
+        a measured capability declared as absent is a measurement thrown
+        away.  ``parallel_tool_calls`` was not probed and is declared on
+        the same grounds as ``supports_tool_calls`` above — it is part of
+        the OpenAI-compatible contract this backend speaks, and a server
+        that does not honour it is a server constructed with
+        ``supports_tool_calls=False``.
         """
         probed = self.probe()
         max_context = self._max_context_tokens
@@ -530,6 +619,8 @@ class LocalBackend(Backend):
             supports_streaming=True,
             supports_json_mode=True,
             supports_tool_calls=self._supports_tool_calls,
+            supports_parallel_tool_calls=self._supports_tool_calls,
+            supports_tool_choice_required=self._supports_tool_calls,
             max_context_tokens=max_context,
             max_output_tokens=self._max_output_tokens,
         )

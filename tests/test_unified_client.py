@@ -102,3 +102,85 @@ class TestTheUsageSideChannel:
 
         client = UnifiedClient(provider_override="openai", backend=_Bare())
         assert client.last_usage is None
+
+
+class TestTheToolCallSideChannel:
+    """The second channel beside the counts, read the same way.
+
+    Native tool calls travel as plain dicts so that nothing reading them
+    has to import a backend type: `{"id", "name", "arguments"}`, every
+    call the provider made, in its order.
+    """
+
+    def _client(self, message):
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=message)])
+        return UnifiedClient(provider_override="openai",
+                             openai_client=mock_openai)
+
+    def test_nothing_has_been_asked_yet(self):
+        client = self._client(SimpleNamespace(content="hi"))
+        assert client.last_tool_calls == []
+
+    def test_it_is_the_backends(self):
+        client = self._client(SimpleNamespace(content=None, tool_calls=[
+            SimpleNamespace(id="a", function=SimpleNamespace(
+                name="f", arguments='{"n": 1}'))]))
+        client.chat(model="gpt-4o-mini", messages=[{"role": "user",
+                                                    "content": "hi"}])
+        assert client.last_tool_calls is client._backend.last_tool_calls
+        assert client.last_tool_calls == [
+            {"id": "a", "name": "f", "arguments": {"n": 1}}]
+
+    def test_the_native_kwargs_are_forwarded_to_the_backend(self):
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])
+        client = UnifiedClient(provider_override="openai",
+                               openai_client=mock_openai)
+        client.chat(model="m", messages=[{"role": "user", "content": "hi"}],
+                    tool_choice="required", parallel_tool_calls=True)
+        kwargs = mock_openai.chat.completions.create.call_args.kwargs
+        assert kwargs["tool_choice"] == "required"
+        assert kwargs["parallel_tool_calls"] is True
+
+    def test_an_injected_backend_that_never_heard_of_them_is_empty(self):
+        """A caller loops over this. "No calls" and "a backend that cannot
+        make calls" are the same instruction to that loop — whether it
+        *can* is a `capabilities` question, asked somewhere else."""
+
+        class _Bare:
+            capabilities = None
+
+            def chat(self, model, messages, stream=False, **kw):
+                return "hi"
+
+        client = UnifiedClient(provider_override="openai", backend=_Bare())
+        assert client.last_tool_calls == []
+
+
+class TestTheFakeCarriesBothChannels:
+    """`FakeUnifiedClient` stands in for the real one in most of this
+    suite, so a channel it does not have is a channel no test can script."""
+
+    def test_it_reports_no_calls_by_default(self, fake_client):
+        assert fake_client.last_tool_calls == []
+
+    def test_scripted_calls_are_what_it_reports(self):
+        from tests.conftest import FakeUnifiedClient
+
+        calls = [{"id": "a", "name": "f", "arguments": {"n": 1}}]
+        fake = FakeUnifiedClient(tool_calls=calls)
+        fake.chat("m", [{"role": "user", "content": "x"}])
+        assert fake.last_tool_calls == calls
+
+    def test_it_swallows_what_a_native_request_carries(self):
+        """A caller under test decides what to send; the fake must not be
+        the reason a request shape cannot be tried."""
+        from tests.conftest import FakeUnifiedClient
+
+        fake = FakeUnifiedClient()
+        fake.chat("m", [{"role": "user", "content": "x"}],
+                  tools=[{"type": "function"}], tool_choice="required")
+        assert fake.last_request["tool_choice"] == "required"

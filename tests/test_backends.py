@@ -4,7 +4,12 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from core.runtime.backends.base import BackendCapabilities, Usage
+from core.runtime.backends.base import (
+    BackendCapabilities,
+    ToolCallAccumulator,
+    Usage,
+    tool_calls_from,
+)
 from core.runtime.backends.openai_backend import OpenAIBackend
 from core.runtime.backends.mistral_backend import MistralBackend
 from core.runtime.backends.local_backend import LocalBackend
@@ -166,6 +171,168 @@ class TestOpenAIBackend:
         next(stream)
         stream.close()
         assert backend.last_usage.total_tokens == 3
+
+    # ── what the call decided ────────────────────────────────────────────
+
+    @staticmethod
+    def _call(index, name, arguments, call_id=None):
+        """One tool call, or one fragment of one, in the SDK's shape."""
+        return SimpleNamespace(
+            index=index, id=call_id,
+            function=SimpleNamespace(name=name, arguments=arguments))
+
+    def _replies(self, message):
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=message)])
+        return OpenAIBackend(openai_client=mock), mock
+
+    def test_a_native_call_arrives_beside_the_return_value(self):
+        """`chat` still returns content; the decision is on the side channel."""
+        backend, _ = self._replies(SimpleNamespace(
+            content=None,
+            tool_calls=[self._call(0, "list_files", '{"path": "/tmp"}',
+                                   call_id="call_a")]))
+        assert backend.chat("m", [{"role": "user", "content": "x"}]) is None
+        assert backend.last_tool_calls == [
+            {"id": "call_a", "name": "list_files",
+             "arguments": {"path": "/tmp"}}]
+
+    def test_every_call_is_reported_in_the_order_they_came(self):
+        """Two calls are two dicts. Using only the first is a protocol's
+        decision to make, and it cannot make it about calls it never saw."""
+        backend, _ = self._replies(SimpleNamespace(
+            content=None,
+            tool_calls=[self._call(0, "first", '{"n": 1}', call_id="a"),
+                        self._call(1, "second", '{"n": 2}', call_id="b")]))
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert [(c["name"], c["arguments"])
+                for c in backend.last_tool_calls] == [
+            ("first", {"n": 1}), ("second", {"n": 2})]
+
+    def test_unreadable_arguments_are_kept_rather_than_lost(self):
+        """A truncated brace is the one mistake a native call can still
+        make, and what was sent is the only evidence of it."""
+        backend, _ = self._replies(SimpleNamespace(
+            content=None,
+            tool_calls=[self._call(0, "f", '{"path": "/tmp"', call_id="a")]))
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls == [
+            {"id": "a", "name": "f", "arguments": {},
+             "arguments_raw": '{"path": "/tmp"'}]
+
+    def test_a_reply_with_no_calls_is_an_empty_list(self):
+        backend, _ = self._replies(SimpleNamespace(content="hi"))
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls == []
+
+    def test_the_previous_decision_does_not_survive_a_quiet_reply(self):
+        """Cleared at the top of `chat`, or a runner dispatches a tool
+        nobody asked for on the turn after."""
+        mock = MagicMock()
+        mock.chat.completions.create.side_effect = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+                content=None,
+                tool_calls=[self._call(0, "f", "{}", call_id="a")]))]),
+            SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="just prose"))]),
+        ]
+        backend = OpenAIBackend(openai_client=mock)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls == []
+
+    def test_a_raised_call_leaves_no_decision_behind(self):
+        mock = MagicMock()
+        mock.chat.completions.create.side_effect = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+                content=None,
+                tool_calls=[self._call(0, "f", "{}", call_id="a")]))]),
+            RuntimeError("boom"),
+        ]
+        backend = OpenAIBackend(openai_client=mock)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        with pytest.raises(RuntimeError):
+            backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls == []
+
+    def test_the_native_kwargs_reach_create_verbatim(self):
+        """`tools`, `tool_choice`, `parallel_tool_calls` and
+        `response_format` are ordinary parameters of the SDK's `create`."""
+        backend, mock = self._replies(SimpleNamespace(content="hi"))
+        tools = [{"type": "function", "function": {"name": "f"}}]
+        backend.chat("m", [{"role": "user", "content": "x"}], tools=tools,
+                     tool_choice="required", parallel_tool_calls=True,
+                     response_format={"type": "json_object"})
+        mock.chat.completions.create.assert_called_once_with(
+            model="m", messages=[{"role": "user", "content": "x"}],
+            tools=tools, tool_choice="required", parallel_tool_calls=True,
+            response_format={"type": "json_object"})
+
+    def test_a_call_with_no_extras_still_sends_no_extras(self):
+        """The request this backend has always sent is the one it sends."""
+        backend, mock = self._replies(SimpleNamespace(content="hi"))
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert mock.chat.completions.create.call_args.kwargs == {
+            "model": "m", "messages": [{"role": "user", "content": "x"}]}
+
+    def _streamed(self, chunks):
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = iter(chunks)
+        return OpenAIBackend(openai_client=mock)
+
+    @staticmethod
+    def _frame(*fragments):
+        return SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=None,
+                                  tool_calls=list(fragments)))], usage=None)
+
+    def test_a_streamed_call_is_assembled_from_its_fragments(self):
+        """Arguments arrive as a JSON string a few characters at a time."""
+        backend = self._streamed([
+            self._frame(self._call(0, "search", '{"q": ', call_id="call_1")),
+            self._frame(self._call(0, None, '"boats"}')),
+        ])
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        assert backend.last_tool_calls == [], "nothing has fully arrived yet"
+        assert len(list(stream)) == 2, "every chunk is still passed through"
+        assert backend.last_tool_calls == [
+            {"id": "call_1", "name": "search", "arguments": {"q": "boats"}}]
+
+    def test_two_streamed_calls_are_kept_apart_by_index(self):
+        backend = self._streamed([
+            self._frame(self._call(0, "first", '{"a":', call_id="a"),
+                        self._call(1, "second", '{"b":', call_id="b")),
+            self._frame(self._call(1, None, " 2}"),
+                        self._call(0, None, " 1}")),
+        ])
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert backend.last_tool_calls == [
+            {"id": "a", "name": "first", "arguments": {"a": 1}},
+            {"id": "b", "name": "second", "arguments": {"b": 2}}]
+
+    def test_an_abandoned_stream_leaves_only_what_fully_arrived(self):
+        """Half a JSON string is not a decision, and it does not pretend
+        to be one — it comes back as the raw text it is."""
+        backend = self._streamed([
+            self._frame(self._call(0, "search", '{"q": ', call_id="call_1")),
+            self._frame(self._call(0, None, '"boats"}')),
+        ])
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        next(stream)
+        stream.close()
+        assert backend.last_tool_calls == [
+            {"id": "call_1", "name": "search", "arguments": {},
+             "arguments_raw": '{"q": '}]
+
+    def test_the_constrained_decode_flags_are_declared(self):
+        backend = OpenAIBackend(openai_client=MagicMock())
+        caps = backend.capabilities
+        assert caps.supports_parallel_tool_calls is True
+        assert caps.supports_tool_choice_required is True
 
 
 class _StubResponse:
@@ -564,6 +731,77 @@ class TestMistralBackend:
             backend.chat("m", [{"role": "user", "content": "x"}])
         assert len(client.calls) == 1
 
+    # ── what the call decided ────────────────────────────────────────────
+
+    def test_the_tool_call_flags_stay_false(self, monkeypatch):
+        """Unverified is not the same as unsupported, and only one of the
+        two is a promise this repo can keep. Mistral's API documents
+        `tools`; nothing here has run a round trip against it."""
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        caps = MistralBackend().capabilities
+        assert caps.supports_tool_calls is False
+        assert caps.supports_parallel_tool_calls is False
+        assert caps.supports_tool_choice_required is False
+
+    def test_tools_in_the_extras_do_not_break_the_call(self, monkeypatch):
+        """`**extra` has always reached the body; a caller CAN send these."""
+        client = _RecordingClient(response=_StubResponse(payload={
+            "choices": [{"message": {"content": "hi"}}]}))
+        backend = self._backend(monkeypatch, client)
+        tools = [{"type": "function", "function": {"name": "f"}}]
+        assert backend.chat("m", [{"role": "user", "content": "x"}],
+                            tools=tools) == "hi"
+        assert client.calls[0]["json"]["tools"] == tools
+
+    def test_a_reply_that_carried_calls_is_reported_not_discarded(self,
+                                                                  monkeypatch):
+        """The flag says nobody should rely on this; it does not say the
+        reply should be thrown away when it arrives anyway."""
+        client = _RecordingClient(response=_StubResponse(payload={
+            "choices": [{"message": {"content": None, "tool_calls": [
+                {"id": "a", "function": {"name": "f",
+                                         "arguments": '{"n": 1}'}},
+                {"id": "b", "function": {"name": "g", "arguments": "{}"}}]}}]}))
+        backend = self._backend(monkeypatch, client)
+        assert backend.chat("m", [{"role": "user", "content": "x"}]) == ""
+        assert backend.last_tool_calls == [
+            {"id": "a", "name": "f", "arguments": {"n": 1}},
+            {"id": "b", "name": "g", "arguments": {}}]
+
+    def test_a_raised_call_leaves_no_decision_behind(self, monkeypatch):
+        """Cleared before the request goes out, which is the only place
+        that helps: a call that never returns never reaches the reader."""
+        import httpx
+
+        client = _RecordingClient(response=_StubResponse(
+            status_code=500, payload={"message": "boom"}))
+        backend = self._backend(monkeypatch, client)
+        backend.last_tool_calls = [{"id": "stale", "name": "f",
+                                    "arguments": {}}]
+        with pytest.raises(httpx.HTTPStatusError):
+            backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_tool_calls == []
+
+    def test_streamed_fragments_are_assembled_too(self, monkeypatch):
+        import json as _json
+
+        lines = [
+            "data: " + _json.dumps({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "a",
+                 "function": {"name": "f", "arguments": '{"n":'}}]}}]}),
+            "data: " + _json.dumps({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": " 1}"}}]}}]}),
+            "data: [DONE]",
+        ]
+        client = _RecordingClient(stream_response=_StubResponse(lines=lines))
+        backend = self._backend(monkeypatch, client)
+        stream = backend.chat("m", [{"role": "user", "content": "x"}],
+                              stream=True)
+        assert backend.last_tool_calls == []
+        list(stream)
+        assert backend.last_tool_calls == [
+            {"id": "a", "name": "f", "arguments": {"n": 1}}]
+
 
 class TestLocalBackend:
     """The Phase-8 stub is gone; see tests/test_local_backend.py.
@@ -646,3 +884,89 @@ class TestUsageIsReportedNeverEstimated:
 
     def test_unparseable_counts_are_not_counts(self):
         assert Usage.from_payload({"prompt_tokens": "many"}) is None
+
+
+class TestNativeCallsTravelAsPlainDicts:
+    """The seam between a provider's reply and this repo's runtime.
+
+    A tool call crosses it as data — three keys and a fourth when
+    something could not be read — so that nothing in the runtime has to
+    import a backend type to learn what a model decided.  One reader for
+    both shapes providers send: nested ``dict``s from the JSON backends,
+    pydantic models from the OpenAI SDK.
+    """
+
+    def test_a_backend_that_says_nothing_claims_nothing(self):
+        """The defaults are the answer for every backend written next, and
+        a capability nobody declared is one a caller must not plan on."""
+        caps = BackendCapabilities()
+        assert caps.supports_tool_calls is False
+        assert caps.supports_parallel_tool_calls is False
+        assert caps.supports_tool_choice_required is False
+
+    def test_a_dict_shaped_call_is_read(self):
+        assert tool_calls_from([
+            {"id": "a", "function": {"name": "f", "arguments": '{"n": 1}'}}
+        ]) == [{"id": "a", "name": "f", "arguments": {"n": 1}}]
+
+    def test_an_object_shaped_call_is_read_the_same_way(self):
+        got = tool_calls_from([SimpleNamespace(
+            id="a", function=SimpleNamespace(name="f", arguments='{"n": 1}'))])
+        assert got == [{"id": "a", "name": "f", "arguments": {"n": 1}}]
+
+    def test_arguments_already_an_object_are_taken_as_they_are(self):
+        """Some servers send the object rather than a string of it."""
+        assert tool_calls_from([
+            {"id": "a", "function": {"name": "f", "arguments": {"n": 1}}}
+        ])[0]["arguments"] == {"n": 1}
+
+    def test_a_missing_id_is_an_empty_string_not_a_none(self):
+        """The field is always there; a caller matching results back to
+        calls should not have to test for two kinds of absence."""
+        assert tool_calls_from([{"function": {"name": "f"}}]) == [
+            {"id": "", "name": "f", "arguments": {}}]
+
+    def test_no_arguments_at_all_loses_nothing_and_says_so(self):
+        """A no-argument call is the common case, not an error."""
+        assert tool_calls_from([
+            {"id": "a", "function": {"name": "f", "arguments": ""}}
+        ]) == [{"id": "a", "name": "f", "arguments": {}}]
+
+    def test_valid_json_that_is_not_an_object_is_kept_raw(self):
+        """There is nothing to dispatch with, and the text is the
+        evidence of what the model actually asked for."""
+        assert tool_calls_from([
+            {"id": "a", "function": {"name": "f", "arguments": "[1, 2]"}}
+        ]) == [{"id": "a", "name": "f", "arguments": {},
+                "arguments_raw": "[1, 2]"}]
+
+    def test_a_tool_calls_field_of_the_wrong_shape_is_no_calls(self):
+        """Not an exception in the middle of somebody's turn."""
+        assert tool_calls_from(None) == []
+        assert tool_calls_from("tool_calls") == []
+
+    def test_the_accumulator_concatenates_by_index(self):
+        acc = ToolCallAccumulator()
+        acc.add([{"index": 0, "id": "a",
+                  "function": {"name": "f", "arguments": '{"path":'}}])
+        acc.add([{"index": 0, "function": {"arguments": ' "/tmp"}'}}])
+        assert acc.result() == [
+            {"id": "a", "name": "f", "arguments": {"path": "/tmp"}}]
+
+    def test_the_accumulator_reports_nothing_before_it_is_fed(self):
+        assert ToolCallAccumulator().result() == []
+
+    def test_a_fragment_without_an_index_falls_back_to_its_position(self):
+        acc = ToolCallAccumulator()
+        acc.add([{"id": "a", "function": {"name": "f", "arguments": "{}"}},
+                 {"id": "b", "function": {"name": "g", "arguments": "{}"}}])
+        assert [c["name"] for c in acc.result()] == ["f", "g"]
+
+    def test_the_accumulator_speaks_the_same_dict_as_a_whole_reply(self):
+        """One owner for the unparseable-arguments rule: a streamed call
+        and a non-streamed one must not be two dialects."""
+        acc = ToolCallAccumulator()
+        acc.add([{"index": 0, "id": "a",
+                  "function": {"name": "f", "arguments": '{"n":'}}])
+        assert acc.result() == tool_calls_from([
+            {"id": "a", "function": {"name": "f", "arguments": '{"n":'}}])

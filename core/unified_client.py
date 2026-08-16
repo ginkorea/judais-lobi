@@ -53,3 +53,23 @@ class UnifiedClient:
         :class:`core.runtime.backends.base.Usage`.
         """
         return getattr(self._backend, "last_usage", None)
+
+    @property
+    def last_tool_calls(self) -> List[Dict[str, Any]]:
+        """The native tool calls the last completion carried, as plain dicts.
+
+        ``[{"id": …, "name": …, "arguments": {…}}]``, every call the
+        provider returned and in its order — the second side channel
+        beside :attr:`last_usage`, mirrored here for the same reason and
+        read the same way. See
+        :attr:`core.runtime.backends.base.Backend.last_tool_calls`.
+
+        Empty rather than absent when there were none, and empty rather
+        than an ``AttributeError`` when the injected backend never heard
+        of tool calls: a caller loops over this, and "no calls" and "a
+        backend that cannot make calls" are the same instruction to that
+        loop. Whether a backend *can* is a capability question, and
+        ``capabilities`` is where it is asked.
+        """
+        calls = getattr(self._backend, "last_tool_calls", None)
+        return calls if isinstance(calls, list) else []
