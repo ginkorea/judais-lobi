@@ -18,7 +18,6 @@ from core.policy.audit import (
     audit_run_id,
     default_audit_logger,
 )
-from core.policy.god_mode import GodModeSession
 
 __all__ = [
     "ProfileMode",
@@ -37,5 +36,4 @@ __all__ = [
     "audit_path",
     "audit_run_id",
     "default_audit_logger",
-    "GodModeSession",
 ]

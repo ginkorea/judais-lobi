@@ -767,6 +767,10 @@ def _mission(elf, args, name, style):
         validator = GroundingValidator.from_config(grounding)
     except ValueError as exc:
         raise SystemExit(f"--skill: {exc}")
+    # The second opinion, built below once the offered set is known and only
+    # where the manifest asked for one. Named here so the runner construction
+    # can read it whether or not that happened.
+    critic = None
 
     system_message = "\n\n".join(
         part for part in (elf.system_message, manifest.prompt if manifest else "")
@@ -1041,7 +1045,39 @@ def _mission(elf, args, name, style):
             # store is on the table too, and the model names it in prose.
             if grounding is not None:
                 validator = GroundingValidator.from_config(
-                    grounding.offering([*tool_names, RESULT_TOOL]))
+                    grounding.offering([*tool_names, RESULT_TOOL]),
+                    # The reading tier's reader, used only where a manifest
+                    # asked for `reading: true`. `plain_chat_fn` rather than
+                    # `chat_fn`, for the reason the swarm's roles use it:
+                    # this is one small question answered in bare JSON, and
+                    # a harmony model with a function namespace declared
+                    # answers a question with a tool call. The mission's own
+                    # model, because that is what the reading result was
+                    # measured on — see `core.runtime.reading`.
+                    ask=lambda prompt: str(plain_chat_fn(
+                        [{"role": "user", "content": prompt}]) or ""))
+            # The second opinion, and the ONE place the manifest's switch
+            # for it is read. Off unless a skill wrote `critic: true`, so a
+            # deployment that never heard of it builds nothing, reads no
+            # config file and emits the stream it always emitted. Said out
+            # loud both ways: which model is about to be shown a governed
+            # draft is not something an operator should have to infer.
+            if grounding is not None and grounding.critic:
+                from core.critic.mission import MissionCritic
+
+                critic = MissionCritic()
+                if critic.available:
+                    console.print(
+                        f"🧐 critic: {critic.provider} — an answer this run "
+                        f"cannot ground gets a second opinion, reported "
+                        f"beside the grounding verdict and never as it",
+                        style=style)
+                else:
+                    console.print(
+                        f"🧐 critic: requested by the skill and UNAVAILABLE "
+                        f"— the grounding record will say so rather than "
+                        f"pass quietly",
+                        style="yellow")
             if manifest:
                 console.print(
                     f"📜 skill {manifest.name} — {len(tool_names)} tool(s): "
@@ -1232,6 +1268,7 @@ def _mission(elf, args, name, style):
                     system_message=system_message,
                     max_steps=max_steps,
                     validator=validator,
+                    critic=critic,
                     gated=gated,
                     approvals=approvals,
                     approval=ticket,

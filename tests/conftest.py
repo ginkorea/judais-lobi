@@ -270,7 +270,7 @@ def tool_bus(permissive_capability_engine, none_sandbox):
 
 
 # ---------------------------------------------------------------------------
-# Phase 4b: Profile / Audit / GodMode fixtures
+# Phase 4b: Profile / Audit fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -278,13 +278,6 @@ def audit_logger(tmp_path):
     """AuditLogger writing to a temp directory."""
     from core.policy.audit import AuditLogger
     return AuditLogger(path=tmp_path / "test_audit.jsonl")
-
-
-@pytest.fixture
-def god_mode_session(audit_logger):
-    """GodModeSession with temp audit logger."""
-    from core.policy.god_mode import GodModeSession
-    return GodModeSession(audit_logger)
 
 
 # ---------------------------------------------------------------------------

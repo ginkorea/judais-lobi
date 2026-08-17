@@ -10,7 +10,6 @@ from core.bounding import bound_result
 from core.tools.descriptors import (
     ToolDescriptor,
     SandboxProfile,
-    HIGH_RISK_ACTIONS,
     SKIP_SANDBOX_ACTIONS,
     NETWORK_ACTIONS,
     summarize_input_schema,
@@ -53,12 +52,31 @@ class ToolBus:
     ``descriptor.required_scopes``.
     """
 
+    #: Two constructor parameters were removed here on 16 Aug 2026, and the
+    #: reason is recorded rather than left to be rediscovered.
+    #:
+    #: ``preflight_hook`` announced a high-risk action to a callable before
+    #: dispatch.  **Nothing in the package ever passed one** — the only
+    #: callers were its own tests — and by the time it was audited there were
+    #: two real preflights on the path already: this bus's capability check,
+    #: which refuses rather than announces, and
+    #: :mod:`core.runtime.schema_check`, which validates a call's arguments
+    #: against the server's own schema before a mission dispatches it.  A
+    #: third hook nobody passes is not a control; it is a place a future
+    #: caller puts one and believes the run is governed.
+    #:
+    #: ``god_mode`` took an object with ``is_panicked`` and blocked every
+    #: dispatch while it was set.  Nothing constructed a ``GodModeSession``
+    #: either, and the concept it implemented — everything allowed for a
+    #: session, with a TTL and a panic switch — has an honest form now that
+    #: is actually reachable: ``--profile god`` / ``JUDAIS_LOBI_PROFILE``,
+    #: announced on ``mission_started.profile``, with ``ProfileMode.GOD``
+    #: unchanged.  A panic switch whose only user is a test is a safety
+    #: story a deployment can tell and not have.
     def __init__(
         self,
         capability_engine: Optional[CapabilityEngine] = None,
         sandbox: Optional[SandboxRunner] = None,
-        preflight_hook: Optional[Callable] = None,
-        god_mode: Any = None,
         audit: Any = None,
     ):
         self._descriptors: Dict[str, ToolDescriptor] = {}
@@ -72,8 +90,6 @@ class ToolBus:
         # concrete sandbox skips the auto path entirely, including its read
         # of ``JUDAIS_LOBI_SANDBOX``.)
         self._sandbox = sandbox if sandbox is not None else select_sandbox()[0]
-        self._preflight_hook = preflight_hook
-        self._god_mode = god_mode
         self._audit = audit
         #: How many audit writes have failed on this bus.  Counted rather
         #: than swallowed: see :meth:`_log_audit`.
@@ -211,45 +227,15 @@ class ToolBus:
         else:
             scopes_to_check = descriptor.required_scopes
 
-        # Per-action metadata
-        is_high_risk = (
-            (tool_name, action) in HIGH_RISK_ACTIONS if action
-            else descriptor.high_risk
-        )
+        # Per-action metadata. `HIGH_RISK_ACTIONS` is no longer read here:
+        # its only consumer was the preflight hook removed above, and the
+        # set stays declared in `core.tools.descriptors` — where it is
+        # tested and where a caller that wants to warn on one can read it —
+        # rather than being computed here for nobody.
         needs_network = (
             (tool_name, action) in NETWORK_ACTIONS if action
             else descriptor.requires_network
         )
-
-        # Panic check — if god mode panic is active, block everything
-        if self._god_mode is not None and self._god_mode.is_panicked:
-            panic_err = {
-                "error": "panic_revoked",
-                "tool": tool_name,
-                "action": action,
-                "message": "Panic switch activated. All tool execution halted.",
-            }
-            result = ToolResult(
-                exit_code=-1,
-                stdout="",
-                stderr=_json.dumps(panic_err),
-                tool_name=tool_name,
-                evidence=_json.dumps(panic_err),
-            )
-            self._log_audit(tool_name, action, scopes_to_check,
-                            "panic_revoked", arguments=arguments,
-                            reason=panic_err["message"], exit_code=-1)
-            return result
-
-        # Preflight announcement for high-risk actions
-        if is_high_risk and self._preflight_hook is not None:
-            self._preflight_hook({
-                "type": "preflight",
-                "tool": tool_name,
-                "action": action,
-                "scopes": list(scopes_to_check),
-                "message": f"High-risk tool '{tool_name}' action '{action}' about to execute",
-            })
 
         # Capability check
         verdict = self._capability.check(tool_name, scopes_to_check)

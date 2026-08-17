@@ -9,6 +9,11 @@ from core.critic.models import (
 )
 from core.critic.config import CriticConfig, CriticProviderConfig, load_critic_config
 from core.critic.backends import CriticBackend
+from core.critic.triggers import (
+    MissionCriticContext,
+    MissionTriggerConfig,
+    should_invoke_mission_critic,
+)
 
 
 def __getattr__(name):
@@ -24,6 +29,13 @@ def __getattr__(name):
     if name == "CriticCache":
         from core.critic.cache import CriticCache
         return CriticCache
+    if name in ("MissionCritic", "CriticOpinion"):
+        # Deferred like the orchestrator: importing it pulls in the local
+        # backend's transport, and `import core.critic` must stay cheap for
+        # a caller that only wants the trigger rules.
+        from core.critic import mission
+
+        return getattr(mission, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -41,4 +53,9 @@ __all__ = [
     "Redactor",
     "CriticKeystore",
     "CriticCache",
+    "MissionCritic",
+    "CriticOpinion",
+    "MissionCriticContext",
+    "MissionTriggerConfig",
+    "should_invoke_mission_critic",
 ]

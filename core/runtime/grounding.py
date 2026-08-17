@@ -69,10 +69,22 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple,
+)
 
+from core.runtime.reading import ReadingCheck, ReadingReport
 from core.runtime.results import walk_path
-from core.tools.descriptors import same_tool
+from core.tools.descriptors import same_tool, tool_key
+
+
+#: ``prompt -> reply``.  What a tier that needs a model is handed, and the
+#: whole of what it may know about one: no client, no model name, no
+#: streaming.  :class:`~core.runtime.reading.ReadingCheck` takes the same
+#: shape for the same reason — a tier that could reach a client could pick a
+#: model, and which model verifies a governed draft is a deployment's
+#: decision and not a check's.
+Ask = Callable[[str], str]
 
 
 class GroundingMisdeclared(TypeError):
@@ -117,6 +129,17 @@ ANY_CHECK = "*"
 #: an identifier grammar matches, and a report that flags a field path the
 #: skill asked for is a report its reader learns to skip.
 CLAIM_BLOCK = re.compile(r"```claims\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def _string_list(raw: Any) -> Tuple[str, ...]:
+    """A manifest list of strings, or ``()``.  A bare string is one item."""
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, Sequence):
+        return ()
+    return tuple(str(item).strip() for item in raw if str(item or "").strip())
 
 #: A fenced code block, any language tag or none.  Non-greedy, so two
 #: blocks in one answer are two matches and the prose between them keeps
@@ -195,6 +218,49 @@ def typographic_plain(text: str) -> str:
 
 
 @dataclass(frozen=True)
+class Plane:
+    """A named family of tools, and the phrases that claim to have used it.
+
+    **Data, not code.**  Which tools constitute "the SDK" on a platform, and
+    which sentences an answer writes when it says it used one, are both
+    content — a framework that hard-coded either would be deciding what a
+    deployment's planes are called.  The manifest declares them; this is the
+    shape they arrive in.
+    """
+
+    name: str
+    #: Tool names, matched with :func:`plane_matches` so every spelling of an
+    #: offered tool counts and a trailing ``*`` is a family (``catalog_*``).
+    tools: Tuple[str, ...] = ()
+    #: Phrases whose presence in the prose is a claim to have used this plane.
+    #: Matched case-insensitively as substrings, because a model writes
+    #: "I used the SDK" and "we used the SDK to" and both are the claim.
+    claims: Tuple[str, ...] = ()
+
+
+def plane_matches(spec: str, called: str) -> bool:
+    """Whether the tool *called* is one the plane spec *spec* names.
+
+    Two forms, and the wildcard is the reason this is not just
+    :func:`~core.tools.descriptors.same_tool`.  An exact name is compared
+    with ``same_tool``, so every spelling and namespacing of one tool
+    counts.  A trailing ``*`` names a family — ``catalog_*`` is every
+    catalogue tool a server advertises, whatever its suffix — and matches
+    on the reduced key, so ``mcp.catalog_search_assets`` is in the
+    ``catalog_*`` family and ``xcatalog_search`` is not.
+    """
+    spec = str(spec or "").strip()
+    if not spec.endswith("*"):
+        return same_tool(spec, called)
+    stem = tool_key(spec.rstrip("*"))
+    key = tool_key(called)
+    if not stem or not key:
+        return False
+    return (key == stem or key.startswith(f"{stem}.")
+            or key.endswith(f".{stem}") or f".{stem}." in key)
+
+
+@dataclass(frozen=True)
 class GroundingConfig:
     """The content half: what counts as a claim, and how strict to be.
 
@@ -229,6 +295,22 @@ class GroundingConfig:
     #: Empty means silence is acceptable here — which is a *declaration*
     #: now, not the absence of one.
     must_cite: Tuple[Tuple[str, int], ...] = ()
+    #: Whether the field-misreading tier runs.  **Off** unless a manifest
+    #: says ``reading: true``, because it is the one tier that spends model
+    #: calls, and a framework that turned it on by default would be
+    #: charging every deployment for a check nobody asked for.  It also
+    #: needs a reader — see :meth:`GroundingValidator.from_config`'s ``ask``
+    #: — and says so rather than passing when there is none.
+    reading: bool = False
+    #: Whether a second opinion is asked of a critic when the mechanical
+    #: verdict is bad enough to earn one.  **Off** by default and, unlike
+    #: every other field here, not a check: it is read by the mission loop
+    #: (:mod:`core.critic.mission`) and its answer is surfaced beside
+    #: :attr:`GroundingReport.grounded`, never inside it.
+    critic: bool = False
+    #: Named tool families and the phrases that claim them.  Empty means no
+    #: plane-claim check, like every other grammar here.
+    planes: Tuple[Plane, ...] = ()
 
     def offering(self, tools: Sequence[str]) -> "GroundingConfig":
         """This config, told which tools the mission put on the table.
@@ -296,7 +378,8 @@ class GroundingConfig:
             )
 
         known = {"identifier_pattern", "number_pattern", "ignore",
-                 "max_repairs", "must_cite", "claim_table"}
+                 "max_repairs", "must_cite", "claim_table", "reading",
+                 "critic", "planes"}
         problems: List[str] = []
         unknown = sorted(set(raw) - known)
         if unknown:
@@ -336,6 +419,36 @@ class GroundingConfig:
             )
             claim_table = False
 
+        reading = raw.get("reading", False)
+        if not isinstance(reading, bool):
+            problems.append(
+                f"`reading` is {reading!r}; it is true or false — whether "
+                f"this skill's figures are read back to a reader to check "
+                f"the FIELD each was taken from, not just that the value is "
+                f"in the evidence"
+            )
+            reading = False
+        if reading and not claim_table:
+            problems.append(
+                "`reading: true` needs `claim_table: true`. The tier reads "
+                "the claim table for the path each figure came from; with no "
+                "table it has no path to ask about, so it would report a "
+                "clean pass having checked nothing"
+            )
+
+        critic = raw.get("critic", False)
+        if not isinstance(critic, bool):
+            problems.append(
+                f"`critic` is {critic!r}; it is true or false — whether an "
+                f"answer this skill could not ground earns a second opinion "
+                f"from a critic. Which critic is a deployment's decision and "
+                f"is not settled here"
+            )
+            critic = False
+
+        planes, plane_problems = cls._read_planes(raw.get("planes"))
+        problems.extend(plane_problems)
+
         if problems:
             raise ValueError("unusable grounding block:\n  - " + "\n  - ".join(problems))
 
@@ -351,7 +464,70 @@ class GroundingConfig:
             ignore=tuple(str(item) for item in ignore),
             max_repairs=repairs,
             must_cite=must_cite,
+            reading=reading,
+            critic=critic,
+            planes=planes,
         )
+
+    @staticmethod
+    def _read_planes(raw: Any) -> Tuple[Tuple[Plane, ...], List[str]]:
+        """``planes:`` as :class:`Plane` objects, plus every problem with it.
+
+        The shape is a mapping of plane name to ``{tools: [...],
+        claims: [...]}``.  Both halves are required and the refusal says
+        which is missing, because each of them fails silently on its own:
+        a plane with no ``claims`` can never fire and reports a clean pass
+        forever, and a plane with no ``tools`` fails every claim about it
+        whatever the run actually called.  Those are the two ways a
+        plane-claim check looks governed and is not, which is the same
+        rule :meth:`GroundingValidator._audit_must_cite` enforces one level
+        up: a declaration that can never bind is a typo, not leniency.
+        """
+        if raw is None:
+            return (), []
+        if not isinstance(raw, Mapping):
+            return (), [
+                f"`planes` is a {type(raw).__name__}; it is a mapping of "
+                f"plane name to {{tools: [...], claims: [...]}}"
+            ]
+
+        problems: List[str] = []
+        planes: List[Plane] = []
+        for name, body in raw.items():
+            name = str(name or "").strip()
+            if not name:
+                problems.append("`planes` names an empty plane")
+                continue
+            if not isinstance(body, Mapping):
+                problems.append(
+                    f"`planes: {name}` is a {type(body).__name__}; it is "
+                    f"{{tools: [...], claims: [...]}}. A bare list of tools "
+                    f"has no phrases to recognise a claim by, so the check "
+                    f"could never fire"
+                )
+                continue
+            unknown = sorted(set(body) - {"tools", "claims"})
+            if unknown:
+                problems.append(
+                    f"`planes: {name}` has unknown key(s): "
+                    f"{', '.join(unknown)}. A plane sets claims, tools"
+                )
+            tools = _string_list(body.get("tools"))
+            claims = _string_list(body.get("claims"))
+            if not tools:
+                problems.append(
+                    f"`planes: {name}` names no `tools`, so every claim to "
+                    f"have used it fails whatever this run called"
+                )
+            if not claims:
+                problems.append(
+                    f"`planes: {name}` names no `claims`, so nothing in an "
+                    f"answer can ever be recognised as claiming it and the "
+                    f"check never binds"
+                )
+            planes.append(Plane(name=name, tools=tools, claims=claims))
+
+        return tuple(planes), problems
 
     @staticmethod
     def _read_must_cite(
@@ -432,6 +608,19 @@ class CheckResult:
     #: Zero is the harness's default and means the skill declared nothing;
     #: it is not the harness deciding that silence is fine.
     minimum: int = 0
+    #: What this check says in the repair turn, when the validator's generic
+    #: wording would be **wrong** for it rather than merely vaguer.
+    #:
+    #: "These appear in your answer and in no tool output" is the right
+    #: sentence for an invented identifier and a false one for a misread
+    #: field — ``total_s: 80.847`` is in the evidence, at a real path, and a
+    #: repair turn that told the model otherwise would send it looking for a
+    #: transcription slip that is not there.  A check with its own words
+    #: supplies them here and the generic paragraph skips it; empty means
+    #: the generic wording is correct and there is one owner of it.
+    repair: str = ""
+    #: The same, for the caveat appended when a repair turn did not fix it.
+    caveat: str = ""
 
     @property
     def verdict(self) -> str:
@@ -614,9 +803,20 @@ class GroundingCheck(ABC):
                 + "\n  - ".join(problems)
             )
 
-    def __init__(self, config: GroundingConfig):
+    def __init__(self, config: GroundingConfig, *, ask: Optional[Ask] = None):
         self._config = config
         self._ignore = frozenset(config.ignore)
+        #: ``prompt -> reply``, or ``None`` where nobody supplied one.  Every
+        #: check takes it and one uses it: :class:`ReadingGroundingCheck` is
+        #: the tier that spends a model call, and handing it in through the
+        #: same constructor every check has is what keeps
+        #: :meth:`GroundingValidator.from_config` from having to know which
+        #: check is which.
+        self._ask = ask
+        #: Which tools this run actually dispatched.  Set by
+        #: :meth:`observing` immediately before :meth:`check`, and empty
+        #: until then — see that method for why it is not on the config.
+        self._called: Tuple[str, ...] = ()
         #: The tools this mission offered. Compared with
         #: :func:`~core.tools.descriptors.same_tool`, so every spelling of
         #: one is covered. See :meth:`GroundingConfig.offering` for why
@@ -627,6 +827,26 @@ class GroundingCheck(ABC):
     @property
     def config(self) -> GroundingConfig:
         return self._config
+
+    def observing(self, called: Sequence[str]) -> None:
+        """Told which tools this run dispatched, before :meth:`check` runs.
+
+        Not on :class:`GroundingConfig`, and the difference is the point:
+        the config is the *skill's declaration*, read once at the door
+        before a single tool has been called, and a run-time fact written
+        into it would make the same validator answer differently on its
+        second mission.  ``tools_offered`` is on the config because what
+        was **offered** is settled before the run starts;  what was
+        **called** is not.
+
+        One owner of the list: the mission's own result store, which
+        recorded every dispatch as it happened.  Re-deriving it by reading
+        the conversation back would be a second owner, and the second owner
+        is the one that goes stale the day a call is made somewhere the
+        messages do not show it.
+        """
+        self._called = tuple(
+            str(name) for name in called if str(name or "").strip())
 
     # ── the template. FINAL. ────────────────────────────────────────────
 
@@ -660,6 +880,8 @@ class GroundingCheck(ABC):
             unsupported=tuple(unsupported),
             detail=self._detail(len(considered), len(unsupported)),
             minimum=self._minimum,
+            repair=self.repair_words(unsupported),
+            caveat=self.caveat_words(unsupported),
         )
 
     def _detail(self, stated: int, failed: int) -> str:
@@ -719,6 +941,19 @@ class GroundingCheck(ABC):
     def unconfigured(self) -> List[str]:
         """Why this check cannot run, or an empty list."""
         return []
+
+    def repair_words(self, failed: Sequence[str]) -> str:
+        """This check's own sentence for the repair turn, or ``""``.
+
+        Empty by default, which means the validator's generic wording is
+        correct for this check and there is exactly one copy of it.  See
+        :attr:`CheckResult.repair`.
+        """
+        return ""
+
+    def caveat_words(self, failed: Sequence[str]) -> str:
+        """The same, for the caveat.  See :attr:`CheckResult.caveat`."""
+        return ""
 
     def ignored(self, token: str) -> bool:
         """A literal the manifest named, or **any spelling of an offered tool**.
@@ -1013,12 +1248,378 @@ def _as_decimal(value: Any) -> Optional[Decimal]:
     return None
 
 
-#: The order checks run in. Identifiers first: they are the finding a
-#: reader acts on, and a repair turn that leads with them is the one
-#: most likely to be actionable. Claims last: it is the most structural
-#: and the least likely to be the thing a reader looks at first.
+class PlaneClaimCheck(GroundingCheck):
+    """An answer may not claim a plane it never called.
+
+    The other half of :attr:`GroundingConfig.tools_offered`, which until now
+    was read only to derive what a check must *not* flag.  What it never
+    asked was the opposite question: the answer says "I ran the code" — did
+    anything on the code plane get dispatched this run?
+
+    That failure is invisible to every other check here.  "I used the SDK to
+    recompute the figure" contains no identifier, no figure and no claim
+    table entry; it extracts nothing, so the mechanical tiers report
+    ``nothing_considered`` and the answer comes back grounded while
+    describing work that did not happen.  It is also the single most
+    expensive sentence in a governance report to get wrong, because a reader
+    who believes the SDK ran believes the number was computed rather than
+    remembered.
+
+    **What a plane is, is data.**  Which tools constitute "the SDK" and which
+    phrases claim it arrive from the manifest as :class:`Plane` objects — a
+    framework that hard-coded either would be naming another platform's tool
+    families for it.  No ``planes:`` block, no check.
+
+    The set of tools this run dispatched is **not** re-derived here.  It
+    arrives through :meth:`GroundingCheck.observing` from the mission's own
+    result store, which recorded each call as it was made; reading it back
+    out of the conversation would be a second owner of the fact, and a
+    second owner is what six-of-ten grounding fields looked like.
+    """
+
+    name = "planes"
+
+    #: The separator between the plane's name and the phrase in a token.
+    #: Both halves are in the token because a repair turn has to say *which*
+    #: plane was claimed, and a reader has to see the words that claimed it.
+    SEPARATOR = ": "
+
+    def unconfigured(self) -> List[str]:
+        if not self._config.planes:
+            return [
+                "no `planes` in the grounding block, so nothing here knows "
+                "which tools are a plane on this platform or what an answer "
+                "says when it claims one"
+            ]
+        return []
+
+    def extract(self, answer: str) -> Iterable[str]:
+        """Every plane-claiming phrase in the prose, as ``plane: phrase``.
+
+        Case-insensitive substring, deliberately.  A model writes "I used
+        the SDK", "we used the SDK to recompute" and "used the SDK for
+        this" and all three are the claim; a phrase list that only matched
+        whole sentences would be a list nobody could write correctly.
+        """
+        lowered = (answer or "").lower()
+        found: List[str] = []
+        for plane in self._config.planes:
+            for phrase in plane.claims:
+                if phrase.lower() in lowered:
+                    found.append(f"{plane.name}{self.SEPARATOR}{phrase}")
+        return found
+
+    def supported(self, token: str, evidence: Sequence[str]) -> bool:
+        """Whether **this run** dispatched a tool of the claimed plane.
+
+        The evidence is not consulted at all, which is the one check here
+        that reads nothing: what a tool *returned* is beside the point when
+        the question is whether it was called.
+        """
+        name, _, _phrase = token.partition(self.SEPARATOR)
+        plane = next((p for p in self._config.planes if p.name == name), None)
+        if plane is None:                       # pragma: no cover - defensive
+            return True
+        return any(plane_matches(spec, called)
+                   for spec in plane.tools for called in self._called)
+
+    def _detail(self, stated: int, failed: int) -> str:
+        if not stated:
+            return ("nothing to check — the answer claims no plane this "
+                    "skill named")
+        called = ", ".join(self._called) or "nothing"
+        return (f"{stated - failed}/{stated} plane claim(s) backed by a call "
+                f"in this run; called: {called}")
+
+    def repair_words(self, failed: Sequence[str]) -> str:
+        if not failed:
+            return ""
+        lines = [
+            "That answer says it used a tool plane that was never called in "
+            "this mission. The claim is about what YOU did, so no tool "
+            "output can support it and rewording it will not:",
+        ]
+        for token in failed:
+            name, _, phrase = token.partition(self.SEPARATOR)
+            plane = next(
+                (p for p in self._config.planes if p.name == name), None)
+            tools = ", ".join(plane.tools) if plane else ""
+            lines.append(
+                f"  {name}: the answer says {phrase!r} and nothing on this "
+                f"plane ({tools}) was dispatched this run")
+        lines.append(
+            "Either call one of those tools and report what it returned, or "
+            "delete the claim and say plainly how you actually arrived at "
+            "the figures — from a tool result you already have, or not at "
+            "all. This run dispatched: "
+            + (", ".join(self._called) or "no tools."))
+        return "\n".join(lines)
+
+    def caveat_words(self, failed: Sequence[str]) -> str:
+        if not failed:
+            return ""
+        listed = ", ".join(
+            token.partition(self.SEPARATOR)[0] for token in failed)
+        return (
+            f"⚠️ Unperformed: this answer claims to have used {listed}, and "
+            f"no tool of that plane was called in this mission. Whatever it "
+            f"reports was not produced by the work it describes."
+        )
+
+
+class ReadingGroundingCheck(GroundingCheck):
+    """Was the field read for what it is?  The tier that costs a model call.
+
+    :class:`ClaimGroundingCheck` asks *is this value at this path?* and has
+    a measured ceiling: on 10 August 2026 two agents on two harnesses each
+    reported ``data.runs[0].total_s`` — a wall clock — as an influence
+    score, and both figures are the honest contents of that path.  A
+    membership check reports them supported and is right to.  The error is
+    semantic, and :mod:`core.runtime.reading` is the instrument for it.
+
+    This class is the *wiring* and nothing else.  Every prompt, the
+    two-step design that keeps a reader from being anchored by the sentence
+    it is judging, the cache, and the words a repair turn uses all live in
+    :mod:`core.runtime.reading` and have one owner there.  What is decided
+    here is where the tier sits in the order — **last**, after every
+    mechanical check, because it is the only one that spends a model call
+    and the cost argument is that it only pays for claims that already look
+    fine.
+
+    Off unless a manifest sets ``reading: true``, and it needs two more
+    things before it can run: a ``claim_table``, which is where the path
+    for each figure comes from, and an ``ask`` for
+    :meth:`GroundingValidator.from_config`.  Missing either is reported as
+    :data:`UNCONFIGURED` with the reason — never as a pass.
+    """
+
+    name = "reading"
+
+    #: The fence the claim table is written in.  The same one
+    #: :class:`ClaimGroundingCheck` reads, because it is the same table.
+    BLOCK = CLAIM_BLOCK
+
+    #: How many claims one answer may cost a reader.  Two calls each, minus
+    #: whatever the per-field cache answers.  Beyond it the tier stops
+    #: asking and says how many it looked at rather than quietly reviewing
+    #: the first twelve of forty and reporting a clean pass.
+    MAX_CLAIMS = 12
+
+    #: A prose sentence.  Split on terminators followed by space or a line
+    #: break, so a draft's bulleted findings are separate claims.
+    SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+    def __init__(self, config: GroundingConfig, *, ask: Optional[Ask] = None):
+        super().__init__(config, ask=ask)
+        #: One reader per validator, so its per-field cache survives the
+        #: repair turn: a mission that quotes five figures out of one view
+        #: asks what that field holds once, and asks nothing at all on the
+        #: second pass over the same fields.
+        self._reader = (
+            ReadingCheck(ask, max_claims=self.MAX_CLAIMS) if ask else None)
+        self._sentences: dict = {}
+        self._report = ReadingReport()
+
+    @property
+    def report(self) -> ReadingReport:
+        """What the reader said about the last answer checked."""
+        return self._report
+
+    def unconfigured(self) -> List[str]:
+        problems: List[str] = []
+        if not self._config.reading:
+            problems.append(
+                "no `reading` in the grounding block; the field-misreading "
+                "tier is the one that spends model calls and runs only where "
+                "a skill asked for it")
+            return problems
+        if not self._config.claim_table:
+            problems.append(
+                "`reading: true` without `claim_table: true`; the tier reads "
+                "the claim table for the path each figure came from")
+        if self._reader is None:
+            problems.append(
+                "`reading: true` and no reader was supplied to the "
+                "validator; the tier asks a model what each field holds and "
+                "there is nothing here to ask")
+        return problems
+
+    def text(self, answer: str) -> str:
+        """The whole answer: the table carries the paths and the prose the
+        sentences, and this check needs both."""
+        return answer
+
+    def extract(self, answer: str) -> Iterable[str]:
+        """Every claim-table entry that some sentence in the prose states.
+
+        A claim nobody wrote a sentence about is not extracted.  The unit of
+        this tier is *the claim*, and a figure that appears only in the
+        machine-readable annex has not been asserted in words — there is no
+        reading of it to be wrong about, and sending it to a reader would be
+        paying for a question with no answer.
+        """
+        self._sentences = {}
+        self._report = ReadingReport()
+        prose = prose_only(self.BLOCK.sub(" ", answer or ""))
+        sentences = [s.strip() for s in self.SENTENCE.split(prose) if s.strip()]
+        found: List[str] = []
+        for raw in self.BLOCK.findall(answer or ""):
+            try:
+                claims = json.loads(raw)
+            except json.JSONDecodeError:
+                # An unreadable table is `ClaimGroundingCheck`'s finding and
+                # is reported there. Two checks reporting one broken fence
+                # would be two rows for one defect.
+                continue
+            if isinstance(claims, Mapping):
+                claims = [claims]
+            if not isinstance(claims, list):
+                continue
+            for claim in claims:
+                if not isinstance(claim, Mapping):
+                    continue
+                path = str(claim.get("path") or "")
+                if not path or "value" not in claim:
+                    continue
+                sentence = self._sentence_for(claim["value"], sentences)
+                if not sentence:
+                    continue
+                token = f"{path}={json.dumps(claim['value'], default=str)}"
+                self._sentences[token] = sentence
+                found.append(token)
+        return found
+
+    @classmethod
+    def _sentence_for(cls, value: Any, sentences: Sequence[str]) -> str:
+        """The first sentence that states *value*, or ``""``.
+
+        Numerically for a number, because prose does not spell a payload's
+        figures the way the payload does and a substring match would find
+        none of the recorded cases:  ``1080`` is written ``1,080``, and see
+        :meth:`_states` for the other two spellings the recording contains.
+
+        This only decides **which sentence to ask the reader about**.  It is
+        not a verification of anything and a wrong pairing costs one
+        question about a sentence the answer really does contain, which is
+        why it is allowed to be generous where the exact check beside it is
+        not.
+        """
+        wanted = _as_decimal(value)
+        for sentence in sentences:
+            if wanted is None:
+                if str(value) and str(value) in sentence:
+                    return sentence
+                continue
+            for match in NumericGroundingCheck.FIGURE.finditer(sentence):
+                found = _as_decimal(
+                    NumericGroundingCheck._plain(match.group(0)))
+                if found is not None and cls._states(wanted, found):
+                    return sentence
+        return ""
+
+    @staticmethod
+    def _states(wanted: "Decimal", found: "Decimal") -> bool:
+        """Whether the figure *found* in prose is a rendering of *wanted*.
+
+        Three ways, and each has a recorded case behind it:
+
+        * **exactly** — ``80.847`` reported as ``80.847`` (Tai's draft);
+        * **rounded for display** — ``80.889`` reported as ``80.89``
+          (Goose's, and a pairing that insisted on all three decimals would
+          miss the second of the two misreadings this tier exists for);
+        * **as a percentage** — ``0.7446`` reported as ``74.46%`` and
+          ``0.023169`` as ``2.3%``, which is how a proportion is written in
+          a sentence and never how it is stored.
+
+        Rounding is one-directional: the prose figure may have *fewer*
+        decimals than the payload's, never more.  ``80.9`` in a payload is
+        not stated by ``80.889`` in a sentence — that is a different number
+        somebody would have had to compute.
+        """
+        if found == wanted:
+            return True
+        places = -found.as_tuple().exponent
+        if places < 0:
+            return False
+        unit = Decimal(1).scaleb(-places)
+        for candidate in (wanted, wanted * 100):
+            try:
+                if candidate.quantize(unit) == found:
+                    return True
+            except InvalidOperation:            # pragma: no cover - defensive
+                continue
+        return False
+
+    def prepare(self, evidence: Sequence[str]) -> Sequence[Any]:
+        """Every tool payload that is JSON, parsed once — the same shape
+        :class:`ClaimGroundingCheck` walks, because it is the same walk."""
+        payloads: List[Any] = []
+        for text in evidence:
+            try:
+                payloads.append(json.loads(text))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return payloads
+
+    def supported(self, token: str, evidence: Sequence[Any]) -> bool:
+        """Ask the reader, and treat only an explicit *no* as a finding.
+
+        An absent opinion — an unreachable reader, an unparseable reply, a
+        reader that will not say what the field is — is **not** a
+        misreading.  A tier whose own flakiness became findings would put
+        its error rate into a governance report; the count of claims nobody
+        answered for is in :meth:`_detail` instead.
+        """
+        path, _, _raw = token.rpartition("=")
+        sentence = self._sentences.get(token, "")
+        if self._reader is None or not sentence:  # pragma: no cover - guarded
+            return True
+        if len(self._report.verdicts) + len(self._report.skipped) \
+                >= self.MAX_CLAIMS:
+            return True
+        report = self._reader.review([(path, sentence)], evidence)
+        self._report = ReadingReport(
+            verdicts=self._report.verdicts + report.verdicts,
+            skipped=self._report.skipped + report.skipped,
+        )
+        return not any(v.misread for v in report.verdicts)
+
+    def _detail(self, stated: int, failed: int) -> str:
+        if not stated:
+            return ("nothing to check — no figure in the claim table is "
+                    "stated in the prose")
+        unanswered = len(self._report.unanswered)
+        detail = (f"{stated - failed}/{stated} figure(s) read for what the "
+                  f"field holds")
+        if unanswered:
+            detail += (f"; {unanswered} the reader had no opinion on, which "
+                       f"is not a pass")
+        return detail
+
+    def repair_words(self, failed: Sequence[str]) -> str:
+        """:mod:`core.runtime.reading`'s own sentence.  One owner."""
+        if not self._report.misread:
+            return ""
+        return ReadingCheck.repair_prompt(self._report)
+
+    def caveat_words(self, failed: Sequence[str]) -> str:
+        """Also reading's, for the same reason."""
+        if not self._report.misread:
+            return ""
+        return ReadingCheck.caveat(self._report)
+
+
+#: The order checks run in, and it is the **cost** order.  Identifiers
+#: first: they are the finding a reader acts on, and a repair turn that
+#: leads with them is the one most likely to be actionable.  Figures and
+#: claims next — still free, still arithmetic.  Planes after them: also
+#: free, but a statement about the run rather than about the text.
+#: Reading LAST, because it is the only tier that spends a model call and
+#: the whole affordability argument for it is that everything cheaper has
+#: already had its say.
 DEFAULT_CHECKS: Tuple[type, ...] = (
     IdentifierGroundingCheck, NumericGroundingCheck, ClaimGroundingCheck,
+    PlaneClaimCheck, ReadingGroundingCheck,
 )
 
 
@@ -1040,17 +1641,25 @@ class GroundingValidator:
 
     @classmethod
     def from_config(
-        cls, config: Optional[GroundingConfig], checks: Sequence[type] = DEFAULT_CHECKS,
+        cls, config: Optional[GroundingConfig],
+        checks: Sequence[type] = DEFAULT_CHECKS,
+        *, ask: Optional[Ask] = None,
     ) -> Optional["GroundingValidator"]:
         """A validator, or ``None`` when there is nothing to enforce.
 
         ``None`` rather than an empty validator: a mission with no
         grounding configuration runs exactly as it did before one
         existed, and nothing in its transcript claims it was checked.
+
+        *ask* is ``prompt -> reply`` and is handed to **every** check
+        rather than to the one that wants it, so this method never has to
+        know which check is which.  Without one, a manifest that asked for
+        ``reading: true`` gets a check that reports why it could not run —
+        never one that reports a pass.
         """
         if config is None:
             return None
-        built = [check(config) for check in checks]
+        built = [check(config, ask=ask) for check in checks]
         if not any(not c.unconfigured() for c in built):
             return None
         cls._audit_must_cite(config, built)
@@ -1100,11 +1709,23 @@ class GroundingValidator:
     def max_repairs(self) -> int:
         return self._max_repairs
 
-    def validate(self, answer: str, evidence: Sequence[str]) -> GroundingReport:
+    def validate(self, answer: str, evidence: Sequence[str],
+                 *, called: Sequence[str] = ()) -> GroundingReport:
+        """Run every check over one answer.
+
+        *called* is the tools this run actually dispatched, told to each
+        check before it runs — see :meth:`GroundingCheck.observing`.  It
+        defaults to empty so every caller that predates the plane-claim
+        check keeps working; a caller that supplies nothing simply has no
+        plane claims to support, which is the honest reading of "we do not
+        know what was called".
+        """
         evidence = list(evidence)
-        return GroundingReport(
-            results=tuple(check.check(answer, evidence) for check in self._checks),
-        )
+        results = []
+        for check in self._checks:
+            check.observing(called)
+            results.append(check.check(answer, evidence))
+        return GroundingReport(results=tuple(results))
 
     # ── what the loop says next ─────────────────────────────────────────
 
@@ -1119,18 +1740,23 @@ class GroundingValidator:
         """
         lines: List[str] = []
 
-        if report.unsupported:
+        # A check with words of its own is left OUT of the generic
+        # paragraph rather than described twice. See `CheckResult.repair`:
+        # the generic sentence is not vaguer for a misread field, it is
+        # false, and a repair turn carrying both would contradict itself.
+        generic = [r for r in report.results if r.unsupported and not r.repair]
+
+        if generic:
             lines.append(
                 "That answer contains claims no tool result in this mission "
                 "supports. Every one of these appears in your answer and in "
                 "no tool output you received:"
             )
-            for result in report.results:
-                if result.unsupported:
-                    lines.append(
-                        f"  {result.check}: "
-                        + ", ".join(repr(t) for t in result.unsupported)
-                    )
+            for result in generic:
+                lines.append(
+                    f"  {result.check}: "
+                    + ", ".join(repr(t) for t in result.unsupported)
+                )
             lines.append(
                 "Either call a tool that returns them, or rewrite the answer "
                 "without them and say plainly what the tools could not "
@@ -1157,6 +1783,10 @@ class GroundingValidator:
                 "one."
             )
 
+        for result in report.results:
+            if result.unsupported and result.repair:
+                lines.append(result.repair)
+
         lines.append("Reply with one JSON object as before.")
         return "\n".join(lines)
 
@@ -1164,14 +1794,24 @@ class GroundingValidator:
     def caveat(report: GroundingReport) -> str:
         """The abstention appended when a repair turn did not fix it."""
         parts: List[str] = []
-        if report.unsupported:
-            listed = ", ".join(report.unsupported)
+        # The same partition the repair turn makes, and for the same reason:
+        # "appears in no tool result" is the wrong sentence for a field that
+        # is in the evidence and was read as the wrong quantity.
+        generic: List[str] = []
+        for result in report.results:
+            if result.unsupported and not result.caveat:
+                generic.extend(t for t in result.unsupported if t not in generic)
+        if generic:
+            listed = ", ".join(generic)
             parts.append(
                 "⚠️ Ungrounded: the following appear in this answer and in no "
                 f"tool result from this mission: {listed}. They were not "
                 "established by this run and must not be relied on or cited "
                 "onward."
             )
+        for result in report.results:
+            if result.unsupported and result.caveat:
+                parts.append(result.caveat)
         if report.uncited:
             listed = ", ".join(report.uncited)
             parts.append(

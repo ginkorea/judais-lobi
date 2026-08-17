@@ -630,3 +630,31 @@ class ReadingCheck:
         )
         lines.append("Reply with one JSON object as before.")
         return "\n".join(lines)
+
+    @staticmethod
+    def caveat(report: ReadingReport) -> str:
+        """The abstention appended when the repair turn did not fix it.
+
+        Its own sentence, and not the grounding validator's, because the
+        validator's is *false* here.  "Appears in no tool result from this
+        mission" is exactly wrong about ``total_s: 80.847`` — it appears in
+        one, at a real path, unaltered — and a reader told that would go
+        looking for a fabricated number and find a real one, which is how a
+        control teaches its audience to ignore it.  What has to be said
+        instead is the harder thing: the figure is genuine and the sentence
+        around it is not.
+        """
+        misread = report.misread
+        if not misread:
+            return ""
+        lines = [
+            "⚠️ Misread: these figures are real values from this run, "
+            "reported as the wrong quantity. The numbers are genuine; what "
+            "they were called is not:",
+        ]
+        lines.extend("  " + verdict.as_repair_line() for verdict in misread)
+        lines.append(
+            "Nothing above may be relied on or cited onward as the quantity "
+            "this answer names it."
+        )
+        return "\n".join(lines)

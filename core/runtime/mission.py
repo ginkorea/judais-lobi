@@ -78,7 +78,9 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple,
+)
 
 from core.bounding import MAX_RESULT_BYTES, bound_result
 from core.durable import RunStore
@@ -448,13 +450,22 @@ def _takes_deadline(bus: Any) -> bool:
 
 
 def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
-                      repairing: bool = False, caveat: str = "") -> Dict[str, Any]:
+                      repairing: bool = False, caveat: str = "",
+                      opinions: Sequence[Mapping[str, Any]] = ()) -> Dict[str, Any]:
     """A :class:`GroundingReport` as the observer's ``grounding`` fields.
 
     Read off the report with ``getattr`` defaults rather than by unpacking a
     known shape: this module's job is to say what the validator said, and a
     check the validator grows next month should reach a watcher as a row in
     ``checks`` rather than as an ``AttributeError`` inside a mission.
+
+    *opinions* are rows a **second opinion** contributed — today the critic's,
+    from :meth:`core.critic.mission.CriticOpinion.as_check`.  They are
+    appended to ``checks`` and they are appended LAST, after every mechanical
+    row, and they are **not** in ``report.results``: ``grounded``,
+    ``verified``, ``unsupported``, ``silent`` and ``uncited`` are all computed
+    from the report alone, so a model's opinion cannot move a mechanical fact.
+    Each such row carries ``advisory: true`` and says so for itself.
     """
     return {
         "ran": bool(getattr(report, "ran", False)),
@@ -483,9 +494,13 @@ def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
              "considered": len(getattr(row, "considered", ()) or ()),
              "minimum": int(getattr(row, "minimum", 0) or 0),
              "unsupported": list(getattr(row, "unsupported", ()) or ()),
-             "detail": getattr(row, "detail", "")}
+             "detail": getattr(row, "detail", ""),
+             # False on every mechanical row and true on a second opinion,
+             # stated on both so a consumer never has to infer it from a
+             # check's name. See `opinions` above.
+             "advisory": False}
             for row in (getattr(report, "results", ()) or ())
-        ],
+        ] + [dict(row) for row in opinions],
     }
 
 
@@ -1033,6 +1048,7 @@ class MissionRunner:
         system_message: str = "",
         max_steps: int = 8,
         validator: Optional[GroundingValidator] = None,
+        critic: Any = None,
         max_result_bytes: int = MAX_RESULT_BYTES,
         store_tool: str = RESULT_TOOL,
         gated: Sequence[str] = (),
@@ -1060,6 +1076,17 @@ class MissionRunner:
         self._system_message = system_message
         self._max_steps = max_steps
         self._validator = validator
+        #: A :class:`~core.critic.mission.MissionCritic`, or ``None``.
+        #:
+        #: ``None`` is the default and the whole behaviour: a mission with
+        #: no critic emits exactly the stream it emitted before one existed.
+        #: **Whether a run gets one is the manifest's decision** —
+        #: ``grounding: critic: true`` — and it is read by the caller that
+        #: already reads the manifest, so this object never learns what a
+        #: skill is. Duck-typed rather than imported: `core.critic` pulls in
+        #: pydantic and a transport, and a mission that is not using a
+        #: critic must not pay for either.
+        self._critic = critic
         self._max_result_bytes = max(0, int(max_result_bytes))
         self._store_tool = (store_tool or "").strip()
         self._store = MissionResultStore()
@@ -1953,7 +1980,10 @@ class MissionRunner:
             # with. A caveat that arrives after the text it qualifies
             # is a caveat that can be rendered separately from it.
             self._emit(GROUNDING, **_grounding_record(
-                marked, repairs=repairs, caveat=caveat))
+                marked, repairs=repairs, caveat=caveat,
+                opinions=self._second_opinion(
+                    transcript.objective, answer, marked,
+                    answered_with_caveat=True)))
             self._emit(ANSWER, text=transcript.answer,
                        outcome=transcript.outcome, **spent)
             return transcript, repairs
@@ -1963,12 +1993,62 @@ class MissionRunner:
                 results=report.results, repairs=repairs,
             )
             self._emit(GROUNDING, **_grounding_record(
-                transcript.grounding, repairs=repairs))
+                transcript.grounding, repairs=repairs,
+                # Asked here too, and on this path it declines: no rule in
+                # `core.critic.triggers` fires on a clean answer, and the
+                # call is made anyway so that the decision has ONE owner.
+                # A branch that skipped asking would be a second copy of
+                # the trigger policy, written in `if`s.
+                opinions=self._second_opinion(
+                    transcript.objective, answer, transcript.grounding,
+                    answered_with_caveat=False)))
         transcript.answer = answer
         transcript.outcome = "answered"
         transcript.steps.append(step)
         self._emit(ANSWER, text=answer, outcome=transcript.outcome, **spent)
         return transcript, repairs
+
+    def _second_opinion(self, objective: str, answer: str,
+                        report: GroundingReport, *,
+                        answered_with_caveat: bool,
+                        ) -> List[Dict[str, Any]]:
+        """The critic's row for the grounding record, or no rows at all.
+
+        Beside the mechanical verdict and never inside it — see
+        :func:`_grounding_record` and :mod:`core.critic.mission`.  The
+        report handed in here is already final; nothing this returns is
+        allowed to change it, which is why it comes back as rows for the
+        record rather than as a report the caller merges.
+
+        It runs **before** the ``answer`` record, like the grounding verdict
+        it sits beside, so a consumer framing the prose has the whole
+        verdict before the prose arrives.  Under streaming the text has
+        already gone out as ``answer_delta`` fragments, so what this delays
+        is the authoritative record and not the reader's first sight of the
+        answer.
+
+        Every failure here is swallowed into a row rather than raised.  A
+        second opinion that took the mission down with it would be a
+        control strictly worse than not having one: the draft exists, the
+        mechanical verdict is computed, and the only thing missing is an
+        opinion nobody is entitled to.
+        """
+        if self._critic is None:
+            return []
+        try:
+            opinion = self._critic.review(
+                answer, self._store.evidence_texts(),
+                objective=objective,
+                unsupported=report.unsupported,
+                answered_with_caveat=answered_with_caveat,
+            )
+        except Exception as exc:                # pragma: no cover - defensive
+            return [{"check": "critic", "advisory": True, "configured": False,
+                     "grounded": True, "verdict": "skipped", "considered": 0,
+                     "minimum": 0, "unsupported": [],
+                     "detail": f"the critic could not be reached: "
+                               f"{type(exc).__name__}: {exc}"}]
+        return [opinion.as_check()] if opinion is not None else []
 
     def _gate(self, objective: str, index: int, name: str,
               arguments: Dict[str, Any], step: MissionStep,
@@ -2603,7 +2683,12 @@ class MissionRunner:
         """Validate the answer, or ``None`` when nothing is configured."""
         if self._validator is None:
             return None
-        report = self._validator.validate(answer, self._store.evidence_texts())
+        report = self._validator.validate(
+            answer, self._store.evidence_texts(),
+            # Which tools this run dispatched, from the store that recorded
+            # them — the plane-claim check's evidence, and the one place
+            # that fact lives. See `MissionResultStore.called_tools`.
+            called=self._store.called_tools())
         if not report.ran:
             # Every check said it could not run. That is a report with no
             # opinion, and it must not be read as a pass — it is kept on

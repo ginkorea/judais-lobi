@@ -4592,3 +4592,154 @@ class TestAGateAnsweredWhileTheRunStandsAtIt:
         assert calls == []
         assert transcript.outcome == AWAITING_APPROVAL
         assert "could NOT be recorded" in transcript.steps[0].error
+
+
+class TestTheSecondOpinionRidesTheGroundingRecord:
+    """A critic's verdict is surfaced beside `grounded` and never inside it.
+
+    `grounded` is a mechanical fact anybody holding the transcript can
+    recompute. A critic's verdict varies with sampling, with which provider
+    had a key today, and with a prompt somebody may edit next month —
+    latching one onto the other would make a governance field
+    unreproducible while the record went on looking exactly the same.
+    """
+
+    class Critic:
+        """A stand-in for `core.critic.mission.MissionCritic`.
+
+        Duck-typed here for the reason the runner duck-types it: `core.critic`
+        pulls in pydantic and a transport, and a mission not using a critic
+        must not pay for either.
+        """
+
+        def __init__(self, row=None, boom=False):
+            self.row = row
+            self.boom = boom
+            self.seen = []
+
+        def review(self, answer, evidence, **kw):
+            if self.boom:
+                raise RuntimeError("the far end went away")
+            self.seen.append({"answer": answer, "evidence": list(evidence),
+                              **kw})
+            if not kw.get("answered_with_caveat"):
+                return None
+            return _Opinion(self.row or {
+                "check": "critic", "advisory": True, "configured": True,
+                "grounded": False, "verdict": "fail", "considered": 1,
+                "minimum": 0, "unsupported": ["the SDK never ran"],
+                "detail": "stub disputes this answer"})
+
+    def run(self, asset_bus, strict, critic, answers):
+        events = []
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.search"), *answers),
+            asset_bus, ["catalog.search"], validator=strict,
+            critic=critic, observer=events.append,
+        ).run("go")
+        return transcript, [r for r in events if r["event"] == "grounding"]
+
+    #: Two drafts that both fail the grammar, so the run ends
+    #: `answered_with_caveat` after its one repair turn.
+    UNGROUNDED = ('{"answer": "The label set is labels.7a19c4e2."}',
+                  '{"answer": "The label set is labels.7a19c4e2."}')
+
+    def test_no_critic_means_no_row_and_the_stream_is_unchanged(
+            self, asset_bus, strict):
+        transcript, records = self.run(asset_bus, strict, None, self.UNGROUNDED)
+        assert transcript.outcome == "answered_with_caveat"
+        assert all(row["check"] != "critic"
+                   for record in records for row in record["checks"])
+
+    def test_the_verdict_arrives_on_the_final_record(self, asset_bus, strict):
+        critic = self.Critic()
+        transcript, records = self.run(asset_bus, strict, critic,
+                                       self.UNGROUNDED)
+        assert transcript.outcome == "answered_with_caveat"
+        final = records[-1]
+        assert final["repairing"] is False
+        row = next(r for r in final["checks"] if r["check"] == "critic")
+        assert row["verdict"] == "fail"
+        assert row["detail"] == "stub disputes this answer"
+
+    def test_it_does_not_ride_the_interim_repairing_record(
+            self, asset_bus, strict):
+        """A repair turn is work in progress and a consumer is told not to
+        latch it. Paying for a second opinion on a draft about to be
+        rewritten would buy an opinion about text nobody keeps."""
+        _t, records = self.run(asset_bus, strict, self.Critic(),
+                               self.UNGROUNDED)
+        interim = [r for r in records if r["repairing"]]
+        assert interim, "this run has to spend a repair turn or it proves nothing"
+        assert all(row["check"] != "critic"
+                   for record in interim for row in record["checks"])
+
+    def test_a_failing_critic_does_not_move_grounded(self, asset_bus, strict):
+        """The whole rule, in one assertion. The row says `fail`; the
+        mechanical verdict is whatever the arithmetic said."""
+        _t, records = self.run(asset_bus, strict, self.Critic(),
+                               self.UNGROUNDED)
+        final = records[-1]
+        mechanical = [r for r in final["checks"] if not r["advisory"]]
+        assert final["grounded"] == all(
+            r["grounded"] for r in mechanical if r["configured"])
+
+    def test_a_failing_critic_on_a_clean_answer_cannot_break_it(
+            self, asset_bus, strict):
+        """It is not even asked: no rule in `core.critic.triggers` fires on
+        a clean answer, and the stub returns `None` accordingly."""
+        critic = self.Critic()
+        transcript, records = self.run(
+            asset_bus, strict, critic,
+            ('{"answer": "The corpus is asset.5f21c9."}',))
+        assert transcript.outcome == "answered"
+        assert records[-1]["grounded"] is True
+        assert all(row["check"] != "critic" for row in records[-1]["checks"])
+        assert critic.seen[-1]["answered_with_caveat"] is False, (
+            "the trigger decision has one owner and the loop still asks it")
+
+    def test_every_mechanical_row_says_it_is_not_advisory(
+            self, asset_bus, strict):
+        """Stated on both kinds so a consumer never infers it from a name."""
+        _t, records = self.run(asset_bus, strict, self.Critic(),
+                               self.UNGROUNDED)
+        rows = records[-1]["checks"]
+        assert [r["advisory"] for r in rows] == \
+            [False] * (len(rows) - 1) + [True]
+
+    def test_the_critic_is_shown_the_store_and_the_findings(
+            self, asset_bus, strict):
+        critic = self.Critic()
+        self.run(asset_bus, strict, critic, self.UNGROUNDED)
+        asked = critic.seen[-1]
+        assert asked["objective"] == "go"
+        assert "labels.7a19c4e2" in asked["unsupported"]
+        assert asked["evidence"], "the critic judged an answer with no evidence"
+
+    def test_a_critic_that_explodes_does_not_take_the_mission_with_it(
+            self, asset_bus, strict):
+        """A second opinion that could take a run down would be strictly
+        worse than not having one: the draft exists, the mechanical verdict
+        is computed, and the only thing missing is an opinion."""
+        transcript, records = self.run(asset_bus, strict,
+                                       self.Critic(boom=True), self.UNGROUNDED)
+        assert transcript.outcome == "answered_with_caveat"
+        row = next(r for r in records[-1]["checks"] if r["check"] == "critic")
+        assert row["verdict"] == "skipped"
+        assert "the far end went away" in row["detail"]
+
+    def test_the_records_still_conform(self, asset_bus, strict):
+        _t, records = self.run(asset_bus, strict, self.Critic(),
+                               self.UNGROUNDED)
+        assert [conforms(record) for record in records] == \
+            [[] for _ in records]
+
+
+class _Opinion:
+    """The one method `MissionRunner` calls on a critic's answer."""
+
+    def __init__(self, row):
+        self.row = row
+
+    def as_check(self):
+        return dict(self.row)
