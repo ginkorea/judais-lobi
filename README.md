@@ -156,6 +156,7 @@ program that spawns this harness may rely on them. The table below is in
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native`. `native` declares the mission's tools as **functions**, declares a `mission_answer(text)` beside them and asks the server for `tool_choice=required` — so an unparseable reply and a tool name nobody offers stop being possible instead of being caught a turn later, and one turn may call several tools. Refused at the door on a backend that does not declare `supports_tool_calls` and `supports_tool_choice_required`. **Off by default on purpose**: it is measured before it is anybody's default |
 | `--no-stream` | `MISSION_STREAM=off` | ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`: the answer's own fragments go out as `answer_delta` records while the model is still writing them, and the console prints them as they land. The `answer` record that follows is still the whole of it, and turning this off changes nothing else |
 | `--control` | `MISSION_CONTROL` | where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-`. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and the only lever into a running turn besides `SIGTERM`. A bad line is dropped with a sentence on stderr, never fatal |
+| `--gate-wait` | `MISSION_GATE_WAIT` | seconds a run standing at a gate waits in-turn for a `gate_decision` on `--control` before ending the turn at `awaiting_approval`. `0` = never wait (the 0.11 behaviour); default 300; capped by `--mission-seconds`. Set it low for an unattended caller |
 
 The rest of the published environment: `MCP_CLIENT_NAME` is what this client
 calls itself in the MCP `initialize` handshake — set it to the agent's name, or a
@@ -172,7 +173,7 @@ for the durable approval records — a path moves the directory, `none`/`off`
 keeps none, and then a gate stops a mission and leaves nothing anybody can
 decide against, which the console says out loud. `MISSION_RESUME` is the environment form of
 `--resume`, `MISSION_PROTOCOL` of `--protocol`, `MISSION_CONTROL` of
-`--control`, and `MISSION_STREAM` of `--no-stream` the other way round: `off`,
+`--control`, `MISSION_GATE_WAIT` of `--gate-wait`, and `MISSION_STREAM` of `--no-stream` the other way round: `off`,
 `0`, `false`, `no` or `none` turn the streamed answer off and anything else
 leaves it on.
 
@@ -700,7 +701,7 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.12.0 — 3341 tests collected.** Mission mode, skill manifests, the
+**v0.12.1 — 3343 tests collected.** Mission mode, skill manifests, the
 grounding validator, `--swarm`, the NDJSON mission stream and the published
 contract are all in this release. What 0.12.0 **is**, rather than what each
 release added:
@@ -736,7 +737,7 @@ release added:
   NDJSON commands *into* a running mission — `inject`, `cancel`, `cancel_step`,
   `gate_decision`. `core/runtime/agui.py` translates the stream into AG-UI
   frames for a browser that speaks them.
-* **One roadmap.** `ROADMAP.md`: §1 is where 0.12.0 stands and what is still
+* **One roadmap.** `ROADMAP.md`: §1 is where 0.12.1 stands and what is still
   missing, §2 is Phases 9–13, §3 the principles, §5 the history — the Feb 2026
   blueprint, the Phase 8 disposition, and what two weeks in production taught.
   `NEXT_STEPS.md` and `PHASE_8.md` were folded into it on 15 Aug 2026.
@@ -751,6 +752,7 @@ One line each. The commit for every one of these is `release: <version> — …`
 | version | date | what it was |
 | --- | --- | --- |
 | 0.12.0 | 16 Aug 2026 | `answer_delta` at the source, a `--control` channel into a running mission, an AG-UI translator |
+| 0.12.1 | 16 Aug 2026 | `--gate-wait` / `MISSION_GATE_WAIT`: an unattended caller can turn the in-turn gate wait down to `0` (the 0.11 behaviour); default unchanged |
 | 0.11.0 | 16 Aug 2026 | native tool calling behind `--protocol native`; arguments schema-checked before dispatch; a byte-stable prompt prefix, and a window that evicts tool round trips first |
 | 0.10.0 | 16 Aug 2026 | durable and bounded: the fsync'd run log and `--resume`, a wall clock and a cancel that finish cleanly, the usage ledger and `elapsed_s`, approvals as durable records |
 | 0.9.0 | 15 Aug 2026 | safe by default: sandbox on, the `safe` profile, audit on every bus, one redactor. Phase 8 closed |
@@ -860,7 +862,7 @@ If you are **running this from another program**, read:
 
 If you want to understand **where this is going**, read:
 
-* 🗺️ `ROADMAP.md` — the only roadmap: where 0.12.0 stands (§1), Phases 9–13
+* 🗺️ `ROADMAP.md` — the only roadmap: where 0.12.1 stands (§1), Phases 9–13
   (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 
 If you want to understand the **current implementation**, inspect:

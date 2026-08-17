@@ -938,6 +938,7 @@ _FLAG_VALUES = {
     "--resume": "run_20260815T131102-9f3a1c04",
     "--protocol": "native",
     "--control": "fd:9",
+    "--gate-wait": "45",
 }
 
 

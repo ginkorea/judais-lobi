@@ -77,6 +77,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.durable import RunStore
+from core.runtime.control import GATE_WAIT_S
 from core.budgets import BudgetExhausted, Deadline, cancelled
 from core.redact import scrub_record
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
@@ -509,6 +510,7 @@ class SwarmRunner:
         deadline: Optional[Deadline] = None,
         cancel: Any = None,
         control: Any = None,
+        gate_wait_s: float = GATE_WAIT_S,
     ):
         self._chat = chat_fn
         self._plain_chat = plain_chat_fn or chat_fn
@@ -576,6 +578,7 @@ class SwarmRunner:
         # steering this turn is steering the mission, not whichever stage
         # happened to be listening.
         self._control = control
+        self._gate_wait_s = max(0.0, float(gate_wait_s))
         self._started_at: Optional[float] = None
         self._max_plan_steps = max(1, int(max_plan_steps))
         self._step_budget = max(1, int(step_budget))
@@ -861,6 +864,7 @@ class SwarmRunner:
             deadline=self._deadline,
             cancel=self._cancel,
             control=self._control,
+            gate_wait_s=self._gate_wait_s,
             started_at=self._started_at,
         )
 
@@ -891,6 +895,7 @@ class SwarmRunner:
             deadline=self._deadline,
             cancel=self._cancel,
             control=self._control,
+            gate_wait_s=self._gate_wait_s,
             started_at=self._started_at,
         )
         return runner.run(objective)

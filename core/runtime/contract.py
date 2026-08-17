@@ -573,6 +573,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
     "--history", "--gate-tool", "--approval", "--resume", "--temperature",
     "--top-p", "--seed", "--protocol", "--no-stream", "--control",
+    "--gate-wait",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -614,7 +615,12 @@ CLI_FLAGS: tuple[str, ...] = (
 #: ``MISSION_CONTROL`` is the environment form of ``--control`` — where a
 #: platform writes NDJSON commands **into** a running mission (``fd:N``, a
 #: FIFO, a path, or ``-`` for stdin), which is the only lever into a turn
-#: besides ``SIGTERM``;
+#: besides ``SIGTERM``; ``MISSION_GATE_WAIT`` is the environment form of
+#: ``--gate-wait`` — how many seconds a run standing at a gate waits, in-turn,
+#: for a ``gate_decision`` on that channel before ending the turn at
+#: ``awaiting_approval`` (``0`` = never wait, the 0.11 behaviour; default 300;
+#: an unattended caller sets it low so a gate nobody is watching does not hold
+#: the turn open);
 #: ``MISSION_PROTOCOL`` is the environment form of ``--protocol`` — ``json``
 #: (the default, and the loop as it has always run) or ``native``, which
 #: declares the tools as functions and constrains the decoder to them.
@@ -646,6 +652,7 @@ ENV_VARS: tuple[str, ...] = (
     "MISSION_PROTOCOL",
     "MISSION_STREAM",
     "MISSION_CONTROL",
+    "MISSION_GATE_WAIT",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",

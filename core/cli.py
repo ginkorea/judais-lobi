@@ -24,6 +24,26 @@ def _env_path(name: str):
     return Path(value) if value else None
 
 
+def _env_gate_wait(name: str = "MISSION_GATE_WAIT"):
+    """The in-turn gate window from an env var, or None for "the default".
+
+    Unlike :func:`_env_seconds`, **zero is a value here** — it is the whole
+    point of the flag: ``0`` means "do not wait at a gate; end the turn at
+    ``awaiting_approval`` and let the decision arrive on a later turn", which
+    is what an unattended caller (an eval driver, a batch, an analyst who is
+    not looking) needs.  Unset/blank/garbage/negative → ``None`` → the
+    default window, so a typo cannot silently turn waiting off.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
+
+
 def _env_seconds(name: str):
     """A positive float from an env var, or None. An argparse default.
 
@@ -958,6 +978,12 @@ def _mission(elf, args, name, style):
                       max_seconds=getattr(args, "mission_seconds", None))
     deadline = Deadline.of(budgets)
     close_on_sigterm(sink, cancel)
+    # The in-turn gate window. Read here so a `None` (flag and env both
+    # silent) resolves to the runner's own default in ONE place; `0` is a
+    # real value and means "end the turn at the gate, as 0.11 did".
+    from core.runtime.control import GATE_WAIT_S
+    _gw = getattr(args, "gate_wait", None)
+    gate_wait_s = GATE_WAIT_S if _gw is None else max(0.0, float(_gw))
 
     # The other direction, opened here for the reason the sink is opened
     # before the connection: a platform that handed us a descriptor is
@@ -1198,6 +1224,7 @@ def _mission(elf, args, name, style):
                     deadline=deadline,
                     cancel=cancel,
                     control=control,
+                    gate_wait_s=gate_wait_s,
                 )
             else:
                 runner = MissionRunner(
@@ -1220,6 +1247,7 @@ def _mission(elf, args, name, style):
                     deadline=deadline,
                     cancel=cancel,
                     control=control,
+                    gate_wait_s=gate_wait_s,
                 )
             # AFTER the runner exists, because the replay renders a
             # recorded tool result through the runner's own
@@ -1562,6 +1590,17 @@ def _main(AgentClass):
                              "run is standing at. Bad lines are dropped with "
                              "a line on stderr. The vocabulary is "
                              "core/runtime/control.py (env: MISSION_CONTROL)")
+    parser.add_argument("--gate-wait", type=float,
+                        default=_env_gate_wait(),
+                        metavar="SECONDS",
+                        help="How long a run standing at a gate waits, in-turn, "
+                             "for a gate_decision on --control before it ends "
+                             "the turn at awaiting_approval (the decision then "
+                             "arrives on a later turn via --approval). Only "
+                             "meaningful with --control; the window is also "
+                             "capped by --mission-seconds. 0 = never wait "
+                             "(the 0.11 behaviour). Default 300 "
+                             "(env: MISSION_GATE_WAIT)")
     parser.add_argument("--gate-tool", action="append", default=None,
                         metavar="NAME",
                         help="A tool this deployment offers and GATES. It is "

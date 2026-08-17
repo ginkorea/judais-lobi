@@ -165,6 +165,35 @@ class TestTheHappyPath:
         run_cli(MockClass, "--skill", str(skill_file), "--mission-seconds", "45")
         assert "budget: 8 steps, 45 s" in capsys.readouterr().out
 
+    def test_gate_wait_reaches_the_runner_and_zero_is_a_value(
+            self, elf, skill_file, monkeypatch):
+        """`--gate-wait` is the knob an unattended caller turns down: the
+        reference deployment measured a 300 s hang on a gate nobody was
+        watching. Flag beats env; `0` is honoured (never wait), and silence
+        on both means the runner's own default."""
+        from core.runtime.control import GATE_WAIT_S
+        from core.runtime import mission as mission_module
+
+        MockClass, _agent = elf
+        seen = []
+        original = mission_module.MissionRunner.__init__
+
+        def spy(self_, *a, **kw):
+            seen.append(kw.get("gate_wait_s"))
+            return original(self_, *a, **kw)
+
+        monkeypatch.setattr(mission_module.MissionRunner, "__init__", spy)
+        monkeypatch.delenv("MISSION_GATE_WAIT", raising=False)
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert seen[-1] == GATE_WAIT_S
+        run_cli(MockClass, "--skill", str(skill_file), "--gate-wait", "0")
+        assert seen[-1] == 0.0
+        monkeypatch.setenv("MISSION_GATE_WAIT", "45")
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert seen[-1] == 45.0
+        run_cli(MockClass, "--skill", str(skill_file), "--gate-wait", "7.5")
+        assert seen[-1] == 7.5
+
     def test_the_end_of_a_run_that_ran_out_says_which_budget(
             self, elf, skill_file, capsys):
         """`Mission ended without an answer: budget_exhausted` sent an

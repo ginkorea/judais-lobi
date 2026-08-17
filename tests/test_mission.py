@@ -4302,6 +4302,34 @@ class TestAGateAnsweredWhileTheRunStandsAtIt:
         assert recorded.state == SPENT
         assert recorded.decided_by == "dana"
 
+    def test_a_zero_window_ends_the_turn_at_the_gate_at_once(
+            self, bus, tmp_path, steering, monkeypatch):
+        """`--gate-wait 0` with a channel open is the 0.11 behaviour: the run
+        ends at `awaiting_approval` immediately, the record stays pending,
+        and the decision arrives on a later turn. The reference deployment
+        measured a 300 s hang on an unattended gate without this — an eval
+        driver is not going to click an approval card."""
+        import time
+
+        from core.runtime.approvals import PENDING
+
+        store = self._store(tmp_path)
+        steer = steering()
+        self._pending = []                      # nobody answers this gate
+        # A wait that WOULD have taken time: nobody answers, and a fake clock
+        # would let a bug wait 300 s of wall time without the test noticing,
+        # so this one is on the real clock with a real budget.
+        started = time.monotonic()
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          '{"answer": "unreached"}'),
+            bus, ["catalog.search", "catalog.get"], gated=["catalog.get"],
+            approvals=store, control=steer.channel, gate_wait_s=0,
+            observer=self._watch([])).run("fetch a1")
+        assert transcript.outcome == "awaiting_approval"
+        assert time.monotonic() - started < 2.0
+        assert store.get(self._pending[0]).state == PENDING
+
     def test_the_record_names_the_person_the_platform_sent(
             self, bus, tmp_path, steering):
         store = self._store(tmp_path)

@@ -484,6 +484,7 @@ person's surface and may move.
 - `--protocol` — `json` (the default) or `native`. Arrives back as `protocol` on `mission_started`, and only when it is `native`. Refused at the door on a backend that does not declare `supports_tool_calls` and `supports_tool_choice_required`, because a run that asked for the constrained decoder and silently got prose would be measured as the protocol it was not running. On `--resume` it comes off the recorded run; stating one that disagrees with the record is refused, naming both.
 - `--no-stream` — ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`, and the only difference it makes to this stream is the `answer_delta` records: the same `answer` arrives at the same moment either way.
 - `--control` — where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-` for stdin. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and a bad line is dropped, never fatal. See the exit contract.
+- `--gate-wait` — seconds a run standing at a gate waits in-turn for a `gate_decision` on `--control` before ending the turn at `awaiting_approval` (the decision then arrives on a later turn via `--approval`). Also capped by `--mission-seconds`. `0` = never wait; default 300. An unattended caller — an eval driver, a batch, a pane nobody is watching — sets it low.
 
 ## Environment
 
@@ -509,6 +510,7 @@ passes the other gets the one it passed.
 - `MISSION_PROTOCOL` — the environment form of `--protocol`; the flag wins. Unset and blank both mean `json`, which is what a mission runs under unless somebody asks otherwise.
 - `MISSION_STREAM` — the environment form of `--no-stream`, the way round a consumer wants to read it: `off`, `0`, `false`, `no` or `none` turn streaming off and anything else — including unset and blank — leaves it on. The flag wins. It has no effect on a backend that does not declare `supports_streaming`, which is asked first.
 - `MISSION_CONTROL` — the environment form of `--control`; the flag wins. Unset and blank both mean no channel, which is a run that can only be stopped by `SIGTERM`.
+- `MISSION_GATE_WAIT` — the environment form of `--gate-wait`; the flag wins. `0` is a value (never wait); unset, blank, garbage or negative mean the default.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.
