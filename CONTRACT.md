@@ -49,21 +49,33 @@ direct loop and from `--swarm` alike. Index them without a default.
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` |
 | `mission_finished` | `outcome`, `steps`, `max_steps` |
 
-Optional, and therefore to be read with a default: `audit_ref`, `run_id` and
-`protocol` on
-`mission_started`, `call` on `tool_call` and `tool_result`, `plan` on `step_started`
-(`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
-on the first step of a redrawn one), `tool` on `reply_rejected` (present
-only when the model got as far as naming one), `compacted`, `resumed` and
-`injected` on
-`step_started` (`injected` is the operator instructions delivered on this run's
-control channel and put in front of the model for that step, in the order they
-were sent), `approval_id` on `gate_requested`, `sandbox` and `profile` on
-`mission_started`, `usage` on `tool_call`, `answer`, `reply_rejected` and
-`mission_finished`, and `budget`, `reason` and `elapsed_s` on `mission_finished`. `plan`
-rode `mission_started` until 0.8.x: that record is now emitted before triage —
-which is itself a call to the model — so at the time it is written there is no
-plan and there may never be one.
+### Optional fields
+
+Everything below is read **with a default**. A field may be absent because
+nothing was configured, because the run had nothing to say, or because the
+consumer is older than the field — and adding one is a minor change by the rule
+at the bottom of this page, so a stream may always carry a name you have never
+heard of. Two events have none: `answer_delta` and `grounding` carry their
+required fields and nothing else.
+
+| event | optional fields | what they add |
+| --- | --- | --- |
+| **`mission_started`** | `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol` | the run's posture: the isolation its tool subprocesses ran under, the capability profile governing it, the audit file, the durable transcript it is being recorded in, and how the model was asked to decide |
+| **`step_started`** | `plan`, `compacted`, `resumed`, `injected` | what happened to this step before it was asked: a staged plan drawn, the conversation shortened to fit the window, an earlier stretch continued, an operator instruction put in front of the model |
+| **`reply_rejected`** | `tool`, `usage` | the name the model wrote, when it got as far as one; and what the rejected call cost, because a rejected reply is still a billed reply |
+| **`tool_call`** | `usage`, `call` | what the model call that chose this tool cost; and which call of the turn it is when the model asked for several |
+| **`tool_result`** | `call` | the same ordinal as its `tool_call`, so a consumer can pair them under a shared `index` |
+| **`gate_requested`** | `approval_id` | the name of the durable record this request was written to, which is what a decision is addressed to afterwards |
+| **`answer`** | `usage` | what the call that wrote this text cost — the repair turn's, on a repaired answer |
+| **`mission_finished`** | `usage`, `budget`, `reason`, `elapsed_s` | the run's ledger; which budget ran out and by how much; why it ended when the outcome word does not say; and the wall clock |
+
+`plan` rode `mission_started` until 0.8.x: that record is now emitted before
+triage — which is itself a call to the model — so at the time it is written
+there is no plan and there may never be one. Moving an optional field is a minor
+change; a consumer was reading it with a default or was not reading it as
+optional.
+
+### The posture on the opening frame
 
 `sandbox` is `"bwrap"` or `"none"`: the isolation the mission's tool
 subprocesses ran under. `"bwrap"` is write isolation with the network denied
@@ -91,6 +103,8 @@ and finishing is a call to `mission_answer`. What changes for a consumer:
 **one model turn may produce several `tool_call`/`tool_result` pairs under one
 `index`**, told apart by `call`.
 
+### `call` — one model turn, several dispatches
+
 `call` is which call of the step this is, 0-based, in the order the model
 emitted them. **Absent on the first call of a turn and absent for every call
 of a `json` run**, so a consumer that never heard of it reads the stream it
@@ -106,6 +120,8 @@ three tools did not pay for it three times.
 A gated tool under `native` ends the turn on **that** call: the calls before it
 have already run and are on the record, the calls after it are not dispatched,
 and `gate_requested.reason` says how many were dropped with it.
+
+### `profile`, `audit_ref` and `run_id` — where the run's records are
 
 `profile` is the capability profile the run is governed by — one of `safe`,
 `dev`, `ops`, `god`. Deny-by-default means `safe` unless `--profile` (or
@@ -141,6 +157,8 @@ that passed no store. It is a run id and not a path: the directory is
 `.judais-lobi/runs/` unless `JUDAIS_LOBI_RUNS` moved it. No credential is
 written there — not the value of `MCP_TOKEN`, and not a transport that might
 carry one.
+
+### Resuming a run — `resumed`, the step budget, and what does not replay
 
 `resumed` is `{from_seq, steps_replayed}` and rides the **first**
 `step_started` of a stretch that continues an earlier one
@@ -202,6 +220,8 @@ carries the refusal, and the reply is precisely the thing that did not parse.
 The harness says which of these applied on the console rather than replaying
 in silence.
 
+### `compacted` — the conversation had to be shortened
+
 `compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,
 tokens_after, limit_tokens, profile, dropped_results}` and is present only on
 the steps where older tool round-trips had to be dropped from the conversation
@@ -227,6 +247,8 @@ exactly like an agent that had it all along. Nothing is lost to the run —
 `tool_result` already carried the whole of every result, the mission's result
 store still holds them, and the grounding verdict is computed from that store
 rather than from the conversation.
+
+### `usage`, `cost` and `elapsed_s` — what a run spent
 
 `usage` is **what the provider said a model call cost**, and it appears in
 two forms.
@@ -285,7 +307,7 @@ staged alike, and it is deliberately **not** inside `usage`: `usage` is absent
 when the provider reported nothing, and elapsed time is known regardless. Print
 it beside `usage.total_tokens`; read both with a default.
 
-Six of these carry more meaning than their names suggest:
+### Six records that carry more than their names suggest
 
 - **`tool_call` is emitted before the call is made.** That is what lets a
   watcher show what is about to happen rather than only what happened.
@@ -328,6 +350,8 @@ Six of these carry more meaning than their names suggest:
   something spends them, it fills in a field you were already told to expect.
   `reason` is present when the outcome word does not say why — today, only
   `"cancelled"` beside `incomplete`.
+
+### `approval_id` — the other half of a gate
 
 `approval_id` names the durable record this request was written to:
 `.judais-lobi/approvals/<id>.json` under the harness's working directory by
@@ -432,11 +456,12 @@ Carried by `mission_finished`, and by `answer` when there is one.
 
 ## Command line
 
-The mission-mode flags. The rest of the CLI is a person's surface and may move.
+The mission-mode flags, in `contract.CLI_FLAGS` order. The rest of the CLI is a
+person's surface and may move.
 
 - `--mission` — run as a mission rather than a chat turn.
-- `--mcp-url` — the tool plane.
-- `--mission-steps` — the tool-turn budget; arrives back as `max_steps`.
+- `--mcp-url` — the tool plane, over streamable HTTP. (`--mcp-stdio` is the other transport and is not itself in `CLI_FLAGS`; its environment form `MCP_STDIO` is.)
+- `--mission-steps` — the budget in **model turns**; arrives back as `max_steps`. Default 8. Under `--resume` it is read as that many *further* steps, and unset the resumed run is held to the total it started with.
 - `--mission-seconds` — the wall-clock budget for the whole run. Unset is
   **unbounded**. Checked between steps and before each model call, and shared by
   every stage of a `--swarm` turn; a call already in flight is not interrupted,
@@ -448,19 +473,23 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--unsandboxed` — run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists. Arrives back as `sandbox`.
 - `--skill` — the skill manifest: tool subset, prompt, grounding grammar.
 - `--swarm` — triage first, then stage the mission if it needs staging.
-- `--events` — where the NDJSON goes. See above.
-- `--control` — where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-` for stdin. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and a bad line is dropped, never fatal. See the exit contract.
+- `--events` — where the NDJSON goes **out**. See above.
 - `--history` — prior turns, seeded as chat messages ahead of the objective.
-- `--gate-tool` — offer a tool and refuse to call it. Repeatable.
+- `--gate-tool` — offer a tool and refuse to call it. Repeatable. Names resolve through the same `same_tool` rule a manifest's `allowed_tools` uses, so a bare name matches the namespaced one the bus dispatches; a name matching nothing, or matching two offered tools, is a refusal at the door listing what was offered.
 - `--approval` — an approval id somebody has already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched. A pending, refused, spent or abandoned record is refused at the door, naming the state.
+- `--resume` — carry on a recorded mission by its `run_id`. The objective comes off that run, so the positional message may be omitted; a different one is refused. A finished run is refused, except one that ended `awaiting_approval`.
 - `--temperature` — sampling, when it must be stated rather than the server's.
 - `--top-p` — likewise.
 - `--seed` — likewise, for a run somebody intends to reproduce.
-- `--resume` — carry on a recorded mission by its `run_id`. The objective comes off that run, so the positional message may be omitted; a different one is refused. A finished run is refused, except one that ended `awaiting_approval`.
-- `--no-stream` — ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`, and the only difference it makes to this stream is the `answer_delta` records: the same `answer` arrives at the same moment either way.
 - `--protocol` — `json` (the default) or `native`. Arrives back as `protocol` on `mission_started`, and only when it is `native`. Refused at the door on a backend that does not declare `supports_tool_calls` and `supports_tool_choice_required`, because a run that asked for the constrained decoder and silently got prose would be measured as the protocol it was not running. On `--resume` it comes off the recorded run; stating one that disagrees with the record is refused, naming both.
+- `--no-stream` — ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`, and the only difference it makes to this stream is the `answer_delta` records: the same `answer` arrives at the same moment either way.
+- `--control` — where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-` for stdin. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and a bad line is dropped, never fatal. See the exit contract.
 
 ## Environment
+
+In `contract.ENV_VARS` order. Where a variable has a flag beside it, it is that
+flag's argparse default, so the flag still wins: a consumer that exports one and
+passes the other gets the one it passed.
 
 - `MCP_TOKEN` — the tool plane's credential.
 - `MCP_CLIENT_NAME` — the name this client is announced under.
@@ -474,17 +503,17 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `MISSION_SWARM` — the environment form of `--swarm`.
 - `MISSION_EVENTS` — the environment form of `--events`.
 - `MISSION_HISTORY` — the environment form of `--history`.
+- `MISSION_APPROVAL` — the environment form of `--approval`; the flag wins.
 - `MISSION_SECONDS` — the environment form of `--mission-seconds`; the flag wins. Unset, blank, unparseable or ≤ 0 all mean unbounded, because a mistyped budget that killed the run before its first step would look like a broken harness.
 - `MISSION_RESUME` — the environment form of `--resume`.
+- `MISSION_PROTOCOL` — the environment form of `--protocol`; the flag wins. Unset and blank both mean `json`, which is what a mission runs under unless somebody asks otherwise.
 - `MISSION_STREAM` — the environment form of `--no-stream`, the way round a consumer wants to read it: `off`, `0`, `false`, `no` or `none` turn streaming off and anything else — including unset and blank — leaves it on. The flag wins. It has no effect on a backend that does not declare `supports_streaming`, which is asked first.
-- `MISSION_PROTOCOL` — the environment form of `--protocol`; the flag wins. Unset and blank both mean `json`, which is what every mission ran under until now.
 - `MISSION_CONTROL` — the environment form of `--control`; the flag wins. Unset and blank both mean no channel, which is a run that can only be stopped by `SIGTERM`.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.
 - `JUDAIS_LOBI_RUNS` — a path moves the durable run directories; `none`/`off` keeps none at all. Either way `run_id` on `mission_started` is present exactly when there is a transcript to name.
 - `JUDAIS_LOBI_APPROVALS` — a path moves the durable approval records; `none`/`off` keeps none, and then a gate carries no `approval_id`.
-- `MISSION_APPROVAL` — the environment form of `--approval`; the flag wins.
 
 The flags that *answer* a gate — `--approve`, `--refuse`, `--decided-by`,
 `--note` — are deliberately **not** in the list above. They are an operator's
