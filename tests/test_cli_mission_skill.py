@@ -149,21 +149,77 @@ class TestTheHappyPath:
         run_cli(MockClass, "--skill", str(skill_file))
         assert "grounded" in capsys.readouterr().out
 
-    def test_both_budgets_are_said_out_loud_at_the_start(
+    def test_both_ceilings_are_said_out_loud_at_the_start(
             self, elf, skill_file, capsys, monkeypatch):
         """Beside `🪟 context:`, and for the same reason: the line an
         operator reads BEFORE an 11,000-second mission rather than after
-        it. "no wall clock" is printed as such and not omitted — somebody
-        who meant to pass --mission-seconds and mistyped the variable
-        should see that nothing is bounding the waiting."""
+        it. Neither is set by default and BOTH absences are printed —
+        somebody who meant to pass --mission-seconds and mistyped the
+        variable should see that nothing is bounding the waiting, and
+        somebody who expects the old cap of eight should see that there
+        is no longer one."""
         MockClass, _agent = elf
         monkeypatch.delenv("MISSION_SECONDS", raising=False)
         run_cli(MockClass, "--skill", str(skill_file))
         out = capsys.readouterr().out
-        assert "budget: 8 steps, no wall clock" in out
+        assert "ceilings: no step ceiling, no wall clock" in out
 
-        run_cli(MockClass, "--skill", str(skill_file), "--mission-seconds", "45")
-        assert "budget: 8 steps, 45 s" in capsys.readouterr().out
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--mission-seconds", "45", "--mission-steps", "8")
+        assert "ceilings: 8 steps, 45 s" in capsys.readouterr().out
+
+    def test_a_wound_up_run_says_so_on_the_console(self, elf, skill_file,
+                                                    capsys):
+        """A run the supervisor stopped is not a run that ran out and not a
+        run that failed, and the console has to say which of the three it
+        was — an operator reading "ended without an answer" reaches for
+        --mission-steps, which is not what happened here."""
+        MockClass, agent = elf
+        read = json.dumps({"tool": "mcp.governed_read",
+                           "arguments": {"asset_id": "asset.5f21"}})
+        agent.replies = [
+            read, read, read,                       # the pattern
+            json.dumps({"verdict": "stuck"}),       # the review turn
+            read,                                   # the wind-up: no answer
+        ]
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out
+        assert "judged this run stuck" in out
+        assert "no ceiling was reached" in out
+
+    def test_a_wound_up_run_that_answered_is_marked_before_the_answer(
+            self, elf, skill_file, capsys):
+        """The answer still gets printed — that is the point of asking for
+        it — with the sentence that says how much to lean on it above it."""
+        MockClass, agent = elf
+        read = json.dumps({"tool": "mcp.governed_read",
+                           "arguments": {"asset_id": "asset.5f21"}})
+        agent.replies = [
+            read, read, read,
+            json.dumps({"verdict": "stuck"}),
+            json.dumps({"answer": "asset.5f21 is all I could establish."}),
+        ]
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out
+        assert "judged this run stuck" in out
+        assert "read what follows as partial" in out
+        assert out.index("judged this run stuck") < \
+            out.index("all I could establish")
+
+    def test_the_supervisor_is_said_out_loud_too(
+            self, elf, skill_file, capsys):
+        """What replaced the step budget is announced where the step budget
+        used to be announced: an operator reading the top of a run has to
+        know what will stop it, and "nothing counts your turns" is only
+        half of that sentence."""
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out
+        # Substrings short enough to survive the console's own wrapping,
+        # which is why neither of these is a whole sentence.
+        assert "supervisor: watching for repetition" in out
+        assert "oscillation" in out
+        assert "nudge" in out
 
     def test_gate_wait_reaches_the_runner_and_zero_is_a_value(
             self, elf, skill_file, monkeypatch):

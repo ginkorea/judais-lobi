@@ -61,7 +61,7 @@ required fields and nothing else.
 | event | optional fields | what they add |
 | --- | --- | --- |
 | **`mission_started`** | `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol` | the run's posture: the isolation its tool subprocesses ran under, the capability profile governing it, the audit file, the durable transcript it is being recorded in, and how the model was asked to decide |
-| **`step_started`** | `plan`, `compacted`, `resumed`, `injected`, `catalogue` | what happened to this step before it was asked: a staged plan drawn, the conversation shortened to fit the window, an earlier stretch continued, an operator instruction put in front of the model, and — only where it changed — the whole set of tool names the model may name from this step on, because a server may register a tool mid-run and a closed set that allows it lets it join |
+| **`step_started`** | `plan`, `compacted`, `resumed`, `injected`, `catalogue`, `review` | what happened to this step before it was asked: a staged plan drawn, the conversation shortened to fit the window, an earlier stretch continued, an operator instruction put in front of the model, the supervisor's verdict on a repeating pattern, and — only where it changed — the whole set of tool names the model may name from this step on, because a server may register a tool mid-run and a closed set that allows it lets it join |
 | **`reply_rejected`** | `tool`, `usage` | the name the model wrote, when it got as far as one; and what the rejected call cost, because a rejected reply is still a billed reply |
 | **`tool_call`** | `usage`, `call` | what the model call that chose this tool cost; and which call of the turn it is when the model asked for several |
 | **`tool_result`** | `call` | the same ordinal as its `tool_call`, so a consumer can pair them under a shared `index` |
@@ -207,9 +207,10 @@ learning one about the reconciler.
 `max_steps` counts the **whole run** across a resume, recorded steps
 included, and `mission_finished.steps` likewise — so the two stay comparable.
 Without `--mission-steps` the resumed stretch is held to the total the run was
-started with; with it, the number is read as that many *further* steps and the
+started with, and a run started with no ceiling (`max_steps: 0`) resumes with
+no ceiling; with it, the number is read as that many *further* steps and the
 total becomes what was spent plus what was asked for. A resume cannot buy a
-fresh budget by omission.
+fresh ceiling by omission, and it cannot invent one either.
 
 Not everything replays. The typed payload of a tool result
 (`structuredContent`) never travelled on this stream, so a replayed result has
@@ -379,8 +380,60 @@ it beside `usage.total_tokens`; read both with a default.
   the spend would hide by how much. `bytes` and `tokens` are declared and not
   yet emitted by anything: the vocabulary is closed now so that the day
   something spends them, it fills in a field you were already told to expect.
-  `reason` is present when the outcome word does not say why — today, only
-  `"cancelled"` beside `incomplete`.
+  `reason` is present when the outcome word does not say why, and there are
+  two values: `"cancelled"` beside `incomplete`, and `"stuck"` beside
+  whatever answer a wound-up run managed to write — see the supervisor
+  below.
+
+### `review` — the supervisor, which is what replaced the step budget
+
+**This harness imposes no step budget.** `--mission-steps` is an operator's
+optional ceiling, exactly as `--mission-seconds` is, and `max_steps: 0` on
+`mission_started` and `mission_finished` says there is no ceiling — which is
+the default. A run ends when it answers, when somebody cancels it, when a
+ceiling you set is reached (`budget_exhausted`, naming which), or when the
+supervisor judges it stuck.
+
+The supervisor watches for **repetition**, never for quantity: the same tool
+called with the same arguments returning the same result three times within
+the last six calls, three rejected replies in a row, four steps with no new
+tool call and no result the run had not already seen, or an oscillation
+between two calls (A B A B). A model that spends nine minutes on one honest
+turn trips none of them.
+
+When one fires, the same model is asked in one plain call what the pattern
+means, and the step that follows carries `review`:
+`{signal, verdict, reviews_left}` plus `note` when the verdict has one.
+
+- **progressing** — a false alarm. Nothing happens; the field is here because
+  "something looked wrong and was judged fine" is a fact worth rendering, and
+  an absence cannot state it. That signal's threshold is raised for the rest
+  of the run.
+- **nudge** — the note was put in front of the model as a user turn, so the
+  same record also carries `injected`. `injected` therefore means *a turn
+  somebody outside the conversation put into it*, which is an operator on
+  `--control` or the supervisor; `review` on the same record is which.
+- **stuck** — this step is the run's last. The model is asked for its best
+  answer with what it has, so the transcript usually still ends with an
+  `answer`, and `mission_finished` carries `reason: "stuck"` beside whatever
+  outcome that answer earned. **`stuck` is not `budget_exhausted`** and it is
+  not an outcome word: what the run produced and why it stopped producing are
+  two facts.
+- **replan** — staged turns only, from the review of a failed gate: the plan is
+  redrawn around what already succeeded, so the same record also carries
+  `plan`.
+
+`reviews_left` is how many reviews the run has after this one. There are at
+most three, and **the last one is not offered `progressing`** — a run that
+keeps tripping signals and keeps being told it is fine is the endless loop
+this exists to catch. After the last review, a signal winds the run up with
+no further call.
+
+A staged turn's step-level review happens between sub-missions and rides the
+next `step_started` to come through, which is what the field means on the
+direct path too. A review with no step after it — the last step of a plan,
+settled `stuck` — is not announced; `mission_finished` is what says how the
+turn ended.
 
 ### `approval_id` — the other half of a gate
 

@@ -270,6 +270,65 @@ class TestAMissionConformsToItsOwnContract:
         assert seen[-1]["reason"] == "cancelled"
         assert seen[-1]["outcome"] in c.OUTCOMES
 
+    def test_a_mission_the_supervisor_nudged(self):
+        """``review`` is the newest optional field and the whole of what
+        replaced the step budget. It rides ``step_started`` beside
+        ``injected``, because a nudge is delivered the way an operator's
+        instruction is."""
+        from core.runtime.supervisor import Supervisor
+
+        call = json.dumps({"tool": "catalog_search_assets", "arguments": {}})
+        seen = []
+        MissionRunner(
+            _replies(call, call, call, json.dumps({"answer": "done"})),
+            _Bus(), ["catalog_search_assets"], observer=seen.append,
+            store_tool="",
+            supervisor=Supervisor(_replies(json.dumps(
+                {"verdict": "nudge", "note": "ask a different question"}))),
+        ).run("go")
+
+        assert _faults(seen) == []
+        reviewed = [r for r in seen
+                    if r["event"] == ms.STEP_STARTED and "review" in r]
+        assert len(reviewed) == 1
+        assert set(reviewed[0]["review"]) == {"signal", "verdict", "note",
+                                              "reviews_left"}
+        assert "injected" in reviewed[0]
+
+    def test_a_mission_the_supervisor_wound_up(self):
+        """``reason: "stuck"`` beside the outcome the best-effort answer
+        earned — which is an ANSWER, and is the reason this is a field and
+        not a sixth outcome word."""
+        from core.runtime.supervisor import Supervisor
+
+        call = json.dumps({"tool": "catalog_search_assets", "arguments": {}})
+        seen = []
+        transcript = MissionRunner(
+            _replies(call, call, call,
+                     json.dumps({"answer": "as far as I got"})),
+            _Bus(), ["catalog_search_assets"], observer=seen.append,
+            store_tool="",
+            supervisor=Supervisor(_replies(json.dumps({"verdict": "stuck"}))),
+        ).run("go")
+
+        assert transcript.outcome == "answered"
+        assert _faults(seen) == []
+        assert seen[-1]["outcome"] in c.OUTCOMES
+        assert seen[-1]["reason"] == "stuck"
+
+    def test_a_run_nobody_bounded_says_zero(self):
+        """``max_steps: 0`` is how the wire says "no ceiling", and no
+        ceiling is the default. A consumer indexes the field on every
+        record it always did."""
+        seen = []
+        MissionRunner(
+            _replies(json.dumps({"answer": "done"})), _Bus(),
+            ["catalog_search_assets"], observer=seen.append, store_tool="",
+        ).run("go")
+        assert _faults(seen) == []
+        assert seen[0]["max_steps"] == 0
+        assert seen[-1]["max_steps"] == 0
+
     def test_a_mission_that_repaired_and_then_caveated(self):
         """Both grounding records — the interim one carrying ``repairing`` and
         the verdict that follows it — are full records, not the subset the

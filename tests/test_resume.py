@@ -358,10 +358,73 @@ class TestTheStepBudgetIsTheRunsAndNotTheProcesss:
         recorded = self._recorded(spent=8, of=8)
         assert recorded.total_steps(None) - recorded.spent_steps == 0
 
+    def test_a_run_with_no_ceiling_resumes_with_no_ceiling(self):
+        """`0` is what a run nobody bounded recorded, and it is what the
+        resumed stretch is held to. Inventing a bound at the moment a run
+        is picked back up would be the resume deciding something the run
+        never did — and the run would then end `budget_exhausted` on a
+        number no operator ever typed."""
+        recorded = self._recorded(spent=12, of=0)
+        assert recorded.total_steps(None) == 0
+
+    def test_a_ceiling_may_be_put_on_an_unbounded_run_at_the_resume(self):
+        """The other direction, and the one an operator reaches for after
+        watching a run go on longer than they meant it to: the number is
+        read as that many FURTHER steps, exactly as it is on a run that
+        already had a ceiling."""
+        recorded = self._recorded(spent=12, of=0)
+        assert recorded.total_steps(3) == 15
+
     def test_a_step_that_was_asked_and_never_answered_still_counts(self):
         """It cost the round trip, and reusing its index would put two
         records with the same ``index`` in one log."""
         assert self._recorded(spent=3, of=8).spent_steps == 3
+
+
+class TestResumingAcrossAReview:
+    """A run that was nudged, killed, and picked back up.
+
+    Two things are asserted and a third is stated. The recorded `review`
+    field does not disturb the rebuild — it is a field on `step_started`,
+    which the replay reads for its index and nothing else — and the
+    indices continue. What is *not* carried is the nudge itself: the note
+    was a user turn this process put in the conversation, it never
+    travelled as a message, and the resumed process starts watching
+    afresh. That is the same thing already true of an operator's
+    `--control inject`, and it is the honest shape: a new process has seen
+    none of the repetition the old one saw.
+    """
+
+    def _nudged_then_killed(self, bus, store):
+        from core.runtime.supervisor import Supervisor
+
+        run_id = store.create(meta={"objective": "find it"}).run_id
+        looping = ScriptedModel(*[tool_call("catalog.search", q="a")] * 3,
+                                Stop)
+        with pytest.raises(ScriptedModel.Stop):
+            runner(bus, looping, run_store=store, run_id=run_id,
+                   supervisor=Supervisor(ScriptedModel(
+                       json.dumps({"verdict": "nudge",
+                                   "note": "ask something else"}),
+                   ))).run("find it")
+        return run_id
+
+    def test_the_recorded_stretch_holds_the_review(self, bus, store):
+        run_id = self._nudged_then_killed(bus, store)
+        reviewed = [r for r in store.records(run_id)
+                    if r["event"] == "step_started" and "review" in r]
+        assert len(reviewed) == 1
+        assert reviewed[0]["review"]["verdict"] == "nudge"
+
+    def test_the_resumed_stretch_carries_on_from_the_right_index(
+            self, bus, store):
+        run_id = self._nudged_then_killed(bus, store)
+        _built, transcript = resume(
+            bus, ScriptedModel('{"answer": "found it"}'), store, run_id)
+        assert transcript.outcome == "answered"
+        started = [r["index"] for r in store.records(run_id)
+                   if r["event"] == "step_started"]
+        assert started == [0, 1, 2, 3, 4]
 
 
 # ── the replay is the run that never stopped ─────────────────────────────────
@@ -1006,7 +1069,10 @@ class TestOrphansAreClosed:
         _age(store, run_id, ORPHAN_STALE_S + 10)
         reconcile_orphans(store)
         closing = store.records(run_id)[-1]
-        assert (closing["steps"], closing["max_steps"]) == (2, 8)
+        # `0` is what the opening frame said, because the run that was
+        # killed had no step ceiling — the default. The reconciler carries
+        # the numbers off the log rather than inventing one.
+        assert (closing["steps"], closing["max_steps"]) == (2, 0)
 
     def test_a_follower_reading_from_a_cursor_is_told(self, bus, store):
         """The whole point: a reader holding a cursor has to *receive* the

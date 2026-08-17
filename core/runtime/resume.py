@@ -211,7 +211,7 @@ class Recorded:
     #: a follower reading it would be sitting on, and what the resumed
     #: stretch announces as ``resumed.from_seq``.
     from_seq: int
-    #: The recorded ``mission_started.max_steps``: the budget this run was
+    #: The recorded ``mission_started.max_steps``: the ceiling this run was
     #: started with, and the total the resumed stretch is held to unless the
     #: caller states a new one.  See :meth:`total_steps`.
     max_steps: int
@@ -249,26 +249,33 @@ class Recorded:
     replanned: bool = False
 
     def total_steps(self, more: Optional[int]) -> int:
-        """The step budget for the whole run — recorded steps included.
+        """The step ceiling for the whole run — recorded steps included.
 
         **The rule, stated once.**  ``max_steps`` bounds a *mission*, not a
-        process.  A resume that started the count again would turn the cap
-        into a per-process one, which anybody could widen by killing the
-        mission and resuming it, and the flag would stop meaning what it
-        says.
+        process.  A resume that started the count again would turn a
+        ceiling into a per-process one, which anybody could widen by
+        killing the mission and resuming it, and the flag would stop
+        meaning what it says.
 
         So with *more* ``None`` — no ``--mission-steps`` on the resuming
         command line — the total is the one the run was started with, and
         the steps already in the log count against it: a run that spent 5
-        of 8 has 3 left.  With *more* given, the operator has restated the
-        budget on purpose and it is read as *that many further steps*: the
-        total becomes what has been spent plus what they asked for.  Either
-        way ``mission_finished`` reports ``steps`` and ``max_steps`` as
-        totals for the run, so the two remain comparable across a resume.
+        of 8 has 3 left.  **A run started with no ceiling resumes with no
+        ceiling**, which is the same rule read against a recorded ``0``:
+        the operator set nothing then and has said nothing now, and
+        inventing a bound at the moment a run is picked back up would be
+        the resume deciding something the run never did.
+
+        With *more* given, the operator has restated the ceiling on purpose
+        and it is read as *that many further steps*: the total becomes what
+        has been spent plus what they asked for — on an unbounded run too,
+        which is how a ceiling is put on a run that had none.  Either way
+        ``mission_finished`` reports ``steps`` and ``max_steps`` as totals
+        for the run, so the two remain comparable across a resume.
         """
         spent = self.spent_steps
         if more is None:
-            return max(self.max_steps, spent)
+            return 0 if self.max_steps <= 0 else max(self.max_steps, spent)
         return spent + max(0, int(more))
 
     @property

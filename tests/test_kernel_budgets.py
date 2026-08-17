@@ -260,9 +260,12 @@ class TestTheSharedBudgetShape:
                 budgets.max_bytes, budgets.max_tokens) == (None, None, None, None)
 
     def test_the_console_line_names_the_unbounded_ones_as_unbounded(self):
+        """Both absences printed, and the steps one says CEILING: nothing
+        counts a run's turns any more, so "unbounded steps" would describe
+        a thing that no longer has a bounded form to be the opposite of."""
         assert Budgets(max_steps=8).describe() == "8 steps, no wall clock"
         assert Budgets(max_steps=8, max_seconds=90).describe() == "8 steps, 90 s"
-        assert Budgets().describe() == "unbounded steps, no wall clock"
+        assert Budgets().describe() == "no step ceiling, no wall clock"
 
     def test_the_exception_renders_the_field_a_consumer_indexes(self):
         exhausted = shared.BudgetExhausted("steps", 8, 8)

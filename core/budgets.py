@@ -85,16 +85,21 @@ class Budgets:
     model — a 20B at 59 tok/s spends minutes on one honest answer.  A
     budget is a thing an operator asks for.
 
-    ``max_steps`` is the one exception in practice: the mission loop has
-    always carried a step cap of its own with a default of 8, and that
-    default stays where its callers can see it
-    (:class:`core.runtime.mission.MissionRunner`).  This dataclass is the
-    *shape* the two runtimes agree on and the thing a console line is
-    rendered from; it is not a second place to change the loop's default.
+    ``max_steps`` used to be the one exception in practice: the mission
+    loop carried a step cap of its own with a default of 8.  It does not
+    any more — see :class:`core.runtime.mission.MissionRunner`'s
+    ``max_steps`` and :mod:`core.runtime.supervisor` for what catches an
+    endless run instead — so every field of this dataclass now means the
+    same thing when it is ``None``, which is what it always claimed.  This
+    is still the *shape* the two runtimes agree on and the thing a console
+    line is rendered from, and it is still not a second place to set a
+    default.
     """
 
     #: Model round trips.  Counts refused replies and parse errors too:
-    #: they are turns the endpoint served.
+    #: they are turns the endpoint served.  ``None`` — the default — is an
+    #: operator who set no ceiling, and a run with no ceiling is not a run
+    #: with no bound: see :mod:`core.runtime.supervisor`.
     max_steps: Optional[int] = None
     #: Wall clock for the whole run, in seconds.  Checked between steps
     #: and before each model call — see :class:`Deadline`.
@@ -114,7 +119,7 @@ class Budgets:
         """
         parts = [
             f"{self.max_steps} steps" if self.max_steps is not None
-            else "unbounded steps",
+            else "no step ceiling",
             f"{self.max_seconds:g} s" if self.max_seconds is not None
             else "no wall clock",
         ]

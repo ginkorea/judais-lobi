@@ -13,7 +13,8 @@ from core.runtime.grounding import GroundingConfig, GroundingValidator
 from core.runtime.mission import (
     ANSWER_TOOL, AWAITING_APPROVAL, NATIVE_PROTOCOL, MissionRunner,
 )
-from core.runtime.swarm import SwarmRunner
+from core.runtime.supervisor import Supervisor
+from core.runtime.swarm import PlanStep, SwarmRunner, _StageObserver
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
 from core.tools.descriptors import ToolDescriptor
@@ -73,6 +74,23 @@ def swarm(plain, executor, bus, **kw):
     kw.setdefault("system_message", "You are Tai.")
     return SwarmRunner(executor, bus, ["catalog.search", "run_code"],
                        plain_chat_fn=plain, **kw)
+
+
+def verdict(word, note=""):
+    """One review turn's reply, in the shape the supervisor parses."""
+    return json.dumps({"verdict": word, "note": note})
+
+
+def reviewer(*verdicts):
+    """A `Supervisor` whose review turns answer with these, in order.
+
+    A staged turn's retries and its redraws are the supervisor's decisions
+    now: a failed gate is a signal put to the model, not a countdown. So a
+    test that wants a step attempted twice says so with a `nudge` here,
+    and a swarm built without one of these does not retry at all — a gate
+    that says no settles the step and the plan carries on.
+    """
+    return Supervisor(ScriptedModel(*verdicts))
 
 
 def _paging_bus():
@@ -607,7 +625,11 @@ class TestRungSdk:
 
 
 class TestGateAndRetry:
-    def test_a_step_that_never_called_a_tool_fails_the_mechanical_gate_and_retries(self, bus, calls):
+    def test_a_step_that_never_called_a_tool_fails_the_gate_and_is_nudged(
+            self, bus, calls):
+        """The mechanical half of the gate is unchanged; what happens after
+        it is a verdict rather than a retry counter, and the reviewer's note
+        reaches the executor beside the gate's own sentence."""
         plain = ScriptedModel(
             STAGED,
             plan({"id": "s1", "goal": "search", "rung": "tool"},
@@ -615,16 +637,67 @@ class TestGateAndRetry:
             "final answer")
         executor = ScriptedModel(
             '{"answer": "I remember abc123"}',       # attempt 1: no tool call
-            tool_call("catalog.search", q="x"),      # retry: does the work
+            tool_call("catalog.search", q="x"),      # nudged: does the work
             '{"answer": "found abc123"}',
             tool_call("run_code", code="c"),
             '{"answer": "counted"}')
-        transcript = swarm(plain, executor, bus).run("search then count")
+        transcript = swarm(
+            plain, executor, bus,
+            supervisor=reviewer(verdict("nudge", "call the tool, do not "
+                                                 "answer from memory")),
+        ).run("search then count")
         assert transcript.completed
         retry_objective = executor.seen[1][-1]["content"]
         assert "previous attempt at this step failed" in retry_objective
         assert "no successful tool call" in retry_objective
+        assert "do not answer from memory" in retry_objective
         assert [name for name, _ in calls] == ["catalog.search", "run_code"]
+
+    def test_a_failed_gate_with_nobody_watching_settles_the_step(
+            self, bus, calls):
+        """No supervisor, no retry and no redraw: the step is failed, the
+        plan carries on past it, and the answer says so. A harness with no
+        judgement available to it must not invent one."""
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"},
+                 {"id": "s2", "goal": "count", "rung": "code", "needs": ["s1"]}),
+            "final answer")
+        executor = ScriptedModel(
+            '{"answer": "I remember abc123"}',       # s1: no tool call
+            tool_call("run_code", code="c"),
+            '{"answer": "counted"}')
+        transcript = swarm(plain, executor, bus).run("search then count")
+        # The turn still answers, and the answer is written over the
+        # failure: what does not happen is a second attempt at s1. The step
+        # queued behind it is dropped as it always was, because its `needs`
+        # name the step that failed.
+        assert transcript.completed
+        assert executor.calls == 1
+        assert [name for name, _ in calls] == []
+        assert "s1 (search): FAILED" in plain.seen[-1][-1]["content"]
+
+    def test_a_progressing_verdict_overrules_the_gate(self, bus):
+        """A gate is a judgement and its mechanical half can be wrong about
+        a step that did the work under a name the plan did not use. The
+        reviewer saying so is the run's way of standing by the step."""
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"},
+                 {"id": "s2", "goal": "count", "rung": "code", "needs": ["s1"]}),
+            "final answer")
+        executor = ScriptedModel(
+            '{"answer": "I already know it is abc123"}',
+            tool_call("run_code", code="c"),
+            '{"answer": "counted"}')
+        transcript = swarm(
+            plain, executor, bus,
+            supervisor=reviewer(verdict("progressing")),
+        ).run("search then count")
+        assert transcript.completed
+        shown = plain.seen[-1][-1]["content"]
+        assert "s1 (search): I already know it is abc123" in shown
+        assert "FAILED" not in shown
 
     def test_an_llm_gate_failure_names_its_why_on_the_retry(self, bus):
         plain = ScriptedModel(
@@ -639,13 +712,19 @@ class TestGateAndRetry:
             tool_call("catalog.search", q="x"), '{"answer": "many results"}',
             tool_call("catalog.search", q="x id"), '{"answer": "corpus.abc123"}',
             tool_call("catalog.search", q="y"), '{"answer": "b done"}')
-        transcript = swarm(plain, executor, bus).run("q")
+        transcript = swarm(
+            plain, executor, bus,
+            supervisor=reviewer(verdict("nudge", "name the id")),
+        ).run("q")
         assert transcript.completed
         # Attempt 1 cost two model calls (tool, answer); the retry's fresh
         # seed is therefore the third, and its objective carries the why.
         assert "no asset id in the result" in executor.seen[2][-1]["content"]
 
-    def test_retries_exhausted_triggers_exactly_one_replan(self, bus):
+    def test_a_replan_verdict_redraws_the_plan(self, bus):
+        """The redraw used to be "once per turn, on any failure". Now the
+        step's own review says whether the step was unlucky or the plan was
+        wrong, and only the second word redraws."""
         plain = ScriptedModel(
             STAGED,
             plan({"id": "s1", "goal": "search", "rung": "tool"},
@@ -654,10 +733,14 @@ class TestGateAndRetry:
             "final after replan")
         executor = ScriptedModel(
             '{"answer": "no tool 1"}',               # s1 attempt 1: gate fails
-            '{"answer": "no tool 2"}',               # s1 retry: gate fails
+            '{"answer": "no tool 2"}',               # s1 nudged: gate fails
             tool_call("catalog.search", q="other"),  # r1 from the new plan
             '{"answer": "found it"}')
-        transcript = swarm(plain, executor, bus).run("q")
+        transcript = swarm(
+            plain, executor, bus,
+            supervisor=reviewer(verdict("nudge", "try once more"),
+                                verdict("replan", "this step cannot work")),
+        ).run("q")
         assert transcript.answer == "final after replan"
         # triage, plan, re-plan, synth — and the re-plan request names the
         # failed step so the planner can route around it.
@@ -678,13 +761,40 @@ class TestGateAndRetry:
             "final after replan")
         executor = ScriptedModel(
             '{"answer": "no tool 1"}',               # s1 attempt 1: gate fails
-            '{"answer": "no tool 2"}',               # s1 retry: gate fails
+            '{"answer": "no tool 2"}',               # s1 nudged: gate fails
             tool_call("catalog.search", q="other"),  # r1 from the new plan
             '{"answer": "found it"}')
-        swarm(plain, executor, bus, observer=sink).run("q")
+        swarm(plain, executor, bus, observer=sink,
+              supervisor=reviewer(verdict("nudge", "again"),
+                                  verdict("replan", "wrong plan")),
+              ).run("q")
         announced = [[s["id"] for s in r["plan"]]
                      for r in sink.of("step_started") if "plan" in r]
         assert announced == [["s1", "s2"], ["r1"]]
+
+    def test_the_step_after_a_gate_review_carries_the_verdict(self, bus):
+        """A staged review happens between sub-missions and has no step of
+        its own, so it rides the next one — which is what `review` means on
+        the direct path too."""
+        sink = Sink()
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"},
+                 {"id": "s2", "goal": "count", "rung": "code", "needs": ["s1"]}),
+            "final")
+        executor = ScriptedModel(
+            '{"answer": "no tool"}',
+            tool_call("catalog.search", q="x"), '{"answer": "found"}',
+            tool_call("run_code", code="c"), '{"answer": "counted"}')
+        swarm(plain, executor, bus, observer=sink,
+              supervisor=reviewer(verdict("nudge", "call the tool")),
+              ).run("q")
+        reviewed = [r for r in sink.of("step_started") if "review" in r]
+        assert len(reviewed) == 1
+        assert reviewed[0]["review"]["signal"] == "failed_gate"
+        assert reviewed[0]["review"]["verdict"] == "nudge"
+        assert reviewed[0]["review"]["note"] == "call the tool"
+        assert reviewed[0]["review"]["reviews_left"] == 2
 
     def test_a_replanned_failure_surfaces_as_an_honest_partial_answer(self, bus):
         plain = ScriptedModel(
@@ -698,10 +808,18 @@ class TestGateAndRetry:
             tool_call("catalog.search", q="x"),
             '{"answer": "found corpus.abc123"}',
             '{"answer": "cannot run code 1"}',       # s2 attempt: no tool
-            '{"answer": "cannot run code 2"}',       # s2 retry: no tool
+            '{"answer": "cannot run code 2"}',       # s2 nudged: no tool
             '{"answer": "cannot run code 3"}',       # r1 attempt: no tool
-            '{"answer": "cannot run code 4"}')       # r1 retry: no tool
-        transcript = swarm(plain, executor, bus).run("search then chart")
+            '{"answer": "cannot run code 4"}')       # r1 nudged: no tool
+        # Three reviews and no more: the fourth failed gate is answered by
+        # the arithmetic — `stuck`, with no call made — which is what bounds
+        # a plan that keeps failing.
+        transcript = swarm(
+            plain, executor, bus,
+            supervisor=reviewer(verdict("nudge", "try again"),
+                                verdict("replan", "the plan is wrong"),
+                                verdict("nudge", "one more time")),
+        ).run("search then chart")
         assert transcript.outcome == "answered_with_caveat"
         synth_request = plain.seen[-1][-1]["content"]
         assert "FAILED" in synth_request
@@ -1210,15 +1328,16 @@ class TestTheSynthesizerSeesWhatTheMissionRead:
         assert "s2 (read the view for r-9)" in shown
 
 
-class TestTheStepBudgetIsWhatTheMissionHasLeft:
-    """`step_budget` defaults to the remaining mission budget.
+class TestAStepHasNoSliceOfAnything:
+    """There is no per-step budget, and now there is no budget either.
 
-    It was four tool turns per sub-mission, and four is what the live run
-    of 16 August could not fit a step into: two governed views and two
-    result reads is four turns before the executor can say a word, so the
-    step exhausted its slice, failed its gate on `budget_exhausted`,
-    retried, and had the plan redrawn around whatever had fitted.
-    `max_steps` already bounds the turn.
+    The slice was four tool turns per sub-mission, and four is what the
+    live run of 16 August could not fit a step into: two governed views and
+    two result reads is four turns before the executor can say a word, so
+    the step exhausted its slice, failed its gate on `budget_exhausted`,
+    retried, and had the plan redrawn around whatever had fitted. It was
+    replaced by "what the mission has left", and now the mission has no
+    ceiling unless an operator set one.
     """
 
     FIVE = plan({"id": "s1", "goal": "page the catalogue", "rung": "tool"},
@@ -1232,39 +1351,59 @@ class TestTheStepBudgetIsWhatTheMissionHasLeft:
             tool_call("run_code", code="c"),
             '{"answer": "charted"}')
 
-    def test_a_step_that_needs_five_tool_turns_completes_on_the_default(
+    def test_a_step_that_needs_five_tool_turns_completes_under_a_ceiling(
             self, bus, calls):
-        """`retries_per_step=0` so this measures the SLICE and not the
-        retry: a step cut off at four turns whose second attempt happens to
-        finish the work would hide the very thing being asked about."""
+        """An operator's ceiling bounds the TURN and is not divided up: a
+        step that needs five of twenty takes five."""
         plain = ScriptedModel(STAGED, self.FIVE, "Final: done")
-        transcript = swarm(plain, self._executor(), bus, max_steps=20,
-                           retries_per_step=0).run("page it and chart it")
+        transcript = swarm(plain, self._executor(), bus,
+                           max_steps=20).run("page it and chart it")
         assert transcript.outcome == "answered"
         assert [name for name, _ in calls].count("catalog.search") == 5
         assert "five pages read" in plain.seen[-1][-1]["content"]
 
-    def test_a_caller_may_still_portion_the_budget_into_slices(self, bus,
-                                                               calls):
-        """And the slice behaves exactly as the default used to: the step
-        runs out of turns, and the answer says which step failed and why
-        rather than pretending it did not."""
-        plain = ScriptedModel(STAGED, self.FIVE, "no json", "still no json",
-                              "Final: partial")
-        transcript = swarm(plain, self._executor(), bus, max_steps=6,
-                           step_budget=2, retries_per_step=0,
-                           ).run("page it and chart it")
-        assert [name for name, _ in calls].count("catalog.search") == 2
-        assert transcript.outcome == "answered_with_caveat"
-        assert "s1 (page the catalogue): FAILED" in plain.seen[-1][-1]["content"]
+    def test_a_step_that_needs_six_tool_turns_completes_with_no_ceiling(
+            self, bus, calls):
+        """The default, and the thing that was impossible: nobody set a
+        number, so nobody is cut off at one."""
+        plain = ScriptedModel(STAGED, self.FIVE, "Final: done")
+        executor = ScriptedModel(
+            *([tool_call("catalog.search", q="p")] * 6),
+            '{"answer": "six pages read"}',
+            tool_call("run_code", code="c"),
+            '{"answer": "charted"}')
+        transcript = swarm(plain, executor, bus).run("page it and chart it")
+        assert transcript.outcome == "answered"
+        assert [name for name, _ in calls].count("catalog.search") == 6
+        assert "six pages read" in plain.seen[-1][-1]["content"]
 
-    def test_the_plan_cap_is_derived_from_the_mission_budget(self, bus):
-        """A plan cannot have more steps than the mission has turns to
-        spend on them — two turns each, a call and an answer. Five was a
-        number; this is the thing the number stood for."""
-        runner = SwarmRunner(ScriptedModel(), bus, ["catalog.search"],
-                             max_steps=24)
-        assert runner._max_plan_steps == 12
+    def test_the_sub_mission_is_told_the_ceiling_and_not_a_slice(self, bus):
+        """What reaches a `MissionRunner` is `0` — no ceiling — when the
+        turn has none, and what the turn has LEFT when it has one. A number
+        derived per step would be a slice by another name."""
+        built = []
+        runner = swarm(ScriptedModel(), ScriptedModel(), bus)
+        original = runner._runner
+
+        def spy(**kw):
+            built.append(kw["max_steps"])
+            return original(**kw)
+
+        runner._runner = spy
+        runner._execute_step("go", PlanStep(id="s1", goal="g", rung="tool"),
+                             {}, _StageObserver(lambda *a, **k: None), None)
+        assert built == [0]
+
+    def test_the_plan_cap_is_a_cap_on_a_list_and_not_on_work(self, bus):
+        """It bounds what the planner may WRITE. With no ceiling it is the
+        flat cap; with one, it is still no longer than that ceiling could
+        pay for at two turns a step."""
+        from core.runtime.swarm import MAX_PLAN_STEPS
+
+        assert SwarmRunner(ScriptedModel(), bus,
+                           ["catalog.search"])._max_plan_steps == MAX_PLAN_STEPS
+        assert SwarmRunner(ScriptedModel(), bus, ["catalog.search"],
+                           max_steps=24)._max_plan_steps == MAX_PLAN_STEPS
         assert SwarmRunner(ScriptedModel(), bus, ["catalog.search"],
                            max_steps=2)._max_plan_steps == 2
         assert SwarmRunner(ScriptedModel(), bus, ["catalog.search"],
@@ -1299,7 +1438,10 @@ class TestTheSynthesisIsTheUnionOfWhatSettled:
             '{"answer": "still no tool"}',
             tool_call("catalog.search", q="rows"),
             '{"answer": "counted 41 rows"}')
-        swarm(plain, executor, bus).run("find it and count it")
+        swarm(plain, executor, bus,
+              supervisor=reviewer(verdict("nudge", "again"),
+                                  verdict("replan", "wrong plan")),
+              ).run("find it and count it")
         shown = plain.seen[-1][-1]["content"]
         assert "s1 (find the corpus): found corpus.abc123" in shown
         assert "s9 (count by hand): counted 41 rows" in shown
@@ -1377,7 +1519,7 @@ class TestBudget:
         transcript = runner.run("three things")
         assert transcript.outcome == "answered_with_caveat"
         synth_request = plain.seen[-1][-1]["content"]
-        assert "budget was exhausted" in synth_request
+        assert "step ceiling was reached" in synth_request
 
 
 # ── what the swarm says about the host it ran on ─────────────────────────
@@ -2391,8 +2533,10 @@ class TestTheStagedRunIsCheckpointed:
         executor = ScriptedModel(
             '{"answer": "no tool"}', '{"answer": "still no tool"}',
             tool_call("catalog.search", q="x"), '{"answer": "found abc123"}')
-        swarm(plain, executor, bus, run_store=store,
-              run_id=run_id).run("search then count")
+        swarm(plain, executor, bus, run_store=store, run_id=run_id,
+              supervisor=reviewer(verdict("nudge", "again"),
+                                  verdict("replan", "wrong plan")),
+              ).run("search then count")
         assert [s["id"] for s in store.meta(run_id).meta["plan"]] == ["r1"]
 
     def test_the_checkpoint_never_rewinds_the_sequence_counter(self, bus,
@@ -2694,10 +2838,11 @@ class TestAStagedTurnReEntersOnWhatItsPlanHasLeft:
             observer=sink)
         assert [r["index"] for r in sink.of("step_started")] == [2, 3]
 
-    def test_the_redraw_is_not_bought_a_second_time(self, bus):
-        """One redraw per mission, and a resume that reset the flag would
-        make it one per process — which anybody could spend again by
-        killing the run."""
+    def test_a_resumed_turn_with_nobody_watching_does_not_redraw(self, bus):
+        """A redraw is the supervisor's decision, and a resumed turn built
+        without one does not make it — the failed step settles and the
+        answer says so, rather than a second plan appearing from a counter
+        somebody forgot to carry across the resume."""
         plain = ScriptedModel(
             # No plan reply here on purpose: if the runner tried to redraw
             # it would consume this synthesis as a plan and the assertion

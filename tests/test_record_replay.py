@@ -984,6 +984,70 @@ def replay_argv(run_id, skill, *extra):
 REPLAY_FLAGS = {SWARM_RUN: ("--swarm",)}
 
 
+class TestARunWithAReviewInIt:
+    """A supervisor review is a plain model call, and a replay is only
+    honest if it serves that call too.
+
+    The corpus is three runs of ordinary work and none of them repeats
+    itself, so this one is recorded here rather than committed: what it
+    pins is the ORDINAL. The review lands between the third mission call
+    and the fourth, and a replay that served the two functions from two
+    queues would hand the reviewer's verdict to the loop and the loop's
+    tool call to the reviewer — with nothing about the resulting stream
+    looking wrong.
+    """
+
+    #: Three identical reads — which is what the watcher fires on — then
+    #: the verdict, then the answer the nudge produced.
+    LOOPING = (
+        json.dumps({"tool": "mcp.governed_view",
+                    "arguments": {"run_id": ASSET, "section": "totals"}}),
+        json.dumps({"tool": "mcp.governed_view",
+                    "arguments": {"run_id": ASSET, "section": "totals"}}),
+        json.dumps({"tool": "mcp.governed_view",
+                    "arguments": {"run_id": ASSET, "section": "totals"}}),
+        json.dumps({"verdict": "nudge", "note": "you already have the "
+                                                "totals; answer with them"}),
+        json.dumps({"answer": f"Totals for {ASSET}: 12481 records."}),
+    )
+
+    def _recorded(self, tmp_path):
+        MockClass, _ = scripted_elf(self.LOOPING)
+        run_cli(MockClass, *mission_argv("what are the totals?",
+                                         write_skill(tmp_path)))
+        root = Path(os.environ[RUNS_ENV])
+        return root, only_run(root)
+
+    def test_the_review_is_recorded_as_a_plain_call_in_one_sequence(
+            self, tmp_path):
+        root, run_id = self._recorded(tmp_path)
+        assert [line["kind"] for line in lines(root / run_id / MODEL_LOG)] == \
+            ["mission", "mission", "mission", "plain", "mission"]
+
+    def test_the_replayed_stream_is_the_recorded_stream(self, tmp_path):
+        root, run_id = self._recorded(tmp_path)
+        MockClass, _ = scripted_elf(refuse=True)
+        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path)))
+        fresh = replayed(root, run_id)
+        assert comparable(records(root, fresh.run_id)) == \
+            comparable(records(root, run_id))
+
+    def test_the_replayed_run_carries_the_review_and_the_nudge(self,
+                                                               tmp_path):
+        """The point of the whole thing: the verdict comes back out of the
+        recording, the note is injected again, and the step that follows
+        carries both fields it carried the first time."""
+        root, run_id = self._recorded(tmp_path)
+        MockClass, _ = scripted_elf(refuse=True)
+        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path)))
+        fresh = replayed(root, run_id)
+        reviewed = [r for r in records(root, fresh.run_id)
+                    if r["event"] == "step_started" and "review" in r]
+        assert len(reviewed) == 1
+        assert reviewed[0]["review"]["verdict"] == "nudge"
+        assert "answer with them" in reviewed[0]["injected"][0]
+
+
 class TestReplayingTheCorpus:
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_replayed_stream_is_the_recorded_stream(

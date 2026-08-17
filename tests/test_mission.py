@@ -57,6 +57,11 @@ def tool_call(name, **arguments):
     return json.dumps({"tool": name, "arguments": arguments})
 
 
+def verdict(word, note=""):
+    """One supervisor review turn's reply."""
+    return json.dumps({"verdict": word, "note": note})
+
+
 class TestSeeding:
     def test_the_catalogue_is_in_the_system_message(self, bus):
         runner = MissionRunner(ScriptedModel(), bus, ["catalog.search", "catalog.get"])
@@ -388,6 +393,245 @@ class TestRefusals:
         assert transcript.steps[0].refused
         assert "capability_denied" in transcript.steps[0].error
         assert "refused" in model.seen[-1][-1]["content"]
+
+
+class TestNothingCountsTheTurns:
+    """The framework imposes no step budget, and that is the whole change.
+
+    Eight was doing two jobs: it caught an endless loop, and it decided
+    that no question was worth a ninth turn. Only the first is a job a
+    framework can do — see `TestTheSupervisor` for who does it now — and
+    the second is what this class is about: a mission that needs twelve
+    turns takes twelve, because nobody said otherwise.
+    """
+
+    def test_a_run_with_no_ceiling_goes_past_the_old_eight(self, bus):
+        """Twelve tool turns and then an answer. Under the cap this run
+        ended `budget_exhausted` on turn eight with four of its reads
+        never made, and nothing in the transcript said the question had
+        been answerable."""
+        model = ScriptedModel(
+            *[tool_call("catalog.search", q=str(n)) for n in range(12)],
+            '{"answer": "twelve searches later, the answer"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"]).run("go")
+
+        assert transcript.outcome == "answered"
+        assert len(transcript.steps) == 13
+        assert transcript.answer == "twelve searches later, the answer"
+
+    def test_the_opening_frame_says_zero(self, bus):
+        """`max_steps: 0` is how the wire says "no ceiling", and it is what
+        a consumer reads on every run nobody bounded. TAIPAN's own bridge
+        already defaults the field to 0."""
+        seen = []
+        MissionRunner(ScriptedModel('{"answer": "done"}'), bus,
+                      ["catalog.search"], observer=seen.append).run("go")
+        assert seen[0]["event"] == "mission_started"
+        assert seen[0]["max_steps"] == 0
+        assert seen[-1]["max_steps"] == 0
+
+    def test_no_ceiling_never_says_budget_exhausted(self, bus):
+        """The outcome is reserved for a bound somebody asked for. A run
+        that reports it under no ceiling would send an operator to lengthen
+        a number that does not exist."""
+        seen = []
+        MissionRunner(ScriptedModel('{"answer": "done"}'), bus,
+                      ["catalog.search"], observer=seen.append).run("go")
+        assert seen[-1]["outcome"] == "answered"
+        assert "budget" not in seen[-1]
+
+
+class TestTheSupervisor:
+    """What catches a run that is going nowhere, now that nothing counts.
+
+    The mechanics of the watcher are `tests/test_supervisor.py`'s. What is
+    tested here is the seam: which verdict does what to a running loop,
+    what a watcher sees on the stream, and what the transcript says
+    afterwards.
+    """
+
+    def _watching(self, *verdicts, **kw):
+        from core.runtime.supervisor import Supervisor
+
+        return Supervisor(ScriptedModel(*verdicts), **kw)
+
+    def _looping(self, bus, *verdicts, replies=None, observer=None, **kw):
+        """A mission that reads the same thing forever, under a supervisor."""
+        model = ScriptedModel(*(replies if replies is not None
+                                else [tool_call("catalog.search", q="x")] * 20))
+        transcript = MissionRunner(
+            model, bus, ["catalog.search"], observer=observer,
+            supervisor=self._watching(*verdicts), **kw).run("go")
+        return transcript, model
+
+    def test_a_repeating_run_is_reviewed_and_the_step_says_so(self, bus):
+        seen = []
+        self._looping(bus, verdict("stuck"), observer=seen.append)
+        reviewed = [r for r in seen
+                    if r["event"] == "step_started" and "review" in r]
+        assert len(reviewed) == 1
+        assert reviewed[0]["review"] == {"signal": "repeated_call",
+                                         "verdict": "stuck",
+                                         "reviews_left": 2}
+
+    def test_progressing_changes_nothing_but_still_rides_the_record(self, bus):
+        """A false alarm is a fact a watcher wants: "something looked wrong
+        and was judged fine" cannot be stated by an absence."""
+        seen = []
+        transcript, _model = self._looping(
+            bus, verdict("progressing"), observer=seen.append,
+            replies=[tool_call("catalog.search", q="x")] * 3
+                    + ['{"answer": "done"}'])
+        assert transcript.outcome == "answered"
+        assert transcript.reason == ""
+        reviewed = [r for r in seen
+                    if r["event"] == "step_started" and "review" in r]
+        assert [r["review"]["verdict"] for r in reviewed] == ["progressing"]
+        assert "injected" not in reviewed[0]
+
+    def test_a_nudge_reaches_the_model_as_an_injected_turn(self, bus):
+        """The same delivery an operator's `inject` gets, and the same
+        field on the record: it is the same act — somebody outside the
+        conversation putting a turn into it — and `review` on the same
+        record is which of the two it was."""
+        seen = []
+        transcript, model = self._looping(
+            bus, verdict("nudge", "search for something else"),
+            observer=seen.append,
+            replies=[tool_call("catalog.search", q="x")] * 3
+                    + ['{"answer": "done"}'])
+        assert transcript.outcome == "answered"
+        reviewed = [r for r in seen
+                    if r["event"] == "step_started" and "review" in r]
+        assert reviewed[0]["review"]["verdict"] == "nudge"
+        assert len(reviewed[0]["injected"]) == 1
+        assert "search for something else" in reviewed[0]["injected"][0]
+        # And the model was actually shown it, on the turn it applied to.
+        assert "search for something else" in model.seen[-1][-1]["content"]
+
+    def test_a_nudged_run_carries_on(self, bus):
+        """Nothing is taken away: the step after a nudge is an ordinary
+        step, and the run answers on its own terms."""
+        model = ScriptedModel(
+            *[tool_call("catalog.search", q="x")] * 3,
+            tool_call("catalog.get", asset_id="a1"),
+            '{"answer": "found it"}')
+        transcript = MissionRunner(
+            model, bus, ["catalog.search", "catalog.get"],
+            supervisor=self._watching(
+                verdict("nudge", "try the other tool"))).run("go")
+        assert transcript.answer == "found it"
+        assert len(transcript.steps) == 5
+
+    def test_stuck_asks_for_a_best_answer_and_says_why_it_ended(self, bus):
+        """The run winds up rather than stopping: an answer written from
+        three real tool results with its gaps named is worth more to the
+        person who asked than a transcript that stops."""
+        seen = []
+        transcript, model = self._looping(
+            bus, verdict("stuck"), observer=seen.append,
+            replies=[tool_call("catalog.search", q="x")] * 3
+                    + ['{"answer": "as far as I got: nothing new"}'])
+        assert transcript.outcome == "answered"
+        assert transcript.reason == "stuck"
+        assert transcript.answer == "as far as I got: nothing new"
+        assert seen[-1]["reason"] == "stuck"
+        assert [r["event"] for r in seen if r["event"] == "answer"] == ["answer"]
+        # The model was told, in as many words, that this is its last turn.
+        assert "Give your best answer NOW" in model.seen[-1][-1]["content"]
+
+    def test_a_wind_up_that_produces_no_answer_ends_incomplete(self, bus):
+        """The other half: the turn is asked for and the model calls a tool
+        instead. The run is over either way, and the word for a run that
+        stopped without an answer is the one it has always been."""
+        transcript, _model = self._looping(bus, verdict("stuck"))
+        assert transcript.outcome == "incomplete"
+        assert transcript.reason == "stuck"
+        assert transcript.answer is None
+        # Three repeats, then the one wind-up turn, and no more.
+        assert len(transcript.steps) == 4
+
+    def test_a_stuck_run_is_not_budget_exhausted(self, bus):
+        """Two different facts with two different fixes: one is answered by
+        raising a number, the other is not."""
+        seen = []
+        self._looping(bus, verdict("stuck"), observer=seen.append)
+        assert seen[-1]["outcome"] == "incomplete"
+        assert "budget" not in seen[-1]
+        assert seen[-1]["max_steps"] == 0
+
+    def test_a_cancelled_wind_up_says_cancelled(self, bus):
+        """Precedence: somebody threw a switch, and that is the sentence
+        they are owed — `stuck` was true a moment earlier and is the less
+        useful of two true things."""
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+
+        class _CancelsAtTheWindUp(ScriptedModel):
+            def __call__(self, messages):
+                if "Give your best answer NOW" in messages[-1]["content"]:
+                    switch.cancel()
+                return super().__call__(messages)
+
+        model = _CancelsAtTheWindUp(*[tool_call("catalog.search", q="x")] * 6)
+        transcript = MissionRunner(
+            model, bus, ["catalog.search"], cancel=switch,
+            supervisor=self._watching(verdict("stuck"))).run("go")
+        assert transcript.outcome == "incomplete"
+        assert transcript.reason == "cancelled"
+
+    def test_rejected_replies_are_a_pattern_the_supervisor_sees(self, bus):
+        """Five places can refuse a reply and all five go through one
+        method, because a watcher shown four rejections out of five is
+        counting a pattern it cannot see the whole of."""
+        seen = []
+        transcript, _model = self._looping(
+            bus, verdict("stuck"), observer=seen.append,
+            replies=["not json at all"] * 6)
+        reviewed = [r for r in seen
+                    if r["event"] == "step_started" and "review" in r]
+        assert reviewed[0]["review"]["signal"] == "rejected_replies"
+        assert transcript.reason == "stuck"
+
+    def test_a_run_with_no_supervisor_emits_the_stream_it_always_did(self, bus):
+        """`None` is a run nobody is watching, which is every library
+        caller that does not ask: no review field, no extra call, no
+        difference."""
+        seen = []
+        MissionRunner(
+            ScriptedModel(*[tool_call("catalog.search", q="x")] * 3
+                          + ['{"answer": "done"}']),
+            bus, ["catalog.search"], observer=seen.append).run("go")
+        assert not any("review" in r for r in seen)
+
+    def test_an_operator_ceiling_still_stops_a_watched_run(self, bus):
+        """The two are independent: the supervisor is not a replacement for
+        a hard stop somebody asked for, and a ceiling reached first is
+        still `budget_exhausted` naming steps."""
+        transcript, _model = self._looping(
+            bus, verdict("progressing"), max_steps=3)
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.budget.which == "steps"
+        assert transcript.budget.limit == 3
+
+    def test_what_the_review_cost_is_on_the_run_s_ledger(self, bus):
+        """A review is a model call and the run pays for it."""
+        from core.runtime.backends.base import Usage
+        from core.runtime.supervisor import Supervisor
+
+        seen = []
+        MissionRunner(
+            ScriptedModel(*[tool_call("catalog.search", q="x")] * 3
+                          + ['{"answer": "done"}']),
+            bus, ["catalog.search"], observer=seen.append,
+            supervisor=Supervisor(
+                ScriptedModel(verdict("progressing")),
+                usage_fn=lambda: Usage(prompt_tokens=11, completion_tokens=2,
+                                       total_tokens=13)),
+        ).run("go")
+        assert seen[-1]["usage"]["total_tokens"] == 13
+        assert seen[-1]["usage"]["calls"] == 1
 
 
 class TestBudget:
