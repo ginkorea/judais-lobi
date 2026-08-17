@@ -16,7 +16,7 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v0.11.0**, 16 Aug 2026. 3,059 tests collected; ~23.2k non-test lines in
+**v0.12.0**, 16 Aug 2026. 3,341 tests collected; ~23.2k non-test lines in
 `core/`+`judais/`+`lobi/`, ~26k lines of tests.
 
 For two weeks this framework ran in production as **Tai**, the mission agent
@@ -104,7 +104,7 @@ merges. Version bump every phase.
 | 9 | Durable and bounded (0.10) | ✅ 0.10.0 — properties 2 and 3, less the residuals in §2.4 |
 | 10 | Measurable (0.11) | property 4; absorbs February's Phase 10 |
 | 11 | One runtime (0.12) | property 5 |
-| 12 | Providers and streaming (0.13) | properties 4 and 6 — constrained decoding shipped early in 0.11.0 (`--protocol native`, default off) |
+| 12 | Providers and streaming (0.13) | properties 4 and 6 — constrained decoding (0.11.0), `answer_delta` + AG-UI translator + control channel (0.12.0) shipped; the httpx/retry/Anthropic provider work remains |
 | 13 | Embeddable (1.0) | property 6 |
 
 ### 2.2 As built
@@ -294,10 +294,20 @@ Properties 4 and 6.
   error class, owned in one neutral place instead of imported by Mistral from
   the local backend; Anthropic as a first-class backend — the critic already
   speaks it.
-- **`answer_delta` at the source.** A deployment fans one `answer` record into
-  bounded deltas client-side; emit real deltas here instead. Keep the design
-  lesson that made that work: the grounding verdict rides the answer's own
-  frames, never a sibling event. ~~Ship the AG-UI translator as an optional
+- ~~**`answer_delta` at the source.**~~ **Shipped 0.12.0**: the tenth event,
+  `answer_delta` (`index`, `part`, `text`), emitted while the answer streams
+  from the model (json: the `"answer"` value; native: `mission_answer.text`),
+  bounded at 64 chars/newline; the `answer` record ALWAYS follows and is
+  authoritative, grounding rides right after it as before; streaming is on by
+  default (`--no-stream`/`MISSION_STREAM=off`). Also shipped 0.12.0, from
+  Phase 13's list: a **control channel INTO the run** — `--control fd:N|path`
+  (`MISSION_CONTROL`), NDJSON commands `inject` (a user instruction before the
+  next model call, `injected` on `step_started`), `cancel`, `cancel_step`, and
+  `gate_decision` (a gate waits in-turn, bounded, when a channel is open;
+  approve dispatches that one call now through the same approval store; refuse
+  tells the model; timeout ends `awaiting_approval` as before). Keep the design
+  lesson: the grounding verdict rides the answer's own frames, never a sibling
+  event. ~~Ship the AG-UI translator as an optional
   `core.runtime.agui` so the next browser does not rewrite it.~~ **Shipped:**
   `core/runtime/agui.py` — `translate()` over a whole run or a `RunStore`
   replay, `Translator.feed/close` for a live follower, dicts only and no AG-UI
