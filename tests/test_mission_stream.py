@@ -292,6 +292,60 @@ class TestTheGroundingVerdictReachesAWatcher:
         assert ms.GROUNDING not in _kinds(seen)
 
 
+class TestTheAnswerIsNarratedWhileItIsWritten:
+    """The last turn of a mission is the one with nothing to show.
+
+    Every other stretch of a mission has records — a call announced
+    before it is made, a result when it comes back. The stretch where the
+    model is writing the answer had none, and on a local 20B that is
+    minutes of a pane with a spinner on it. These are the records that
+    stretch now has, written to a real sink, because "one line per event,
+    flushed" is what makes them worth having.
+    """
+
+    def _streamed(self, reply, piece=7):
+        def chat(_messages):
+            for at in range(0, len(reply), piece):
+                yield {"choices": [
+                    {"delta": {"content": reply[at:at + piece]}}]}
+        return chat
+
+    def _lines(self, reply):
+        handle = io.StringIO()
+        MissionRunner(
+            self._streamed(reply), _Bus(), ["catalog_search_assets"],
+            observer=ms.NdjsonSink(handle), store_tool="",
+        ).run("what do we hold")
+        return [json.loads(line) for line in
+                handle.getvalue().splitlines() if line]
+
+    def test_the_fragments_are_lines_on_the_stream_before_the_answer_is(self):
+        answer = "The cable was cut on 3 August, and two more are at risk."
+        records = self._lines(json.dumps({"answer": answer}))
+        kinds = _kinds(records)
+        assert ms.ANSWER_DELTA in kinds
+        assert kinds.index(ms.ANSWER_DELTA) < kinds.index(ms.ANSWER)
+        assert "".join(r["text"] for r in records
+                       if r["event"] == ms.ANSWER_DELTA) == answer
+        assert _first(records, ms.ANSWER)["text"] == answer
+
+    def test_a_frame_shaped_as_a_dict_is_read_like_any_other(self):
+        """Backends yield SDK objects and this one yields dicts. The
+        reader is `attr_or_key`, which is one owner of that question and
+        the same one the tool-call accumulator uses."""
+        records = self._lines(json.dumps({"answer": "read either way"}))
+        assert [r["text"] for r in records
+                if r["event"] == ms.ANSWER_DELTA] == ["read either way"]
+
+    def test_the_declared_fields_are_all_there(self):
+        from core.runtime import contract as c
+
+        records = self._lines(json.dumps({"answer": "fields"}))
+        fragment = _first(records, ms.ANSWER_DELTA)
+        assert set(c.FIELDS[ms.ANSWER_DELTA]) <= set(fragment)
+        assert c.conforms(fragment) == []
+
+
 class TestTheSink:
     def test_one_line_one_event(self):
         stream = io.StringIO()

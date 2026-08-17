@@ -2,6 +2,7 @@
 
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -3472,3 +3473,309 @@ class TestACompactedNativeConversationIsStillSendable:
             {"role": "tool", "tool_call_id": "c1", "content": "stranded"},
         ])
         assert [m["role"] for m in healed] == ["assistant", "user"]
+
+
+# ── the answer, while it is still being written ──────────────────────────────
+#
+# `chat_fn` may hand the loop a string, which is what every test above does
+# and what every library caller does, or an iterator of delta frames, which
+# is what a streaming backend hands `core.cli`. The loop takes either. What
+# follows asserts both halves of that promise: the fragments a streamed call
+# produces, and the fact that a string-returning one still produces exactly
+# the stream it always produced.
+
+
+class StreamingModel:
+    """Replays canned replies as frames, the way a backend yields them.
+
+    Each scripted reply is cut into fixed-size pieces, and the split is
+    the point: a server's frame boundary lands wherever its buffer filled
+    and never where a JSON token ends.
+    """
+
+    def __init__(self, *replies, piece=5):
+        self.replies = list(replies)
+        self.piece = piece
+        self.seen = []
+
+    def __call__(self, messages):
+        self.seen.append([dict(m) for m in messages])
+        reply = self.replies.pop(0) if self.replies else '{"answer": "done"}'
+        return self._frames(reply)
+
+    def _frames(self, reply):
+        for at in range(0, len(reply), self.piece):
+            yield SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=reply[at:at + self.piece],
+                                      tool_calls=None))])
+
+
+class NativeStreamingModel(NativeModel):
+    """A constrained decoder, streaming: the call arrives as fragments.
+
+    Subclasses the scripted native model so the side channel — which is
+    what the loop actually dispatches from — is filled exactly as it is
+    for a non-streamed native turn, and only the frames are new.
+    """
+
+    def __init__(self, *turns, piece=6):
+        super().__init__(*turns)
+        self.piece = piece
+
+    def __call__(self, messages):
+        self.seen.append([dict(m) for m in messages])
+        content, calls = (self.turns.pop(0) if self.turns
+                          else ("", [answer_call("done")]))
+        self.last_tool_calls = list(calls)
+        return self._frames(content, calls)
+
+    def _frames(self, content, calls):
+        if content:
+            yield SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=content, tool_calls=None))])
+        for index, call in enumerate(calls):
+            raw = json.dumps(call["arguments"])
+            yield self._fragment(index, call["id"], call["name"], raw[:1])
+            for at in range(1, len(raw), self.piece):
+                yield self._fragment(index, None, None,
+                                     raw[at:at + self.piece])
+
+    @staticmethod
+    def _fragment(index, call_id, name, arguments):
+        function = {"arguments": arguments}
+        if name is not None:
+            function["name"] = name
+        entry = {"index": index, "function": function}
+        if call_id is not None:
+            entry["id"] = call_id
+        return SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=None, tool_calls=[entry]))])
+
+
+def deltas(events):
+    return [r for r in events if r["event"] == contract.ANSWER_DELTA]
+
+
+class TestTheAnswerArrivesWhileItIsBeingWritten:
+    def test_the_fragments_concatenate_to_the_answer(self, bus):
+        events = []
+        answer = "Three assets, and the newest is from August."
+        MissionRunner(
+            StreamingModel(json.dumps({"answer": answer})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("what do we hold")
+        assert "".join(r["text"] for r in deltas(events)) == answer
+
+    def test_the_answer_record_still_follows_and_carries_the_whole_text(
+            self, bus):
+        """Always emitted, never suppressed because the fragments already
+        added up to it: the deltas are decoded out of a half-written reply
+        and the answer is read out of the finished one."""
+        events = []
+        answer = "The cable was cut."
+        MissionRunner(
+            StreamingModel(json.dumps({"answer": answer})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("what happened")
+        names = [r["event"] for r in events]
+        assert names.index(contract.ANSWER) > names.index(contract.ANSWER_DELTA)
+        assert [r["text"] for r in events
+                if r["event"] == contract.ANSWER] == [answer]
+
+    def test_the_ordinals_run_from_zero_without_a_gap(self, bus):
+        events = []
+        MissionRunner(
+            StreamingModel(json.dumps({"answer": "x" * 300})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        assert len(deltas(events)) > 1, "300 characters is several fragments"
+        assert [r["part"] for r in deltas(events)] == \
+            list(range(len(deltas(events))))
+
+    def test_the_index_is_the_step_that_produced_them(self, bus):
+        events = []
+        MissionRunner(
+            StreamingModel(tool_call("catalog.search", q="x"),
+                           json.dumps({"answer": "found it"})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        assert {r["index"] for r in deltas(events)} == {1}
+
+    def test_every_record_conforms(self, bus):
+        events = []
+        MissionRunner(
+            StreamingModel(json.dumps({"answer": "conformant"})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        assert deltas(events)
+        for record in events:
+            assert conforms(record) == [], record
+
+    def test_a_turn_that_called_a_tool_streamed_no_answer(self, bus):
+        """Nothing is provisional about a tool call, and the reply has no
+        top-level `answer` key for the decoder to find."""
+        events = []
+        MissionRunner(
+            StreamingModel(tool_call("catalog.search", q="x"),
+                           json.dumps({"answer": "done"})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        assert [r["index"] for r in deltas(events)] == [1] * len(deltas(events))
+        assert [r["event"] for r in events][:3] == [
+            contract.MISSION_STARTED, contract.STEP_STARTED,
+            contract.TOOL_CALL]
+
+    def test_a_rejected_reply_streams_nothing_and_still_rejects(self, bus):
+        events = []
+        MissionRunner(
+            StreamingModel("not json at all",
+                           json.dumps({"answer": "second time lucky"})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        rejected = [r for r in events if r["event"] == contract.REPLY_REJECTED]
+        assert len(rejected) == 1
+        assert {r["index"] for r in deltas(events)} == {1}
+
+    def test_the_loop_is_told_the_whole_reply(self, bus):
+        """What the model is handed back as its own turn is the assembled
+        reply and not the fragments — a paraphrase of the model to itself
+        is how a conversation stops making sense."""
+        model = StreamingModel(tool_call("catalog.search", q="x"),
+                               json.dumps({"answer": "done"}))
+        MissionRunner(model, bus, ["catalog.search"]).run("go")
+        assistant = [m for m in model.seen[-1] if m["role"] == "assistant"]
+        assert assistant[-1]["content"] == tool_call("catalog.search", q="x")
+
+    def test_a_repair_turn_streams_again_from_part_zero(self, asset_bus,
+                                                        strict):
+        """One model call, one `part` sequence. The consumer replaces its
+        provisional text when the `answer` arrives, so the last one wins."""
+        events = []
+        MissionRunner(
+            StreamingModel(
+                tool_call("catalog.search"),
+                json.dumps({"answer": "The label set is labels.7a19c4e2."}),
+                json.dumps({"answer": "The corpus is asset.5f21c9."})),
+            asset_bus, ["catalog.search"], validator=strict,
+            observer=events.append,
+        ).run("go")
+        by_step = {}
+        for record in deltas(events):
+            by_step.setdefault(record["index"], []).append(record["part"])
+        assert sorted(by_step) == [1, 2], "the draft, then the repair"
+        assert all(parts[0] == 0 for parts in by_step.values())
+
+    def test_the_fragments_are_scrubbed_like_every_other_text(self, bus,
+                                                              monkeypatch):
+        monkeypatch.setattr(redact, "_home", lambda: "/home/someone")
+        events = []
+        MissionRunner(
+            StreamingModel(json.dumps(
+                {"answer": "it is under /home/someone/x and nowhere else"}),
+                piece=200),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        streamed = "".join(r["text"] for r in deltas(events))
+        assert "/home/someone" not in streamed
+        assert redact.HOME in streamed
+
+
+class TestAStringReplyIsTheStreamItAlwaysWas:
+    """The other half of the promise, and the more important half."""
+
+    def test_a_string_returning_chat_fn_emits_no_deltas(self, bus):
+        events = []
+        MissionRunner(
+            ScriptedModel(json.dumps({"answer": "done"})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        assert deltas(events) == []
+
+    def test_the_two_streams_differ_by_the_deltas_and_nothing_else(self, bus):
+        """Byte for byte the stream a consumer read before this existed,
+        once the new records are dropped — which is exactly what a
+        consumer that has never heard of them does."""
+        reply = json.dumps({"answer": "the same answer either way"})
+        whole, pieces = [], []
+        MissionRunner(ScriptedModel(reply), bus, ["catalog.search"],
+                      observer=whole.append).run("go")
+        MissionRunner(StreamingModel(reply), bus, ["catalog.search"],
+                      observer=pieces.append).run("go")
+
+        def comparable(records):
+            # `elapsed_s` is a wall clock and differs between any two runs;
+            # everything else on these records is a fact about the loop.
+            return [{k: v for k, v in r.items() if k != "elapsed_s"}
+                    for r in records if r["event"] != contract.ANSWER_DELTA]
+
+        assert deltas(pieces)
+        assert comparable(pieces) == comparable(whole)
+
+
+class TestANativeTurnStreamsItsAnswerToo:
+    def test_the_answer_functions_argument_streams(self, bus):
+        events = []
+        model = NativeStreamingModel(answer_call("the cable was cut"))
+        transcript = native_runner(bus, model, events=events).run("what?")
+        assert "".join(r["text"] for r in deltas(events)) == "the cable was cut"
+        assert transcript.answer == "the cable was cut"
+
+    def test_a_dispatching_turn_streams_nothing(self, bus):
+        events = []
+        model = NativeStreamingModel(
+            native_call("catalog.search", q="x"),
+            answer_call("found"))
+        native_runner(bus, model, events=events).run("go")
+        assert {r["index"] for r in deltas(events)} == {1}
+
+    def test_the_side_channel_is_still_what_gets_dispatched(self, bus):
+        """The fragments are a rendering; the decision is the calls the
+        backend published when the iterator was exhausted."""
+        events = []
+        model = NativeStreamingModel(native_call("catalog.search", q="x"),
+                                     answer_call("done"))
+        native_runner(bus, model, events=events).run("go")
+        called = [r for r in events if r["event"] == contract.TOOL_CALL]
+        assert [r["arguments"] for r in called] == [{"q": "x"}]
+
+    def test_every_record_of_a_streamed_native_run_conforms(self, bus):
+        events = []
+        model = NativeStreamingModel(answer_call("conformant"))
+        native_runner(bus, model, events=events).run("go")
+        assert deltas(events)
+        for record in events:
+            assert conforms(record) == [], record
+
+
+class TestADecoderThatGivesUpCostsTheMissionNothing:
+    def test_a_decoder_that_raises_never_reaches_the_loop(self, bus,
+                                                          monkeypatch):
+        """The error policy, exercised where it matters. The reply is
+        accumulated whatever the decoder does, and the answer is read out
+        of the finished reply by the parser that has always read it — so
+        a decoder that gave up costs a pane its live rendering and costs
+        the mission nothing."""
+        from core.runtime import answer_stream
+
+        def boom(_self, _text):
+            raise RuntimeError("the decoder is confused")
+
+        monkeypatch.setattr(answer_stream._TopLevelString, "feed", boom)
+        events = []
+        transcript = MissionRunner(
+            StreamingModel(json.dumps({"answer": "still here"})),
+            bus, ["catalog.search"], observer=events.append,
+        ).run("go")
+        assert transcript.answer == "still here"
+        assert deltas(events) == []
+
+    def test_frames_of_a_shape_no_backend_sends_do_not_end_the_mission(
+            self, bus):
+        def odd(_messages):
+            yield object()
+            yield SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content='{"answer": "fine"}',
+                                      tool_calls=None))])
+
+        assert MissionRunner(odd, bus, ["catalog.search"]).run("go").answer \
+            == "fine"

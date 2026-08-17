@@ -504,7 +504,7 @@ share bytes. `fd:N` is what TAIPAN uses: it opens a pipe, passes the write end
 through `pass_fds`, and each line arrives the moment it happens with no file to
 tail.
 
-The record vocabulary — nine event types, their required fields, the optional
+The record vocabulary — ten event types, their required fields, the optional
 ones, the five outcome words, and the exit contract — is **`CONTRACT.md`**, and
 its authority is `core/runtime/contract.py`. Read those rather than this section;
 a summary of a contract is a second copy of it.

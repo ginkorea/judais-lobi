@@ -422,7 +422,7 @@ class LocalBackend(Backend):
             # repairs a server's own parser bug and has nothing to do with
             # which protocol is being spoken.
             return content
-        return content or self._as_mission_json(message)
+        return content or self._as_mission_json(self.last_tool_calls)
 
     @staticmethod
     def _speaking_native(body: Dict[str, Any]) -> bool:
@@ -446,7 +446,7 @@ class LocalBackend(Backend):
                 or body.get("parallel_tool_calls") is True)
 
     @staticmethod
-    def _as_mission_json(message: Dict[str, Any]) -> str:
+    def _as_mission_json(calls: List[Dict[str, Any]]) -> str:
         """Render a native ``tool_calls`` reply into the mission protocol.
 
         The kernel reads one JSON object — ``{"tool": …, "arguments": {…}}`` —
@@ -472,21 +472,20 @@ class LocalBackend(Backend):
         caller that wants the calls themselves says so in the request and
         gets the content back unsynthesized instead: see
         :meth:`_speaking_native`, which owns that rule.
+
+        *calls* is the NORMALIZED list — what
+        :func:`~core.runtime.backends.base.tool_calls_from` made, which is
+        what :attr:`last_tool_calls` already holds — rather than the raw
+        message.  Both paths that render this now have one, and a streamed
+        reply is assembled out of fragments and never had a message at
+        all: rendering from the calls is what lets the streamed and the
+        non-streamed reply be the same string rather than two dialects.
         """
-        calls = message.get("tool_calls") or []
         if not calls:
             return ""
-        function = (calls[0] or {}).get("function") or {}
-        raw = function.get("arguments")
-        if isinstance(raw, str):
-            try:
-                arguments = json.loads(raw or "{}")
-            except ValueError:
-                arguments = {}
-        else:
-            arguments = raw or {}
-        decision: Dict[str, Any] = {"tool": function.get("name") or "",
-                                    "arguments": arguments}
+        first = calls[0] or {}
+        decision: Dict[str, Any] = {"tool": first.get("name") or "",
+                                    "arguments": first.get("arguments") or {}}
         if len(calls) > 1:
             decision["note"] = (
                 f"{len(calls)} tool calls were offered; this protocol takes "
@@ -513,11 +512,26 @@ class LocalBackend(Backend):
         published on :attr:`last_tool_calls` in the same ``finally`` as
         the counts — a half-arrived call is not a decision.  The frames
         themselves still reach the consumer untouched.
+
+        **A streamed reply and a non-streamed one are the same reply.**
+        A caller not speaking native gets its tool calls rendered into
+        the mission protocol's one JSON object — see
+        :meth:`_as_mission_json`, which is the whole reason a served
+        gpt-oss answers a mission at all — and a streamed call must not
+        lose that just because the text was assembled from frames.  So
+        when the stream is over and nothing came through as ``content``,
+        the rendering goes out as one last frame carrying it: a caller
+        concatenating ``delta.content`` ends up holding exactly the
+        string :meth:`_complete` would have returned.  Nothing is
+        invented for a caller that DID get content, and nothing at all
+        for one speaking native, which reads
+        :attr:`last_tool_calls` itself.
         """
         res = self._post(body, stream=True)
         self._raise_for_status(res, body)
         seen: Optional[Usage] = None
         calls = ToolCallAccumulator()
+        spoke = False
         try:
             for line in res.iter_lines():
                 if not line:
@@ -539,16 +553,41 @@ class LocalBackend(Backend):
                 if found is not None:
                     seen = found
                 for choice in chunk.get("choices") or []:
-                    calls.add((choice.get("delta") or {}).get("tool_calls"))
+                    delta = choice.get("delta") or {}
+                    calls.add(delta.get("tool_calls"))
+                    if delta.get("content"):
+                        spoke = True
                 if not chunk.get("choices"):
                     continue
                 yield self._as_delta(chunk)
+            if not spoke and not self._speaking_native(body):
+                rendered = self._as_mission_json(calls.result())
+                if rendered:
+                    yield self._content_frame(rendered)
         finally:
             # In a `finally` so that a consumer that walks away mid-stream
             # still leaves behind whatever had been reported by then —
             # the abandoned case is the one that has to work.
             self.last_usage = seen
             self.last_tool_calls = calls.result()
+
+    @staticmethod
+    def _content_frame(text: str) -> SimpleNamespace:
+        """One frame carrying *text* as content, in the shape of a delta.
+
+        The synthesized rendering of a tool-call-only reply — see
+        :meth:`_stream`.  Shaped by hand rather than through
+        :meth:`_as_delta` because there is no chunk: the server never
+        sent this, this backend wrote it, and the honest way to say so is
+        that it carries neither an id nor a model.
+        """
+        return SimpleNamespace(
+            id=None, model=None,
+            choices=[SimpleNamespace(
+                index=0, finish_reason=None,
+                delta=SimpleNamespace(role=None, content=text,
+                                      tool_calls=None))],
+        )
 
     @staticmethod
     def _as_delta(chunk: Dict[str, Any]) -> SimpleNamespace:

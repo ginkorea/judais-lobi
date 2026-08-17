@@ -44,6 +44,7 @@ direct loop and from `--swarm` alike. Index them without a default.
 | `tool_call` | `index`, `tool`, `arguments` |
 | `tool_result` | `index`, `tool`, `arguments`, `ok`, `exit_code`, `output`, `error`, `handle`, `truncated` |
 | `gate_requested` | `index`, `tool`, `arguments`, `reason` |
+| `answer_delta` | `index`, `part`, `text` |
 | `answer` | `text`, `outcome` |
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` |
 | `mission_finished` | `outcome`, `steps`, `max_steps` |
@@ -340,6 +341,54 @@ answer.
 `grounding` is absent altogether when no grounding grammar was configured. An
 absent report and a clean one are different facts.
 
+### `answer_delta` — the answer while it is still being written
+
+`answer_delta` carries a fragment of the answer as the model writes it:
+`index` is the step whose model call is producing it, `part` is a 0-based
+ordinal within that call's answer, and `text` is the fragment. Concatenating
+`text` over `part` in order gives the answer **as streamed**.
+
+**It is provisional, and it is replaced rather than completed.** The `answer`
+record that follows is the authority and is **always emitted** — never
+suppressed because the deltas happened to add up to the same string — so a
+consumer renders the fragments as they arrive and then replaces the lot with
+`answer.text`. That is not belt and braces: the fragments are decoded out of a
+half-written reply, the answer is read out of the finished one, and only the
+second has been through the grounding path that may append a caveat to it.
+
+**Zero of them is normal.** A backend that does not declare
+`supports_streaming`, a run started with `--no-stream` or `MISSION_STREAM=off`,
+a turn that called a tool instead of answering, a library caller whose
+`chat_fn` returns a string — all of them produce an `answer` with no deltas
+before it, which is exactly the stream every consumer read before this event
+existed. A tenth event type is additive and does **not** bump
+`SCHEMA_VERSION`; a consumer that has never heard of it drops the records and
+renders what it always rendered.
+
+**`part` restarts at 0 for every model call.** A step is one call, so in
+practice it restarts every step; a grounding repair turn is a further step
+with its own `index` and streams again from part 0. The last `answer` wins.
+Key provisional text by `index` and clear it on the next `step_started`: a
+turn whose reply was rejected, and a `native` turn whose `mission_answer` was
+ignored because it came alongside tool calls, leave fragments behind that no
+`answer` will ever replace.
+
+**Each fragment is scrubbed on its own.** `text` goes through the same
+redactor as every other free-text field, but it goes through it *per
+fragment*, and a credential split across two deltas is not recognisable in
+either half. So the fragments are for display: what a consumer keeps, logs or
+forwards is the `answer` record.
+
+Fragments are bounded before they are emitted — 64 characters, or a newline,
+whichever comes first — because a record per token is a record every 17 ms on
+a local endpoint and the durable log pays for each one. A fragment boundary
+therefore means nothing: it is not a token, a word or a sentence, and
+concatenation is the only operation defined on them.
+
+A staged (`--swarm`) turn emits none of these for its sub-missions, exactly as
+it emits none of their `answer` records: a sub-mission's answer is not the
+mission's. The synthesized answer arrives whole, as one `answer`.
+
 ## Outcomes
 
 Carried by `mission_finished`, and by `answer` when there is one.
@@ -393,6 +442,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--top-p` — likewise.
 - `--seed` — likewise, for a run somebody intends to reproduce.
 - `--resume` — carry on a recorded mission by its `run_id`. The objective comes off that run, so the positional message may be omitted; a different one is refused. A finished run is refused, except one that ended `awaiting_approval`.
+- `--no-stream` — ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`, and the only difference it makes to this stream is the `answer_delta` records: the same `answer` arrives at the same moment either way.
 - `--protocol` — `json` (the default) or `native`. Arrives back as `protocol` on `mission_started`, and only when it is `native`. Refused at the door on a backend that does not declare `supports_tool_calls` and `supports_tool_choice_required`, because a run that asked for the constrained decoder and silently got prose would be measured as the protocol it was not running. On `--resume` it comes off the recorded run; stating one that disagrees with the record is refused, naming both.
 
 ## Environment
@@ -411,6 +461,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `MISSION_HISTORY` — the environment form of `--history`.
 - `MISSION_SECONDS` — the environment form of `--mission-seconds`; the flag wins. Unset, blank, unparseable or ≤ 0 all mean unbounded, because a mistyped budget that killed the run before its first step would look like a broken harness.
 - `MISSION_RESUME` — the environment form of `--resume`.
+- `MISSION_STREAM` — the environment form of `--no-stream`, the way round a consumer wants to read it: `off`, `0`, `false`, `no` or `none` turn streaming off and anything else — including unset and blank — leaves it on. The flag wins. It has no effect on a backend that does not declare `supports_streaming`, which is asked first.
 - `MISSION_PROTOCOL` — the environment form of `--protocol`; the flag wins. Unset and blank both mean `json`, which is what every mission ran under until now.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.

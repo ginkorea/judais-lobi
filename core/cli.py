@@ -2,10 +2,15 @@
 import argparse
 import os
 from pathlib import Path
+from typing import Any, Dict
 from rich.console import Console
 from rich.markdown import Markdown
 
 from core.contracts.schemas import ProfileMode
+# The event name only, off the module that owns the vocabulary and imports
+# nothing at all — the console echo below switches on it, and a second
+# spelling of a record type is how a consumer comes to render nothing.
+from core.runtime.contract import ANSWER_DELTA
 from core.runtime.provider_config import PROVIDERS
 
 GREEN = "\033[92m"
@@ -317,6 +322,113 @@ def _mission_protocol(args) -> str:
             f"--protocol: {wanted!r} is not a protocol this harness speaks. "
             f"Choose one of: {', '.join(PROTOCOLS)}.")
     return wanted
+
+
+#: What ``MISSION_STREAM`` has to say to turn the streamed model call off.
+#: Spelled as words a person types rather than as a single one, because the
+#: variable reads as a switch and half of anybody's guesses at "off" are in
+#: this set.  Anything else — including unset, including a typo — leaves
+#: streaming ON, which is the safe direction: the worst an unrecognised
+#: value costs is the deltas a consumer was going to get anyway.
+STREAM_OFF = frozenset({"off", "0", "false", "no", "none"})
+
+
+def _stream_is_off() -> bool:
+    """``MISSION_STREAM``'s answer, read as ``--no-stream``'s default.
+
+    Unset and blank both mean **on**, which is what every mission ran
+    under from the release this arrived in.  Read at parser construction
+    like every other environment default here, so a caller that exports
+    the variable and passes the flag gets the flag.
+    """
+    return os.getenv("MISSION_STREAM", "").strip().lower() in STREAM_OFF
+
+
+def _mission_streams(args, client) -> bool:
+    """Whether this run's model calls stream.  On unless something says no.
+
+    Two questions, in this order, because only one of them is a
+    preference.  **Can** the backend stream — ``supports_streaming``, read
+    through ``getattr`` with a ``False`` default like every other
+    capability question here, because a library caller may hand ``Agent``
+    any client and one that never heard of capabilities has not declared
+    it.  And **should** it — ``--no-stream``, whose argparse default is
+    already ``MISSION_STREAM``'s answer, so the flag wins over the
+    variable the same way every other pair on this surface does.
+
+    Turning it off is not a downgrade and needs no warning: the mission
+    runs the identical loop, the ``answer`` record arrives at the identical
+    moment, and what a consumer loses is the fragments before it.
+    """
+    if getattr(args, "no_stream", False):
+        return False
+    return bool(getattr(getattr(client, "capabilities", None),
+                        "supports_streaming", False))
+
+
+class _ProgressiveAnswer:
+    """Print ``answer_delta`` fragments as they arrive, and nothing else.
+
+    The mission's console rendering happens after the run — the steps, the
+    grounding line, the answer — which on a minutes-long mission means a
+    person watches a blank terminal for the whole of the last turn.  The
+    fragments are already on the stream by then; this puts them on stdout
+    as well, under the same header the finished answer gets.
+
+    **The text printed is the text emitted**, straight off the record and
+    therefore already through :func:`core.redact.scrub_record` — the
+    console and the stream must not disagree about what an answer said,
+    and a second scrub here would be a second owner of that rule.
+
+    The final rendering is untouched.  What is printed live is a preview
+    of a provisional decode; what is printed at the end is
+    ``transcript.answer`` as Markdown, including any caveat the grounding
+    path appended, and that is the line a person reads.
+    """
+
+    def __init__(self, console, style: str, name: str):
+        self._console = console
+        self._style = style
+        self._name = name
+        self._open = False
+
+    def __call__(self, record: Dict[str, Any]) -> None:
+        if record.get("event") == ANSWER_DELTA:
+            if not self._open:
+                self._console.print(f"🧞 {self._name}: ", style=self._style,
+                                    end="")
+                self._open = True
+            self._console.print(str(record.get("text") or ""),
+                                style=self._style, end="")
+            return
+        if self._open:
+            # Any other record closes the line. The `answer` that follows
+            # the fragments is the usual one, but a rejected reply or a
+            # tool call does the same job: the next thing printed must not
+            # continue somebody's half-streamed sentence.
+            self._console.print("")
+            self._open = False
+
+
+def _watchers(*observers):
+    """Fan one record out to each observer, or ``None`` when there are none.
+
+    The sink goes FIRST wherever both are passed.  ``MissionRunner._emit``
+    wraps the whole call in one ``try`` — an observer that throws must not
+    end a mission — so an ordering that put the console before the machine
+    channel would let a rich markup error cost a consumer the record.
+    """
+    kept = [observer for observer in observers if observer is not None]
+    if not kept:
+        return None
+    if len(kept) == 1:
+        return kept[0]
+
+    def fan(record):
+        for observer in kept:
+            observer(record)
+
+    return fan
 
 
 def _mission_tools(manifest, discovered, style, bus=None):
@@ -731,6 +843,23 @@ def _mission(elf, args, name, style):
             + " — pinned for this run; unset means the server's own default",
             style=style)
 
+    # ON, unless the backend cannot or the operator said not to. A streamed
+    # call returns an iterator of frames instead of a string, and
+    # `MissionRunner` takes either — see `_model_reply`, which drains the
+    # frames into `answer_delta` records and hands the loop the same reply
+    # string it has always had. `plain_chat_fn` below deliberately does NOT
+    # stream: its callers are the swarm's router, planner, gates and
+    # synthesizer, which read one small JSON object or one paragraph and
+    # have nowhere to put a fragment.
+    streaming = _mission_streams(args, elf.client)
+    if streaming:
+        console.print(
+            "📝 streaming: the answer goes out in fragments as the model "
+            "writes it (answer_delta), and the answer record that follows "
+            "is still the whole of it — --no-stream / MISSION_STREAM=off "
+            "turns this off and changes nothing else",
+            style=style)
+
     def chat_fn(messages):
         # The mission loop still reads one JSON object out of the reply; the
         # backend renders any native tool_call back into that shape. So this
@@ -757,7 +886,7 @@ def _mission(elf, args, name, style):
         elif declared and getattr(elf.client, "supports_tool_calls", True):
             extra.update({"tools": declared, "tool_choice": "auto"})
         return elf.client.chat(model=elf.model, messages=messages,
-                               stream=False, **extra)
+                               stream=streaming, **extra)
 
     def plain_chat_fn(messages, **extra):
         # No tool schemas, deliberately: the swarm's router, planner, gate
@@ -979,6 +1108,15 @@ def _mission(elf, args, name, style):
                     "--unsandboxed, to sandbox them)",
                     style="yellow",
                 )
+            # The sink is the machine channel and the echo is a person's;
+            # both are observers, and neither is the other's client. Built
+            # here, once, so the two runners below cannot be given
+            # different watchers. With no `--events` and no streaming this
+            # is `None` and the loop emits nothing, exactly as before.
+            watcher = _watchers(
+                sink,
+                _ProgressiveAnswer(console, style, name) if streaming
+                else None)
             if getattr(args, "swarm", False) and recorded is not None:
                 # A resume continues the loop that was recorded, and what
                 # was recorded is a MissionRunner's: the swarm's own
@@ -1011,7 +1149,7 @@ def _mission(elf, args, name, style):
                     approvals=approvals,
                     approval=ticket,
                     history=history,
-                    observer=sink,
+                    observer=watcher,
                     plain_chat_fn=plain_chat_fn,
                     # Asked of the CLIENT, because the client is what knows
                     # which backend it is and the swarm holds only a
@@ -1045,7 +1183,7 @@ def _mission(elf, args, name, style):
                     approvals=approvals,
                     approval=ticket,
                     history=history,
-                    observer=sink,
+                    observer=watcher,
                     window=window,
                     run_store=run_store,
                     run_id=run_id,
@@ -1349,6 +1487,22 @@ def _main(AgentClass):
                              "supports_tool_choice_required. Off by default "
                              "until the eval harness has scored it "
                              "(env: MISSION_PROTOCOL)")
+    # The variable is the flag's default, so the flag still wins — the same
+    # arrangement every other pair on this surface has. Named for the thing
+    # it turns OFF, because streaming is the default and a `--stream` flag
+    # nobody needs to pass is a flag nobody reads.
+    parser.add_argument("--no-stream", action="store_true",
+                        default=_stream_is_off(),
+                        help="Ask the model for the whole reply at once "
+                             "instead of streaming it. Streaming is ON by "
+                             "default wherever the backend declares "
+                             "supports_streaming: the answer's own fragments "
+                             "go out as answer_delta records while the model "
+                             "is still writing, which is the only thing a "
+                             "watcher has to show during the last turn of a "
+                             "minutes-long mission. Turning it off changes "
+                             "nothing else — the same answer record arrives "
+                             "at the same moment (env: MISSION_STREAM=off)")
     parser.add_argument("--skill", type=Path, default=_env_path("MISSION_SKILL"),
                         help="A SKILL.md manifest (or a directory holding one) "
                              "supplying the mission's closed tool set, its "

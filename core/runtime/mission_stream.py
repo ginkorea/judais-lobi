@@ -45,7 +45,8 @@ from typing import Any, Callable, Dict, IO, Optional
 
 __all__ = [
     "MISSION_STARTED", "STEP_STARTED", "REPLY_REJECTED", "TOOL_CALL",
-    "TOOL_RESULT", "GATE_REQUESTED", "ANSWER", "GROUNDING", "MISSION_FINISHED",
+    "TOOL_RESULT", "GATE_REQUESTED", "ANSWER_DELTA", "ANSWER", "GROUNDING",
+    "MISSION_FINISHED",
     "EVENTS", "NdjsonSink", "open_sink", "close_on_sigterm",
     "exit_as_signalled", "SIGTERM_CAUSE",
 ]
@@ -55,7 +56,7 @@ __all__ = [
 # Re-exported under the names they have always had here so that every existing
 # importer, in this repo and in whatever pinned a release of it, is untouched.
 from core.runtime.contract import (           # noqa: E402  (re-export)
-    ANSWER, EVENTS, GATE_REQUESTED, GROUNDING, MISSION_FINISHED,
+    ANSWER, ANSWER_DELTA, EVENTS, GATE_REQUESTED, GROUNDING, MISSION_FINISHED,
     MISSION_STARTED, REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
 )
 
