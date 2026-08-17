@@ -1654,9 +1654,13 @@ def _main(AgentClass):
 
     parser.add_argument("--model", type=str, help="Model to use")
     parser.add_argument("--provider", type=str, choices=list(PROVIDERS),
-                        help="Force provider backend "
-                             "('local' = an OpenAI-compatible endpoint at "
-                             "LOCAL_API_BASE serving LOCAL_MODEL)")
+                        help="Force provider backend. 'openai' and "
+                             "'mistral' fall back to each other when a key "
+                             "is missing; 'anthropic' (ANTHROPIC_API_KEY, "
+                             "needs the [anthropic] extra) and 'local' do "
+                             "not — 'local' is an OpenAI-compatible "
+                             "endpoint at LOCAL_API_BASE serving "
+                             "LOCAL_MODEL")
     parser.add_argument("--profile", type=str,
                         choices=[m.value for m in ProfileMode],
                         default=None,

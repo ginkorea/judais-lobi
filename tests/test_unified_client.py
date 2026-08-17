@@ -184,3 +184,40 @@ class TestTheFakeCarriesBothChannels:
         fake.chat("m", [{"role": "user", "content": "x"}],
                   tools=[{"type": "function"}], tool_choice="required")
         assert fake.last_request["tool_choice"] == "required"
+
+
+class TestUnifiedClientAnthropic:
+    """The fourth provider, routed the same way as the other three."""
+
+    def test_it_builds_the_anthropic_backend(self, monkeypatch):
+        from core.runtime.backends.anthropic_backend import AnthropicBackend
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+        client = UnifiedClient(provider_override="anthropic")
+        assert client.provider == "anthropic"
+        assert isinstance(client._backend, AnthropicBackend)
+
+    def test_missing_anthropic_key_raises_by_name(self, monkeypatch):
+        """Not a fallback to whichever provider does have a key."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        with pytest.raises(RuntimeError, match="Missing ANTHROPIC_API_KEY"):
+            UnifiedClient(provider_override="anthropic")
+
+    def test_the_side_channels_are_the_backends(self, monkeypatch):
+        from core.runtime.backends.anthropic_backend import AnthropicBackend
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+        stub = MagicMock()
+        stub.messages.create.return_value = SimpleNamespace(
+            content=[{"type": "text", "text": "hi"},
+                     {"type": "tool_use", "id": "a", "name": "f",
+                      "input": {"n": 1}}],
+            usage={"input_tokens": 6, "output_tokens": 2})
+        client = UnifiedClient(provider_override="anthropic",
+                               backend=AnthropicBackend(client=stub))
+        assert client.chat(model="m",
+                           messages=[{"role": "user", "content": "hi"}]) == "hi"
+        assert client.last_usage.total_tokens == 8
+        assert client.last_tool_calls == [
+            {"id": "a", "name": "f", "arguments": {"n": 1}}]

@@ -190,3 +190,25 @@ class TestTheWallClockDefault:
 
         monkeypatch.setenv("MISSION_SECONDS", value)
         assert _env_seconds("MISSION_SECONDS") == expected
+
+
+class TestProviderChoices:
+    """`--provider` choices are generated from `PROVIDERS`, so a backend
+    the client can build is a backend the CLI will accept."""
+
+    @patch("sys.argv", ["test", "hello", "--provider", "anthropic"])
+    def test_anthropic_is_accepted_and_forwarded(self):
+        from core.cli import _main
+
+        MockClass, mock_elf = TestCLISmoke()._make_mock_elf_class()
+        mock_elf.chat.return_value = iter([])
+        _main(MockClass)
+        assert MockClass.call_args.kwargs["provider"] == "anthropic"
+
+    @patch("sys.argv", ["test", "hello", "--provider", "nosuchprovider"])
+    def test_an_unknown_provider_is_refused_at_the_door(self):
+        from core.cli import _main
+
+        MockClass, _ = TestCLISmoke()._make_mock_elf_class()
+        with pytest.raises(SystemExit):
+            _main(MockClass)

@@ -48,6 +48,14 @@ setup(
         # compiled ones, and `judais --help` has to keep working without them.
         # core/tools/mcp_client.py is the only importer, and imports it lazily.
         "mcp": ["mcp>=1.25,<2"],
+        # The Anthropic SDK, for `--provider anthropic` and for the
+        # external critic's Anthropic tier — one client per provider, and
+        # one extra that installs it. Soft-imported at both call sites so
+        # `judais --help` works without it. The version floor is repeated
+        # in `critic` below rather than referenced, because
+        # `tests/test_packaging.py` reads `extras_require` with
+        # `ast.literal_eval` and a shared name would not survive that.
+        "anthropic": ["anthropic>=0.40"],
         # What a mission actually needs, as one name. `mcp` alone installs
         # half of it: `--skill` reads YAML frontmatter, and with no pyyaml
         # `load_skill` raises `SkillManifestError`, which `_load_skill`
@@ -64,7 +72,7 @@ setup(
         # extra a platform installs rather than left to be discovered.
         "mission": ["mcp>=1.25,<2", "pyyaml>=6.0", "jsonschema>=4"],
         "critic": [
-            "anthropic>=0.30.0",
+            "anthropic>=0.40",
             "google-generativeai>=0.7.0",
             "keyring>=25.0.0",
             "pyyaml>=6.0",

@@ -5,6 +5,12 @@ from typing import Optional
 
 DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
+    # Sonnet tier, undated, for the same reason `gpt-4o-mini` is the
+    # OpenAI default: a framework default that quietly costs top-tier
+    # money is a decision a deployment should make, not inherit. See
+    # `core.runtime.backends.anthropic_backend.DEFAULT_ANTHROPIC_MODEL`,
+    # which is the same string and the reason it is undated.
+    "anthropic": "claude-sonnet-5",
     "mistral": "codestral-latest",
     # The served name of a local endpoint is whatever it was started with, so
     # this is only the last resort: LOCAL_MODEL, then GET /models, then this.
@@ -23,6 +29,7 @@ PROVIDERS = tuple(DEFAULT_MODELS)
 #: trigger a fallback.
 API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
     "mistral": "MISTRAL_API_KEY",
 }
 
@@ -33,11 +40,21 @@ def resolve_provider(
 ) -> str:
     """Resolve provider: explicit arg > ELF_PROVIDER env > default 'openai'.
 
-    When no client is injected, falls back between the two hosted
-    providers if the requested one's API key is missing.  ``local`` is
-    never fallen back *from*: asking for the endpoint on this host and
-    being silently answered by OpenAI is the opposite of what was asked,
-    and for a mission prompt it would send the prompt off the host.
+    When no client is injected, falls back between OpenAI and Mistral if
+    the requested one's API key is missing — the pair this function has
+    always swapped between, and the swap survives because ``openai`` is
+    the default nobody chose and a missing key there is a fresh install
+    rather than an instruction.
+
+    ``local`` and ``anthropic`` are never fallen back *from*, for the same
+    reason in two shapes: both are somebody naming a provider on purpose.
+    Asking for the endpoint on this host and being silently answered by
+    OpenAI is the opposite of what was asked, and for a mission prompt it
+    would send the prompt off the host; asking for Anthropic and being
+    answered by OpenAI is a different model, a different bill and a
+    different set of capability flags. A missing ``ANTHROPIC_API_KEY``
+    stops the run by name — see
+    :class:`core.runtime.backends.anthropic_backend.AnthropicBackend`.
     """
     from rich import print  # local to avoid hard dep when not needed
 

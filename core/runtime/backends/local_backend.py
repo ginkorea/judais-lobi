@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional
@@ -39,6 +38,8 @@ from core.runtime.backends.base import (
     Usage,
     tool_calls_from,
 )
+from core.runtime.backends import policy
+from core.runtime.backends.policy import CHAT_TIMEOUT
 
 DEFAULT_LOCAL_API_BASE = "http://127.0.0.1:8000/v1"
 DEFAULT_LOCAL_MODEL = "local-model"
@@ -46,9 +47,13 @@ DEFAULT_LOCAL_MODEL = "local-model"
 #: Seconds to wait on ``GET /models``.  Short: the probe is a convenience,
 #: and a capabilities lookup must never be the thing that hangs a CLI.
 PROBE_TIMEOUT = 5.0
-#: Seconds to wait on ``POST /chat/completions``.  Long: a cold vLLM
-#: server loads weights for ~100s before it answers the first request.
-CHAT_TIMEOUT = 600.0
+
+#: ``CHAT_TIMEOUT`` — seconds to wait on ``POST /chat/completions`` — is
+#: imported above from :mod:`core.runtime.backends.policy`, which owns it,
+#: and re-exported so the name this module has always published keeps
+#: resolving.  ``PROBE_TIMEOUT`` stays here because it is genuinely local:
+#: five seconds is a statement about a convenience lookup on this host,
+#: not about how long a completion may take.
 
 
 @dataclass(frozen=True)
@@ -301,39 +306,37 @@ class LocalBackend(Backend):
             return self._stream(body)
         return self._complete(body)
 
-    #: Backoff (seconds) before each retry of a refused connection. Three
-    #: tries spanning ~17s: a vLLM endpoint that bounces or hands off ports
-    #: mid-session comes back inside that window; one that is truly down
-    #: fails just as clearly 17 seconds later. Measured 12 Aug 2026: one
-    #: mid-eval turn died at step 0 on a single refused connect while the
-    #: turns on either side of it succeeded — a whole turn is too much to
-    #: pay for one blip.
-    CONNECT_RETRIES = (2.0, 5.0, 10.0)
+    #: Backoff (seconds) before each retry of a refused connection — an
+    #: alias for :data:`core.runtime.backends.policy.CONNECT_RETRIES`,
+    #: which owns it and states why.  Kept as a class attribute because
+    #: callers read the budget off the backend they are holding.
+    CONNECT_RETRIES = policy.CONNECT_RETRIES
 
     def _post(self, body: Dict[str, Any], stream: bool):
-        last: Exception | None = None
-        for wait in (0.0, *self.CONNECT_RETRIES):
-            if wait:
-                time.sleep(wait)
-            try:
-                return self._session.post(
-                    f"{self.endpoint}/chat/completions",
-                    headers=self._headers(),
-                    json=body,
-                    timeout=CHAT_TIMEOUT,
-                    stream=stream,
-                )
-            except requests.exceptions.ConnectionError as exc:
-                # Refused/reset connect only — an HTTP error or a mid-body
-                # timeout is the server ANSWERING, and re-sending those
-                # would double a completion that may already be decoding.
-                last = exc
-        raise last  # type: ignore[misc]
+        """POST once, and again only if the connect never happened.
 
-    #: How much of a server's error body to put in front of a caller. Enough
-    #: for vLLM's `{"object":"error","message":...}` to arrive whole; short
-    #: enough that a stack trace does not become the error message.
-    ERROR_DETAIL_CHARS = 600
+        Which failures are worth re-sending is
+        :data:`core.runtime.backends.policy.ERROR_POLICY`, not a decision
+        this method makes: a refused connect costs nothing to repeat, a
+        status code or a mid-body timeout is the server ANSWERING and
+        re-sending it would double a completion that may already be
+        decoding.
+        """
+        return policy.retry_on_connect(
+            lambda: self._session.post(
+                f"{self.endpoint}/chat/completions",
+                headers=self._headers(),
+                json=body,
+                timeout=CHAT_TIMEOUT,
+                stream=stream,
+            ),
+            retries=self.CONNECT_RETRIES,
+        )
+
+    #: How much of a server's error body to put in front of a caller — an
+    #: alias for :data:`core.runtime.backends.policy.ERROR_DETAIL_CHARS`,
+    #: read the same way and for the same reason as CONNECT_RETRIES above.
+    ERROR_DETAIL_CHARS = policy.ERROR_DETAIL_CHARS
 
     #: Fragments that make a harmony-speaking server refuse a whole request.
     #: Not an exhaustive list of harmony syntax — the ones that have actually
@@ -366,38 +369,37 @@ class LocalBackend(Backend):
         return "\n  ".join(found)
 
     def _raise_for_status(self, res, body: Optional[Dict[str, Any]] = None) -> None:
-        """Fail with what the server SAID, not just the number it returned.
+        """The shared body-as-diagnosis rule, plus the harmony hint.
 
-        ``requests``' own ``raise_for_status`` produces ``500 Server Error for
-        url ...`` and discards the body — and the body is the whole diagnosis.
-        An OpenAI-compatible server puts a real sentence there: which parameter
-        it rejected, that ``max_tokens`` came out negative, that the model name
-        does not match what is loaded.
+        :func:`core.runtime.backends.policy.raise_for_status` owns the
+        rule — the status, the URL, and a bounded slice of what the server
+        actually said, because ``requests``' own ``raise_for_status``
+        produces ``500 Server Error for url ...`` and throws the sentence
+        away. That mattered immediately: Tai reached a served gpt-oss-20b
+        during the first bake-off and got ``500`` with nothing else, which
+        is indistinguishable from the server being broken, so the run was
+        reported as "the server rejects the request shape". The shape was
+        in the body the whole time.
 
-        This mattered immediately. Tai reached a served gpt-oss-20b during the
-        first bake-off and got ``500`` with nothing else, which is
-        indistinguishable from the server being broken — so the run was
-        reported as "the server rejects the request shape", which was a guess.
-        The shape was in the body the whole time.
-
-        Same fix, same reason, as `RemoteSshComputeProvider._sh` in TAIPAN:
-        bounded, and in front of the operator.
+        What stays here is the half that is only true of this backend: a
+        harmony-speaking server refuses a whole request over text
+        somewhere else in the conversation, so the message names where —
+        see :meth:`_locate_suspect_text`. It is appended by the error
+        factory rather than by a second copy of the formatting, so the
+        two raw-HTTP backends cannot drift on what a failure reads like.
         """
-        if res.status_code < 400:
-            return
-        try:
-            detail = (res.json() or {}).get("message") or res.text
-        except ValueError:
-            detail = res.text
-        detail = (detail or "").strip()[:self.ERROR_DETAIL_CHARS]
-        message = (f"{res.status_code} from {self.endpoint}/chat/completions"
-                   + (f": {detail}" if detail
-                      else " (and the server said nothing)"))
-        where = self._locate_suspect_text(body or {})
-        if where:
-            message += ("\n\nText a harmony parser will refuse, in what we "
-                        "sent:\n  " + where)
-        raise requests.HTTPError(message, response=res)
+        where = (self._locate_suspect_text(body or {})
+                 if res.status_code >= 400 else "")
+
+        def error(message: str, response) -> Exception:
+            if where:
+                message += ("\n\nText a harmony parser will refuse, in what "
+                            "we sent:\n  " + where)
+            return requests.HTTPError(message, response=response)
+
+        policy.raise_for_status(
+            res, f"{self.endpoint}/chat/completions",
+            detail_chars=self.ERROR_DETAIL_CHARS, error=error)
 
     def _complete(self, body: Dict[str, Any]) -> str:
         res = self._post(body, stream=False)

@@ -741,10 +741,12 @@ class TestConnectRetry:
 
     def _backend(self, monkeypatch):
         b = LocalBackend(endpoint="http://127.0.0.1:1/v1")
-        # No real sleeping in a unit test; record the waits instead.
+        # No real sleeping in a unit test; record the waits instead. The
+        # loop lives in `policy` now — see `retry_on_connect`, which
+        # resolves `time.sleep` at call time so this patch is obeyed.
         waits = []
         monkeypatch.setattr(
-            "core.runtime.backends.local_backend.time.sleep", waits.append)
+            "core.runtime.backends.policy.time.sleep", waits.append)
         return b, waits
 
     def test_a_refused_connect_is_retried_then_succeeds(self, monkeypatch):
@@ -795,3 +797,64 @@ class TestConnectRetry:
         with _pytest.raises(rq.exceptions.ReadTimeout):
             b._post({"messages": []}, stream=False)
         assert len(calls) == 1
+
+
+class TestAFailureNamesWhatTheServerRefused:
+    """What a non-2xx reads like, and the one part that is local.
+
+    `policy.raise_for_status` owns the sentence — status, URL, and a
+    bounded slice of the body, because the body is the whole diagnosis.
+    The harmony hint stays here, because only a harmony-speaking server
+    refuses a whole request over text somewhere in the conversation, and
+    finding that message by eye cost most of an afternoon once.
+    """
+
+    class _Res:
+        def __init__(self, status_code=500, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            if self._payload is None:
+                raise ValueError("no json")
+            return self._payload
+
+    def _backend(self):
+        return LocalBackend(endpoint="http://127.0.0.1:1/v1")
+
+    def test_the_body_is_the_diagnosis(self):
+        import requests as rq
+
+        with pytest.raises(rq.HTTPError) as exc:
+            self._backend()._raise_for_status(
+                self._Res(payload={"message": "bad max_tokens"}), {})
+        assert "500" in str(exc.value)
+        assert "http://127.0.0.1:1/v1/chat/completions" in str(exc.value)
+        assert "bad max_tokens" in str(exc.value)
+
+    def test_a_harmony_refusal_names_the_message_that_carries_it(self):
+        import requests as rq
+
+        body = {"messages": [
+            {"role": "user", "content": "fine"},
+            {"role": "assistant", "content": "commentary to=functions.f"}]}
+        with pytest.raises(rq.HTTPError) as exc:
+            self._backend()._raise_for_status(
+                self._Res(payload={"message": "unexpected tokens"}), body)
+        message = str(exc.value)
+        assert "harmony parser will refuse" in message
+        assert "messages[1]" in message
+        assert "to=" in message
+
+    def test_a_clean_body_gets_no_hint(self):
+        import requests as rq
+
+        with pytest.raises(rq.HTTPError) as exc:
+            self._backend()._raise_for_status(
+                self._Res(payload={"message": "nope"}),
+                {"messages": [{"role": "user", "content": "fine"}]})
+        assert "harmony" not in str(exc.value)
+
+    def test_below_400_raises_nothing(self):
+        self._backend()._raise_for_status(self._Res(status_code=200), {})
