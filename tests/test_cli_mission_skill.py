@@ -14,6 +14,7 @@ it, and nothing in the output says so.
 """
 
 import json
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -1946,3 +1947,134 @@ class TestResumingANativeRun:
         with pytest.raises(SystemExit) as exc:
             run_resume(MockClass, run_id, "--protocol", "native")
         assert "recorded under --protocol json" in str(exc.value)
+
+
+class TestTheControlChannelFromTheCommandLine:
+    """`--control fd:N`, through the real CLI and the real stub server.
+
+    The commands are written into a real pipe before the run, which is the
+    only arrangement that exercises the whole path: argparse, the open at
+    the door, the daemon reader, the drain in the loop, and the close in
+    the same `finally` as the sink.
+    """
+
+    def _pipe(self, *payloads):
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(write_fd, "w", encoding="utf-8") as writer:
+            for payload in payloads:
+                writer.write(json.dumps(payload) + "\n")
+        return read_fd
+
+    def _channels(self, monkeypatch):
+        """Every channel the CLI opens, so a test can ask what became of
+        it. The real class, wrapped — the point is what `_mission` does
+        with the object, not what a double would have recorded."""
+        from core.runtime.control import ControlChannel
+
+        made = []
+        real = ControlChannel.open.__func__
+
+        def opened(cls, spec, **kwargs):
+            channel = real(cls, spec, **kwargs)
+            if channel is not None:
+                made.append(channel)
+            return channel
+
+        monkeypatch.setattr(ControlChannel, "open", classmethod(opened))
+        return made
+
+    def _settled(self, made, seconds=2.0):
+        import time
+
+        until = time.monotonic() + seconds
+        while time.monotonic() < until:
+            if made and made[0].waiting:
+                return
+            time.sleep(0.002)
+
+    def test_an_injection_written_before_the_run_reaches_the_model(
+            self, elf, skill_file, monkeypatch):
+        MockClass, agent = elf
+        made = self._channels(monkeypatch)
+        fd = self._pipe({"control": "inject",
+                         "text": "the SECOND corpus, not the first"})
+        run_cli(MockClass, "--skill", str(skill_file), "--control", f"fd:{fd}")
+
+        assert agent.seeds[0][-1] == {
+            "role": "user", "content": "the SECOND corpus, not the first"}
+        assert made and made[0].spec == f"fd:{fd}"
+
+    def test_the_step_it_rode_says_so_on_the_event_stream(
+            self, elf, skill_file, monkeypatch):
+        import core.runtime.mission_stream as stream
+
+        MockClass, _agent = elf
+        self._channels(monkeypatch)
+        sink = RecordingSink()
+        monkeypatch.setattr(stream, "open_sink", lambda spec: sink)
+        fd = self._pipe({"control": "inject", "text": "narrow it down"})
+        run_cli(MockClass, "--skill", str(skill_file), "--control", f"fd:{fd}")
+
+        started = [r for r in sink.records if r["event"] == "step_started"]
+        assert started[0]["injected"] == ["narrow it down"]
+
+    def test_the_channel_is_closed_in_the_same_finally_as_the_sink(
+            self, elf, skill_file, monkeypatch):
+        """The descriptor belongs to whoever spawned us, and a run that
+        ended badly is exactly the one that must still let go of it."""
+        MockClass, _agent = elf
+        made = self._channels(monkeypatch)
+        fd = self._pipe({"control": "inject", "text": "x"})
+        run_cli(MockClass, "--skill", str(skill_file), "--control", f"fd:{fd}")
+        assert made[0].closed
+
+    def test_a_cancel_on_the_channel_winds_the_run_up(
+            self, elf, skill_file, monkeypatch):
+        import core.runtime.mission_stream as stream
+
+        MockClass, _agent = elf
+        self._channels(monkeypatch)
+        sink = RecordingSink()
+        monkeypatch.setattr(stream, "open_sink", lambda spec: sink)
+        fd = self._pipe({"control": "cancel"})
+        run_cli(MockClass, "--skill", str(skill_file), "--control", f"fd:{fd}")
+
+        last = sink.records[-1]
+        assert last["event"] == "mission_finished"
+        assert last["reason"] == "cancelled"
+
+    def test_a_bad_spec_is_refused_at_the_door(self, elf, skill_file):
+        """Like `--events`: a spec that cannot be opened is a refusal, not
+        a channel that silently delivers nothing."""
+        MockClass, _agent = elf
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--control", "fd:nine")
+        assert "--control" in str(exc.value)
+
+    def test_no_flag_is_no_channel_and_no_runner_keyword_changes(
+            self, elf, skill_file, monkeypatch):
+        import core.runtime.mission as mission_module
+
+        MockClass, _agent = elf
+        made = self._channels(monkeypatch)
+        captured = {}
+        real = mission_module.MissionRunner
+
+        def watched(*args, **kwargs):
+            captured.update(kwargs)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(mission_module, "MissionRunner", watched)
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert made == []
+        assert captured["control"] is None
+
+    def test_the_environment_form_is_the_flags_default(
+            self, elf, skill_file, monkeypatch):
+        MockClass, agent = elf
+        self._channels(monkeypatch)
+        fd = self._pipe({"control": "inject", "text": "from the environment"})
+        monkeypatch.setenv("MISSION_CONTROL", f"fd:{fd}")
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert agent.seeds[0][-1]["content"] == "from the environment"

@@ -361,7 +361,8 @@ def _mission_tools(manifest, discovered, style, bus=None):
 #: disk next month.
 RUN_META_FLAGS = (
     "mission_steps", "provider", "model", "profile", "unsandboxed", "skill",
-    "swarm", "events", "history", "gate_tool", "temperature", "top_p", "seed",
+    "swarm", "events", "control", "history", "gate_tool", "temperature",
+    "top_p", "seed",
 )
 
 #: The step budget a mission runs under when nobody says otherwise.
@@ -441,6 +442,7 @@ def _mission(elf, args, name, style):
         APPROVALS_ENV, ApprovalError, default_approval_store, resolve,
     )
     from core.runtime.context_window import MissionWindow
+    from core.runtime.control import ControlChannel
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import (
         ANSWER_FUNCTION, AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL,
@@ -828,6 +830,29 @@ def _mission(elf, args, name, style):
     deadline = Deadline.of(budgets)
     close_on_sigterm(sink, cancel)
 
+    # The other direction, opened here for the reason the sink is opened
+    # before the connection: a platform that handed us a descriptor is
+    # entitled to be refused at the door if we cannot read it, rather than
+    # to discover minutes later that nothing it sent arrived. It is handed
+    # the SAME cancellation the SIGTERM handler holds — `cancel` on the
+    # channel and the first signal are one lever reached by two roads —
+    # and its cause is `control`, not `sigterm`, so a run stopped this way
+    # exits normally instead of dying of a signal nobody sent.
+    try:
+        control = ControlChannel.open(getattr(args, "control", "") or "",
+                                      cancel=cancel)
+    except (ValueError, OSError) as exc:
+        if sink is not None:
+            sink.close()
+        raise SystemExit(f"--control: {exc}")
+    if control is not None:
+        console.print(
+            f"🎛  control: {control.spec} — NDJSON commands in: inject, "
+            f"cancel, cancel_step, gate_decision. A gate will WAIT here for "
+            f"a decision instead of ending the mission",
+            style=style,
+        )
+
     try:
         with McpClient(transport) as client:
             from core.tools.mcp_client import McpToolBridge
@@ -1034,6 +1059,7 @@ def _mission(elf, args, name, style):
                     rate=rate,
                     deadline=deadline,
                     cancel=cancel,
+                    control=control,
                 )
             else:
                 runner = MissionRunner(
@@ -1055,6 +1081,7 @@ def _mission(elf, args, name, style):
                     rate=rate,
                     deadline=deadline,
                     cancel=cancel,
+                    control=control,
                 )
             # AFTER the runner exists, because the replay renders a
             # recorded tool result through the runner's own
@@ -1089,6 +1116,13 @@ def _mission(elf, args, name, style):
     finally:
         if sink is not None:
             sink.close()
+        # In the same `finally` and for the same reason: the descriptor
+        # belongs to whoever spawned us, and a run that ended badly is
+        # exactly the one that must still let go of it. The reader is a
+        # daemon thread and may be blocked on a pipe nobody will write to
+        # again; it is not waited on.
+        if control is not None:
+            control.close()
         # In the `finally` for the same reason `mission_finished` is: a run
         # that ended badly is exactly the run whose audit gaps matter. The
         # bus already said the FIRST failure on stderr with its exception;
@@ -1361,6 +1395,19 @@ def _main(AgentClass):
                              "parent process passed, or a path. The vocabulary "
                              "is core/runtime/mission_stream.py "
                              "(env: MISSION_EVENTS)")
+    parser.add_argument("--control", type=str,
+                        default=os.getenv("MISSION_CONTROL", ""),
+                        help="Read NDJSON commands INTO the running mission: "
+                             "'fd:N' for a pipe the parent process passed, a "
+                             "FIFO or a path, or '-' for stdin. One object "
+                             "per line: {\"control\": \"inject\", \"text\": "
+                             "\"...\"} puts an instruction in front of the "
+                             "next model call, \"cancel\" stops the run, "
+                             "\"cancel_step\" drops the rest of the current "
+                             "step, and \"gate_decision\" answers a gate the "
+                             "run is standing at. Bad lines are dropped with "
+                             "a line on stderr. The vocabulary is "
+                             "core/runtime/control.py (env: MISSION_CONTROL)")
     parser.add_argument("--gate-tool", action="append", default=None,
                         metavar="NAME",
                         help="A tool this deployment offers and GATES. It is "

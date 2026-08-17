@@ -53,8 +53,11 @@ Optional, and therefore to be read with a default: `audit_ref`, `run_id` and
 `mission_started`, `call` on `tool_call` and `tool_result`, `plan` on `step_started`
 (`[{id, goal, rung}]`, on the first step of a staged `--swarm` plan and again
 on the first step of a redrawn one), `tool` on `reply_rejected` (present
-only when the model got as far as naming one), `compacted` and `resumed` on
-`step_started`, `approval_id` on `gate_requested`, `sandbox` and `profile` on
+only when the model got as far as naming one), `compacted`, `resumed` and
+`injected` on
+`step_started` (`injected` is the operator instructions delivered on this run's
+control channel and put in front of the model for that step, in the order they
+were sent), `approval_id` on `gate_requested`, `sandbox` and `profile` on
 `mission_started`, `usage` on `tool_call`, `answer`, `reply_rejected` and
 `mission_finished`, and `budget`, `reason` and `elapsed_s` on `mission_finished`. `plan`
 rode `mission_started` until 0.8.x: that record is now emitted before triage —
@@ -292,6 +295,17 @@ Six of these carry more meaning than their names suggest:
   approves has to be the bytes that would run. It carries `approval_id`
   whenever the deployment keeps durable approval records, which it does
   unless `JUDAIS_LOBI_APPROVALS` says otherwise.
+  **Terminal unless somebody answers it in time.** With a control channel open
+  (`--control`), the run waits at the gate for a `gate_decision` naming that
+  `approval_id`, so a consumer may now see a `gate_requested` **followed, under
+  the same `index`, by the `tool_call`/`tool_result` for the call it asked
+  about** — that is an approval that arrived in-turn, recorded in the approval
+  store as `spent` by the person who sent it. A refusal is a `gate_requested`
+  followed by nothing and then the next `step_started`: the model was told and
+  is trying something else. Nothing times out into a yes; the wait running out
+  ends the mission at `awaiting_approval` exactly as it always did, with the
+  record left `pending` for `--approval` on a later turn. A consumer without a
+  control channel sees no change at all.
 - **`grounding` is emitted twice when a repair happens**, on `--swarm` as on
   the direct path. The interim record has `repairing: true` and is work in
   progress — show it, do not latch it. The record with `repairing: false` is
@@ -386,6 +400,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `--skill` — the skill manifest: tool subset, prompt, grounding grammar.
 - `--swarm` — triage first, then stage the mission if it needs staging.
 - `--events` — where the NDJSON goes. See above.
+- `--control` — where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-` for stdin. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and a bad line is dropped, never fatal. See the exit contract.
 - `--history` — prior turns, seeded as chat messages ahead of the objective.
 - `--gate-tool` — offer a tool and refuse to call it. Repeatable.
 - `--approval` — an approval id somebody has already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched. A pending, refused, spent or abandoned record is refused at the door, naming the state.
@@ -412,6 +427,7 @@ The mission-mode flags. The rest of the CLI is a person's surface and may move.
 - `MISSION_SECONDS` — the environment form of `--mission-seconds`; the flag wins. Unset, blank, unparseable or ≤ 0 all mean unbounded, because a mistyped budget that killed the run before its first step would look like a broken harness.
 - `MISSION_RESUME` — the environment form of `--resume`.
 - `MISSION_PROTOCOL` — the environment form of `--protocol`; the flag wins. Unset and blank both mean `json`, which is what every mission ran under until now.
+- `MISSION_CONTROL` — the environment form of `--control`; the flag wins. Unset and blank both mean no channel, which is a run that can only be stopped by `SIGTERM`.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.
@@ -450,6 +466,22 @@ it knows who the person is. Core enforces only that somebody is named.
   the signal re-raised, so the exit status is still the signal's rather than a
   spurious clean exit. A **second** SIGTERM does not wait: it flushes, closes and
   dies, so a run stuck in a model call or a subprocess can still be stopped.
+- **`--control` is the only channel in.** One JSON object per line, on an
+  inherited descriptor (`fd:N`), a FIFO, a path, or stdin (`-`). The vocabulary
+  is closed: `{"control": "inject", "text": "…"}` puts a user turn in front of
+  the next model call and comes back as `step_started.injected`;
+  `{"control": "cancel"}` is the first SIGTERM by another road — `incomplete`
+  with `reason: "cancelled"`, transcript kept, `mission_finished` written;
+  `{"control": "cancel_step"}` skips the calls of the current step that have
+  not been dispatched, tells the model so and asks it again, and never touches
+  a tool subprocess that is already running; `{"control": "gate_decision",
+  "approval_id": "ap_…", "approve": true, "decided_by": "who", "note": ""}`
+  answers a gate the run is standing at, and `decided_by` must name somebody or
+  the command is dropped. A malformed line, an unknown word, an `inject` with
+  no text or a decision signed by nobody is **dropped with one sentence on
+  stderr** and the run carries on; a channel nobody writes to, or one whose
+  writer goes away, is not an error. Commands are not events: the run answers
+  them by doing the thing, and `injected` is the only trace on the stream.
 - **stderr carries the diagnostic**, and its tail is what to show when a mission
   produced no events or stopped without an answer. It is a traceback, and it is
   **scrubbed before it is written** — home directories, this host's name,

@@ -758,7 +758,8 @@ class TestTheContractIsWhole:
 
     def test_the_exit_contract_names_the_clauses_a_consumer_builds_on(self):
         assert set(c.EXIT_CONTRACT) == {
-            "stdout", "events", "silence", "finished", "sigterm", "diagnostic"}
+            "stdout", "events", "control", "silence", "finished", "sigterm",
+            "diagnostic"}
         with pytest.raises(TypeError):
             c.EXIT_CONTRACT["stdout"] = "something else"
 
@@ -859,6 +860,7 @@ _FLAG_VALUES = {
     "--seed": "7",
     "--resume": "run_20260815T131102-9f3a1c04",
     "--protocol": "native",
+    "--control": "fd:9",
 }
 
 

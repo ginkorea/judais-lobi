@@ -1,6 +1,7 @@
 # tests/test_swarm.py — staged decomposition over one mission backend
 
 import json
+import time
 
 import pytest
 
@@ -2230,3 +2231,130 @@ class TestTheProtocolReachesEverySubMission:
         self._native(bus, executor, plain).run("go")
         assert plain.calls == 1
         assert all("tool_calls" not in m for m in plain.seen[0])
+
+
+# ── one control channel for the whole turn ──────────────────────────────────
+
+
+class TestTheSwarmSharesOneControlChannel:
+    """Shared the way the clock and the switch are, and for the same reason.
+
+    An operator steering "this mission" is steering the turn. A channel
+    opened per sub-mission would deliver an injection to whichever of five
+    stages happened to be reading, and a cancel to none of them.
+    """
+
+    def _channel(self, *payloads, cancel=None):
+        import io
+        import json as _json
+
+        from core.runtime.control import ControlChannel
+
+        text = "".join(_json.dumps(p) + "\n" for p in payloads)
+        chan = ControlChannel(io.StringIO(text), cancel=cancel)
+        # Pre-written, so the reader is at end-of-file before the run
+        # starts and there is no race to lose.
+        until = time.monotonic() + 2.0
+        while not chan.finished and time.monotonic() < until:
+            time.sleep(0.002)
+        return chan
+
+    def test_every_sub_mission_is_handed_the_same_object(self, bus):
+        """One object, not one apiece: the identity is the property, and a
+        copy per stage would be five places an instruction could land."""
+        import core.runtime.swarm as swarm_module
+
+        chan = self._channel()
+        handed = []
+        real = swarm_module.MissionRunner
+
+        def watched(*args, **kwargs):
+            handed.append(kwargs.get("control"))
+            return real(*args, **kwargs)
+
+        swarm_module.MissionRunner = watched
+        try:
+            plain = ScriptedModel(STAGED, TWO_STEPS, '{"pass": true}',
+                                  '{"pass": true}', "Final: corpus.abc123")
+            executor = ScriptedModel(
+                tool_call("catalog.search", q="a"), '{"answer": "a"}',
+                tool_call("catalog.search", q="b"), '{"answer": "b"}')
+            swarm(plain, executor, bus, control=chan).run("go")
+        finally:
+            swarm_module.MissionRunner = real
+        assert handed and all(one is chan for one in handed)
+
+    def test_an_injection_reaches_the_sub_mission_that_is_running(self, bus):
+        """The only stage of a staged turn that is a conversation."""
+        chan = self._channel({"control": "inject",
+                              "text": "the SECOND corpus"})
+        plain = ScriptedModel(STAGED, TWO_STEPS, '{"pass": true}',
+                              '{"pass": true}', "Final: corpus.abc123")
+        executor = ScriptedModel('{"answer": "a"}', '{"answer": "b"}')
+        seen = []
+        swarm(plain, executor, bus, control=chan,
+              observer=seen.append).run("go")
+
+        # The first sub-mission's first step carried it, and no later step
+        # did: a command is delivered once.
+        carried = [r for r in seen
+                   if r["event"] == "step_started" and "injected" in r]
+        assert len(carried) == 1
+        assert carried[0]["injected"] == ["the SECOND corpus"]
+        assert executor.seen[0][-1] == {"role": "user",
+                                        "content": "the SECOND corpus"}
+
+    def test_the_swarms_own_roles_are_never_spoken_into(self, bus):
+        """The router, the planner, each gate and the synthesizer are
+        single questions answered in one round trip. There is no "between
+        steps" to inject into, and an instruction folded into a yes/no
+        prompt would corrupt the answer that prompt exists to get."""
+        chan = self._channel({"control": "inject", "text": "SPOKEN"})
+        plain = ScriptedModel(STAGED, TWO_STEPS, '{"pass": true}',
+                              '{"pass": true}', "Final: corpus.abc123")
+        executor = ScriptedModel('{"answer": "a"}', '{"answer": "b"}')
+        swarm(plain, executor, bus, control=chan).run("go")
+        assert all("SPOKEN" not in m["content"]
+                   for turn in plain.seen for m in turn)
+
+    def test_a_cancel_ends_the_whole_turn(self, bus):
+        """It reaches every stage, including the ones a channel is never
+        drained in: the switch is thrown from the reader thread and
+        `_stop` is asked before each of the swarm's own round trips."""
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        chan = self._channel({"control": "cancel"}, cancel=switch)
+        until = time.monotonic() + 2.0
+        while not switch.is_set() and time.monotonic() < until:
+            time.sleep(0.002)
+
+        plain = ScriptedModel(STAGED, TWO_STEPS, "the answer")
+        executor = ScriptedModel('{"answer": "never asked"}')
+        seen = []
+        transcript = swarm(plain, executor, bus, cancel=switch, control=chan,
+                           observer=seen.append).run("go")
+
+        assert plain.calls == 0 and executor.calls == 0
+        assert (transcript.outcome, transcript.reason) == ("incomplete",
+                                                           "cancelled")
+        assert [r["event"] for r in seen] == ["mission_started",
+                                              "mission_finished"]
+
+    def test_a_turn_with_no_channel_hands_none_down(self, bus):
+        import core.runtime.swarm as swarm_module
+
+        handed = []
+        real = swarm_module.MissionRunner
+
+        def watched(*args, **kwargs):
+            handed.append(kwargs.get("control"))
+            return real(*args, **kwargs)
+
+        swarm_module.MissionRunner = watched
+        try:
+            swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "ok"}'),
+                  bus).run("go")
+        finally:
+            swarm_module.MissionRunner = real
+        assert handed == [None]
