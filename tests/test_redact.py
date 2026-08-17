@@ -22,7 +22,7 @@ import pytest
 from core import redact
 from core.redact import (
     SCRUBBED_FIELDS, VERBATIM_FIELDS, WHY_VERBATIM, redacted, scrub,
-    scrub_record,
+    scrub_record, scrub_secrets,
 )
 
 HOME = "/home/testuser"
@@ -357,3 +357,37 @@ class TestTheFieldListIsTheContract:
                                "outcome": "answered"})
         assert record["text"] == redact.FAILED
         assert record["outcome"] == "answered"
+
+
+class TestTheCredentialPassIsLinear:
+    """A tool result on the reference platform runs to 222,000 characters.
+
+    `_ASSIGNMENT` used to start `[A-Za-z0-9_]*` at every offset inside an
+    unbroken word, scan to the end of it and backtrack looking for `_KEY`,
+    which is quadratic: 8,000 characters cost 0.67s and 200,000 cost
+    minutes. The fix is a lookbehind refusing to start in the middle of an
+    identifier, and it must not have narrowed what is caught — so both
+    halves are asserted here.
+    """
+
+    #: Generous by two orders of magnitude. The pre-fix pattern needed
+    #: several minutes for this input; a bound that only just held would be
+    #: a test that fails on a loaded machine.
+    BUDGET_S = 5.0
+
+    def test_a_long_unbroken_payload_is_scrubbed_in_bounded_time(self):
+        import time
+
+        text = "sk-abcdef123456789012345678901234567890 " + "x" * 200_000
+        start = time.monotonic()
+        scrubbed = scrub_secrets(text)
+        assert time.monotonic() - start < self.BUDGET_S
+        assert "sk-abcdef" not in scrubbed
+
+    @pytest.mark.parametrize("before,after", [
+        ("MCP_TOKEN=abcdefgh", "MCP_TOKEN=<redacted:MCP_TOKEN>"),
+        ('"API_KEY": "abcdefgh"', '"API_KEY": "<redacted:API_KEY>"'),
+        ("xMYAPP_SECRET=abcdefgh", "xMYAPP_SECRET=<redacted:xMYAPP_SECRET>"),
+    ])
+    def test_the_lookbehind_did_not_narrow_what_is_caught(self, before, after):
+        assert scrub_secrets(before) == after

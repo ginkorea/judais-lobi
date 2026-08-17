@@ -28,6 +28,8 @@ from core.runtime.grounding import (
     GroundingValidator,
     IdentifierGroundingCheck,
     NumericGroundingCheck,
+    PlaneClaimCheck,
+    ReadingGroundingCheck,
 )
 
 #: Ids look guessable on purpose — that is the whole problem.
@@ -741,8 +743,219 @@ class TestDeclaration:
 
         assert Custom(GroundingConfig()).check("a b", ["a b"]).grounded
 
-    def test_the_default_checks_are_the_three_named(self):
+    def test_the_default_checks_are_the_five_named_in_cost_order(self):
+        """The order is the cost order and the tuple states it.
+
+        Reading is last because it is the only tier that spends a model
+        call, and the whole affordability argument for it is that every
+        free check has already had its say. A change that moved it earlier
+        would be a change to what a mission costs.
+        """
         assert DEFAULT_CHECKS == (
             IdentifierGroundingCheck, NumericGroundingCheck,
-            ClaimGroundingCheck,
+            ClaimGroundingCheck, PlaneClaimCheck, ReadingGroundingCheck,
         )
+
+
+class TestThePlaneClaimCheck:
+    """"I ran the code" is a claim about the run, not about the text.
+
+    It contains no identifier, no figure and no claim-table entry, so every
+    other check here extracts nothing from it and reports
+    `nothing_considered` — and the answer comes back grounded while
+    describing work that did not happen. That is the hole this closes, and
+    it is the most expensive one in a governance report: a reader who
+    believes the SDK ran believes the number was computed rather than
+    remembered.
+    """
+
+    SDK = {"sdk": {"tools": ["run_code", "run_python"],
+                   "claims": ["I used the SDK", "ran the code"]},
+           "catalogue": {"tools": ["catalog_*"],
+                         "claims": ["searched the catalogue"]}}
+
+    def config(self):
+        return GroundingConfig.from_mapping({"planes": self.SDK})
+
+    def report(self, answer, called):
+        return GroundingValidator.from_config(self.config()).validate(
+            answer, [], called=called)
+
+    def row(self, answer, called):
+        return next(r for r in self.report(answer, called).results
+                    if r.check == "planes")
+
+    # ── off by default ──────────────────────────────────────────────────
+
+    def test_no_planes_block_no_check(self):
+        result = PlaneClaimCheck(GroundingConfig()).check(
+            "I used the SDK to recompute it.", [])
+        assert result.configured is False
+        assert result.grounded is False
+        assert "`planes`" in result.detail
+
+    def test_a_manifest_without_planes_parses_to_none(self):
+        assert GroundingConfig.from_mapping({}).planes == ()
+
+    # ── the claim, and the call behind it ───────────────────────────────
+
+    def test_a_claim_with_no_call_to_that_plane_fails(self):
+        row = self.row("I used the SDK to recompute the figure.",
+                       called=["catalog_search_assets"])
+        assert row.verdict == "unsupported"
+        assert row.unsupported == ("sdk: I used the SDK",)
+
+    def test_the_same_claim_with_the_call_behind_it_passes(self):
+        row = self.row("I used the SDK to recompute the figure.",
+                       called=["run_code"])
+        assert row.verdict == "supported"
+
+    def test_an_answer_claiming_no_plane_says_so(self):
+        row = self.row("The gate settled on three communities.", called=[])
+        assert row.verdict == "nothing_considered"
+        assert row.grounded is True, (
+            "an answer that claims nothing has claimed nothing falsely")
+
+    def test_the_claim_is_matched_however_the_sentence_runs_on(self):
+        """A phrase list nobody could write correctly is a phrase list
+        nobody writes: "I used the SDK" has to match the sentence it is
+        embedded in."""
+        assert self.row("So I used the SDK for this part.",
+                        called=[]).verdict == "unsupported"
+
+    def test_case_does_not_decide_whether_a_claim_was_made(self):
+        assert self.row("i used the sdk.", called=[]).verdict == "unsupported"
+
+    # ── which spellings of a tool count ─────────────────────────────────
+
+    def test_a_namespaced_spelling_of_the_tool_counts(self):
+        """The bridge prefixes a server's tools; a manifest writes the bare
+        name. `same_tool` is the one owner of that and this uses it."""
+        assert self.row("I used the SDK.",
+                        called=["mcp.run_code"]).verdict == "supported"
+
+    def test_a_trailing_star_is_a_family(self):
+        assert self.row("I searched the catalogue for it.",
+                        called=["mcp.catalog_search_assets"]).verdict \
+            == "supported"
+
+    def test_a_family_does_not_swallow_a_different_tool(self):
+        assert self.row("I searched the catalogue for it.",
+                        called=["xcatalog_search"]).verdict == "unsupported"
+
+    # ── what a caller that says nothing gets ────────────────────────────
+
+    def test_a_caller_that_names_no_calls_supports_no_claim(self):
+        """`validate` defaults `called` to empty so every caller written
+        before this check keeps working — and the honest reading of "we do
+        not know what ran" is that nothing backs a claim that it did."""
+        report = GroundingValidator.from_config(self.config()).validate(
+            "I used the SDK.", [])
+        assert report.grounded is False
+
+    # ── the words ───────────────────────────────────────────────────────
+
+    def test_the_repair_turn_does_not_ask_for_a_tool_output(self):
+        validator = GroundingValidator.from_config(self.config())
+        report = validator.validate("I used the SDK.", [], called=["fetch"])
+        prompt = validator.repair_prompt(report)
+        assert "never called in this mission" in prompt
+        assert "run_code" in prompt, "a repair turn has to name the plane"
+        assert "in no tool output you received" not in prompt, (
+            "no tool output could ever support a claim about what the model "
+            "itself did, so the generic sentence sends it looking for one")
+
+    def test_the_caveat_says_the_work_was_not_done(self):
+        validator = GroundingValidator.from_config(self.config())
+        report = validator.validate("I used the SDK.", [], called=[])
+        caveat = validator.caveat(report)
+        assert "Unperformed" in caveat and "sdk" in caveat
+
+    def test_the_detail_names_what_the_run_actually_called(self):
+        row = self.row("I used the SDK.", called=["catalog_search_assets"])
+        assert "catalog_search_assets" in row.detail
+
+    # ── a declaration that can never bind is a typo ─────────────────────
+
+    def test_a_plane_with_no_claims_is_refused(self):
+        with pytest.raises(ValueError) as exc:
+            GroundingConfig.from_mapping(
+                {"planes": {"sdk": {"tools": ["run_code"]}}})
+        assert "never binds" in str(exc.value)
+
+    def test_a_plane_with_no_tools_is_refused(self):
+        with pytest.raises(ValueError) as exc:
+            GroundingConfig.from_mapping(
+                {"planes": {"sdk": {"claims": ["I used the SDK"]}}})
+        assert "fails whatever this run called" in str(exc.value)
+
+    def test_a_bare_list_of_tools_is_refused_with_the_reason(self):
+        with pytest.raises(ValueError) as exc:
+            GroundingConfig.from_mapping({"planes": {"sdk": ["run_code"]}})
+        assert "no phrases to recognise a claim by" in str(exc.value)
+
+    def test_an_unknown_key_inside_a_plane_is_refused(self):
+        with pytest.raises(ValueError) as exc:
+            GroundingConfig.from_mapping(
+                {"planes": {"sdk": {"tool": ["run_code"],
+                                    "claims": ["x"]}}})
+        assert "unknown key(s): tool" in str(exc.value)
+
+
+class TestWhichToolsWereCalledHasOneOwner:
+    """The store recorded every dispatch as it happened. Nothing re-derives
+    it by reading the conversation back, which is the second owner that goes
+    wrong the day a call is made somewhere the messages do not show it.
+    """
+
+    def store(self):
+        from core.runtime.results import MissionResultStore
+
+        store = MissionResultStore()
+        store.record("run_code", {}, text="ok")
+        store.record("run_code", {}, text="again")
+        store.record("catalog_search", {}, text="", exit_code=1)
+        return store
+
+    def test_each_tool_once_in_the_order_called(self):
+        assert self.store().called_tools() == ["run_code", "catalog_search"]
+
+    def test_a_failed_call_still_used_the_plane(self):
+        """The question is whether the plane was used, not whether it
+        worked. What a non-zero call produced is the other checks' business
+        — `evidence_texts` already drops it."""
+        store = self.store()
+        assert "catalog_search" in store.called_tools()
+        assert len(store.evidence_texts()) == 2
+
+
+class TestTheCriticSwitchIsTheManifests:
+    """`critic:` is the only key here that configures no check.
+
+    It is read by whoever builds the mission — the caller that already reads
+    the manifest — and answered by `core.critic.mission`, whose verdict
+    lands beside `grounded` and never in it. It lives in this block anyway
+    because it is a statement about how hard this skill's answers are
+    checked, and a skill that says `claim_table` and `reading` here should
+    not have to say the third thing somewhere else.
+    """
+
+    def test_it_is_off_unless_a_skill_asks(self):
+        assert GroundingConfig.from_mapping({}).critic is False
+        assert GroundingConfig().critic is False
+
+    def test_a_skill_can_ask_for_it(self):
+        assert GroundingConfig.from_mapping({"critic": True}).critic is True
+
+    def test_it_is_true_or_false_and_not_a_provider_name(self):
+        """Which critic is a deployment's handling decision, settled in its
+        own config; a manifest naming one would be a skill deciding where a
+        governed draft is posted."""
+        with pytest.raises(ValueError) as exc:
+            GroundingConfig.from_mapping({"critic": "anthropic"})
+        assert "it is true or false" in str(exc.value)
+
+    def test_it_configures_no_check(self):
+        """Nothing in the validator answers to `critic`, so a `must_cite`
+        naming it is refused by the audit that already exists."""
+        assert "critic" not in {c.name for c in DEFAULT_CHECKS}

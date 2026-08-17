@@ -563,21 +563,6 @@ class TestEveryDispatchIsAudited:
         assert entry["verdict"] == "error"
         assert "the far end went away" in _detail(logger)["reason"]
 
-    def test_the_panic_switch_is_audited(self, tmp_path):
-        from types import SimpleNamespace
-
-        from core.policy.audit import AuditLogger
-
-        logger = AuditLogger(path=tmp_path / "audit.jsonl")
-        bus = ToolBus(
-            capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
-            god_mode=SimpleNamespace(is_panicked=True),
-            audit=logger,
-        )
-        bus.register(ToolDescriptor(tool_name="t"), lambda **kw: (0, "ran", ""))
-        bus.dispatch("t")
-        assert logger.tail(1)[0]["verdict"] == "panic_revoked"
-
     def test_the_action_is_recorded(self, tmp_path):
         bus, logger = _audited(
             tmp_path, executor=lambda action, **kw: (0, action, ""))

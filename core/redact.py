@@ -275,7 +275,16 @@ _SHAPES: Sequence[Tuple["re.Pattern", str]] = (
 #: ``MCP_TOKEN=`` was passed is worth reading, one that says what it was is a
 #: leak.  Came from the audit logger's own list when the two redactors were
 #: folded into one owner.
+#:
+#: The leading lookbehind is not cosmetic and not a narrowing: it makes this
+#: pattern LINEAR.  ``[A-Za-z0-9_]*`` will happily start at every offset
+#: inside a long unbroken word, scan to the end of it and backtrack looking
+#: for ``_KEY`` — so one 200,000-character tool result cost minutes, on
+#: exactly the payloads a critique carries.  Refusing to start in the middle
+#: of an identifier makes every one of those starts fail in constant time
+#: and matches the same strings: a name begins where a name begins.
 _ASSIGNMENT = re.compile(
+    r"(?<![A-Za-z0-9_])"
     r"([A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD)[\"']?\s*[:=]\s*[\"']?)"
     r"([^\s\"',;}]{4,})",
     re.IGNORECASE,

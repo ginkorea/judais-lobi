@@ -34,7 +34,17 @@ class CriticBackend(ABC):
         model: str,
         max_tokens: int,
         timeout: float,
+        system: str = CRITIC_SYSTEM_PROMPT,
     ) -> ExternalCriticReport:
+        """One critique of *payload_json*, as this provider answers it.
+
+        *system* is the job, and it is a parameter because there are two
+        of them.  :data:`CRITIC_SYSTEM_PROMPT` audits a code change and
+        asks for missing tests and patch adjustments; a mission answer has
+        no patch and no tests, and a critic told to look for them looks for
+        them.  The default keeps every existing caller — the kernel
+        orchestrator — sending exactly what it sent before.
+        """
         raise NotImplementedError
 
 
@@ -42,7 +52,8 @@ class OpenAICritic(CriticBackend):
     provider_name = "openai"
 
     def critique(self, payload_json: str, model: str,
-                 max_tokens: int, timeout: float) -> ExternalCriticReport:
+                 max_tokens: int, timeout: float,
+                 system: str = CRITIC_SYSTEM_PROMPT) -> ExternalCriticReport:
         start = time.monotonic()
         try:
             from openai import OpenAI
@@ -50,7 +61,7 @@ class OpenAICritic(CriticBackend):
             result = client.chat.completions.create(
                 model=model or self.default_model,
                 messages=[
-                    {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": payload_json},
                 ],
                 response_format={"type": "json_object"},
@@ -69,7 +80,8 @@ class AnthropicCritic(CriticBackend):
     provider_name = "anthropic"
 
     def critique(self, payload_json: str, model: str,
-                 max_tokens: int, timeout: float) -> ExternalCriticReport:
+                 max_tokens: int, timeout: float,
+                 system: str = CRITIC_SYSTEM_PROMPT) -> ExternalCriticReport:
         start = time.monotonic()
         try:
             from anthropic import Anthropic
@@ -78,7 +90,7 @@ class AnthropicCritic(CriticBackend):
                 model=model or self.default_model,
                 max_tokens=max_tokens,
                 temperature=0,
-                system=CRITIC_SYSTEM_PROMPT,
+                system=system,
                 messages=[{"role": "user", "content": payload_json}],
                 timeout=timeout,
             )
@@ -94,14 +106,15 @@ class GoogleCritic(CriticBackend):
     provider_name = "google"
 
     def critique(self, payload_json: str, model: str,
-                 max_tokens: int, timeout: float) -> ExternalCriticReport:
+                 max_tokens: int, timeout: float,
+                 system: str = CRITIC_SYSTEM_PROMPT) -> ExternalCriticReport:
         start = time.monotonic()
         try:
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
             gen_model = genai.GenerativeModel(model or self.default_model)
             response = gen_model.generate_content(
-                [CRITIC_SYSTEM_PROMPT, payload_json],
+                [system, payload_json],
                 generation_config={"max_output_tokens": max_tokens, "temperature": 0},
                 request_options={"timeout": timeout},
             )
@@ -113,10 +126,104 @@ class GoogleCritic(CriticBackend):
             return _unavailable_report(self.provider_name, model, exc, start)
 
 
+class LocalCritic(CriticBackend):
+    """The critic a deployment with no frontier key still has.
+
+    The reference deployment's ask, and :mod:`core.critic.triggers` had
+    already written down why it is the *default* rather than the fallback:
+    the local plane is "the ONLY tier guaranteed to exist", and a control
+    that quietly does not exist for half the users is worse than none.  It
+    is also the only one that sends nothing off the box — a governed draft
+    carries actor names and scores, and shipping it to a hosted model is a
+    handling decision, not a config default.
+
+    Same weights, different job.  What makes it a second opinion and not
+    the generator agreeing with itself is the system prompt: the caller
+    passes an adversarial one (see
+    :data:`core.critic.mission.MISSION_CRITIC_SYSTEM_PROMPT`), and the
+    two-step ordering the reading tier measured — commit to a reading
+    before being shown the claim — is the same lesson one level up.
+
+    **Not a second HTTP client.**  ``LocalBackend`` already speaks
+    ``POST {LOCAL_API_BASE}/chat/completions``, already repairs a base URL
+    missing its ``/v1``, already strips harmony control tokens a served
+    gpt-oss would 500 on, and already reports what model is loaded.  A
+    ``requests.post`` here would be a second owner of all of it.
+    """
+
+    provider_name = "local"
+
+    def __init__(self, api_key: str = "", default_model: str = "",
+                 endpoint: str = "", backend: Any = None):
+        super().__init__(api_key=api_key, default_model=default_model)
+        self._endpoint = endpoint
+        self._backend = backend
+
+    @property
+    def backend(self):
+        """The shared local client, built on first use.
+
+        Lazily, because constructing one reads the environment and a
+        registry lookup must not depend on a server being configured.
+        """
+        if self._backend is None:
+            from core.runtime.backends.local_backend import LocalBackend
+
+            self._backend = LocalBackend(
+                endpoint=self._endpoint or None,
+                model=self.default_model or None,
+                api_key=self.api_key or None,
+                # It is being asked one question in prose and must answer
+                # in JSON. A function namespace declared here is how a
+                # harmony model answers a yes/no question with a tool call
+                # — the same reason `plain_chat_fn` declares none.
+                supports_tool_calls=False,
+            )
+        return self._backend
+
+    def critique(self, payload_json: str, model: str,
+                 max_tokens: int, timeout: float,
+                 system: str = CRITIC_SYSTEM_PROMPT) -> ExternalCriticReport:
+        """One call, no ``response_format``, and the parse does the rest.
+
+        Structured decoding is deliberately not requested.  vLLM supports
+        it and llama.cpp's server and Ollama's shim variously do not, and a
+        400 from asking would turn "the local critic had no opinion" into
+        "the local critic is broken" on exactly the deployments this exists
+        for.  :func:`_try_parse_json` already recovers an object from a
+        fenced block or from the first ``{`` to the last ``}``, which is
+        what a chatty local model produces.
+
+        *timeout* is accepted and not forwarded: ``LocalBackend`` holds one
+        (``CHAT_TIMEOUT``, long on purpose — a cold vLLM loads weights for
+        ~100s before the first reply) and a second, shorter one here would
+        make a first call fail for a reason nobody could see.
+        """
+        start = time.monotonic()
+        try:
+            reply = self.backend.chat(
+                model=model or self.default_model or "",
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": payload_json},
+                ],
+                stream=False,
+                max_tokens=max_tokens,
+                temperature=0,
+            )
+            elapsed = time.monotonic() - start
+            return _parse_critic_response(
+                reply, self.provider_name,
+                model or self.default_model or "", elapsed)
+        except Exception as exc:
+            return _unavailable_report(self.provider_name, model, exc, start)
+
+
 BACKEND_REGISTRY = {
     "openai": OpenAICritic,
     "anthropic": AnthropicCritic,
     "google": GoogleCritic,
+    "local": LocalCritic,
 }
 
 

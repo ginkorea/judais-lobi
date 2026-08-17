@@ -566,6 +566,13 @@ class SwarmRunner:
         #: actually wrote it — which is the repair turn when there was
         #: one, not the draft it replaced.
         self._last_spent: Dict[str, Any] = {}
+        #: Every tool this staged turn dispatched, across every sub-mission,
+        #: once each.  Accumulated here rather than threaded back through
+        #: `_execute_step` beside `evidence` because it comes from the same
+        #: place `evidence` does — the sub-runner's own store — and the
+        #: plane-claim check needs the union over the whole turn, not one
+        #: step's.  See `MissionResultStore.called_tools`.
+        self._called: List[str] = []
         # One clock and one switch for the whole turn, handed to every
         # runner `_runner` and `_direct` build. See the class docstring for
         # why seconds are shared where steps are portioned.
@@ -1257,6 +1264,7 @@ class SwarmRunner:
             sub = runner.run(self._step_objective(step, results, failure))
             attempts.append(sub)
             evidence.extend(runner.store.evidence_texts())
+            self._note_calls(runner)
             spent += len(sub.steps)
             if sub.outcome == AWAITING_APPROVAL:
                 return (_StepOutcome(step=step, ok=False,
@@ -1411,6 +1419,18 @@ class SwarmRunner:
                    **self._last_spent)
         return transcript
 
+    def _note_calls(self, runner) -> None:
+        """Fold one sub-mission's dispatched tools into the turn's set.
+
+        A direct mission's plane-claim check reads one store; a staged
+        turn's answer is synthesized over several, and a claim to have used
+        the SDK is true if *any* step used it.  One owner still — each
+        store's own record of what it dispatched — merged, not re-derived.
+        """
+        for name in runner.store.called_tools():
+            if name not in self._called:
+                self._called.append(name)
+
     def _ground(self, answer: str, messages: List[Dict[str, str]],
                 evidence: List[str]):
         """The same discipline the direct path applies to its answer.
@@ -1422,7 +1442,8 @@ class SwarmRunner:
         """
         if self._validator is None:
             return answer, None
-        report = self._validator.validate(answer, evidence)
+        report = self._validator.validate(answer, evidence,
+                                          called=self._called)
         if not report.ran:
             return answer, GroundingReport(results=report.results)
         repairs = 0
@@ -1442,7 +1463,8 @@ class SwarmRunner:
                              "content": self._validator.repair_prompt(report)})
             answer = str(self._plain_chat(messages) or "").strip() or answer
             self._spent()
-            report = self._validator.validate(answer, evidence)
+            report = self._validator.validate(answer, evidence,
+                                              called=self._called)
         if not report.grounded:
             caveat = self._validator.caveat(report)
             return answer + caveat, GroundingReport(

@@ -194,6 +194,28 @@ class MissionResultStore:
                 texts.append(stored.evidence)
         return texts
 
+    def called_tools(self) -> List[str]:
+        """Every tool this run dispatched, once each, in the order called.
+
+        **The one owner of "what was called this run."**  The store already
+        holds it — one entry per dispatch, recorded as it happened — and the
+        alternative is reading the conversation back and counting tool
+        messages, which is a second owner of the same fact and the one that
+        goes wrong the day a call is made somewhere the messages do not show
+        it.  See :meth:`~core.runtime.grounding.GroundingCheck.observing`,
+        which is the consumer.
+
+        A call that **failed** still counts.  The question this answers is
+        whether the plane was used, not whether it worked; an answer saying
+        "I ran the code" after a run that exited non-zero was at least
+        dispatched, and what it produced is the other checks' business.
+        """
+        names: List[str] = []
+        for stored in self._results:
+            if stored.tool and stored.tool not in names:
+                names.append(stored.tool)
+        return names
+
     # ── the tool ────────────────────────────────────────────────────────
 
     def descriptor(self, name: str = RESULT_TOOL) -> ToolDescriptor:

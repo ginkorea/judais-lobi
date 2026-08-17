@@ -39,6 +39,7 @@ rather than a paragraph.
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -57,10 +58,15 @@ from core.runtime.reading import (
 
 FIXTURE = Path(__file__).parent / "fixtures" / "field_misreadings.json"
 
+#: The recording, read at import time as well as through the fixture: a
+#: `parametrize` id list is built while the module is being collected and
+#: cannot wait for a fixture. One file, read twice, never transcribed.
+_CASES = json.loads(FIXTURE.read_text())["cases"]
+
 
 @pytest.fixture(scope="module")
 def cases():
-    return json.loads(FIXTURE.read_text())["cases"]
+    return _CASES
 
 
 def context_of(case) -> FieldContext:
@@ -359,3 +365,242 @@ class TestIdentityIsAMechanicalCheckAfterAll:
         assert report.grounded is True
         assert report.verified is False, (
             "`verified` is the bit that separates this from a checked answer")
+
+
+# ── the tier, wired into the validator ──────────────────────────────────────
+
+def payload_for(case) -> dict:
+    """A tool payload the recorded field really sits in.
+
+    Built from the fixture's own context — the path, the value and the
+    sibling names — rather than hand-written per case, because the point of
+    the fixture is that these are the objects the misreadings were made
+    about and a second transcription of them is a second thing to get wrong.
+    (`test_grounding_catches_the_recorded_fabrication` was written after
+    exactly that mistake: evidence transcribed from the draft instead of the
+    recording, one field short, and four assertions passing for the wrong
+    reason.)
+    """
+    raw = case["context"]
+    leaf = dict()
+    for name, rendered in raw["siblings"]:
+        try:
+            leaf[name] = json.loads(rendered)
+        except (json.JSONDecodeError, TypeError):
+            leaf[name] = rendered
+    segments = raw["path"].split(".")
+    leaf[re.sub(r"\[\d+\]$", "", segments[-1])] = raw["value"]
+
+    node = leaf
+    for segment in reversed(segments[:-1]):
+        if segment.endswith("]"):
+            name, _, index = segment[:-1].partition("[")
+            node = {name: [{} for _ in range(int(index))] + [node]}
+        else:
+            node = {segment: node}
+    return node
+
+
+def answer_for(case) -> str:
+    """The sentence, plus the claim table the tier reads paths out of."""
+    return (case["sentence"] + "\n\n```claims\n"
+            + json.dumps([{"value": case["context"]["value"],
+                           "path": case["context"]["path"]}])
+            + "\n```")
+
+
+class PerfectReader(RecordedReader):
+    """Step one recorded; step two answered from the fixture's ground truth.
+
+    **Not a measurement, and it must not be read as one.** Only one
+    step-two reply was transcribed on 11 August (the Tai draft's, in
+    `TestTheReaderCatchesWhatMembershipCannot.MISREAD_REPLY`), and inventing
+    eleven more and calling them recorded would put a fiction where the
+    measurement is. So this stub answers step two from the `expect` field
+    the fixture already carries, and what the class below asserts is
+    therefore the **wiring**: given a reader that gets it right, does a
+    misreading reach `unsupported`, flip `grounded`, and name the field in
+    the repair turn — and does a correct reading do none of that.
+
+    Whether a real reader gets it right is measured in
+    `TestTheReaderIsAnchoredByTheClaim` and is what the two-step prompt is
+    for.
+    """
+
+    def __init__(self, cases):
+        super().__init__()
+        self.expected = {case["sentence"]: case["expect"] for case in cases}
+
+    def __call__(self, prompt: str) -> str:
+        if prompt.startswith("A field was read out of a tool result. You are"):
+            return super().__call__(prompt)
+        self.asked.append(prompt)
+        for sentence, expect in self.expected.items():
+            if sentence.strip().replace('"', "'") in prompt:
+                if expect == "misread":
+                    return json.dumps({
+                        "read_correctly": False,
+                        "why": "the sentence names a different quantity",
+                        "correction": "this field is something else"})
+                return json.dumps({"read_correctly": True, "why": "ok",
+                                   "correction": ""})
+        raise AssertionError(f"no case for this step-two prompt:\n{prompt[:300]}")
+
+
+def tiered(reading: bool, ask=None):
+    """A validator with the claim table on and the reading tier off or on."""
+    return GroundingValidator.from_config(
+        GroundingConfig(claim_table=True, reading=reading), ask=ask)
+
+
+class TestTheTierIsOffUnlessTheManifestAsksForIt:
+    """A model call per claim is not something a framework helps itself to."""
+
+    def test_a_manifest_that_says_nothing_gets_no_reading_check(self):
+        report = tiered(False, ask=lambda p: "").validate("x", [])
+        row = next(r for r in report.results if r.check == "reading")
+        assert row.verdict == "unconfigured"
+        assert "spends model calls" in row.detail
+
+    def test_an_unconfigured_tier_never_costs_a_call(self, cases):
+        reader = PerfectReader(cases)
+        case = next(c for c in cases if c["expect"] == "misread")
+        tiered(False, ask=reader).validate(
+            answer_for(case), [json.dumps(payload_for(case))])
+        assert reader.asked == [], (
+            "the tier asked a model although no manifest turned it on")
+
+    def test_asked_for_with_no_reader_it_refuses_rather_than_passes(self):
+        report = tiered(True, ask=None).validate("x", [])
+        row = next(r for r in report.results if r.check == "reading")
+        assert row.verdict == "unconfigured"
+        assert "no reader was supplied" in row.detail
+        assert row.grounded is False, (
+            "UNKNOWN, not 0.5: a tier that could not run has not passed")
+
+    def test_reading_without_a_claim_table_is_refused_at_the_manifest(self):
+        """It could never bind, so it is a typo and not leniency — the same
+        rule `must_cite` on an unconfigured check gets."""
+        with pytest.raises(ValueError) as exc:
+            GroundingConfig.from_mapping({"reading": True})
+        assert "needs `claim_table: true`" in str(exc.value)
+
+    def test_the_manifest_key_is_what_turns_it_on(self):
+        assert GroundingConfig.from_mapping(
+            {"claim_table": True, "reading": True}).reading is True
+        assert GroundingConfig.from_mapping({"claim_table": True}).reading \
+            is False
+
+
+class TestEveryRecordedMisreadingReachesTheVerdict:
+    """The twelve ground-truth cases, through the whole validator.
+
+    Table-driven off `tests/fixtures/field_misreadings.json` so that a case
+    added to the recording is a case this asserts, without anybody editing
+    a list here.
+    """
+
+    def report_for(self, case, reading, reader):
+        return tiered(reading, ask=reader).validate(
+            answer_for(case), [json.dumps(payload_for(case))])
+
+    @pytest.mark.parametrize("case_id", [c["id"] for c in _CASES])
+    def test_on_the_tier_agrees_with_the_recording(self, cases, case_id):
+        case = next(c for c in cases if c["id"] == case_id)
+        report = self.report_for(case, True, PerfectReader(cases))
+        row = next(r for r in report.results if r.check == "reading")
+        misread = case["expect"] == "misread"
+        assert row.verdict == ("unsupported" if misread else "supported"), \
+            row.detail
+        assert report.grounded is not misread, (
+            "a misreading has to flip the report, or the tier is a comment")
+
+    @pytest.mark.parametrize("case_id", [c["id"] for c in _CASES])
+    def test_off_the_same_answer_is_grounded(self, cases, case_id):
+        """The other half, and the one that makes the first mean something.
+
+        Every one of these figures IS in the payload, at the path the claim
+        table names. With the tier off, the mechanical checks report the
+        misreadings as supported and are right to — which is the measured
+        ceiling this tier was built to sit above.
+        """
+        case = next(c for c in cases if c["id"] == case_id)
+        report = self.report_for(case, False, PerfectReader(cases))
+        claims = next(r for r in report.results if r.check == "claims")
+        assert claims.verdict == "supported"
+        assert report.grounded is True
+
+    def test_the_repair_turn_names_the_field_and_uses_readings_words(
+            self, cases):
+        case = next(c for c in cases
+                    if c["id"] == "total_s_as_influence_score_tai")
+        validator = tiered(True, ask=PerfectReader(cases))
+        report = validator.validate(
+            answer_for(case), [json.dumps(payload_for(case))])
+        prompt = validator.repair_prompt(report)
+        assert "real values read from the wrong field" in prompt, (
+            "the repair text is `core.runtime.reading`'s sentence; a second "
+            "copy of it in `grounding` would be a second owner")
+        assert "data.runs[0].total_s" in prompt
+        assert "appears in your answer and in no tool output" not in prompt, (
+            "80.847 IS in a tool output — the generic paragraph is not "
+            "vaguer here, it is false, and it sends the model looking for a "
+            "transcription slip that does not exist")
+
+    def test_the_caveat_says_the_number_is_genuine(self, cases):
+        case = next(c for c in cases
+                    if c["id"] == "total_s_as_influence_score_tai")
+        validator = tiered(True, ask=PerfectReader(cases))
+        report = validator.validate(
+            answer_for(case), [json.dumps(payload_for(case))])
+        caveat = validator.caveat(report)
+        assert "Misread" in caveat and "genuine" in caveat
+        assert "in no tool result from this mission" not in caveat
+
+    def test_the_recorded_reply_carries_the_whole_way_through(self, cases):
+        """One case end to end on the verbatim 11 August step-two answer,
+        so the fixture-driven stub above is not the only reader this file
+        ever runs the tier with."""
+        case = next(c for c in cases
+                    if c["id"] == "total_s_as_influence_score_tai")
+        reader = RecordedReader({
+            "Someone then wrote this sentence":
+                TestTheReaderCatchesWhatMembershipCannot.MISREAD_REPLY})
+        validator = tiered(True, ask=reader)
+        report = validator.validate(
+            answer_for(case), [json.dumps(payload_for(case))])
+        assert report.grounded is False
+        assert "total_causal_influence" in validator.repair_prompt(report)
+
+    def test_a_reader_with_no_opinion_is_not_a_finding(self, cases):
+        """A tier whose parse failures counted as misreadings would put its
+        own flakiness into a governance report."""
+        case = next(c for c in cases
+                    if c["id"] == "total_s_as_influence_score_tai")
+        reader = RecordedReader({"Someone then wrote this sentence":
+                                 "the model said something else entirely"})
+        validator = tiered(True, ask=reader)
+        report = validator.validate(
+            answer_for(case), [json.dumps(payload_for(case))])
+        row = next(r for r in report.results if r.check == "reading")
+        assert row.unsupported == ()
+        assert "no opinion on" in row.detail, (
+            "an unanswered claim must be counted out loud, not silently "
+            "reported as checked")
+
+    def test_a_figure_only_in_the_table_is_not_sent_to_a_reader(self, cases):
+        """The unit is the claim. A figure nobody asserted in words has no
+        reading to be wrong about and must not cost a call."""
+        reader = PerfectReader(cases)
+        answer = ("Nothing quantitative to report.\n\n```claims\n"
+                  + json.dumps([{"value": 80.847,
+                                 "path": "data.runs[0].total_s"}])
+                  + "\n```")
+        case = next(c for c in cases
+                    if c["id"] == "total_s_as_influence_score_tai")
+        report = tiered(True, ask=reader).validate(
+            answer, [json.dumps(payload_for(case))])
+        row = next(r for r in report.results if r.check == "reading")
+        assert row.considered == ()
+        assert reader.asked == []
+        assert row.verdict == "nothing_considered"
