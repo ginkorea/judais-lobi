@@ -118,8 +118,8 @@ one. Both halves, or neither.
 
 Each tool a server advertises is registered into the existing `ToolBus` as a
 `ToolDescriptor` whose executor dispatches `tools/call`, namespaced `mcp.<name>`
-so a server cannot shadow a local tool. Capability gating, the panic switch and
-the audit log apply to it exactly as to `fs` or `git`. The tool's JSON Schema is
+so a server cannot shadow a local tool. Capability gating, the sandbox and the
+audit log apply to it exactly as to `fs` or `git`. The tool's JSON Schema is
 carried whole on the descriptor, so the catalogue the model reads says
 `type (string: dataset|model|service)` and not just `type` — types, `required`
 and enums are what decide whether a first call to a faceted search works.
@@ -150,7 +150,6 @@ program that spawns this harness may rely on them. The table below is in
 | `--gate-tool` | — | a tool to offer and refuse to call. Repeatable. Resolved by `same_tool`, so a bare name matches the namespaced one; a name that matches nothing, or two things, is a refusal at the door |
 | `--approval` | `MISSION_APPROVAL` | an approval id somebody already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched |
 | `--resume` | `MISSION_RESUME` | carry on a recorded mission by its run id. The objective comes off the record, so the message may be omitted |
-| `--replay` | `MISSION_REPLAY` | run a recorded mission **again** from its recording: the replies come out of that run's `model.jsonl` in order and the tool results out of `tools.jsonl`, so no server is dialled and no model is asked. The objective comes off the record, so the message may be omitted. The replayed run is a **new** run directory carrying `replay_of` and any `drift`, and grounding runs fresh over the recorded answer — which is how a grounding change is scored on yesterday's runs. `--replay-tools live` dispatches against the real plane instead |
 | `--temperature` | — | sampling. Unset sends **nothing** and the server's own default applies |
 | `--top-p` | — | nucleus sampling. Unset sends nothing |
 | `--seed` | — | a seed where the server honours one. Not a determinism guarantee |
@@ -158,6 +157,7 @@ program that spawns this harness may rely on them. The table below is in
 | `--no-stream` | `MISSION_STREAM=off` | ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`: the answer's own fragments go out as `answer_delta` records while the model is still writing them, and the console prints them as they land. The `answer` record that follows is still the whole of it, and turning this off changes nothing else |
 | `--control` | `MISSION_CONTROL` | where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-`. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and the only lever into a running turn besides `SIGTERM`. A bad line is dropped with a sentence on stderr, never fatal |
 | `--gate-wait` | `MISSION_GATE_WAIT` | seconds a run standing at a gate waits in-turn for a `gate_decision` on `--control` before ending the turn at `awaiting_approval`. `0` = never wait (the 0.11 behaviour); default 300; capped by `--mission-seconds`. Set it low for an unattended caller |
+| `--replay` | `MISSION_REPLAY` | run a recorded mission **again** from its recording: the replies come out of that run's `model.jsonl` in order and the tool results out of `tools.jsonl`, so no server is dialled and no model is asked. The objective comes off the record, so the message may be omitted. The replayed run is a **new** run directory carrying `replay_of` and any `drift`, and grounding runs fresh over the recorded answer — which is how a grounding change is scored on yesterday's runs. `--replay-tools live` dispatches against the real plane instead — a person's flag, not part of `CLI_FLAGS` |
 
 The rest of the published environment: `MCP_CLIENT_NAME` is what this client
 calls itself in the MCP `initialize` handshake — set it to the agent's name, or a
@@ -173,7 +173,10 @@ to name. `JUDAIS_LOBI_APPROVALS` does the same
 for the durable approval records — a path moves the directory, `none`/`off`
 keeps none, and then a gate stops a mission and leaves nothing anybody can
 decide against, which the console says out loud. `MISSION_RESUME` is the environment form of
-`--resume`, `MISSION_PROTOCOL` of `--protocol`, `MISSION_CONTROL` of
+`--resume` and `MISSION_REPLAY` of `--replay` — the first continues an
+unfinished run against a live model, the second re-runs a finished one against
+its own recording, and they are not interchangeable. `MISSION_PROTOCOL` is the
+environment form of `--protocol`, `MISSION_CONTROL` of
 `--control`, `MISSION_GATE_WAIT` of `--gate-wait`, and `MISSION_STREAM` of `--no-stream` the other way round: `off`,
 `0`, `false`, `no` or `none` turn the streamed answer off and anything else
 leaves it on.
@@ -485,6 +488,52 @@ drafting a finding declares one, and an answer with nothing in it fails. A
 load: a requirement that never binds is the original hole wearing the name of
 the fix for it.
 
+**Three more tiers, all off by default.** They cost model calls, or they need
+the platform to say something only the platform knows, so a manifest asks for
+each one by name.
+
+```yaml
+grounding:
+  claim_table: true
+  reading: true                  # needs claim_table
+  critic: true
+  planes:
+    sdk: {tools: [run_code], claims: ['I used the SDK']}
+```
+
+`reading: true` runs the **field-misreading** tier. For every figure the claim
+table names, a reader is asked — cold, before it is shown the sentence — what
+that field holds, and then whether the sentence says the same thing. It is the
+one class no arithmetic reaches: `total_s: 80.847` reported as "the overall
+influence score" is a real value at a real path, and a membership check is
+right to pass it. It needs `claim_table: true`, because the table is where the
+path for each figure comes from, and it spends two model calls per claim, which
+is why it is off.
+
+`planes:` fails an answer that claims to have used a tool family nothing on it
+was called from **this run**. "I used the SDK to recompute the figure" contains
+no identifier, no figure and no claim-table entry, so every mechanical tier
+reports *nothing considered* and the answer comes back grounded while
+describing work that did not happen. Which tools are a plane, and what an
+answer says when it claims one, are the platform's to declare — a framework
+that hard-coded either would be naming somebody else's tool families for them.
+What was actually dispatched has one owner, `MissionResultStore.called_tools`.
+
+`critic: true` asks a second model whether an answer the mechanical checks
+could not ground holds up. Its verdict is a `critic` row in `grounding.checks`
+marked `advisory: true`, **beside `grounded` and never inside it**: `grounded`
+is a mechanical fact anyone holding the transcript can recompute, and a
+critic's verdict is a model's opinion that varies with sampling and with which
+provider had a key today. Local first — `LOCAL_API_BASE`, the same weights the
+mission leased, given an adversarial prompt — and a hosted provider only where
+the critic config declares one and a key resolves, because posting a governed
+draft to another company is a handling decision a deployment makes explicitly.
+With neither, the row says `skipped` and names what was missing: "we asked and
+nobody answered" and "we never asked" are different facts about a run.
+
+None of the three is on by default, and `EVAL.md` is why: nothing here becomes
+a default until the harness scores it on a held-out set.
+
 ### Gates — a tool offered, and not called
 
 `--gate-tool NAME` (repeatable) names a tool this deployment offers **and
@@ -636,6 +685,36 @@ problems = contract.conforms(record)    # [] when the record is fine
 so a consumer that cannot import an agent framework can vendor that one file and
 have the whole seam.
 
+### Evaluating it — `core/eval` and `--replay`
+
+A behavioural change that nobody scored is a change nobody can defend, which is
+why `--protocol native` and the three grounding tiers above all ship off. The
+harness that scores them is in the tree:
+
+```
+python -m core.eval check                    # refuse a suite that cannot be graded
+python -m core.eval run   --out DIR -- …     # spawn every mission, capture the stream, score it
+python -m core.eval score --runs DIR         # score run directories that already exist — no GPU
+```
+
+`check` refuses a suite whose missions cannot be graded — before anybody spends
+a model on it. `run` spawns the mission command line given after `--` once per
+mission, captures each stream off its own descriptor, and scores it. `score`
+reads run directories that already exist and computes the same verdict, which
+is the no-GPU path.
+
+**`--replay` plus `score` is how a grounding change is measured on yesterday's
+runs.** Every mission with a run store on records the model calls and the tool
+dispatches beside its events; a replay re-runs a finished mission out of that
+recording — the real loop, the real validator, no server dialled and no model
+asked — into a new run directory that `score` reads like any other. Change the
+`grounding:` block, replay ten of last week's missions, and the delta is the
+change rather than the difference between two samples.
+
+The whole of it — the mission shape, the flags, the held-out split, the KPI
+columns, the recording format and how a platform writes its own suite — is
+**[`EVAL.md`](EVAL.md)**.
+
 ### `--history` — a conversation, not a paragraph
 
 `--history FILE` seeds prior turns into the model's message list as **real
@@ -699,12 +778,13 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 * Add or consolidate tools via `core/tools/descriptors.py` and `core/tools/`.
 * Define stricter safety boundaries with `core/policy/` profiles.
 * Extend evaluation logic under `core/judge/` and `core/critic/`.
+* Measure a change before defaulting it: write a suite for `core/eval/` (`EVAL.md` §9) and score it, out of a platform's own repository.
 
 # 🚧 Current Status
 
 **v0.13.0 — 3676 tests collected.** Mission mode, skill manifests, the
 grounding validator, `--swarm`, the NDJSON mission stream and the published
-contract are all in this release. What 0.12.0 **is**, rather than what each
+contract are all in this release. What 0.13.0 **is**, rather than what each
 release added:
 
 * **Safe by default.** Tool subprocesses run under `bwrap` wherever bubblewrap
@@ -738,6 +818,18 @@ release added:
   NDJSON commands *into* a running mission — `inject`, `cancel`, `cancel_step`,
   `gate_decision`. `core/runtime/agui.py` translates the stream into AG-UI
   frames for a browser that speaks them.
+* **Measurable.** `core/eval/` is a suite of missions × behavioural flags with
+  a mechanical held-out split, scored **only from the recorded stream**
+  (`python -m core.eval check|run|score`). Every run with a store on records
+  its model calls and its tool dispatches, and `--replay <run-id>` runs a
+  finished mission again out of that recording — no server, no GPU, the real
+  loop, the grounding verdict computed fresh. That is what lets a change to the
+  grounding grammar be scored on yesterday's runs. See `EVAL.md`.
+* **Grounding beyond arithmetic, off by default.** `reading:` asks a reader
+  what a field holds before it is shown the sentence, `planes:` fails an answer
+  that claims a tool family nothing on it was called from, and `critic:` asks a
+  second model — its verdict an `advisory: true` row beside `grounded`, never
+  inside it. Each one waits on a measurement before it is anybody's default.
 * **One roadmap.** `ROADMAP.md`: §1 is where 0.13.0 stands and what is still
   missing, §2 is Phases 9–13, §3 the principles, §5 the history — the Feb 2026
   blueprint, the Phase 8 disposition, and what two weeks in production taught.
@@ -786,8 +878,11 @@ Phase 8 closed at 0.9.0, and the numbering continues in `ROADMAP.md` §2:
 
 * ✅ Phase 9 — durable and bounded (0.10.0): a fsync'd append-only transcript,
   `--resume`, a wall-clock budget, a usage ledger, approvals as durable records
-* ⏳ Phase 10 — measurable: an in-repo eval harness scored from recorded runs.
-  **Next**, and the reason `--protocol native` is not yet a default
+* ✅ Phase 10 — measurable (0.13.0): the in-repo eval harness (`core/eval/`,
+  `EVAL.md`), recording + `--replay`, and the reading/planes/critic grounding
+  tiers wired off by default. What remains is the **measurements themselves** —
+  swarm versus direct, `json` versus `native`, each tier on versus off — and
+  they gate every one of those defaults
 * ⏳ Phase 11 — one runtime: the mission loop and the kernel become one `Run`
 * ⏳ Phase 12 — providers and streaming. Partly shipped early, on evidence:
   constrained decoding in 0.11.0, `answer_delta` + the AG-UI translator + the
@@ -839,15 +934,14 @@ The agent is now repo-aware. It understands structure, relationships, and what's
 
 Tools are dumb executors behind a capability-gated bus. The kernel decides everything.
 
-* **`core/tools/bus.py`** — Action-aware `ToolBus` with preflight hooks, panic switch integration, and JSONL audit logging. Structured JSON denial errors replace plain text.
+* **`core/tools/bus.py`** — Action-aware `ToolBus` with capability gating, sandboxing and JSONL audit logging. Structured JSON denial errors replace plain text. (The `preflight_hook` and `god_mode` constructor parameters were **deleted in 0.13.0**: nothing in the package ever passed either, and a hook nobody passes is a place a future caller puts a control and believes the run is governed. The bus's own capability check and `core/runtime/schema_check.py` are the preflights that actually run.)
 * **`core/tools/fs_tools.py`** — Consolidated `FsTool` with 5 actions (read, write, delete, list, stat). Pure `pathlib` I/O, no subprocess.
 * **`core/tools/git_tools.py`** — Consolidated `GitTool` with 12 actions (status, diff, log, add, commit, branch, push, pull, fetch, stash, tag, reset) via `run_subprocess`.
 * **`core/tools/verify_tools.py`** — Config-driven `VerifyTool` (lint, test, typecheck, format). Reads `.judais-lobi.yml` for project-specific commands, falls back to sensible defaults.
 * **`core/tools/descriptors.py`** — 11 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
 * **`core/tools/capability.py`** — Deny-by-default `CapabilityEngine` with wildcard `"*"` support, profile switching, and grant revocation.
-* **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard).
-* **`core/policy/god_mode.py`** — `GodModeSession` with TTL auto-downgrade, panic switch (instant revocation to SAFE), and full audit trail.
-* **`core/policy/audit.py`** — Append-only JSONL `AuditLogger`, **attached to every `Tools()` bus by default**: one file per run at `.judais-lobi/audit/<run-id>.jsonl` under the working directory, named on the mission stream as `mission_started.audit_ref`, moved or silenced by `JUDAIS_LOBI_AUDIT=<path>|none|off` (silencing is announced, and travels as `audit_ref: null`). Every dispatch is a line — allowed, denied, panicked, unknown or thrown — with the redacted arguments, the decision and its reason, exit code, duration and bytes out. Redaction covers shapes (OpenAI, GitHub, AWS, Slack, `Bearer …`, `*_KEY`/`*_TOKEN`/`*_SECRET` assignments) *and* the values of the credential-named environment variables this process was given, because a token handed to a tool as an argument has no shape to match.
+* **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard). `SAFE` is the default and `--profile`/`JUDAIS_LOBI_PROFILE` is how a run opts up; the profile it got rides `mission_started.profile`. `core/policy/god_mode.py` was **deleted in 0.13.0** — `GodModeSession` was constructed nowhere, and `--profile god` is the reachable form of everything it offered.
+* **`core/policy/audit.py`** — Append-only JSONL `AuditLogger`, **attached to every `Tools()` bus by default**: one file per run at `.judais-lobi/audit/<run-id>.jsonl` under the working directory, named on the mission stream as `mission_started.audit_ref`, moved or silenced by `JUDAIS_LOBI_AUDIT=<path>|none|off` (silencing is announced, and travels as `audit_ref: null`). Every dispatch is a line — `allowed`, `denied`, `unknown_tool` or `error` — with the redacted arguments, the decision and its reason, exit code, duration and bytes out. Redaction covers shapes (OpenAI, GitHub, AWS, Slack, `Bearer …`, `*_KEY`/`*_TOKEN`/`*_SECRET` assignments) *and* the values of the credential-named environment variables this process was given, because a token handed to a tool as an argument has no shape to match.
 * **`core/runtime/resume.py`** — Picking a recorded mission back up, and closing the ones nobody will. Three separate things: the **door** (`open_for_resume` — an unknown id, a run that already finished, an objective that is not the recorded one, a staged run whose plan is checkpointed; every refusal answered before a server is dialled), the **replay** (`rebuild` — the recorded stream read back into the transcript's steps, the mission result store and the model's message list, rendering each replayed result through the runner's own `_render_result` so there is one owner of what a result reads like), and **reconciliation** (`reconcile_orphans` — a run with no `mission_finished` whose metadata has been untouched for `ORPHAN_STALE_S` gets one appended, so a follower's stream closes; the staleness rule is stated rather than assumed, because a mission that is merely thinking has no `mission_finished` either). What a replay cannot give back is written down as sentences (`LOST_*`) and shown, not swallowed.
 * **`core/durable.py`** — The durability primitive, importing nothing else in this tree: `atomic_write_text`/`atomic_write_json` (tempfile in the same directory → flush → fsync → `os.replace`), `fsync_append`, and `RunStore` — one directory per run under `.judais-lobi/runs/<run-id>/` holding an fsync'd append-only `events.jsonl` of `{seq, at, record}` envelopes and a `meta.json` replaced atomically. Every record a mission emits is appended there before it reaches the `--events` sink, so the sink is a client of the log rather than a second copy; `since(cursor)` and `follow(cursor, stop=…)` are what a replay and a live subscriber read it back with. `seq` is monotonic per run and is persisted, and `RunStore.CALLER_OWNED` is why: writing a whole stale record back over a live one is how a reference platform came to reuse sequence numbers and show a blank transcript for a run whose records were on disk the whole time. `SessionManager` and `AuditLogger` are clients of this module, not second implementations of it.
 * **`core/tools/sandbox.py`** — `NoneSandbox` (dev/debug) and `BwrapSandbox` (Tier-1 production) behind a common `SandboxRunner` interface. `BwrapSandbox` keeps every field of the `SandboxProfile` it is given: the host root read-only with the working directory (and `allowed_write_paths`) re-bound writable, a private tmpfs `/tmp`, the network namespace unshared unless the profile says `allow_network`, and `max_cpu_seconds` / `max_memory_bytes` / `max_processes` applied as rlimits on the bwrap process and inherited by what runs inside it. `NoneSandbox` is still the default; it enforces nothing and says so.
@@ -866,10 +960,10 @@ If you are **running this from another program**, read:
 If you want to understand **where this is going**, read:
 
 * 🗺️ `ROADMAP.md` — the only roadmap: where 0.13.0 stands (§1), Phases 9–13
+  (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 * 🧪 `EVAL.md` — the eval harness: missions × behavioural flags, a held-out
   split, scoring from the recorded stream, `--replay`, and how a platform
   writes its own suite
-  (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 
 If you want to understand the **current implementation**, inspect:
 
@@ -878,6 +972,10 @@ If you want to understand the **current implementation**, inspect:
 * `core/runtime/mission.py`, `mission_stream.py`, `swarm.py` — the mission loop, its NDJSON account, and staged decomposition
 * `core/runtime/skills.py` — the `SKILL.md` loader: closed tool set, prompt, grounding grammar, `sdk_import`
 * `core/runtime/grounding.py`, `results.py` — the identifier/claim validator, and the per-mission result store it reads paths out of
+* `core/runtime/reading.py` — the field-misreading reader the `reading` tier asks: what does this field hold, cold, before the sentence is shown
+* `core/runtime/replay.py` — `model.jsonl` and `tools.jsonl` beside `events.jsonl`, and `--replay`: a finished run run again with no server and no GPU, its grounding verdict computed fresh
+* `core/eval/` — the eval harness: a suite of missions × behavioural flags, a mechanical train/test split, and a verdict computed only from the recorded stream (`suite.py`, `run.py`, `score.py`, `stub_suite.py`). See `EVAL.md`
+* `core/critic/mission.py` — the mission-tier critic: local first via `LOCAL_API_BASE`, a keyed provider only where the critic config declares one, and its verdict an `advisory: true` row beside `grounded` rather than inside it
 * `core/runtime/schema_check.py` — a tool call's arguments against that tool's own JSON Schema, before dispatch, in both protocols
 * `core/runtime/answer_stream.py` — the answer decoded out of a half-written reply, bounded into `answer_delta` fragments
 * `core/runtime/control.py` — the closed command vocabulary `--control` reads: `inject`, `cancel`, `cancel_step`, `gate_decision`
@@ -896,10 +994,10 @@ If you want to understand the **current implementation**, inspect:
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory (numpy fallback if FAISS unavailable)
 * `core/tools/` — ToolBus, capability engine, sandbox, the MCP bridge, consolidated tools (fs, git, verify, repo_map, patch)
-* `core/policy/` — `profiles.py` (the four cumulative profiles and `select_profile`), `audit.py` (the append-only log on every default bus), `god_mode.py`
+* `core/policy/` — `profiles.py` (the four cumulative profiles and `select_profile`), `audit.py` (the append-only log on every default bus). Two files, since `god_mode.py` was deleted in 0.13.0
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
 * `core/patch/` — patch engine: parser, matcher, applicator, worktree manager, engine orchestrator
-* `core/judge/`, `core/critic/`, `core/campaign/` — composite judge and candidate sampling; the optional external critic; the campaign orchestrator
+* `core/judge/`, `core/critic/`, `core/campaign/` — composite judge and candidate sampling; the external critic (`mission.py` for the mission tier, `orchestrator.py` for the coding tier); the campaign orchestrator
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -951,7 +1049,7 @@ As of Phase 7.4:
 * Tools are dumb executors behind a sandboxed, capability-gated bus.
 * Every **subprocess-based** tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`. Pure-Python tools are still gated by ToolBus but execute in-process. `HUMAN_REVIEW` uses `$EDITOR` directly (user-initiated TTY) and is an explicit exception.
 * Deny-by-default. No scope = no execution.
-* God mode exists for emergencies — TTL-limited, panic-revocable, fully audited.
+* God mode is a **profile**, not a session — `--profile god` / `JUDAIS_LOBI_PROFILE=god`, announced on `mission_started.profile` and audited like every other run.
 * 5 consolidated multi-action tools (fs, git, verify, repo_map, patch) cover 31 operations under 13 scopes.
 * The agent sees repo structure via a token-budgeted excerpt — file paths, symbol signatures, and dependency-ranked relevance — without loading full source.
 * 3-tier symbol extraction: Python `ast` → tree-sitter (7 languages) → regex fallback. Multi-language dependency graph with import resolution.

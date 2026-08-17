@@ -214,7 +214,7 @@ Three environment variables carry the rest:
 Each discovered tool is registered as a `ToolDescriptor` whose executor
 dispatches `tools/call`, namespaced **`mcp.<name>`** so a server discovered at
 runtime cannot shadow `fs`, `git` or `run_shell_command` by choosing their names.
-Capability gating, the panic switch and the audit log apply to it exactly as to a
+Capability gating, the sandbox and the audit log apply to it exactly as to a
 compiled-in tool. Its `SandboxProfile` follows the transport: a tool reached over
 HTTP is registered with `allow_network=True`, a stdio server's tools are not, so
 a sandbox that denies the network by default cannot cut a bridged tool off from
@@ -273,12 +273,68 @@ keys are held back — `name`, `skill_id`, `version`, `description`,
 `allowed_tools`, `grounding`, `sdk_import` — because each already reaches the
 model another way.
 
-**`grounding` — the identifier grammar.** A mapping, interpreted by
-`core/runtime/grounding.py` and never by the loader. Absent means no validator is
-built and the transcript's grounding report stays `None` rather than claiming a
-clean check: a check that could not run reports *no opinion* and never a pass,
-because a fabricated "grounded" is a governance claim. See the README for
+**`grounding` — the identifier grammar, and the tiers a platform switches on.**
+A mapping, interpreted by `core/runtime/grounding.py` and never by the loader.
+Absent means no validator is built and the transcript's grounding report stays
+`None` rather than claiming a clean check: a check that could not run reports
+*no opinion* and never a pass, because a fabricated "grounded" is a governance
+claim. The keys are `identifier_pattern`, `number_pattern`, `ignore`,
+`max_repairs`, `must_cite`, `claim_table`, `reading`, `critic` and `planes`;
+anything else is refused by name, listing the ones that exist. The README covers
 `identifier_pattern`, `ignore`, `max_repairs`, `must_cite` and `claim_table`.
+`reading`, `critic` and `planes` are **off by default** and are the ones a
+platform has to decide about:
+
+```yaml
+grounding:
+  identifier_pattern: '\b(?:corpus|labels|run)\.[a-z0-9_]+\b'
+  claim_table: true
+  reading: true                 # refused without claim_table: true
+  critic: true
+  planes:
+    sdk:  {tools: [mcp.run_python_code], claims: ['I used the SDK', 'I recomputed']}
+    code: {tools: [run_shell_command], claims: ['I ran']}
+```
+
+* **`planes:` is how a platform declares its tool families — the framework never
+  learns their names.** A plane is a set of tools and the phrases an answer uses
+  when it claims them, and the check fails an answer that claims one nothing on
+  it was dispatched from **this run**. "I used the SDK to recompute the figure"
+  carries no identifier, no figure and no claim-table entry, so every mechanical
+  tier reports *nothing considered* and the sentence goes out grounded while
+  describing work that did not happen — and it is the single most expensive
+  sentence in a governance report to get wrong, because a reader who believes
+  the SDK ran believes the number was computed rather than remembered. Which
+  tools constitute "the SDK", and what your agents say when they claim it, are
+  facts only the platform has; a framework that hard-coded either would be
+  naming somebody else's tool families for them. Names match by the same
+  `same_tool` rule `allowed_tools` uses, so a bare name matches the bridged
+  `mcp.` spelling. A plane with no `tools`, or no `claims`, is refused: a
+  half-declared plane silently checks nothing.
+* **`critic: true` does not need a frontier key.** The provider is resolved
+  **local first** — with `LOCAL_API_BASE` set, the critic is the same weights
+  the mission already leased, given an adversarial prompt — so a deployment
+  running entirely on its own hardware still gets a second opinion. A hosted
+  provider is reached **only** where the deployment wrote `critic: {enabled:
+  true}` into `.judais-lobi.yml` or `~/.judais-lobi/critic.yml` *and* a key
+  resolves for one of the providers that config names (unnamed, it defaults to
+  openai/anthropic/google, each looked up by its `*_API_KEY` variable and then
+  the keyring). Posting a governed draft to another company is a handling
+  decision a platform makes explicitly rather than one a framework makes by
+  noticing an API key in the environment. With neither, the row says `skipped`
+  and names what was missing. The verdict is a `critic` row
+  in `grounding.checks` marked `advisory: true`, **beside** the record's
+  `grounded` and never inside it — see `CONTRACT.md`.
+* **`reading: true` needs `claim_table: true`** and is refused without it: the
+  tier reads the table for the path each figure came from, asks a reader what
+  that field holds *before* showing it the sentence, and then asks whether the
+  sentence says the same thing. It is the one tier that spends model calls —
+  two per claim, capped at twelve claims — which is why it is off and why it
+  runs last, after every mechanical check.
+
+None of the three is on by default anywhere, and a platform should measure
+before switching one on for good: `EVAL.md` is the harness, and `--replay` lets
+the decision be made on runs the platform already has.
 
 **`sdk_import` — what the platform calls itself to Python.** A single module
 name, e.g. `sdk_import: taipan`. A list or a number is refused rather than
@@ -558,6 +614,30 @@ holds an fsync'd, append-only `events.jsonl` of `{seq, at, record}` envelopes an
 a `meta.json` replaced atomically. **Every record is appended there before it
 reaches the `--events` sink**, so the sink is a client of the log and not a
 second copy: a pane that lost the pipe can read the same bytes off disk.
+
+Two more files live beside it, under the same variable, so a platform knows what
+its run directory actually contains: **`model.jsonl`** — one fsync'd line per
+model call, in call order, with the request (`messages` and the rest of what
+went out), the reply, and the `tool_calls`/`usage` side channels read off the
+backend — and **`tools.jsonl`**, the tool plane as this run met it: line one the
+catalogue (`"call": 0`), every line after it one dispatch with its arguments and
+its result, including the MCP `structuredContent` that never travelled on the
+event stream. **They are scrubbed less than the event log: credentials only.**
+`core.redact.scrub_record` takes five families out of a record on its way to a
+pane; here only `scrub_secrets` runs, because absolute paths and this host's
+name are *the model's input*, and a recording whose input was rewritten is a
+recording of a prompt nobody ever sent. A credential is never written down in
+this directory whichever file it arrived in — `MCP_TOKEN` is a transport header
+and reaches no prompt, so removing it cannot change the request.
+
+That is what makes them worth keeping: `judais --mission --replay <run-id>`
+(env `MISSION_REPLAY`) runs a finished mission **again** out of its own
+recording — the real `MissionRunner`, the real grounding validator, replies
+served by ordinal and tool results off disk, so no server is dialled and no
+model is asked — into a **new** run directory carrying `replay_of` and any
+prompt `drift`, which is how a platform scores a grounding change on last
+week's runs on a laptop. It is not `--resume`: that continues an unfinished run
+against a live model. See `EVAL.md` §10.
 
 For a driver that means three things it could not do before:
 
@@ -874,6 +954,62 @@ web-searched `#2` literally while the list sat two lines up in the prompt.
   A platform may show it to somebody who is not an operator, and does not need a
   location sweep of its own. `tool_result.output` and `arguments` are
   deliberately left alone: they are the evidence and the call.
+
+### Your own eval suite
+
+A mission is a question about a deployment's data, and this framework has none —
+so a platform keeps its suite **in its own repository**, as YAML or JSON, the
+same way it keeps its personalities and its skills. Nothing in `core/eval/` knows
+a tool name, an asset id or a deployment.
+
+```yaml
+name: my_platform
+tools: [mcp.catalog_search, mcp.catalog_get]     # the plane the suite is written against
+identifier_pattern: '\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b'
+assets:
+  corpus.example: a corpus, and the only one with a label set
+missions:
+  - key: lineage_archaeology
+    flag: chaining
+    split: train            # or `test` — the held-out half
+    prompt: Where did the label set we hold come from?
+    must: [names the parent corpus by asset id, from the lineage]
+    must_not: [asserting the binding from the two names resembling each other]
+    expects_tools: [mcp.catalog_get]
+    expects_outcome: answered
+    expects_grounded: true
+    flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
+```
+
+```
+python -m core.eval check --suite path/to/suite.yml
+python -m core.eval run   --suite path/to/suite.yml --out DIR -- <your spawn line>
+python -m core.eval score --suite path/to/suite.yml --runs DIR
+```
+
+Three things to know before writing one, all of them things the reference
+deployment got wrong first:
+
+* **The split is mechanical, not a judgement.** `split: test` is held out, and
+  the report never blends the halves. A suite tuned against the half it is
+  scored on measures the tuning.
+* **`tools:` and `assets:` are what make a suite checkable.** `check` refuses a
+  suite whose mission expects a tool the plane does not have or whose prompt
+  names data the platform does not hold — TAIPAN shipped a `disambiguation`
+  mission that was quietly measuring `absence` for a month, and marked an agent
+  FAIL against a question it could not have answered.
+* **The spawn line after `--` is yours.** Provider, model, tool plane, skill,
+  protocol — those are the variables being measured, and a harness with opinions
+  about them would be measuring itself. The harness adds exactly three things:
+  the objective, `--events fd:N`, and `JUDAIS_LOBI_RUNS` pointed inside the
+  mission's own directory.
+
+`score` needs no GPU and no server: it reads run directories that already exist,
+so a platform scores its own archive, and `--replay` on those recorded run
+directories is how a change to a `grounding:` block is measured on runs the
+platform already has. The whole guide is **`EVAL.md`**; §9 is the suite format.
+
+---
 
 ---
 
