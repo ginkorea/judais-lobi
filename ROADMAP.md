@@ -16,7 +16,7 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v0.14.1**, 17 Aug 2026. 3,877 tests collected (`pytest --collect-only -q`);
+**v0.15.0**, 17 Aug 2026. 3,939 tests collected (`pytest --collect-only -q`);
 39,224 lines in `core/`+`judais/`+`lobi/` and 45,067 lines of tests (`wc -l`
 over `*.py`, so blanks and docstrings are in both numbers — this repository
 writes a lot of both on purpose).
@@ -112,7 +112,7 @@ merges. Version bump every phase.
 | — | *Release 0.8.2 — the honest stream* | ✅ swarm silence, mission window, one bounder, httpx Mistral, a bwrap that runs |
 | — | *Release 0.9.0 — safe by default* | ✅ property 1, less its residuals (§1.2) |
 | ~~9~~ | ~~Performance optimisation (TRT-LLM / vLLM tuning)~~ | **Retired** — §2.3 |
-| 9 | Durable and bounded (0.10) | ✅ 0.10.0 — properties 2 and 3, less the residuals in §2.4 |
+| 9 | Durable and bounded (0.10) | ✅ 0.10.0 — properties 2 and 3, less the residuals in §2.4; "bounded" re-read at 0.15.0 as bounded by the operator, supervised by the framework (§2.6a) |
 | — | *Release 0.11.0 — native tool calling* | ✅ Phase 12's constrained-decoding bullet, pulled forward on evidence; **off by default** |
 | — | *Release 0.12.0 — streamed and steerable* | ✅ Phase 12's `answer_delta` and AG-UI bullets and Phase 13's control channel, likewise pulled forward |
 | — | *Release 0.14.0 — what the harness found* | ✅ the two eval findings closed, staged `--resume`, the swarm critic and corpus, Phase 12's provider bullet, `ApprovalStore.reconcile` called |
@@ -120,6 +120,7 @@ merges. Version bump every phase.
 | 11 | One runtime (0.12) | ⏳ property 5. Not started; §1.2's "two agent runtimes" is its whole case |
 | 12 | Providers and streaming (0.13) | ✅ properties 4 and 6 — constrained decoding (0.11.0), `answer_delta` + the AG-UI translator + the control channel (0.12.0), and the provider work — one HTTP policy owner and `--provider anthropic` (0.14.0) |
 | 13 | Embeddable (1.0) | ⏳ property 6. The control channel came out of its list early; the library API has not started |
+| 14 | The step budget is gone (0.15) | ✅ 0.15.0 — no framework step budget; operator ceilings only; `core/runtime/supervisor.py` catches repetition (§2.6a) |
 
 The release numbers in the second column are February's guesses at which
 version a phase would land in, kept so the phase numbers do not move. They are
@@ -754,6 +755,40 @@ lies.
   `bootstrap.py` are gone — nothing imported either, and the recon pair wanted
   selenium and undetected_chromedriver that no extra declared. `kv_prefix.py`
   and `runtime/gpu.py` went in 0.9.0.)
+
+### 2.6a Phase 14 — the step budget is gone (0.15.0, shipped 17 Aug 2026)
+
+Owner's words: "sometimes tasks take more budget. instead we should only
+worry about catching an endless loop where it is stuck … if it just needs
+more thinking. Let it think. just seriously kill this concept completely."
+
+The framework no longer decides how many turns a question is worth.
+`--mission-steps` and `--mission-seconds` are now the same kind of thing — an
+operator's optional ceiling, unset by default, `max_steps: 0` on the wire (the
+required `steps`/`max_steps` fields stay, so the pinned consumer reads them
+unchanged) — and the job the eight-step default was actually doing is done by
+`core/runtime/supervisor.py`: mechanical signals that watch for *repetition*
+(the same call returning the same result three times within six, three
+rejected replies running, four steps with no new evidence, an A-B-A-B
+oscillation), each putting one plain-chat question to the same model, which
+answers `progressing`, `nudge` (a note injected at the next step boundary, on
+the record as `step_started.review` beside `injected`) or `stuck` (the run is
+asked for its best answer and ends `reason: "stuck"`). Three reviews a run and
+the last cannot say `progressing` — that is the endless-loop catch, and it is
+arithmetic rather than judgement. Nothing counts tokens, output length or
+thinking time. The swarm's `step_budget`, `retries_per_step` and one-redraw
+counter are deleted: a failed gate is put to the supervisor, which may also
+say `replan`. `review` is a new OPTIONAL field; SCHEMA_VERSION stays 1.
+Proved live on `gemini-3.6-flash`: an 11-step run that the old default would
+have killed at 8 finished `answered_with_caveat` after a `progressing` review
+(the reviewer read the operator's polling instruction correctly); three
+identical failing calls drew a `nudge` and the run recovered to `answered`.
+Unproven live (proved against the stub): the `stuck` wind-up and the swarm's
+`failed_gate`/`replan` — the live model declines to repeat itself a third time
+on a plainly broken tool. Open: a resumed run starts watching afresh (the
+nudge never travelled as a message — the gap operator injections have too).
+Phase 9's "bounded" now reads: bounded by the operator, supervised by the
+framework.
 
 ### 2.7 Phase 12 — providers and streaming (0.13)
 

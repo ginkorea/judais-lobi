@@ -879,9 +879,9 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.14.1 — 3877 tests collected.** Mission mode, skill manifests, the
+**v0.15.0 — 3939 tests collected.** Mission mode, skill manifests, the
 grounding validator, `--swarm`, the NDJSON mission stream and the published
-contract are all in this release. What 0.14.1 **is**, rather than what each
+contract are all in this release. What 0.15.0 **is**, rather than what each
 release added:
 
 * **Safe by default.** Tool subprocesses run under `bwrap` wherever bubblewrap
@@ -949,6 +949,7 @@ One line each. The commit for every one of these is `release: <version> — …`
 | 0.12.0 | 16 Aug 2026 | `answer_delta` at the source, a `--control` channel into a running mission, an AG-UI translator |
 | 0.12.1 | 16 Aug 2026 | `--gate-wait` / `MISSION_GATE_WAIT`: an unattended caller can turn the in-turn gate wait down to `0` (the 0.11 behaviour); default unchanged |
 | 0.12.2 | 17 Aug 2026 | the credential redactor is linear on long unbroken payloads (a 200 KB tool result took minutes; now ~50 ms) |
+| 0.15.0 | 17 Aug 2026 | the step budget is gone: `--mission-steps` unset means no ceiling (`max_steps: 0`), and `core/runtime/supervisor.py` watches for repetition instead — the same call returning the same result, rejected replies running, no new evidence, an A-B-A-B oscillation — each putting one question to the model (`progressing` / `nudge` / `stuck`, the swarm's gate also `replan`), three reviews a run and the last cannot say `progressing`; `step_started.review` (OPTIONAL) and `reason: "stuck"`; the swarm's `step_budget`/`retries_per_step`/one-redraw counter deleted |
 | 0.14.1 | 17 Aug 2026 | the swarm stops starving itself: one `MissionWindow` at the model's max bounds every role and every sub-mission, the synthesizer sees every settled step's whole tool output, `step_budget`/`max_plan_steps`/`summary_chars` default to what the mission and the window allow, the union of results after a redraw, the executor is told the objective; the figure check reads the answer with the same `FIGURE` rule as the evidence — proved live on a 1M-token endpoint |
 | 0.14.0 | 17 Aug 2026 | `--provider anthropic` (default `claude-opus-5`) and one neutral HTTP policy owner; the offered set follows a bus that grows mid-run (`step_started.catalogue`); the code gate is `tool_key` equality (bridged shells are the server's); the swarm gets the critic and staged `--resume`; a staged replay corpus and swarm end-to-end tests; `ApprovalStore.reconcile` called on the way in |
 | 0.13.0 | 17 Aug 2026 | Phase 10: the eval harness (`core/eval/`, `EVAL.md`), recording + `--replay`, the reading/planes/critic grounding tiers off by default, `god_mode`/preflight deleted |
@@ -1063,7 +1064,7 @@ If you are **running this from another program**, read:
 
 If you want to understand **where this is going**, read:
 
-* 🗺️ `ROADMAP.md` — the only roadmap: where 0.14.1 stands (§1), Phases 9–13
+* 🗺️ `ROADMAP.md` — the only roadmap: where 0.15.0 stands (§1), Phases 9–13
   (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 * 🧪 `EVAL.md` — the eval harness: missions × behavioural flags, a held-out
   split, scoring from the recorded stream, `--replay`, and how a platform
