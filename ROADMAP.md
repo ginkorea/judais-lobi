@@ -430,7 +430,20 @@ self-report.
   plane: its own `_offered` and the planner's catalogue are the set the turn
   started with, only its sub-runners learn, and a sub-mission started after the
   growth treats the new tool as baseline. Phase 11's one runtime is where that
-  stops being two views.
+  stops being two views. Three more swarm findings from a live staged run and
+  its resume on a hosted model (17 Aug 2026, `gemini-3.6-flash` over the
+  OpenAI-compatible endpoint, real stub, real store — the resume continued at
+  index 8 with `resumed={from_seq: 25, steps_replayed: 8}` and finished
+  `answered_with_caveat`): (1) `step_budget=4` is too small for the plans a
+  real planner writes — one step meaning "fetch details for two runs" is four
+  turns before it can answer, so a working step exhausts its slice and fails
+  its gate; either the planner prompt says a step is one fetch or the budget
+  scales with the plan; (2) after a redraw, `_synthesize` is handed the
+  *original* plan on the live path and the *checkpointed* (redrawn) one on a
+  resume, so each drops the other's step results — one owner is needed, the
+  union of results in plan order then arrival; (3) compaction did exactly what
+  it was built for, twice in one step (two 34 kB views, 17,194 → 9,080 tokens
+  against a 14,000 limit, the whole result kept in the store).
 
 ### 2.6 Phase 11 — one runtime (0.12→0.14)
 
