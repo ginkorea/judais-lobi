@@ -143,13 +143,19 @@ class Usage:
         }
 
 
-def _attr_or_key(payload: Any, name: str) -> Any:
+def attr_or_key(payload: Any, name: str) -> Any:
     """One field of a provider object, whether it is a dict or an SDK model.
 
     A JSON backend hands over nested ``dict``s; the OpenAI SDK hands over
     pydantic models.  Reading both here is the same bargain
     :func:`_as_mapping` strikes for usage: one owner, rather than the
     same ``isinstance`` at three call sites that will drift.
+
+    Public because the frames themselves are read outside this package
+    too: :mod:`core.runtime.answer_stream` walks ``choices[0].delta`` off
+    the very objects :class:`ToolCallAccumulator` folds in here, and a
+    second copy of this four-line rule is a second copy of "what shape a
+    provider speaks in".
     """
     if isinstance(payload, Mapping):
         return payload.get(name)
@@ -209,11 +215,11 @@ def tool_calls_from(payload: Any) -> List[Dict[str, Any]]:
     for raw in payload:
         if raw is None:
             continue
-        function = _attr_or_key(raw, "function")
-        arguments, unread = _as_arguments(_attr_or_key(function, "arguments"))
+        function = attr_or_key(raw, "function")
+        arguments, unread = _as_arguments(attr_or_key(function, "arguments"))
         call: Dict[str, Any] = {
-            "id": str(_attr_or_key(raw, "id") or ""),
-            "name": str(_attr_or_key(function, "name") or ""),
+            "id": str(attr_or_key(raw, "id") or ""),
+            "name": str(attr_or_key(function, "name") or ""),
             "arguments": arguments,
         }
         if unread is not None:
@@ -248,19 +254,19 @@ class ToolCallAccumulator:
         for position, fragment in enumerate(fragments):
             if fragment is None:
                 continue
-            index = _attr_or_key(fragment, "index")
+            index = attr_or_key(fragment, "index")
             if not isinstance(index, int) or isinstance(index, bool):
                 index = f"position-{position}"
             slot = self._by_index.setdefault(
                 index, {"id": "", "name": "", "arguments": ""})
-            call_id = _attr_or_key(fragment, "id")
+            call_id = attr_or_key(fragment, "id")
             if call_id:
                 slot["id"] = str(call_id)
-            function = _attr_or_key(fragment, "function")
-            name = _attr_or_key(function, "name")
+            function = attr_or_key(fragment, "function")
+            name = attr_or_key(function, "name")
             if name:
                 slot["name"] = str(name)
-            arguments = _attr_or_key(function, "arguments")
+            arguments = attr_or_key(function, "arguments")
             if isinstance(arguments, str):
                 slot["arguments"] += arguments
             elif arguments is not None:

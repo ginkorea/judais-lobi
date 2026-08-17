@@ -554,7 +554,13 @@ class TestWhatTheCallDecided:
             {"id": "call_1", "name": "list_files",
              "arguments": {"path": "/tmp"}}]
         assert [c.choices[0].delta.tool_calls is not None
-                for c in chunks] == [True, True], "the frames still arrive"
+                for c in chunks[:2]] == [True, True], "the frames still arrive"
+        # And one more the server did not send: this caller is not speaking
+        # native and nothing came through as content, so the reply is the
+        # mission-protocol rendering of the call. See
+        # `TestAStreamedReplyIsTheSameReply`.
+        assert json.loads(chunks[2].choices[0].delta.content) == {
+            "tool": "list_files", "arguments": {"path": "/tmp"}}
 
     def test_two_streamed_calls_are_kept_apart_by_index(self, stub):
         stub.deltas = [
@@ -593,6 +599,68 @@ class TestWhatTheCallDecided:
         backend = LocalBackend(endpoint=stub.base)
         list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
         assert backend.last_tool_calls == []
+
+    def test_a_streamed_reply_reads_the_same_as_a_completed_one(self, stub):
+        """The regression turning streaming on would otherwise have caused.
+
+        A served model given `tools` answers in `tool_calls` with no text,
+        and `_as_mission_json` is the whole reason the JSON-protocol loop
+        can work against one. A streamed call that dropped the rendering
+        would hand the loop an empty reply and spend the turn on a parse
+        error — for every mission on the reference deployment, which sends
+        `tool_choice="auto"` beside `tools` on every single call.
+        """
+        arguments = '{"text": "assets we hold"}'
+        stub.deltas = [
+            {"tool_calls": [{"index": 0, "id": "call_1",
+                             "function": {"name": "catalog_search_assets",
+                                          "arguments": arguments}}]},
+        ]
+        backend = LocalBackend(endpoint=stub.base)
+        streamed = "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in backend.chat("m", [{"role": "user", "content": "x"}],
+                                      stream=True, tools=[{"type": "function"}],
+                                      tool_choice="auto"))
+        stub.message = {"role": "assistant", "content": None,
+                        "tool_calls": [
+                            {"id": "call_1", "type": "function",
+                             "function": {"name": "catalog_search_assets",
+                                          "arguments": arguments}}]}
+        completed = backend.chat("m", [{"role": "user", "content": "x"}],
+                                 tools=[{"type": "function"}],
+                                 tool_choice="auto")
+        assert streamed == completed
+        assert json.loads(streamed)["tool"] == "catalog_search_assets"
+
+    def test_a_caller_speaking_native_gets_no_synthesized_frame(self, stub):
+        """It reads `last_tool_calls` itself, and a manufactured JSON
+        object would be a second, disagreeing copy of the same decision."""
+        stub.deltas = [
+            {"tool_calls": [{"index": 0, "id": "c",
+                             "function": {"name": "f", "arguments": "{}"}}]},
+        ]
+        backend = LocalBackend(endpoint=stub.base)
+        chunks = list(backend.chat("m", [{"role": "user", "content": "x"}],
+                                   stream=True, tool_choice="required"))
+        assert all(chunk.choices[0].delta.content is None
+                   for chunk in chunks)
+        assert backend.last_tool_calls == [
+            {"id": "c", "name": "f", "arguments": {}}]
+
+    def test_a_stream_that_spoke_gets_nothing_added(self, stub):
+        """`content or rendering` on the completed path; the same rule
+        here — a reply with text is a reply, whatever else it carried."""
+        stub.deltas = [
+            {"content": "here you go ",
+             "tool_calls": [{"index": 0, "id": "c",
+                             "function": {"name": "f", "arguments": "{}"}}]},
+        ]
+        backend = LocalBackend(endpoint=stub.base)
+        chunks = list(backend.chat("m", [{"role": "user", "content": "x"}],
+                                   stream=True))
+        assert [chunk.choices[0].delta.content for chunk in chunks] == [
+            "here you go "]
 
     def test_the_native_kwargs_reach_the_body_verbatim(self, stub):
         backend = LocalBackend(endpoint=stub.base)

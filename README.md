@@ -145,6 +145,7 @@ person's surface and may move.
 | `--top-p` | — | nucleus sampling. Unset sends nothing |
 | `--seed` | — | a seed where the server honours one. Not a determinism guarantee |
 | `--resume` | `MISSION_RESUME` | carry on a recorded mission by its run id. The objective comes off the record, so the message may be omitted |
+| `--no-stream` | `MISSION_STREAM=off` | ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`: the answer's own fragments go out as `answer_delta` records while the model is still writing them, and the console prints them as they land. The `answer` record that follows is still the whole of it, and turning this off changes nothing else |
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native`. `native` declares the mission's tools as **functions**, declares a `mission_answer(text)` beside them and asks the server for `tool_choice=required` — so an unparseable reply and a tool name nobody offers stop being possible instead of being caught a turn later, and one turn may call several tools. Refused at the door on a backend that does not declare `supports_tool_calls` and `supports_tool_choice_required`. **Off by default on purpose**: it is measured before it is anybody's default |
 
 The rest of the published environment: `MCP_CLIENT_NAME` is what this client
@@ -161,7 +162,9 @@ to name. `JUDAIS_LOBI_APPROVALS` does the same
 for the durable approval records — a path moves the directory, `none`/`off`
 keeps none, and then a gate stops a mission and leaves nothing anybody can
 decide against, which the console says out loud. `MISSION_RESUME` is the environment form of
-`--resume`, and `MISSION_PROTOCOL` of `--protocol`.
+`--resume`, `MISSION_PROTOCOL` of `--protocol`, and `MISSION_STREAM` of
+`--no-stream` the other way round: `off`, `0`, `false`, `no` or `none` turn the
+streamed answer off and anything else leaves it on.
 
 #### `--protocol native` — the model calls a function instead of writing one
 
@@ -502,7 +505,17 @@ JSON object per line, flushed as it happens, UTF-8 and unescaped.
 only machine channel, which is why a consumer uses `fd:` or a path and never `-`:
 the console rendering and the record stream never share bytes.
 
-The vocabulary — nine event types, their required and optional fields, the five
+The last turn of a mission is the one with nothing to show: the tools have all
+run and the model is writing prose. So the model call **streams** wherever the
+backend can, and the answer's own fragments go out as `answer_delta`
+(`index`, `part`, `text`) while it is still being written — decoded out of the
+half-arrived reply at the source, not fanned out of a finished string by
+whoever is rendering it. They are provisional: the `answer` record still
+follows, still carries the whole text, and is **always** emitted, so a consumer
+shows the fragments and then replaces them. `--no-stream` (or
+`MISSION_STREAM=off`) turns it off and changes nothing else.
+
+The vocabulary — ten event types, their required and optional fields, the five
 outcome words, the exit contract, and the rule for what is a breaking change —
 is **[`CONTRACT.md`](CONTRACT.md)**, and its authority is
 `core/runtime/contract.py`. A consumer pins it:

@@ -1946,3 +1946,125 @@ class TestResumingANativeRun:
         with pytest.raises(SystemExit) as exc:
             run_resume(MockClass, run_id, "--protocol", "native")
         assert "recorded under --protocol json" in str(exc.value)
+
+
+class TestTheAnswerArrivesWhileItIsWritten:
+    """Streaming, from the flag an operator types to the line they read.
+
+    The wiring is the part worth exercising here rather than in
+    `test_mission.py`: whether `stream=` reaches the client at all, what
+    `--no-stream` and `MISSION_STREAM` do to it, and whether the fragments
+    make it both onto the machine channel and onto stdout.
+    """
+
+    ANSWER = "The asset is asset.5f21."
+
+    def streaming(self, agent):
+        """A client that yields frames when it is asked to stream.
+
+        Its `chat` still returns a string when it is not, because that is
+        the shape every backend in this tree has — and because half of
+        what is asserted below is that the string path is untouched.
+        """
+        replies = [
+            json.dumps({"tool": "mcp.governed_read",
+                        "arguments": {"asset_id": "asset.5f21"}}),
+            json.dumps({"answer": self.ANSWER}),
+        ]
+
+        def frames(reply):
+            for at in range(0, len(reply), 4):
+                yield SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=reply[at:at + 4],
+                                          tool_calls=None))])
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            agent.streamed.append(kw.get("stream"))
+            reply = replies.pop(0) if replies else '{"answer": "done"}'
+            return frames(reply) if kw.get("stream") else reply
+
+        agent.streamed = []
+        agent.client.chat.side_effect = _chat
+        # The capability is asked before the flag is consulted, and a
+        # MagicMock attribute is truthy by accident rather than by
+        # declaration. Said out loud so the two tests that turn streaming
+        # OFF are turning off something that was on.
+        agent.client.capabilities = SimpleNamespace(supports_streaming=True)
+        return agent
+
+    def records(self, path):
+        return [json.loads(line) for line in
+                path.read_text().splitlines() if line]
+
+    def test_the_fragments_reach_the_stream_and_the_answer_follows(
+            self, elf, tmp_path):
+        MockClass, agent = elf
+        self.streaming(agent)
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--events", str(events))
+        records = self.records(events)
+        fragments = [r for r in records if r["event"] == "answer_delta"]
+        assert fragments
+        assert "".join(r["text"] for r in fragments) == self.ANSWER
+        assert [r["text"] for r in records
+                if r["event"] == "answer"] == [self.ANSWER]
+
+    def test_the_fragments_belong_to_the_step_that_wrote_them(
+            self, elf, tmp_path):
+        """The first turn called a tool and streamed no answer; the
+        second one is the answer."""
+        MockClass, agent = elf
+        self.streaming(agent)
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--events", str(events))
+        fragments = [r for r in self.records(events)
+                     if r["event"] == "answer_delta"]
+        assert {r["index"] for r in fragments} == {1}
+        assert [r["part"] for r in fragments] == list(range(len(fragments)))
+
+    def test_the_console_prints_it_as_it_arrives(self, elf, capsys):
+        """Twice: once live under a `🧞 Tai:` header while the model is
+        writing, and once in the transcript printed afterwards, which is
+        unchanged."""
+        MockClass, agent = elf
+        self.streaming(agent)
+        run_cli(MockClass)
+        out = capsys.readouterr().out
+        assert out.count(self.ANSWER) == 2
+        assert "streaming:" in out
+
+    def test_no_stream_asks_the_client_for_the_whole_reply(self, elf,
+                                                           tmp_path):
+        MockClass, agent = elf
+        self.streaming(agent)
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--no-stream", "--events", str(events))
+        assert agent.streamed == [False, False]
+        assert not [r for r in self.records(events)
+                    if r["event"] == "answer_delta"]
+        assert [r["text"] for r in self.records(events)
+                if r["event"] == "answer"] == [self.ANSWER]
+
+    def test_the_environment_says_it_too(self, elf, tmp_path, monkeypatch):
+        MockClass, agent = elf
+        self.streaming(agent)
+        monkeypatch.setenv("MISSION_STREAM", "off")
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--events", str(events))
+        assert agent.streamed == [False, False]
+        assert not [r for r in self.records(events)
+                    if r["event"] == "answer_delta"]
+
+    def test_a_backend_that_cannot_stream_is_not_asked_to(self, elf):
+        MockClass, agent = elf
+        self.streaming(agent)
+        agent.client.capabilities = SimpleNamespace(supports_streaming=False)
+        run_cli(MockClass)
+        assert agent.streamed == [False, False]
+
+    def test_streaming_is_on_without_anybody_saying_so(self, elf):
+        MockClass, agent = elf
+        self.streaming(agent)
+        run_cli(MockClass)
+        assert agent.streamed == [True, True]

@@ -54,7 +54,8 @@ __all__ = [
     "SCHEMA_VERSION", "EVENTS", "FIELDS", "OPTIONAL", "OUTCOMES",
     "CLI_FLAGS", "ENV_VARS", "EXIT_CONTRACT", "conforms",
     "MISSION_STARTED", "STEP_STARTED", "REPLY_REJECTED", "TOOL_CALL",
-    "TOOL_RESULT", "GATE_REQUESTED", "ANSWER", "GROUNDING", "MISSION_FINISHED",
+    "TOOL_RESULT", "GATE_REQUESTED", "ANSWER_DELTA", "ANSWER", "GROUNDING",
+    "MISSION_FINISHED",
 ]
 
 
@@ -136,6 +137,51 @@ TOOL_RESULT = "tool_result"
 #: addressed to afterwards.  See :data:`OPTIONAL`.
 GATE_REQUESTED = "gate_requested"
 
+#: A piece of the answer, while the model is still writing it.  ``index``
+#: (the step whose model call is producing it), ``part`` (0-based ordinal
+#: within that call's answer) and ``text`` (the fragment).  Concatenating
+#: ``text`` over ``part`` in order gives the answer AS STREAMED.
+#:
+#: **Provisional, and replaced rather than completed.**  The
+#: :data:`ANSWER` record that follows is the authority and is **always**
+#: emitted — never suppressed because the deltas happened to add up to the
+#: same string — so a consumer renders the fragments as they arrive and
+#: then replaces the lot with ``answer.text``.  That is not belt and
+#: braces: the deltas are decoded out of a half-written reply, the answer
+#: is read out of the finished one, and only the second has been through
+#: the grounding path that may append a caveat to it.
+#:
+#: **Zero of them is normal.**  A backend that does not stream, a run
+#: started with ``--no-stream`` or ``MISSION_STREAM=off``, a turn that
+#: called a tool instead of answering, a library caller whose ``chat_fn``
+#: returns a string — all of them produce an ``answer`` with no deltas
+#: before it, which is exactly the stream every consumer read before this
+#: event existed.  Adding one is a **minor** change by the compatibility
+#: rule at the top of this module and does not bump
+#: :data:`SCHEMA_VERSION`; a consumer that has never heard of it drops the
+#: records and renders what it always rendered.
+#:
+#: ``part`` restarts at 0 for **every model call**.  A step is one call, so
+#: in practice it restarts every step; a grounding repair turn is a further
+#: step with its own ``index`` and streams again from part 0. The last
+#: ``answer`` wins.  A consumer holding provisional text keys it by
+#: ``index`` and clears it on the next :data:`STEP_STARTED` — a turn whose
+#: reply was rejected, or whose ``mission_answer`` was ignored because it
+#: came alongside tool calls, leaves fragments behind that no ``answer``
+#: will ever replace.
+#:
+#: Each fragment is scrubbed by :func:`core.redact.scrub_record` like every
+#: other ``text`` on this stream, and scrubbed **per fragment**: a
+#: credential split across two deltas is not recognisable in either half,
+#: so the fragments are for display and the ``answer`` record is what a
+#: consumer keeps, logs or forwards.
+#:
+#: A staged (``--swarm``) turn emits none of these for its sub-missions,
+#: exactly as it emits none of their ``answer`` records: a sub-mission's
+#: answer is not the mission's.  The synthesized answer arrives whole, as
+#: one ``answer``.
+ANSWER_DELTA = "answer_delta"
+
 #: The model finished.  ``text`` and ``outcome``.  One event, after any
 #: grounding repair turns, carrying exactly what
 #: :attr:`MissionTranscript.answer` will carry — ``outcome`` beside it because
@@ -186,7 +232,7 @@ MISSION_FINISHED = "mission_finished"
 #: The closed vocabulary, so a consumer can assert it knows all of them.
 EVENTS: tuple[str, ...] = (
     MISSION_STARTED, STEP_STARTED, REPLY_REJECTED, TOOL_CALL, TOOL_RESULT,
-    GATE_REQUESTED, ANSWER, GROUNDING, MISSION_FINISHED,
+    GATE_REQUESTED, ANSWER_DELTA, ANSWER, GROUNDING, MISSION_FINISHED,
 )
 
 
@@ -207,6 +253,7 @@ FIELDS: dict[str, tuple[str, ...]] = {
     TOOL_RESULT: ("index", "tool", "arguments", "ok", "exit_code", "output",
                   "error", "handle", "truncated"),
     GATE_REQUESTED: ("index", "tool", "arguments", "reason"),
+    ANSWER_DELTA: ("index", "part", "text"),
     ANSWER: ("text", "outcome"),
     GROUNDING: ("ran", "grounded", "verified", "repairs", "repairing",
                 "caveat", "unsupported", "silent", "uncited", "checks"),
@@ -506,7 +553,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--provider", "--model",
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
     "--history", "--gate-tool", "--approval", "--resume", "--temperature",
-    "--top-p", "--seed", "--protocol",
+    "--top-p", "--seed", "--protocol", "--no-stream",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -552,6 +599,15 @@ CLI_FLAGS: tuple[str, ...] = (
 #: declare both ``supports_tool_calls`` and ``supports_tool_choice_required``,
 #: because a mission that silently fell back to prose would be measured as
 #: the protocol it was not running.
+#: ``MISSION_STREAM`` is the environment form of ``--no-stream``, spelled
+#: the way round a consumer wants to read it: ``off``, ``0``, ``false``,
+#: ``no`` or ``none`` turn the streamed model call off and anything else —
+#: including unset — leaves it **on**, the default, because the deltas are
+#: what a pane renders while a minutes-long mission is still thinking.
+#: Turning it off costs a consumer nothing but the deltas: the same
+#: ``answer`` record arrives at the same moment it always did.  It has no
+#: effect on a backend whose capabilities do not declare
+#: ``supports_streaming``, which is asked before the flag is consulted.
 #:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
@@ -565,6 +621,7 @@ ENV_VARS: tuple[str, ...] = (
     "MISSION_SECONDS",
     "MISSION_RESUME",
     "MISSION_PROTOCOL",
+    "MISSION_STREAM",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",

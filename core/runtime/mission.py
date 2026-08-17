@@ -77,6 +77,7 @@ from core.bounding import MAX_RESULT_BYTES, bound_result
 from core.durable import RunStore
 from core.budgets import BudgetExhausted, Deadline, cancelled
 from core.redact import scrub_record
+from core.runtime.answer_stream import drain as drain_answer
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
@@ -84,8 +85,9 @@ from core.runtime.context_window import (
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission_stream import (
-    ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
-    REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT, Observer,
+    ANSWER, ANSWER_DELTA, GATE_REQUESTED, GROUNDING, MISSION_FINISHED,
+    MISSION_STARTED, REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
+    Observer,
 )
 from core.runtime.results import RESULT_TOOL, MissionResultStore
 from core.runtime.schema_check import check as check_arguments
@@ -1121,6 +1123,51 @@ class MissionRunner:
         except Exception:                       # pragma: no cover - defensive
             pass
 
+    # ── asking the model ────────────────────────────────────────────────
+
+    def _model_reply(self, messages: List[Dict[str, Any]], index: int) -> str:
+        """The model's reply, whether it arrives whole or in pieces.
+
+        ``chat_fn`` may return a ``str`` — every test in this repo, every
+        library caller, and any deployment that turned streaming off —
+        and the loop below is byte for byte the loop that has always run
+        for those.  It may instead return an **iterator of delta frames**,
+        which is the other shape
+        :meth:`core.runtime.backends.base.Backend.chat` has always had,
+        and then the frames are drained here: the answer's own fragments
+        go out as ``answer_delta`` records as they decode, and what comes
+        back is the same complete reply string the non-streamed call
+        would have returned.
+
+        Everything after this line is therefore unchanged.  ``_parse``
+        reads the same object, the native branch reads the same side
+        channel — ``tool_calls_fn`` is filled by the backend when the
+        iterator is exhausted, which is before this returns — and the
+        ``answer`` record still carries the WHOLE text and is still
+        emitted, always, even when the deltas already added up to it.
+
+        ``part`` restarts at 0 for every model call.  A step is one call,
+        so a grounding repair turn — a further step, with its own
+        ``index`` — streams again from part 0, and the consumer's rule of
+        replacing provisional text when an ``answer`` arrives makes that
+        right without anything here having to remember the last one.
+        """
+        got = self._chat(messages)
+        if isinstance(got, str):
+            return got
+        if got is None or not hasattr(got, "__iter__"):
+            return str(got or "")
+
+        part = 0
+
+        def on_delta(text: str) -> None:
+            nonlocal part
+            self._emit(ANSWER_DELTA, index=index, part=part, text=text)
+            part += 1
+
+        return drain_answer(got, on_delta, native=self._native,
+                            answer_tool=ANSWER_TOOL)
+
     # ── what the last call cost ─────────────────────────────────────────
 
     def _spent(self, transcript: MissionTranscript) -> Dict[str, Any]:
@@ -1520,7 +1567,7 @@ class MissionRunner:
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
             opening = {}
-            reply = str(self._chat(messages) or "")
+            reply = self._model_reply(messages, index)
             # Read here and used below: whichever record this step emits
             # carries the cost of the call that produced it. One read per
             # call, because `last_usage` is a side channel that the NEXT

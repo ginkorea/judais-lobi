@@ -1,6 +1,7 @@
 # tests/test_swarm.py — staged decomposition over one mission backend
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -2230,3 +2231,66 @@ class TestTheProtocolReachesEverySubMission:
         self._native(bus, executor, plain).run("go")
         assert plain.calls == 1
         assert all("tool_calls" not in m for m in plain.seen[0])
+
+
+# ── a staged turn's answer arrives whole ─────────────────────────────────────
+
+
+class StreamingModel:
+    """An executor that answers in frames, the way a backend does."""
+
+    def __init__(self, *replies, piece=5):
+        self.replies = list(replies)
+        self.piece = piece
+        self.seen = []
+
+    def __call__(self, messages):
+        self.seen.append([dict(m) for m in messages])
+        reply = self.replies.pop(0) if self.replies else '{"answer": "done"}'
+        return (SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=reply[at:at + self.piece],
+                                  tool_calls=None))])
+            for at in range(0, len(reply), self.piece))
+
+
+class TestAStagedTurnsAnswerArrivesWhole:
+    """A sub-mission's answer is not the mission's, and neither are its
+    fragments.
+
+    `_StageObserver` already drops a sub-mission's `answer` for exactly
+    that reason — five little missions rendered as five answers is not
+    what happened — and the fragments follow it. What a watcher of a
+    staged turn gets is one `answer`, the synthesized one, arriving whole
+    because `plain_chat_fn` does not stream: the synthesizer must not be
+    offered tools, so it is not the mission's `chat_fn`.
+    """
+
+    def test_a_sub_missions_fragments_do_not_reach_the_watcher(self, bus,
+                                                               calls):
+        events = []
+        plain = ScriptedModel(
+            STAGED, TWO_STEP_PLAN,
+            '{"pass": true}',
+            "Final: corpus.abc123 charted in chart.png")
+        executor = StreamingModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        swarm(plain, executor, bus,
+              observer=events.append).run("find the corpus and chart it")
+        assert not [r for r in events if r["event"] == "answer_delta"]
+        assert [r["text"] for r in events if r["event"] == "answer"] == \
+            ["Final: corpus.abc123 charted in chart.png"]
+
+    def test_a_direct_turn_under_the_swarm_still_streams(self, bus):
+        """The direct path is a whole `MissionRunner` and its answer IS the
+        mission's, so its fragments pass through untouched."""
+        events = []
+        plain = ScriptedModel(DIRECT)
+        executor = StreamingModel('{"answer": "a small question"}')
+        swarm(plain, executor, bus, observer=events.append).run("what is x")
+        fragments = [r for r in events if r["event"] == "answer_delta"]
+        assert "".join(r["text"] for r in fragments) == "a small question"
+        assert [r["text"] for r in events if r["event"] == "answer"] == \
+            ["a small question"]

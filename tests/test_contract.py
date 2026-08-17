@@ -639,8 +639,19 @@ class TestTheLedgerIsAFieldAndNotATenthEvent:
         return lambda: Usage(prompt_tokens=prompt, completion_tokens=completion,
                              total_tokens=prompt + completion)
 
-    def test_the_vocabulary_did_not_grow(self):
-        assert len(c.EVENTS) == 9
+    def test_the_ledger_is_still_not_one_of_them(self):
+        """The count is stated so that a tenth name is a decision somebody
+        made rather than a line somebody added.
+
+        It went from nine to ten once, for `answer_delta`, and that is the
+        shape of the argument this class exists to record: a new event is
+        the additive change a consumer cannot absorb quietly, so it is
+        paid for when there is something to say that no existing frame can
+        carry — a fragment of an answer that has not been written yet —
+        and not when there is a number that fits in frames that already
+        exist.
+        """
+        assert len(c.EVENTS) == 10
         assert not any("usage" in event or "ledger" in event
                        for event in c.EVENTS)
 
@@ -685,6 +696,72 @@ class TestTheLedgerIsAFieldAndNotATenthEvent:
         assert "calls" not in per_call
         assert totals["calls"] == 2
         assert totals["total_tokens"] == 110
+
+
+class TestTheTenthEventIsSafeToNotKnowAbout:
+    """`answer_delta` is the one additive change a consumer *does* have to
+    notice, so what it costs one is written down as assertions.
+
+    The reference consumer asserts its read-set EQUALS `EVENTS`, which is
+    why a tenth name was paid for rather than assumed: it buys the one
+    thing no existing frame could carry, an answer that has not been
+    finished yet. What it must not cost is the rest of the stream.
+    """
+
+    def _streamed(self, reply, piece=6):
+        def chat(_messages):
+            for at in range(0, len(reply), piece):
+                yield {"choices": [
+                    {"delta": {"content": reply[at:at + piece]}}]}
+        return chat
+
+    def _run_streamed(self, reply):
+        seen = []
+        MissionRunner(self._streamed(reply), _Bus(),
+                      ["catalog_search_assets"], observer=seen.append,
+                      store_tool="").run("what do we hold")
+        return seen
+
+    def test_a_streamed_mission_conforms_field_by_field(self):
+        seen = self._run_streamed(json.dumps({"answer": "three assets"}))
+        assert [r for r in seen if r["event"] == ms.ANSWER_DELTA]
+        assert _faults(seen) == []
+
+    def test_dropping_the_new_records_leaves_the_stream_a_consumer_read(self):
+        """What a consumer that has never heard of it does, done here: the
+        records it knows are the records it always got."""
+        seen = self._run_streamed(json.dumps({"answer": "three assets"}))
+        known = [r for r in seen if r["event"] != ms.ANSWER_DELTA]
+        assert [r["event"] for r in known] == [
+            ms.MISSION_STARTED, ms.STEP_STARTED, ms.ANSWER,
+            ms.MISSION_FINISHED]
+
+    def test_the_answer_is_emitted_even_though_the_deltas_said_it_all(self):
+        """Never suppressed. A consumer replaces provisional text when the
+        `answer` arrives, and one that never arrived would leave a pane
+        holding a decode of a half-written reply forever."""
+        seen = self._run_streamed(json.dumps({"answer": "the whole thing"}))
+        fragments = "".join(r["text"] for r in seen
+                            if r["event"] == ms.ANSWER_DELTA)
+        answered = [r for r in seen if r["event"] == ms.ANSWER]
+        assert fragments == "the whole thing"
+        assert [r["text"] for r in answered] == ["the whole thing"]
+
+    def test_zero_of_them_is_the_ordinary_case(self):
+        """A backend that does not stream, `--no-stream`, a library caller
+        with a string-returning `chat_fn` — all of them, and all of them
+        normal."""
+        _, seen = _run([json.dumps({"answer": "done"})])
+        assert not [r for r in seen if r["event"] == ms.ANSWER_DELTA]
+        assert _faults(seen) == []
+
+    def test_it_carries_no_optional_field_at_all(self):
+        """Deliberately: `usage` is the cost of a CALL and would be
+        restated on every fragment of it."""
+        assert ms.ANSWER_DELTA not in c.OPTIONAL
+
+    def test_the_event_sits_beside_the_answer_it_precedes(self):
+        assert c.EVENTS.index(c.ANSWER_DELTA) == c.EVENTS.index(c.ANSWER) - 1
 
 
 class TestTheContractIsWhole:
@@ -973,6 +1050,20 @@ class TestTheDocumentAndTheModuleAgree:
 
     def test_the_stated_version(self):
         assert f"SCHEMA_VERSION == {c.SCHEMA_VERSION}" in CONTRACT_MD.read_text()
+
+    def test_the_delta_bound_the_page_quotes_is_the_one_the_code_uses(self):
+        """A number in prose is a number that drifts.
+
+        `BOUND_CHARS` is a display tuning knob rather than a protocol
+        value — a consumer must never read meaning into where a fragment
+        ends — but the page tells one how many records to expect, and a
+        page saying 64 over code doing 8 would be describing a stream
+        nobody receives.
+        """
+        from core.runtime.answer_stream import BOUND_CHARS
+
+        assert f"{BOUND_CHARS} characters, or a newline" in \
+            _md_section("Events")
 
 
 # ── being asked to stop is not the same as stopping ──────────────────────────
