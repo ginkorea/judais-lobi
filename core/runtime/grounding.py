@@ -1026,9 +1026,57 @@ class NumericGroundingCheck(GroundingCheck):
         return []
 
     def extract(self, answer: str) -> Iterable[str]:
+        """Every figure the manifest asks about, that is a figure here.
+
+        Two patterns meet in this check and they used to disagree.  The
+        manifest's ``number_pattern`` says which figures a platform cares
+        about; :data:`FIGURE` below says what counts as one *at all*, and
+        it is the careful one — it refuses a run of digits that follows a
+        dot or continues a word, so that ``a.0000`` is an actor handle and
+        not the number zero.  :meth:`prepare` reads the evidence with
+        ``FIGURE``; this method read the answer with the manifest's pattern
+        alone, and a manifest whose pattern is the ordinary
+        word-boundary-to-word-boundary run of digits therefore pulled
+        ``0000`` out of ``a.0000`` in the answer and looked for it in an
+        evidence set that — correctly — had never put it there.
+
+        Live, 16 August: a staged mission answered *"Run r-7 actor at top
+        of actor list: a.0000"*, the identifier check passed it 2/2, the
+        figure check reported ``0000`` unsupported, and the repair turn
+        took the actor back out of a correct answer.  The disagreement was
+        the whole of it, so the fix is one owner: the manifest chooses
+        *which* figures are checked, ``FIGURE`` decides *whether* a run of
+        characters is one, and a candidate that is not a figure where it
+        sits is not a figure the model has to account for.
+
+        Narrowing only.  Every token this still yields is one the previous
+        version yielded, so no answer becomes grounded that was not.
+        """
         pattern = re.compile(self._config.number_pattern)
         for match in pattern.finditer(answer):
-            yield match.group(1) if match.groups() else match.group(0)
+            # A capturing group means the author narrowed what the token
+            # actually is; honour it rather than the whole match, exactly
+            # as `IdentifierGroundingCheck.extract` does.
+            index = 1 if match.groups() else 0
+            start, end = match.span(index)
+            if self._stands_alone(answer, start, end):
+                yield match.group(index)
+
+    @staticmethod
+    def _stands_alone(text: str, start: int, end: int) -> bool:
+        """:data:`FIGURE`'s two boundaries, asked of one span in *text*.
+
+        The same rule stated once and applied on both sides: nothing wordy
+        and no dot before it, nothing wordy after it.  Written as a
+        boundary test rather than by re-running ``FIGURE`` over a slice,
+        because a slice has boundaries of its own and would answer about
+        those.
+        """
+        before = text[start - 1] if start > 0 else ""
+        after = text[end] if end < len(text) else ""
+        if before == "." or before == "_" or before.isalnum():
+            return False
+        return not (after == "_" or after.isalnum())
 
     #: Separators a figure may carry in prose and not in a payload, or
     #: the other way round.

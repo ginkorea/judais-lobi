@@ -150,7 +150,9 @@ _RUNG_PLAN_LINES = {
     "tool": ('- "tool": a platform tool from the list below does exactly '
              'this (search, fetch, submit, poll, read a run).'),
     "code": ('- "code": computation, transformation or visualization — '
-             'code written and run through a code-execution tool.'),
+             'code written and run through a code-execution tool. Only if '
+             'one of the tools listed below runs code; if none does, the '
+             'step is a "tool" step or it is not a step.'),
 }
 
 
@@ -220,11 +222,16 @@ Reply with exactly one JSON object and nothing else:
 """
 
 SYNTHESIZE_PROMPT = """\
-You are writing the final answer to the objective from the step results \
-below. Use only what the steps reported, and carry their identifiers and \
-figures into the answer exactly as reported. If a step FAILED, say \
-plainly which one and why, and answer with what the completed steps \
-support. Never present a failed or missing step's result as obtained.
+You are writing the final answer to the objective from two things below: \
+the step results, and the tool output this mission received.
+The tool output is what the plane actually returned. Read the answer out \
+of it and carry every identifier and figure across exactly as it appears \
+there. Quote when the objective asks you to quote.
+The step results say which steps met their success condition. If one \
+FAILED, say plainly which and why, and never claim a step succeeded that \
+did not — but a fact is available if it is in the tool output, whatever \
+became of the step that read it.
+Answer every part of the objective the tool output supports.
 """
 
 
@@ -272,12 +279,26 @@ class PlanStep:
 
 @dataclass
 class _StepOutcome:
-    """What one executed step left behind."""
+    """What one executed step left behind — what it said, and what it read.
+
+    ``summary`` is the executor's own sentence about the step; ``evidence``
+    is what that step's tools actually returned, whole, straight out of the
+    sub-mission's :class:`~core.runtime.results.MissionResultStore`.
+
+    Both, because the synthesizer needs the second one.  A step that fetched
+    a 34,000-character governed view and reported "read the view for run
+    r-7" has the actor list in ``evidence`` and nowhere else; an answer
+    asked to name the actor at the top of it, given only ``summary``, said
+    "the actor list was not reported in the step results" — which was true
+    of what it had been shown and false of what the mission had read.
+    """
 
     step: PlanStep
     ok: bool
     summary: str = ""
     why: str = ""
+    #: Every successful tool result of every attempt at this step, whole.
+    evidence: List[str] = field(default_factory=list)
 
 
 #: The keys of a plan step a *watcher* is shown, which is deliberately
@@ -517,13 +538,32 @@ class SwarmRunner:
         not a client.  ``False`` is every backend that cannot, and is the
         behaviour this class had before the flag existed.
     max_plan_steps:
-        Hard cap on plan length.  Five, because the endpoint is serial at
-        59 tok/s and a 20-step plan is a hang wearing a plan's clothes.
+        Hard cap on plan length.  ``None`` — the default — derives it from
+        the mission's own budget: ``max(2, max_steps // 2)``, which is the
+        longest plan whose every step can still afford a call and an
+        answer.  It was a flat five, and five was a stand-in for the
+        thing that actually bounds a plan: a plan cannot have more steps
+        than the mission has tool turns to spend on them.  A caller who
+        wants a shorter plan than the budget allows still says so.
     step_budget:
-        Tool-turns per sub-mission.  Small on purpose: a step that needs
-        eight turns was two steps.
+        Tool-turns per sub-mission.  ``None`` — the default — is *what the
+        mission has left*: a step may spend the whole remaining budget.
+        It was four, and four is what starved the live run of 16 August: a
+        planner-written step reading two governed runs needs two views and
+        two ``mission_result`` reads, which is four turns before it can
+        say a word, so it exhausted its slice, failed its gate on
+        ``budget_exhausted``, retried, and had the plan redrawn around the
+        work that had happened to fit.  ``max_steps`` already bounds the
+        turn; a second, smaller number inside it was bounding the wrong
+        thing.  Portioning is kept as a knob for a caller who wants a
+        slice — with the trade stated: one greedy step can now spend the
+        whole mission, and the mission stops when it does, which is the
+        same stop it always had.
     retries_per_step:
-        Bounded retries before the plan is redrawn.
+        Bounded retries before the plan is redrawn.  Stays a small fixed
+        number, and it is not a stand-in for a context bound: it counts
+        *attempts at the same failure*, and the second attempt of a step
+        that failed for a reason retrying cannot fix is spent, not saved.
     sdk_import:
         What the platform's SDK is called to ``import``, from the skill
         manifest's ``sdk_import`` field.  Naming it offers the planner the
@@ -534,10 +574,26 @@ class SwarmRunner:
         platform it is pointed at, and a manifest is where a platform
         describes itself.
     window:
-        Passed straight through to every :class:`MissionRunner` this
-        builds; see that class's ``window`` parameter.  A staged mission
-        runs more steps than a direct one, not fewer, so it is the path
-        that needs bounding most.
+        **The one window for the whole turn.**  Passed straight through to
+        every :class:`MissionRunner` this builds — see that class's
+        ``window`` parameter — and, since the live run of 16 August, used
+        on this runner's *own* four roles as well: the router, the
+        planner, every gate and the synthesizer go out through
+        :meth:`_fit`.
+
+        Those four were unbounded on the argument that each builds "one
+        short list and sends it once".  Two of them are not short.  The
+        planner carries the tool catalogue, and the synthesizer carries
+        every settled step's whole result — which is the point of it — so
+        the only honest bound on either is the same
+        :class:`~core.runtime.context_window.MissionWindow` the steps are
+        held to, resolved once from the backend's real
+        ``max_context_tokens``.  Nothing in this class shrinks it: there
+        is one object, one profile, one number, and a staged turn on a
+        million-token endpoint uses a million-token endpoint.
+
+        ``None`` is a swarm with no bound at all, which is what a caller
+        who passes no window is asking for.
     run_store, run_id:
         The durable transcript, exactly as
         :class:`~core.runtime.mission.MissionRunner` takes it — and
@@ -633,10 +689,10 @@ class SwarmRunner:
         observer: Optional[Observer] = None,
         plain_chat_fn: Optional[Callable[..., Any]] = None,
         json_mode: bool = False,
-        max_plan_steps: int = 5,
-        step_budget: int = 4,
+        max_plan_steps: Optional[int] = None,
+        step_budget: Optional[int] = None,
         retries_per_step: int = 1,
-        summary_chars: int = 1_200,
+        summary_chars: Optional[int] = None,
         sdk_import: str = "",
         window: Optional[MissionWindow] = None,
         run_store: Optional[RunStore] = None,
@@ -709,11 +765,12 @@ class SwarmRunner:
         # renumbered one. One run, one log, one writer.
         self._run_store = run_store
         self._run_id = str(run_id or "")
-        # Handed to every MissionRunner this builds and to nothing else.
-        # A rung's execution is an ordinary mission loop and grows the same
-        # unbounded message list; the router, planner, gate and synthesizer
-        # each build one short list of their own and send it once, so there
-        # is nothing there for a window to bound.
+        # ONE window, handed to every MissionRunner this builds AND used
+        # by `_fit` on this runner's own four roles. A rung's execution is
+        # an ordinary mission loop and grows the same unbounded message
+        # list; the planner and the synthesizer build lists of their own
+        # that are not short either, and a character cap standing in for a
+        # context bound is what starved the 16 August run.
         self._window = window
         self._usage_fn = usage_fn
         # Handed down to every MissionRunner this builds and used by
@@ -753,10 +810,20 @@ class SwarmRunner:
         self._control = control
         self._gate_wait_s = max(0.0, float(gate_wait_s))
         self._started_at: Optional[float] = None
-        self._max_plan_steps = max(1, int(max_plan_steps))
-        self._step_budget = max(1, int(step_budget))
+        # All three default to "ask the thing that actually bounds this"
+        # rather than to a number. See the class docstring for what each
+        # one used to be and what it cost.
+        self._max_plan_steps = (max(1, int(max_plan_steps))
+                                if max_plan_steps is not None
+                                else max(2, self._max_steps // 2))
+        self._step_budget = (max(1, int(step_budget))
+                             if step_budget is not None else None)
         self._retries = max(0, int(retries_per_step))
-        self._summary_chars = max(200, int(summary_chars))
+        #: ``None`` is "the window decides": a step's result travels whole
+        #: and `_fit` bounds the prompt it lands in. An int is a caller
+        #: asking for a cut in characters, which is what this was.
+        self._summary_chars = (max(200, int(summary_chars))
+                               if summary_chars is not None else None)
 
         # The rungs THIS run offers, and what each one says.  Resolved once
         # here rather than at each use, so the planner's prose, the plan
@@ -770,6 +837,46 @@ class SwarmRunner:
         if self._sdk_import:
             self._rung_sentences[SDK_RUNG] = sdk_rung_sentence(self._sdk_import)
             self._rung_plan_lines[SDK_RUNG] = sdk_rung_plan_line(self._sdk_import)
+
+    # ── the one window, applied to this runner's own roles ──────────────
+
+    def _role_messages(self, system: str, user: str) -> List[Dict[str, str]]:
+        """One role's message list: its system turn, this turn's history,
+        its question.
+
+        The history is the WHOLE history and not a fixed tail of it.  Three
+        roles took ``self._history[-2:]`` — a count standing in for a
+        context bound, chosen when nothing in this class knew how big the
+        window was.  The window knows.  :meth:`_fit` is where the bound is
+        applied now, so a turn with a large window carries the conversation
+        it actually had, and a turn with a small one has its oldest turns
+        evicted by the same policy every mission step is bounded by.
+        """
+        return [{"role": "system", "content": system},
+                *[dict(turn) for turn in self._history],
+                {"role": "user", "content": user}]
+
+    def _fit(self, messages: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
+        """*messages*, inside the one window this turn was given.
+
+        ``pinned=1`` is the role's system turn and nothing else: the
+        instruction — and, for the planner, the tool catalogue — is what a
+        role cannot be without.  Everything after it is evicted
+        oldest-first by :meth:`~core.runtime.context_window.MissionWindow
+        .fit`, which never drops the newest round trip, so the question
+        itself always survives.
+
+        No window is this class as it ran before there was one: the list
+        goes out whole.  The compaction is not announced on the stream —
+        these four calls are not mission steps and have no ``step_started``
+        to ride, and inventing a record for them would be a contract
+        change for a fact the ``usage`` totals already imply.
+        """
+        if self._window is None:
+            return [dict(message) for message in messages]
+        kept, _compaction = self._window.fit(
+            [dict(message) for message in messages], pinned=1)
+        return kept
 
     # ── telling a watcher ───────────────────────────────────────────────
 
@@ -1119,12 +1226,9 @@ class SwarmRunner:
         # is called once per turn rather than once per step.  Through
         # `stacked` so that every system turn this package builds is
         # assembled the same way, down to the whitespace.
-        messages: List[Dict[str, str]] = [
-            {"role": "system", "content": stacked(
-                TRIAGE_PROMPT, f"Tools that exist here: {tools}")},
-            *[dict(turn) for turn in self._history[-2:]],
-            {"role": "user", "content": objective},
-        ]
+        messages = self._role_messages(
+            stacked(TRIAGE_PROMPT, f"Tools that exist here: {tools}"),
+            objective)
         decision = self._json_reply(messages)
         route = str((decision or {}).get("route", "")).strip().lower()
         return route if route == "staged" else "direct"
@@ -1136,8 +1240,15 @@ class SwarmRunner:
 
         The full catalogue (schemas, argument grammars) belongs to the
         executor that will actually call the tool; the planner only decides
-        *that* a tool step exists, and feeding it the schemas would spend
-        the context the whole design exists to save.
+        *that* a tool step exists.
+
+        This one **stays** a cut, and it is not a context bound wearing a
+        character cap.  It is a *relevance* filter: an argument grammar is
+        the answer to "how do I call this", which is the executor's
+        question and not the planner's, and a planner shown fifty JSON
+        schemas plans worse than one shown fifty sentences — on a window of
+        any size.  What the window now decides is whether the sentences
+        themselves fit, which is :meth:`_fit`'s business one level up.
         """
         lines = []
         for name in self._tool_names:
@@ -1185,11 +1296,7 @@ class SwarmRunner:
             user_parts.append(
                 f"The previous plan failed: {failure}\n"
                 f"Plan a different route around that failure.")
-        messages: List[Dict[str, str]] = [
-            {"role": "system", "content": system},
-            *[dict(turn) for turn in self._history[-2:]],
-            {"role": "user", "content": "\n\n".join(user_parts)},
-        ]
+        messages = self._role_messages(system, "\n\n".join(user_parts))
 
         for _attempt in range(2):
             decision = self._json_reply(messages)
@@ -1284,11 +1391,20 @@ class SwarmRunner:
     def _step_done(outcome: "_StepOutcome") -> Dict[str, str]:
         """One executed step as the metadata's ``steps_done`` entry.
 
-        ``{id, outcome, summary}`` — the word first and the prose second,
-        so a restart can branch on the word without parsing the prose.  A
-        failure's ``why`` goes in the same slot its success's ``summary``
-        would: the field answers "what came of this step", and two fields
-        only one of which is ever populated is two fields to read wrong.
+        ``{id, goal, outcome, summary}`` — the word first and the prose
+        second, so a restart can branch on the word without parsing the
+        prose.  A failure's ``why`` goes in the same slot its success's
+        ``summary`` would: the field answers "what came of this step", and
+        two fields only one of which is ever populated is two fields to
+        read wrong.
+
+        ``goal`` is here because after a redraw this record is the ONLY
+        place it lives.  The plan on the checkpoint is the plan as redrawn;
+        a step that settled under the plan it replaced is not in it, so a
+        resumed synthesis rebuilding that step from its id alone rendered
+        it as ``s1 (s1)`` — the step's own account of itself, lost to the
+        redraw that kept its result.  Read with ``.get`` on the way back
+        in, so a run checkpointed before this field existed still resumes.
 
         :func:`_resumed_outcome` is the reader, and the two are written to
         be read together: this method decides which of ``summary`` and
@@ -1296,6 +1412,7 @@ class SwarmRunner:
         comes back out as.
         """
         return {"id": outcome.step.id,
+                "goal": outcome.step.goal,
                 "outcome": "ok" if outcome.ok else "failed",
                 "summary": outcome.summary if outcome.ok else outcome.why}
 
@@ -1439,7 +1556,20 @@ class SwarmRunner:
                                    failure=f"step {step.id} "
                                            f"({step.goal}): {outcome.why}")
                 if fresh:
-                    queue = fresh
+                    # A COPY into the queue: `plan` below and `queue` here
+                    # would otherwise be one list, and `queue.pop(0)` empties
+                    # the plan the answer is then written from — which is a
+                    # plan of nothing by the time the last step has run.
+                    queue = list(fresh)
+                    # The plan the answer is written from is the plan the
+                    # steps belong to. This method used to keep the plan as
+                    # DRAWN in `plan` and hand that to `_synthesize`, while
+                    # a resume handed it the plan as CHECKPOINTED — two
+                    # owners of one fact, each dropping the other's step
+                    # results out of the synthesis. `_settled_order` takes
+                    # the union of this plan and everything else that
+                    # settled, so nothing that ran is lost either way.
+                    plan = fresh
                     stage.announce(fresh)
                     # The plan as REDRAWN replaces the plan as drawn, for
                     # the reason `_StageObserver.announce` is called again:
@@ -1498,7 +1628,13 @@ class SwarmRunner:
         attempts: List[MissionTranscript] = []
         evidence: List[str] = []
         for attempt in range(1 + self._retries):
-            allowance = min(self._step_budget, budget - spent)
+            # What the MISSION has left, unless a caller portioned it.
+            # `budget` is already `max_steps` minus everything spent, so
+            # the default lets a step that needs five tool turns take five
+            # — and the turn still stops at `max_steps`, which is the bound
+            # an operator actually set.
+            allowance = (budget - spent if self._step_budget is None
+                         else min(self._step_budget, budget - spent))
             if allowance <= 0:
                 break
             stage.begin_stage()
@@ -1510,7 +1646,8 @@ class SwarmRunner:
                 max_steps=allowance,
                 observer=stage,
             )
-            sub = runner.run(self._step_objective(step, results, failure))
+            sub = runner.run(
+                self._step_objective(objective, step, results, failure))
             attempts.append(sub)
             evidence.extend(runner.store.evidence_texts())
             self._note_calls(runner)
@@ -1523,22 +1660,47 @@ class SwarmRunner:
             ok, why = self._gate(step, sub)
             if ok:
                 summary = self._bound_summary(sub.answer or "")
-                return (_StepOutcome(step=step, ok=True, summary=summary),
+                # `evidence` and not `runner.store.evidence_texts()`: every
+                # attempt at this step read something real, and the answer
+                # is written over what the mission read rather than over
+                # what its last attempt read.
+                return (_StepOutcome(step=step, ok=True, summary=summary,
+                                     evidence=list(evidence)),
                         attempts, evidence, spent)
             failure = why
         return (_StepOutcome(step=step, ok=False, why=failure or
-                             "the step produced no checkable result"),
+                             "the step produced no checkable result",
+                             evidence=list(evidence)),
                 attempts, evidence, spent)
 
-    def _step_objective(self, step: PlanStep,
+    def _step_objective(self, objective: str, step: PlanStep,
                         results: Dict[str, _StepOutcome],
                         failure: str = "") -> str:
         """The whole of what an executor sees about the mission.
 
-        The step, its rung, its success shape, and the summaries of exactly
-        the earlier steps it declared it needs — never the raw output of
-        any of them, and never the rest of the plan.  This bound is the
-        design: the executor's context must not grow with the mission.
+        The mission's objective for context, the step, its rung, its
+        success shape, and the summaries of exactly the earlier steps it
+        declared it needs — never the raw output of any of them, and never
+        the rest of the plan.  The executor's context still does not grow
+        with the mission: everything here is a fixed handful of sentences
+        whatever the plan's length.
+
+        **The objective is here now, and it was not.**  It was withheld on
+        the rule that an executor doing one step must not be told about the
+        wider question, and what that bought was a step doing *less* than
+        the question needed.  Live, 16 August: the objective asked for "the
+        actor at the top of each run's actor list"; the planner wrote the
+        step as "Retrieve details for run r-7"; the executor, reading only
+        the step, called the view asking for ``totals`` and got no actor
+        list at all — twice in three runs, on a different run each time.
+        Nothing had gone wrong that any gate could see: the step said
+        *details* and details came back.
+
+        Marked as context and not as the task, because the failure it
+        guards against is real too — an executor handed a whole objective
+        answers the whole objective and the plan stops meaning anything.
+        The paragraph above it (``EXECUTE_PROMPT``) says *do only this
+        step*, and the line here says the same word again.
         """
         # `.get` with the plain-code fallback, and not a KeyError: a rung
         # this run does not offer cannot reach here through `_read_plan`,
@@ -1546,7 +1708,10 @@ class SwarmRunner:
         # SDK is the honest degradation of code with it.
         sentence = self._rung_sentences.get(step.rung,
                                             self._rung_sentences["code"])
-        parts = [f"Step {step.id} of a plan: {step.goal}",
+        parts = [f"The mission's objective, for context only — you are "
+                 f"doing ONE step of a plan that answers it, and not the "
+                 f"objective itself:\n{objective}",
+                 f"Step {step.id} of a plan: {step.goal}",
                  f"Do it via: {sentence}"]
         if step.done:
             parts.append(f"Success looks like: {step.done}")
@@ -1613,29 +1778,145 @@ class SwarmRunner:
 
     # ── SYNTHESIZE ──────────────────────────────────────────────────────
 
+    #: The heading the whole tool output goes under in the synthesizer's
+    #: user turn.  Named rather than inlined because a test reads it and a
+    #: second spelling of it would be a test that passes against nothing.
+    EVIDENCE_HEADER = ("What the tools actually returned, oldest first — "
+                       "quote identifiers and figures from here:")
+
+    def _settled_order(self, plan: Sequence[PlanStep],
+                       results: Dict[str, _StepOutcome]) -> List[str]:
+        """Which steps the answer is written from: plan order, then arrival.
+
+        The current plan's ids first, in the plan's own order, then every
+        other settled id in the order its step finished.  A step that ran
+        and settled is evidence whether or not the plan it belonged to is
+        still the current one — which is exactly the case a redraw makes,
+        live and resumed alike.
+        """
+        order = [step.id for step in plan]
+        order.extend(sid for sid in results if sid not in order)
+        return order
+
+    def _result_lines(self, order: Sequence[str], plan: Sequence[PlanStep],
+                      results: Dict[str, _StepOutcome]) -> List[str]:
+        """One line per step: what it was for, and what came of it."""
+        goals = {step.id: step.goal for step in plan}
+        lines = []
+        for sid in order:
+            outcome = results.get(sid)
+            goal = goals.get(sid) or (outcome.step.goal if outcome else sid)
+            if outcome is None:
+                lines.append(f"- {sid} ({goal}): NOT RUN — an "
+                             f"earlier step failed first")
+            elif outcome.ok:
+                lines.append(f"- {sid} ({goal}): {outcome.summary}")
+            else:
+                lines.append(f"- {sid} ({goal}): FAILED — {outcome.why}")
+        return lines
+
+    @staticmethod
+    def _evidence_blocks(order: Sequence[str],
+                         results: Dict[str, _StepOutcome],
+                         evidence: Sequence[str]) -> List[tuple]:
+        """``(label, text)`` for everything this turn's tools returned.
+
+        Attributed to the step that read it where a step claims it, and
+        labelled ``earlier`` where nothing does — which on a resumed turn
+        is the whole of the recorded stretch, read back off the log rather
+        than out of a store this process ever held.  Unattributed first,
+        because that is the order it happened in and the order
+        :meth:`_synthesis_messages` drops it in.
+
+        Deduplicated on the text, once across the turn: two steps that read
+        the same view are one thing to quote, and a window spent twice on
+        it is a window spent on nothing.
+        """
+        claimed: set = set()
+        blocks: List[tuple] = []
+        for sid in order:
+            outcome = results.get(sid)
+            if outcome is None:
+                continue
+            for text in outcome.evidence:
+                if text and text not in claimed:
+                    claimed.add(text)
+                    blocks.append((sid, text))
+        earlier: List[tuple] = []
+        for text in evidence:
+            if text and text not in claimed:
+                claimed.add(text)
+                earlier.append(("earlier", text))
+        return earlier + blocks
+
+    def _synthesis_user(self, objective: str, lines: Sequence[str],
+                        blocks: Sequence[tuple], dropped: int) -> str:
+        """The synthesizer's user turn: the step lines, then the results.
+
+        The note about what was left out is written whether or not anything
+        survived it — a window small enough to drop *every* result is
+        exactly the run whose answer must not read as though there were
+        none.
+        """
+        parts = [f"Objective: {objective}\n\nStep results:\n"
+                 + "\n".join(lines)]
+        if dropped:
+            parts.append(f"({dropped} tool result(s) left out to fit the "
+                         f"context window; the whole of each is in the "
+                         f"mission's result store.)")
+        if blocks:
+            parts.append(self.EVIDENCE_HEADER + "\n" + "\n\n".join(
+                f"[{label}] {body}" for label, body in blocks))
+        return "\n\n".join(parts)
+
+    def _synthesis_messages(self, objective: str, plan: Sequence[PlanStep],
+                            results: Dict[str, _StepOutcome],
+                            evidence: Sequence[str]):
+        """``(messages, step lines)`` — as much of the truth as fits.
+
+        **The whole of every settled step's tool output goes in here**, and
+        that is a reversal of what this class used to promise.  Raw tool
+        output was kept out of the synthesizer on the argument that a step's
+        summary is what travels; the live run of 16 August is what that cost.
+        Two governed views of 34 KB each were read, summarised into 1.2 KB
+        of prose apiece, and the answer to "name the actor at the top of its
+        actor list" was *"the actor list for run r-7 was not reported in the
+        step results"*.  It had been read.  Nothing downstream of the step
+        that read it was allowed to see it.
+
+        What bounds it now is the window and not a number: everything goes
+        in, and if the assembled prompt does not fit, whole results are
+        dropped **oldest first** — :data:`~core.runtime.context_window
+        .EVICTION_ORDER`'s policy (tool output before conversation, oldest
+        before newest) applied where the content actually is, rather than
+        left to :meth:`MissionWindow.fit`, which can only drop whole
+        messages and would take the step lines with them.  :meth:`_fit`
+        still has the last word on the list it is handed.
+
+        On a small window this degrades to what it always did — the step
+        summaries alone — and says so in the prompt.
+        """
+        order = self._settled_order(plan, results)
+        lines = self._result_lines(order, plan, results)
+        blocks = self._evidence_blocks(order, results, evidence)
+        system = stacked(self._system_message, SYNTHESIZE_PROMPT)
+        kept = list(blocks)
+        while True:
+            messages = self._fit(self._role_messages(
+                system, self._synthesis_user(objective, lines, kept,
+                                             len(blocks) - len(kept))))
+            if not kept or self._window is None:
+                return messages, lines
+            if self._window.estimate(messages) <= self._window.limit_tokens:
+                return messages, lines
+            kept.pop(0)
+
     def _synthesize(self, objective: str, plan: List[PlanStep],
                     results: Dict[str, _StepOutcome],
                     evidence: List[str],
                     transcript: MissionTranscript) -> MissionTranscript:
-        lines = []
-        for step in plan:
-            outcome = results.get(step.id)
-            if outcome is None:
-                lines.append(f"- {step.id} ({step.goal}): NOT RUN — an "
-                             f"earlier step failed first")
-            elif outcome.ok:
-                lines.append(f"- {step.id} ({step.goal}): {outcome.summary}")
-            else:
-                lines.append(f"- {step.id} ({step.goal}): FAILED — "
-                             f"{outcome.why}")
-        messages: List[Dict[str, str]] = [
-            {"role": "system", "content": stacked(
-                self._system_message, SYNTHESIZE_PROMPT)},
-            *[dict(turn) for turn in self._history[-2:]],
-            {"role": "user",
-             "content": f"Objective: {objective}\n\nStep results:\n"
-                        + "\n".join(lines)},
-        ]
+        messages, lines = self._synthesis_messages(
+            objective, plan, results, evidence)
         answer = str(self._plain_chat(messages) or "").strip()
         self._spent()
         if not answer:
@@ -1647,8 +1928,12 @@ class SwarmRunner:
         answer, report = self._ground(answer, messages, evidence)
         transcript.answer = answer
         transcript.grounding = report
-        failed = any(not r.ok for r in results.values()) or (
-            len(results) < len(plan))
+        # A plan step with no outcome at all, not a count: `results` may
+        # now hold ids the current plan does not (a redraw settled them),
+        # so `len(results) < len(plan)` could be false of a plan step that
+        # never ran.
+        failed = (any(not r.ok for r in results.values())
+                  or any(step.id not in results for step in plan))
         if report is not None and report.caveat:
             transcript.outcome = "answered_with_caveat"
         else:
@@ -1731,7 +2016,8 @@ class SwarmRunner:
             messages.append({"role": "assistant", "content": answer})
             messages.append({"role": "user",
                              "content": self._validator.repair_prompt(report)})
-            answer = str(self._plain_chat(messages) or "").strip() or answer
+            answer = str(
+                self._plain_chat(self._fit(messages)) or "").strip() or answer
             self._spent()
             report = self._validator.validate(answer, evidence,
                                               called=self._called)
@@ -1754,8 +2040,21 @@ class SwarmRunner:
             transcript.steps.append(step)
 
     def _bound_summary(self, text: str) -> str:
+        """A step's reported result, whole unless a caller asked for a cut.
+
+        ``summary_chars=None`` — the default — returns the executor's own
+        sentence entire, whitespace collapsed, because the thing that
+        bounds it is the window of the prompt it lands in and not a number
+        chosen here.  It was 1,200 characters by default, and 1,200
+        characters is what reached the synthesizer of the 16 August run:
+        a 34,000-character governed view arrived as 1.2 KB of prose about
+        it, and the answer said the actor list "was not reported".
+
+        An int is a caller who wants the cut, and gets exactly the cut
+        this always made, marker included.
+        """
         text = " ".join(str(text).split())
-        if len(text) <= self._summary_chars:
+        if self._summary_chars is None or len(text) <= self._summary_chars:
             return text
         return (text[:self._summary_chars]
                 + f" … [cut at {self._summary_chars} characters]")
@@ -1793,7 +2092,7 @@ class SwarmRunner:
         extra = ({"response_format": {"type": "json_object"}}
                  if self._json_mode else {})
         try:
-            reply = str(self._plain_chat(messages, **extra) or "")
+            reply = str(self._plain_chat(self._fit(messages), **extra) or "")
         except Exception:
             # Nothing to fold: `last_usage` is cleared at the start of
             # every call, so a call that raised reports nothing and adding
