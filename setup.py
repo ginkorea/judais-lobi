@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 
 setup(
     name="judais-lobi",
@@ -116,7 +116,7 @@ setup(
     # `Summary:` in the built metadata. The version belongs to VERSION
     # above; retyped here it agreed for exactly as long as whoever
     # bumped one remembered the other.
-    description=f"JudAIs & Lobi v{VERSION} — Terminal agents and a governed mission runtime over a unified OpenAI/Mistral backend, with memory and tools",
+    description=f"JudAIs & Lobi v{VERSION} — Terminal agents and a governed mission runtime over OpenAI, Anthropic, Mistral and local backends, with memory and tools",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ginkorea/judais-lobi",

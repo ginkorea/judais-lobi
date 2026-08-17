@@ -92,9 +92,15 @@ export LOCAL_MODEL=gpt-oss-20b                   # optional; else GET /models de
 lobi --provider local "summarize this repo"
 ```
 
-`--provider anthropic` speaks the Messages API through the official SDK
-(`pip install 'judais-lobi[anthropic]'`, `ANTHROPIC_API_KEY`); it defaults to
-`claude-opus-5` and its context window comes from the backend's own model table.
+`--provider anthropic` runs the mission on Anthropic's Messages API through the
+official SDK. It needs `ANTHROPIC_API_KEY` and `pip install 'judais-lobi[anthropic]'`.
+The default model is `claude-opus-5` (override with `--model`); streaming and
+native tool calls are supported, JSON mode is not — the Messages API has no
+`response_format`, so a native-protocol run (`--protocol native`) is how you
+constrain the shape. `openai` and `mistral` fall back to each other when a key
+is missing; `anthropic` and `local` do not: naming either is an instruction, and
+a missing `ANTHROPIC_API_KEY` stops the run by name rather than sending the
+prompt to a different provider.
 
 `capabilities` are probed from `GET {base}/models`, so the context window is the
 served model's real `max_model_len` and not a guess. Unlike the other two
@@ -341,9 +347,18 @@ replayed text) and the text of a rejected reply (`reply_rejected` carries the
 refusal — the reply is the thing that did not parse).
 
 A staged (`--swarm`) mission checkpoints its plan and each step's outcome into
-the run's `meta.json` as it goes, and **is refused** by `--resume` today: the
-refusal names the steps that are done. Resuming it with the direct loop would
-restart the plan rather than continue it.
+the run's `meta.json` as it goes, and `--resume` picks it back up **as a staged
+mission**: which loop continues a recorded run is a property of the run and not
+of the resuming command line, so the plan is read off the checkpoint whether or
+not `--swarm` is typed again — and a run the ordinary loop recorded is continued
+by the ordinary loop even when it is. The router and the planner are not asked
+a second time; re-deciding them would put a different mission under this run's
+id. Steps checkpointed `ok` or `failed` are not re-run and their summaries go
+straight to the synthesizer; a step checkpointed `awaiting_approval` is run
+again, because nothing was called and the decision belonged to a person. The
+one staged run still refused is one whose `meta.json` holds no plan: the steps
+it had left are unknown, and the refusal says so and lists what was already
+done.
 
 Every mission also **reconciles orphans** on the way in: a run in the store
 with no `mission_finished` whose metadata has not been touched for 60 seconds
@@ -587,11 +602,14 @@ the stream sees the widening as that tool's **absence from
 `mission_started.gated`**; there is no separate field announcing it.
 
 `ApprovalStore.reconcile(live_run_ids)` marks pending requests whose run is gone
-as `abandoned`, which is a *refusal*. It is **provided and still not called from
-anywhere in `core/`**: the run store landed in 0.10.0 and can say which runs were
-recorded, but "recorded" is not "alive" — only whoever spawned the processes
-knows that, so the caller is the platform and the list of live ids is its
-answer. A liveness check that guessed would abandon live requests.
+as `abandoned`, which is a *refusal*. Since 0.14.0 the CLI calls it on the way
+into every mission, right after orphans are reconciled: "live" is every pending
+record's run id **minus** the runs the staleness rule just closed, so only a
+genuinely orphaned run loses its approval, and a finished `awaiting_approval`
+run keeps its pending record and stays `--approve`-able. It is announced
+(`🧾 reconciled: N approval(s) abandoned …`) and nothing runs when nothing was
+orphaned. A liveness check that guessed would abandon live requests, which is
+why the list is derived from the same rule the orphan sweep used.
 
 Gate names resolve the way `allowed_tools` does — through `same_tool`, so a
 manifest-style bare name matches the namespaced one the bus dispatches. A
@@ -786,9 +804,9 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.13.0 — 3676 tests collected.** Mission mode, skill manifests, the
+**v0.14.0 — 3858 tests collected.** Mission mode, skill manifests, the
 grounding validator, `--swarm`, the NDJSON mission stream and the published
-contract are all in this release. What 0.13.0 **is**, rather than what each
+contract are all in this release. What 0.14.0 **is**, rather than what each
 release added:
 
 * **Safe by default.** Tool subprocesses run under `bwrap` wherever bubblewrap
@@ -851,6 +869,7 @@ One line each. The commit for every one of these is `release: <version> — …`
 | 0.12.0 | 16 Aug 2026 | `answer_delta` at the source, a `--control` channel into a running mission, an AG-UI translator |
 | 0.12.1 | 16 Aug 2026 | `--gate-wait` / `MISSION_GATE_WAIT`: an unattended caller can turn the in-turn gate wait down to `0` (the 0.11 behaviour); default unchanged |
 | 0.12.2 | 17 Aug 2026 | the credential redactor is linear on long unbroken payloads (a 200 KB tool result took minutes; now ~50 ms) |
+| 0.14.0 | 17 Aug 2026 | `--provider anthropic` (default `claude-opus-5`) and one neutral HTTP policy owner; the offered set follows a bus that grows mid-run (`step_started.catalogue`); the code gate is `tool_key` equality (bridged shells are the server's); the swarm gets the critic and staged `--resume`; a staged replay corpus and swarm end-to-end tests; `ApprovalStore.reconcile` called on the way in |
 | 0.13.0 | 17 Aug 2026 | Phase 10: the eval harness (`core/eval/`, `EVAL.md`), recording + `--replay`, the reading/planes/critic grounding tiers off by default, `god_mode`/preflight deleted |
 | 0.11.0 | 16 Aug 2026 | native tool calling behind `--protocol native`; arguments schema-checked before dispatch; a byte-stable prompt prefix, and a window that evicts tool round trips first |
 | 0.10.0 | 16 Aug 2026 | durable and bounded: the fsync'd run log and `--resume`, a wall clock and a cancel that finish cleanly, the usage ledger and `elapsed_s`, approvals as durable records |
@@ -963,7 +982,7 @@ If you are **running this from another program**, read:
 
 If you want to understand **where this is going**, read:
 
-* 🗺️ `ROADMAP.md` — the only roadmap: where 0.13.0 stands (§1), Phases 9–13
+* 🗺️ `ROADMAP.md` — the only roadmap: where 0.14.0 stands (§1), Phases 9–13
   (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 * 🧪 `EVAL.md` — the eval harness: missions × behavioural flags, a held-out
   split, scoring from the recorded stream, `--replay`, and how a platform

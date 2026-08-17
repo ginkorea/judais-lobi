@@ -234,19 +234,23 @@ model is scripted and the tool plane is a subprocess.
 | `the_reply_is_the_right_shape` | protocol_shape | train |
 
 Two things the suite measured about this framework while being written, both
-worth carrying into Phase 11:
+closed in 0.14.0 and kept here as the record of what the harness found:
 
-- **The bus grows mid-run and the offered set does not.** `add_a_tool` makes
-  the server register `late_arrival` and the bridge picks it up, but a
-  mission's offered set is fixed at the start, so naming the new tool is a
-  rejected reply. The `state` mission grades an agent for *saying so* rather
-  than for pretending otherwise.
-- **A closed set cannot name a shell tool without declaring isolation.** The
-  stub serves `run_shell_command` on purpose — a server must not be able to
-  replace a local tool by choosing its name — and 0.9.0's manifest code gate
-  refuses a manifest that names it with no `sandbox: bwrap`. So on this plane
-  the boundary is the closed set itself, and `the_boundary_holds` measures
-  whether the agent reaches past it.
+- **The bus grows mid-run and now so does the offered set.** `add_a_tool` makes
+  the server register `late_arrival` and the bridge picks it up; since 0.14.0
+  the loop reconciles its offered set against the bus after every dispatch, at
+  every step boundary and once more before refusing a name, admits what the
+  manifest allows, re-renders the catalogue and says so on `step_started.
+  catalogue`. The `state` mission grades an agent for *noticing*, and an answer
+  that sends the person away to start again fails it.
+- **The code gate is about tools that run on THIS host.** The stub serves
+  `run_shell_command` on purpose — a server must not be able to replace a local
+  tool by choosing its name. The gate is `tool_key` equality: the bare name is
+  this process's descriptor and needs `sandbox: bwrap`; `mcp.run_shell_command`
+  executes on the server, is in the closed set, and `the_boundary_holds` is
+  spawned with `--gate-tool` in front of it — so the boundary is a door with a
+  person behind it rather than an absence. A mission may carry more than one
+  bad agent (`<key>.invents.jsonl`).
 
 ### The corpus
 

@@ -254,9 +254,10 @@ author chose is the order the catalogue is read in.
   question will answer it from the model's memory instead, and the transcript
   will look completely ordinary. A closed set where every entry is optional and
   none was discovered is refused for the same reason.
-* A closed set that names a **code-plane tool** — a shell, an interpreter, a `pip
-  install` — is refused unless the manifest also declares `sandbox: bwrap`. See
-  `sandbox` below.
+* A closed set that names a **code-plane tool that runs on this host** — a
+  shell, an interpreter, a `pip install`, by its bare descriptor name — is
+  refused unless the manifest also declares `sandbox: bwrap`. See `sandbox`
+  below.
 
 **Prompt text.** The operational frontmatter fields and the whole Markdown body,
 appended to the personality's system message — who you are, then what you are
@@ -379,8 +380,15 @@ already run whatever it ran.
   asking for `shell.exec`, `python.exec` or `pip.install` (`core/tools/
   descriptors.py`) — today `run_shell_command`, `run_python_code` and
   `install_project`, and whatever is registered next, on the day it is registered.
-  A bridged spelling counts: `mcp.run_python_code` is caught by the same
-  `same_tool` rule the closed set is matched with. `verify` is deliberately out:
+  A bridged spelling does **not** count. `mcp.run_python_code` is a tool on a
+  discovered server — the mission sends `tools/call` and the interpreter runs on
+  the far end — so `sandbox: bwrap`, a wrapper this bus puts around a subprocess
+  it spawns, would isolate nothing about it. The rule is `tool_key` equality:
+  the bare name is this process's own descriptor and is gated; a namespaced one
+  is the server's and is not. **A platform that bridges a shell is responsible
+  for the isolation on the server side**; what this harness governs it with is
+  the closed set, the `mcp.call` capability and `--gate-tool`, and it does not
+  claim to have sandboxed it. `verify` is deliberately out:
   it ends in a subprocess too, but the command is the one the *repository*
   configured, and the line this draws is who wrote the code that runs.
 * **An optional entry counts.** `run_shell_command?` is a manifest that permits
@@ -551,6 +559,13 @@ nobody meant to select. `--provider local` is never fallen back *away* from when
 a key is missing, deliberately: asking for the endpoint on this host and being
 answered by OpenAI is the opposite of what was asked, and for a mission prompt it
 would send the prompt off the host.
+
+A platform pointing this framework at Anthropic sets `ELF_PROVIDER=anthropic`
+(or `--provider anthropic`) plus `ANTHROPIC_API_KEY`, installs
+`judais-lobi[anthropic]`, and reads `capabilities.supports_json_mode == False` —
+constrain output with `tools` + `tool_choice="required"` under `--protocol
+native`, not with `response_format`. Like `local`, `anthropic` is never fallen
+back away from. The default model is `claude-opus-5`.
 
 `--mission-steps` defaults to **8**, and it counts parse-error turns as well as
 tool turns. TAIPAN runs at 24, after a mission was graded as an agent that "stops
