@@ -93,6 +93,11 @@ MISSION_STARTED = "mission_started"
 #: A staged (``--swarm``) mission adds ``plan`` to the first one each plan
 #: produces — the plan as drawn, and again as redrawn, on the first step it
 #: is about to be worked through.  See :data:`OPTIONAL`.
+#:
+#: It also carries ``injected`` on a step the operator spoke into over the
+#: run's control channel: the instructions that were put in front of the
+#: model for **this** step, in the order they were sent.  See
+#: :data:`OPTIONAL`.
 STEP_STARTED = "step_started"
 
 #: The model's reply was not a decision this loop could act on — unparseable,
@@ -382,7 +387,21 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: is not read as a gap.  A run resumed with nothing left of its step
     #: budget emits no ``step_started`` at all and therefore no ``resumed``:
     #: it goes straight to ``mission_finished`` with ``budget_exhausted``.
-    STEP_STARTED: ("plan", "compacted", "resumed"),
+    #:
+    #: ``injected`` — ``["…", …]``, the operator instructions delivered on
+    #: this run's control channel (``--control``) and put in front of the
+    #: model as user turns immediately before **this** step's call, in the
+    #: order they were sent.  Absent on every step nobody spoke into, which
+    #: is every step of every run without a channel, so a consumer that has
+    #: never heard of it reads the stream it always read.
+    #:
+    #: It is on the stream for the reason ``compacted`` is: an agent whose
+    #: conversation gained a turn nobody can see, from outside, looks
+    #: exactly like an agent that changed its mind. A consumer renders it
+    #: as what it is — somebody talked to the run — and it is the only
+    #: record that a control command was acted on, because commands
+    #: coming *in* are not events going *out*.
+    STEP_STARTED: ("plan", "compacted", "resumed", "injected"),
     #: ``tool`` — the name the model wrote, when it wrote one.  Absent when
     #: the reply was rejected before a name could be read out of it.
     #:
@@ -553,7 +572,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--provider", "--model",
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
     "--history", "--gate-tool", "--approval", "--resume", "--temperature",
-    "--top-p", "--seed", "--protocol", "--no-stream",
+    "--top-p", "--seed", "--protocol", "--no-stream", "--control",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -592,6 +611,10 @@ CLI_FLAGS: tuple[str, ...] = (
 #: ``MISSION_RESUME`` is the environment form of ``--resume``, the run id of
 #: a recorded mission to carry on from — the objective comes off that run's
 #: own record, so the positional message may be omitted with it;
+#: ``MISSION_CONTROL`` is the environment form of ``--control`` — where a
+#: platform writes NDJSON commands **into** a running mission (``fd:N``, a
+#: FIFO, a path, or ``-`` for stdin), which is the only lever into a turn
+#: besides ``SIGTERM``;
 #: ``MISSION_PROTOCOL`` is the environment form of ``--protocol`` — ``json``
 #: (the default, and the loop as it has always run) or ``native``, which
 #: declares the tools as functions and constrains the decoder to them.
@@ -622,6 +645,7 @@ ENV_VARS: tuple[str, ...] = (
     "MISSION_RESUME",
     "MISSION_PROTOCOL",
     "MISSION_STREAM",
+    "MISSION_CONTROL",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",
@@ -671,6 +695,23 @@ EXIT_CONTRACT: Mapping[str, str] = MappingProxyType({
         "to wind up sees it wound up, not a spurious clean exit. A SECOND "
         "SIGTERM does not wait — it flushes, closes and dies, so a run stuck in "
         "a model call or a subprocess can still be stopped twice."),
+    "control": (
+        "`--control` is the only channel INTO a run: NDJSON commands, one "
+        "per line, on an inherited descriptor (`fd:N`), a FIFO, a path, or "
+        "stdin (`-`). The vocabulary is closed — `inject` (a user "
+        "instruction, delivered before the next model call and reported "
+        "back as `step_started.injected`), `cancel` (identical to the first "
+        "SIGTERM: `incomplete` with `reason: \"cancelled\"`), `cancel_step` "
+        "(the calls of the current step that have not been dispatched are "
+        "skipped and the model is asked again; a tool already running is "
+        "never killed), and `gate_decision` (an `approval_id`, `approve`, "
+        "and a `decided_by` that must name somebody). A malformed line, an "
+        "unknown word or a decision signed by nobody is DROPPED with one "
+        "sentence on stderr and the run carries on; a channel nobody writes "
+        "to, or one whose writer goes away, is not an error and the mission "
+        "ends as it would have with no channel at all. Nothing on this "
+        "channel is an event: the run answers it by doing the thing, and "
+        "`injected` is the only trace on the stream."),
     "diagnostic": (
         "stderr carries the diagnostic. Its tail is what a consumer shows when "
         "a mission produced no events, or produced events and then stopped "

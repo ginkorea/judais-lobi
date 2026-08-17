@@ -43,6 +43,13 @@ The loop is deliberately small and its refusals are deliberately loud:
   deadline is.  A cancelled run ends ``incomplete`` with ``reason``, and
   it ends by *finishing*: the transcript is intact and the stream gets
   its own ``mission_finished`` rather than stopping mid-record;
+* and a caller may **steer** one, with a
+  :class:`~core.runtime.control.ControlChannel`.  Commands coming in where
+  the observer is records going out: a user instruction delivered between
+  steps, a cancellation, an abandonment of the rest of the current step,
+  and a decision on a gate the run is still standing at.  Every one of
+  them is drained at a point this loop chose, and none of them decides
+  anything the harness was not already told;
 * a tool result is **bounded** before it enters the transcript, and the
   whole of it stays in a per-mission store the model can read one field
   of.  See :mod:`core.runtime.results` for why an unbounded paste is a
@@ -78,11 +85,14 @@ from core.durable import RunStore
 from core.budgets import BudgetExhausted, Deadline, cancelled
 from core.redact import scrub_record
 from core.runtime.answer_stream import drain as drain_answer
-from core.runtime.approvals import ApprovalStore, ApprovalTicket
+from core.runtime.approvals import ApprovalError, ApprovalStore, ApprovalTicket
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
 )
 from core.runtime.contract import SCHEMA_VERSION
+from core.runtime.control import (
+    CANCEL_STEP, GATE_DECISION, GATE_WAIT_S, INJECT,
+)
 from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission_stream import (
     ANSWER, ANSWER_DELTA, GATE_REQUESTED, GROUNDING, MISSION_FINISHED,
@@ -490,6 +500,37 @@ def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
 CANCELLED = "cancelled"
 
 
+#: What the model is told about a call the operator cancelled before it ran.
+#:
+#: Said to the model rather than only recorded, because the model is about
+#: to be asked again and a turn whose calls silently produced no results
+#: reads, from inside the conversation, exactly like a tool plane that
+#: broke.  Under the native protocol it goes back as the ``tool`` message
+#: for each skipped call — every declared call has to be answered or the
+#: next request is a 400 — and under the JSON protocol as the ``user`` turn
+#: every other refusal takes.  See
+#: :data:`core.runtime.control.WHY_NOT_MID_FLIGHT` for the call this does
+#: **not** reach: one already dispatched.
+CANCEL_STEP_NOTE = (
+    "The operator cancelled the rest of this step. This call was NOT "
+    "dispatched and nothing it would have done has happened. Decide what to "
+    "do next from what you already have."
+)
+
+#: The same command, arriving too late to skip anything.
+#:
+#: A no-op, and said out loud anyway.  The operator asked for something and
+#: the answer is that it had already happened — a fact the model is entitled
+#: to, because the next turn is the one where the operator's intent still
+#: applies and an unexplained silence would leave the model repeating the
+#: work somebody just tried to stop.
+CANCEL_STEP_LATE = (
+    "The operator asked to cancel the rest of the previous step, which had "
+    "already been dispatched — so nothing was skipped, and its results "
+    "above stand. Take the ask as guidance for what to do next."
+)
+
+
 def _finished_record(*, outcome: str, steps: int, max_steps: int,
                      budget: Optional[BudgetExhausted] = None,
                      reason: str = "",
@@ -698,7 +739,10 @@ class MissionRunner:
         Tool names that are **offered and not dispatched**.  The model
         sees them in the catalogue, marked; naming one ends the mission
         at :data:`AWAITING_APPROVAL` with the proposed arguments intact
-        and nothing called.
+        and nothing called — unless a ``control`` channel is open and
+        somebody answers the request while the run stands at it, which
+        dispatches that one call in that one step and is still not a
+        decision this harness made.
 
         Offered rather than withheld, on purpose.  A tool simply left
         out of the set produces "there is no tool named X", which is
@@ -941,6 +985,37 @@ class MissionRunner:
         stops at its next check, keeps its transcript, and emits its own
         ``mission_finished`` saying ``incomplete`` with ``reason:
         "cancelled"``.
+    control:
+        A :class:`~core.runtime.control.ControlChannel` — commands coming
+        *in*, where ``observer`` is records going out — or ``None``, which
+        is a run nobody can steer and is what this loop was.
+
+        Four things it can do, and each one is drained at a point this loop
+        chose rather than delivered whenever it arrives.  ``inject`` puts a
+        user turn in front of the next model call, and that step's
+        ``step_started`` carries the text as ``injected``.  ``cancel``
+        throws :attr:`cancel` from the channel's own thread, so it behaves
+        exactly as the first ``SIGTERM`` does.  ``cancel_step`` skips the
+        calls of the current step that have not been dispatched yet — see
+        :data:`CANCEL_STEP_NOTE`, and
+        :data:`core.runtime.control.WHY_NOT_MID_FLIGHT` for what it
+        deliberately cannot reach.  ``gate_decision`` answers a gate **while
+        the run is still standing at it**: see :meth:`_gate`.
+
+        The channel is a transport and never a decision.  A gate answered
+        through it is recorded in the same :class:`ApprovalStore` the
+        ``--approval`` path reads, signed by the name the platform sent,
+        and spent on the dispatch it authorised — there is still no code
+        path in this module that reads a state and concludes a yes.
+    gate_wait_s:
+        How long a gated call waits for a ``gate_decision`` before the
+        mission ends at :data:`AWAITING_APPROVAL` as it always has.
+        Defaults to :data:`~core.runtime.control.GATE_WAIT_S`, and the real
+        bound is that or whatever is left of ``deadline``, whichever is
+        less.  A runner keyword and deliberately not a flag: it is a
+        property of the *platform* holding the other end of the channel,
+        which is the caller constructing this object, and a mission with no
+        channel is unaffected by it either way.
 
     The store tool is offered **in addition to** ``tool_names``, and
     that is not a hole in a closed set: it reaches nothing outside the
@@ -975,6 +1050,8 @@ class MissionRunner:
         ledger: Optional[Ledger] = None,
         deadline: Optional[Deadline] = None,
         cancel: Any = None,
+        control: Any = None,
+        gate_wait_s: float = GATE_WAIT_S,
         started_at: Optional[float] = None,
     ):
         self._chat = chat_fn
@@ -1038,6 +1115,13 @@ class MissionRunner:
 
         self._deadline = deadline
         self._cancel = cancel
+        # Commands coming IN. Drained at three points and nowhere else: the
+        # step boundary, a call boundary inside a step, and a gate that is
+        # waiting for somebody. A channel read anywhere the loop happened to
+        # look would be an operator's instruction landing in the middle of a
+        # decision the model had already made.
+        self._control = control
+        self._gate_wait_s = max(0.0, float(gate_wait_s))
         # The instant the MISSION began, on `time.monotonic`. A staged run
         # hands its own down so a sub-mission's `mission_finished` counts
         # from triage, not from the sub-mission; `None` means "this run's
@@ -1559,11 +1643,18 @@ class MissionRunner:
             stop = self._stop()
             if stop is not None:
                 return self._stopped(transcript, stop)
+            # Immediately before the ask and after the stop check, which is
+            # the one moment an operator's instruction can reach the model
+            # without arriving in the middle of a decision it had already
+            # made. A cancellation sent on the same channel was applied by
+            # the channel's own thread and was caught by `_stop` above.
+            injected = self._steer(messages)
             # Before the ask, not after the reply: what is compacted is
             # what this step is about to send, and a watcher told about it
             # afterwards has already rendered the turn it applied to.
             messages, compacted = self._fit(messages)
             self._emit(STEP_STARTED, index=index, **opening,
+                       **({"injected": injected} if injected else {}),
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
             opening = {}
@@ -1633,8 +1724,17 @@ class MissionRunner:
                 continue
 
             if name in self._gated:
-                return self._gate(objective, index, name, arguments, step,
-                                  transcript)
+                # `None` back means the gate was ANSWERED on the control
+                # channel while the run stood at it — the call was
+                # dispatched, or it was refused and said so — and this turn
+                # carries on with the step that already happened.
+                stopped = self._gate(objective, index, name, arguments, step,
+                                     transcript, messages=messages,
+                                     spent=spent)
+                if stopped is not None:
+                    return stopped
+                transcript.steps.append(step)
+                continue
 
             # The tool's own schema, on the way out. AFTER the gate, so a
             # gated call is still proposed exactly as written — what a
@@ -1661,6 +1761,16 @@ class MissionRunner:
                 step.error = self._no_time_to_call(name, stop)
                 transcript.steps.append(step)
                 return self._stopped(transcript, stop)
+
+            # The last boundary before the call is made, and the only place
+            # `cancel_step` can act under this protocol: a turn is one
+            # decision here, so "the rest of this step" is exactly this
+            # dispatch. After it, the tool is the bus's and not this loop's.
+            if self._cancel_step_asked():
+                step.error = CANCEL_STEP_NOTE
+                self._say(messages, CANCEL_STEP_NOTE)
+                transcript.steps.append(step)
+                continue
 
             self._dispatch(step, index, spent, messages)
             transcript.steps.append(step)
@@ -1863,32 +1973,63 @@ class MissionRunner:
     def _gate(self, objective: str, index: int, name: str,
               arguments: Dict[str, Any], step: MissionStep,
               transcript: MissionTranscript, *, skipped: int = 0,
-              call: Optional[MissionCall] = None) -> MissionTranscript:
-        """STOP, and write the proposal down.
+              call: Optional[MissionCall] = None,
+              messages: Optional[List[Dict[str, Any]]] = None,
+              spent: Optional[Dict[str, Any]] = None,
+              ) -> Optional[MissionTranscript]:
+        """STOP, write the proposal down — and, if anybody is listening, wait.
 
-        Not dispatched, not retried, and not handed back to the model to
-        work around — the mission ends here holding the exact call it
-        proposed, and somebody who is not this process decides what
-        happens to it.
+        ``None`` back means the gate was **answered in this turn** and the
+        loop should carry on: a yes was recorded and the one call it
+        authorised has been dispatched, or a no was recorded and the model
+        has been told.  A transcript back is the behaviour this method has
+        always had — the mission ends here holding the exact call it
+        proposed, and somebody who is not this process decides later.
+
+        **Waiting is what a control channel buys**, and it buys nothing
+        else here.  Without one — the default, and every run before this
+        parameter existed — the call is not dispatched, not retried and not
+        handed back to the model to work around.  With one, the ask is
+        still written down first, the ``gate_requested`` record still goes
+        out first, and only then does the runner wait: what arrives is a
+        decision somebody *sent*, recorded through the same
+        :class:`ApprovalStore` the ``--approval`` path reads and signed
+        with the name that platform put on it.  Nothing here reads a state
+        and concludes a yes; nothing here times out into one either — the
+        wait running out is exactly the :data:`AWAITING_APPROVAL` a run
+        without a channel would have reached, with the record left
+        ``pending`` for ``--approval`` on a later turn.
 
         *skipped* is how many further calls the same reply asked for and
         did **not** get: only the native protocol can produce more than
         one, and a person reading "the mission stopped here" is entitled
         to know that two other calls the model wanted were dropped with
         it rather than run behind the gate's back.  Zero adds no words, so
-        a JSON-protocol gate says exactly what it always said.
+        a JSON-protocol gate says exactly what it always said — and where
+        a decision may arrive in-turn the sentence says *held* rather than
+        *not dispatched*, because on a yes those later calls do run.
         """
+        waiting = self._can_wait_for_a_decision()
         reason = (
             f"{name} needs a person's approval on this deployment. It "
             f"has been proposed exactly as written and NOT called. "
             f"Nothing further happens on this mission until somebody "
             f"decides.")
         if skipped:
+            plural = "" if skipped == 1 else "s"
             reason = (
-                f"{reason} The {skipped} later call"
-                f"{'' if skipped == 1 else 's'} in the same reply "
-                f"{'was' if skipped == 1 else 'were'} NOT dispatched "
+                f"{reason} The {skipped} later call{plural} in the same "
+                f"reply {'is' if skipped == 1 else 'are'} HELD: "
+                f"{'it runs' if skipped == 1 else 'they run'} only if this "
+                f"is approved and the mission carries on."
+                if waiting else
+                f"{reason} The {skipped} later call{plural} in the same "
+                f"reply {'was' if skipped == 1 else 'were'} NOT dispatched "
                 f"either.")
+        if waiting:
+            reason = (
+                f"{reason} A decision sent on this run's control channel is "
+                f"honoured while the run stands here.")
         # Written down BEFORE the record goes out, so the id a
         # watcher is handed is an id something can already be
         # decided against. This process is about to exit; a request
@@ -1899,6 +2040,32 @@ class MissionRunner:
         if trouble:
             reason = f"{reason} {trouble}"
         carried = {"approval_id": approval_id} if approval_id else {}
+        # BEFORE the wait, and that is the whole ordering: the platform
+        # cannot answer a request it has not been shown, and this record is
+        # what shows it — carrying the `approval_id` the decision has to
+        # quote back.
+        self._emit(GATE_REQUESTED, index=index, tool=name,
+                   arguments=dict(arguments), reason=reason, **carried)
+
+        if waiting and approval_id:
+            decision = self._control.wait_for(
+                lambda command: (
+                    command.get("control") == GATE_DECISION
+                    and command.get("approval_id") == approval_id),
+                self._gate_window())
+            if decision is not None:
+                approved, trouble = self._record_decision(
+                    approval_id, decision)
+                if not trouble:
+                    return self._answered_gate(
+                        approved, decision, index, name, step, call,
+                        messages if messages is not None else [],
+                        dict(spent or {}))
+                # Fail closed and say so. A decision that could not be
+                # recorded is not a decision: the call is not made, and the
+                # mission stops where it would have stopped anyway.
+                reason = f"{reason} {trouble}"
+
         # On the CALL when there is one, and on the step otherwise. A
         # native turn's problems belong to the call that had them — the
         # step is the turn, and a turn with three calls has no single
@@ -1913,9 +2080,114 @@ class MissionRunner:
         transcript.awaiting = {"tool": name,
                                "arguments": dict(arguments),
                                **carried}
-        self._emit(GATE_REQUESTED, index=index, tool=name,
-                   arguments=dict(arguments), reason=reason, **carried)
         return transcript
+
+    # ── a gate somebody answers while the run is still standing at it ───
+
+    def _can_wait_for_a_decision(self) -> bool:
+        """Whether this gate has anybody to wait for.
+
+        All three have to be true.  A channel, or there is nowhere for a
+        decision to arrive from; a **store**, or there is nothing to record
+        it in and no id to address it to — and an unrecorded yes is the
+        standing permission :mod:`core.runtime.approvals` exists not to
+        have; and a window greater than zero, which is how a caller turns
+        the whole behaviour off without taking the channel away.
+        """
+        return (self._control is not None and self._approvals is not None
+                and self._gate_wait_s > 0)
+
+    def _gate_window(self) -> float:
+        """``min(what the caller allows, what is left of the clock)``.
+
+        The deadline wins where it is shorter, because a run that waited
+        five minutes for a person and then reported that it had run out of
+        seconds would have spent the operator's whole budget standing
+        still.  Negative remaining floors at zero — :meth:`wait_for
+        <core.runtime.control.ControlChannel.wait_for>` returns at once,
+        which is the honest reading of a clock that is already past.
+        """
+        window = self._gate_wait_s
+        remaining = (self._deadline.remaining()
+                     if self._deadline is not None else None)
+        if remaining is not None:
+            window = min(window, max(0.0, remaining))
+        return window
+
+    def _record_decision(self, approval_id: str,
+                         decision: Dict[str, Any]) -> Tuple[bool, str]:
+        """``(approved, trouble)`` — write somebody's answer down.
+
+        Through :meth:`ApprovalStore.decide
+        <core.runtime.approvals.ApprovalStore.decide>` and then
+        :meth:`consume <core.runtime.approvals.ApprovalStore.consume>`, the
+        same two calls the ``--approval`` path makes one process later, so
+        a gate answered in-turn and a gate answered tomorrow leave the same
+        record: ``spent``, by the named decider, at a recorded time.  The
+        decision is the *platform's*; this is the bookkeeping.
+
+        Any refusal from the store — the record was already answered out of
+        band, the directory went read-only — is **trouble**, never a
+        dispatch.  Failing closed is the only direction a gate may fail in,
+        and the sentence names the store's own complaint so an operator is
+        not left guessing which of the two halves refused.
+        """
+        approve = bool(decision.get("approve"))
+        try:
+            self._approvals.decide(
+                approval_id, approve=approve,
+                decided_by=str(decision.get("decided_by") or ""),
+                note=str(decision.get("note") or ""))
+        except (ApprovalError, OSError) as exc:
+            return False, (
+                f"A decision arrived on the control channel and could NOT "
+                f"be recorded ({exc}) — so it is not a decision, and the "
+                f"call was not made.")
+        if not approve:
+            return False, ""
+        try:
+            self._approvals.consume(approval_id)
+        except (ApprovalError, OSError) as exc:
+            return False, (
+                f"The approval was recorded and could NOT be spent ({exc}), "
+                f"so the call was NOT made. Nothing here proceeds on a "
+                f"decision it cannot account for.")
+        return True, ""
+
+    def _answered_gate(self, approved: bool, decision: Dict[str, Any],
+                       index: int, name: str, step: MissionStep,
+                       call: Optional[MissionCall],
+                       messages: List[Dict[str, Any]],
+                       spent: Dict[str, Any]) -> None:
+        """Carry out a decision that arrived in time.  Always ``None``.
+
+        ``None`` is the caller's signal to carry on, and both outcomes are
+        that: an approved call is dispatched **now**, in this step, under
+        this ``index``, so a consumer sees the ``tool_call`` it asked about
+        following the ``gate_requested`` that asked; a refused one tells the
+        model, in the shape its protocol requires, and the loop asks again.
+
+        The approved call is dispatched **exactly as proposed** and is not
+        put through :meth:`_schema_violation` on the way.  What a person
+        approves has to be the bytes that run — a harness that refused a
+        call somebody had just said yes to would be answering a gate it did
+        not open, and the tool's own refusal is the honest place for a
+        malformed argument to land.
+        """
+        who = str(decision.get("decided_by") or "")
+        slot = call if call is not None else step
+        if approved:
+            self._dispatch(slot, index, spent, messages)
+            return None
+        note = str(decision.get("note") or "").strip()
+        refusal = (
+            f"{name} was REFUSED by {who}"
+            + (f": {note}" if note else ".")
+            + f" The call was not made and will not be. Do not propose it "
+              f"again; answer with what you have, or find another way.")
+        slot.error = refusal
+        self._say(messages, refusal, getattr(slot, "call_id", ""))
+        return None
 
     # ── the native protocol ─────────────────────────────────────────────
 
@@ -2070,9 +2342,30 @@ class MissionRunner:
                 str(call["arguments"]["text"]), index, step, cost(), messages,
                 transcript, repairs, call_id=call["id"])
 
+        # Set the moment the operator asks, and never cleared inside this
+        # turn: "cancel the rest of this step" means the rest of it, not
+        # the next call only. It dies with the turn, because the next step
+        # is a decision the model has not made yet.
+        cancel_step = False
+
         for ordinal, entry in enumerate(wanted):
             name = entry["name"]
             arguments = entry["arguments"]
+            # The call boundary this protocol has and the JSON one does
+            # not: a turn may carry several calls, and the operator gets to
+            # stop the ones that have not gone out. Asked before anything
+            # else about this call, so a `cancel_step` sent while the
+            # previous call was in flight catches this one.
+            if cancel_step or self._cancel_step_asked():
+                cancel_step = True
+                step.calls.append(MissionCall(
+                    tool=name, arguments=dict(arguments),
+                    call_id=entry["id"], ordinal=ordinal,
+                    error=CANCEL_STEP_NOTE))
+                # Every declared call has to be answered or the next
+                # request is a 400 — including the ones nobody ran.
+                self._say(messages, CANCEL_STEP_NOTE, entry["id"])
+                continue
             if not entry["shaped"]:
                 problem = (
                     f"{name} was called with arguments that are not a JSON "
@@ -2098,12 +2391,20 @@ class MissionRunner:
                                call_id=entry["id"], ordinal=ordinal)
             step.calls.append(call)
             if name in self._gated:
-                # The turn ends HERE, on this call. The ones before it have
-                # already run and are on the record; the ones after it are
-                # not dispatched and the reason says how many.
-                return self._gate(objective, index, name, arguments, step,
-                                  transcript, skipped=len(wanted) - ordinal - 1,
-                                  call=call), repairs
+                # The turn ends HERE, on this call — unless somebody
+                # answers the gate on the control channel while it stands,
+                # in which case `_gate` dispatches (or refuses) this one
+                # call and hands back `None`, and the calls after it run in
+                # their turn. The ones before it have already run and are
+                # on the record; the ones after it are not dispatched if
+                # the mission stops, and the reason says how many.
+                stopped = self._gate(
+                    objective, index, name, arguments, step, transcript,
+                    skipped=len(wanted) - ordinal - 1, call=call,
+                    messages=messages, spent=cost())
+                if stopped is not None:
+                    return stopped, repairs
+                continue
             problem = self._schema_violation(name, arguments)
             if problem:
                 call.error = problem
@@ -2163,6 +2464,71 @@ class MissionRunner:
                 f"({exc}), so there is nothing for anybody to decide "
                 f"against — the call is still not made, and asking again "
                 f"will not help until the approvals directory is writable.")
+
+    # ── being steered from outside ──────────────────────────────────────
+
+    def _steer(self, messages: List[Dict[str, Any]]) -> List[str]:
+        """Take the step boundary's commands off the channel.  Returns the
+        injected texts, in the order they were sent.
+
+        The **only** place an ``inject`` is applied, and the reason is the
+        one thing that makes injection safe: here, the model has just
+        finished a turn and has not begun the next one, so an operator's
+        instruction is a message in a conversation rather than an edit to a
+        decision already taken.  A channel read after the reply and before
+        the dispatch would put "look at the second corpus" between the
+        model choosing the first and the tool fetching it.
+
+        The texts come back rather than being emitted from inside, because
+        they ride ``step_started`` — one record, one emitter, and a field
+        added by a second one is how six of ten grounding fields came to be
+        hand-listed.
+
+        A ``cancel_step`` that arrives here missed its step: the call it
+        meant to stop has already been dispatched, so there is nothing to
+        skip and the ask becomes a sentence for the model (see
+        :data:`CANCEL_STEP_LATE`).  Anything else waiting — a decision for
+        a gate that closed while it was in flight — is dropped with one
+        line on stderr, because a decision nobody can apply must not look
+        like one that was applied.
+        """
+        if self._control is None:
+            return []
+        injected: List[str] = []
+        # Arrival order, not kind order: two injections and a late
+        # cancel_step reach the model in the order the operator sent them,
+        # which is the only order they mean anything in.
+        for command in self._control.poll():
+            word = command.get("control")
+            if word == INJECT:
+                text = str(command.get("text") or "")
+                # A plain user turn in BOTH protocols. A native turn's
+                # `tool` messages answer calls; this answers nothing — it
+                # is somebody talking, and `user` is the role for that.
+                messages.append({"role": "user", "content": text})
+                injected.append(text)
+            elif word == CANCEL_STEP:
+                messages.append({"role": "user",
+                                 "content": CANCEL_STEP_LATE})
+            else:
+                self._control.warn(
+                    f"control: dropped a {word} for "
+                    f"{command.get('approval_id', '?')} — this run is not "
+                    f"waiting on it any more")
+        return injected
+
+    def _cancel_step_asked(self) -> bool:
+        """Whether the operator has asked to drop the rest of this step.
+
+        Takes **only** ``cancel_step`` off the channel and leaves everything
+        else where it was: an injection swallowed at a call boundary would
+        be an instruction the model was never shown, delivered to nobody,
+        with nothing saying so.  Several asks are one answer — an operator
+        clicking twice wanted the step stopped, not two steps.
+        """
+        if self._control is None:
+            return False
+        return bool(self._control.poll(only=(CANCEL_STEP,)))
 
     # ── being asked to stop, and running out of clock ───────────────────
 

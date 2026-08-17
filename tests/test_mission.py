@@ -4,6 +4,9 @@ import json
 import re
 from types import SimpleNamespace
 
+
+import time
+
 import pytest
 
 from core import redact
@@ -11,6 +14,7 @@ from core.contracts.schemas import PolicyPack
 from core.runtime import contract
 from core.runtime.context_window import ContextConfig, MissionWindow
 from core.runtime.contract import conforms
+from core.runtime.control import ControlChannel
 from core.runtime.grounding import GroundingConfig, GroundingValidator
 from core.runtime.mission import (
     ANSWER_FUNCTION, ANSWER_TOOL, JSON_PROTOCOL, NATIVE_PROTOCOL, MissionCall,
@@ -2655,29 +2659,70 @@ class TestTheRunnerCannotAnswerItsOwnGate:
     """The rule, as a grep.
 
     A framework that could approve its own proposal has a gate that is a
-    formality, and the cheapest guarantee is that the running code shares no
-    call with the answering code. Written against the source because that is
-    the property — not "it does not happen on this path" but "there is no
-    path".
+    formality, and the cheapest guarantee is written against the source
+    because that is the property — not "it does not happen on this path"
+    but "there is no path".
+
+    The rule used to be "the loop never calls ``decide``", and it stopped
+    being spellable that way when the control channel arrived: a gate
+    answered while the run stands at it has to be **recorded**, through the
+    same store the ``--approval`` path reads, or an in-turn yes would be a
+    permission with no record — the exact defect
+    :mod:`core.runtime.approvals` exists to prevent. So the property is
+    stated as what it always meant: the loop may *carry* somebody's
+    decision, and it may not *make* one.
+
+    Which is greppable, and sharper than the old form. There is no literal
+    verdict in the loop — no ``approve=True``, no ``approve=False`` — and no
+    literal decider, so every argument the store is handed came off a
+    command that arrived from outside this process. The word ``APPROVED``
+    still does not appear at all, so no branch here can recognise the state
+    it must not produce, and the staged runner still shares no call with the
+    answering code whatsoever.
     """
 
     SOURCES = ("core/runtime/mission.py", "core/runtime/swarm.py")
 
-    @pytest.mark.parametrize("name", SOURCES)
-    def test_the_loop_never_calls_decide(self, name):
+    def _source(self, name):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent.parent / name).read_text()
-        assert ".decide(" not in source, f"{name} answers a gate"
-        assert "decided_by" not in source, f"{name} names a decider"
+        return (Path(__file__).resolve().parent.parent / name).read_text()
+
+    def test_the_staged_runner_never_goes_near_a_decision(self):
+        """The swarm keeps the original rule whole: it gates, and the gate
+        is answered by the sub-mission's loop or by nobody."""
+        source = self._source("core/runtime/swarm.py")
+        assert ".decide(" not in source
+        assert "decided_by" not in source
+
+    @pytest.mark.parametrize("name", SOURCES)
+    def test_no_verdict_is_written_anywhere_in_the_loop(self, name):
+        """`approve=` is only ever handed a value that arrived from
+        outside. A literal here would be the loop deciding."""
+        source = self._source(name)
+        assert re.findall(r"approve\s*=\s*(?:True|False)\b", source) == [], \
+            f"{name} states a verdict of its own"
+
+    @pytest.mark.parametrize("name", SOURCES)
+    def test_no_decider_is_named_anywhere_in_the_loop(self, name):
+        """A decision names who made it, and this harness never knows who
+        that is — it has no identity layer and will not invent one."""
+        source = self._source(name)
+        assert re.findall(r"decided_by\s*=\s*[\"\']", source) == [], \
+            f"{name} names a decider"
+
+    def test_the_one_call_that_records_a_decision_is_the_only_one(self):
+        """One site, and it is the bookkeeping for a command somebody sent.
+        A second would be a second owner of what a yes means."""
+        source = self._source("core/runtime/mission.py")
+        assert source.count(".decide(") == 1
+        assert "def _record_decision" in source
 
     @pytest.mark.parametrize("name", SOURCES)
     def test_the_loop_never_names_the_approved_state(self, name):
         """It cannot write `state = APPROVED` if it never says the word."""
-        from pathlib import Path
-
-        source = (Path(__file__).resolve().parent.parent / name).read_text()
-        assert "APPROVED" not in source, f"{name} knows what approved is"
+        assert "APPROVED" not in self._source(name), \
+            f"{name} knows what approved is"
 
     def test_only_the_store_reaches_the_approved_state(self):
         """One owner, across the whole of `core/`."""
@@ -3779,3 +3824,743 @@ class TestADecoderThatGivesUpCostsTheMissionNothing:
 
         assert MissionRunner(odd, bus, ["catalog.search"]).run("go").answer \
             == "fine"
+
+
+# ---------------------------------------------------------------------------
+# Being steered from outside: `--control`
+# ---------------------------------------------------------------------------
+
+
+class Steering:
+    """A real control channel over a real pipe, plus a `send` for the test.
+
+    The real object, over a real descriptor, read by the real daemon
+    thread. A fake queue would prove the loop drains something; it would
+    prove nothing about the thing a platform actually writes to.
+
+    `send` does not return until the command has crossed the thread, so a
+    test can say "the operator spoke here" and mean it. A `cancel` never
+    reaches the queue — it is applied in the reader — so that one waits on
+    the switch instead.
+    """
+
+    def __init__(self, cancel=None):
+        import os
+
+        read_fd, write_fd = os.pipe()
+        self.cancel = cancel
+        self.channel = ControlChannel.open(f"fd:{read_fd}", cancel=cancel)
+        self.writer = os.fdopen(write_fd, "w", encoding="utf-8")
+
+    def send(self, **payload):
+        import time
+
+        word = payload.get("control")
+        before = self.channel.waiting
+        self.writer.write(json.dumps(payload) + "\n")
+        self.writer.flush()
+        if word == "gate_decision":
+            # Nothing to wait for: the run is already inside `wait_for`,
+            # draining as fast as this writes, so watching the queue would
+            # be watching for a moment that has already passed.
+            return
+        until = time.monotonic() + 2.0
+        while time.monotonic() < until:
+            if word == "cancel":
+                if self.cancel is not None and self.cancel.is_set():
+                    return
+            elif self.channel.waiting > before:
+                return
+            time.sleep(0.002)
+        raise AssertionError(f"the channel never took {payload}")
+
+    def close(self):
+        try:
+            self.writer.close()
+        except OSError:                         # pragma: no cover - defensive
+            pass
+        self.channel.close()
+
+
+@pytest.fixture
+def steering():
+    """A channel the test writes to, closed however the test ends."""
+    made = []
+
+    def build(cancel=None):
+        made.append(Steering(cancel=cancel))
+        return made[-1]
+
+    yield build
+    for one in made:
+        one.close()
+
+
+class SpeakingModel(ScriptedModel):
+    """A model that lets the operator speak at a chosen turn.
+
+    `at` is which reply this model is about to give when the command goes
+    out — so `at=0` is "the operator sent it while the first model call was
+    in flight", which is the only interesting timing there is.
+    """
+
+    def __init__(self, steer, at, payloads, *replies):
+        super().__init__(*replies)
+        self._steer, self._at, self._payloads = steer, at, payloads
+
+    def __call__(self, messages):
+        reply = super().__call__(messages)
+        if len(self.seen) - 1 == self._at:
+            for payload in self._payloads:
+                self._steer.send(**payload)
+        return reply
+
+
+class TestAnInjectionLandsBeforeTheNextModelCall:
+    """The one moment an operator's instruction is a message in a
+    conversation rather than an edit to a decision already taken."""
+
+    def test_it_is_the_last_thing_the_model_is_shown(self, bus, steering):
+        steer = steering()
+        steer.send(control="inject", text="the SECOND corpus, not the first")
+        model = ScriptedModel('{"answer": "ok"}')
+        MissionRunner(model, bus, ["catalog.search"],
+                      control=steer.channel).run("go")
+        assert model.seen[0][-1] == {
+            "role": "user", "content": "the SECOND corpus, not the first"}
+
+    def test_the_objective_is_still_above_it(self, bus, steering):
+        """Appended, never substituted: the question the run was started
+        with does not stop being the question."""
+        steer = steering()
+        steer.send(control="inject", text="and check the dates")
+        model = ScriptedModel('{"answer": "ok"}')
+        MissionRunner(model, bus, ["catalog.search"],
+                      control=steer.channel).run("survey the corpus")
+        roles = [(m["role"], m["content"]) for m in model.seen[0]]
+        assert ("user", "survey the corpus") in roles
+        assert roles[-1] == ("user", "and check the dates")
+
+    def test_the_step_that_carried_it_says_so_on_the_stream(
+            self, bus, steering):
+        """`injected` is the ONLY trace a control command leaves: commands
+        coming in are not events going out, and an agent whose conversation
+        gained a turn nobody can see looks, from outside, exactly like an
+        agent that changed its mind."""
+        steer = steering()
+        steer.send(control="inject", text="the second corpus")
+        events = []
+        MissionRunner(ScriptedModel('{"answer": "ok"}'), bus,
+                      ["catalog.search"], control=steer.channel,
+                      observer=events.append).run("go")
+        started = [r for r in events if r["event"] == "step_started"]
+        assert started[0]["injected"] == ["the second corpus"]
+        assert conforms(started[0]) == []
+        assert "injected" in contract.OPTIONAL[contract.STEP_STARTED]
+
+    def test_a_step_nobody_spoke_into_carries_no_field_at_all(
+            self, bus, steering):
+        """Absent, not empty. A consumer that has never heard of it reads
+        exactly the stream it always read."""
+        steer = steering()
+        steer.send(control="inject", text="once")
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="x"),
+                          '{"answer": "ok"}'),
+            bus, ["catalog.search"], control=steer.channel,
+            observer=events.append).run("go")
+        started = [r for r in events if r["event"] == "step_started"]
+        assert "injected" in started[0] and "injected" not in started[1]
+
+    def test_a_run_with_no_channel_says_nothing_either(self, bus):
+        events = []
+        MissionRunner(ScriptedModel('{"answer": "ok"}'), bus,
+                      ["catalog.search"], observer=events.append).run("go")
+        assert all("injected" not in r for r in events)
+
+    def test_two_injections_ride_one_step_in_the_order_they_were_sent(
+            self, bus, steering):
+        steer = steering()
+        steer.send(control="inject", text="first")
+        steer.send(control="inject", text="second")
+        events = []
+        model = ScriptedModel('{"answer": "ok"}')
+        MissionRunner(model, bus, ["catalog.search"], control=steer.channel,
+                      observer=events.append).run("go")
+        started = [r for r in events if r["event"] == "step_started"][0]
+        assert started["injected"] == ["first", "second"]
+        assert [m["content"] for m in model.seen[0][-2:]] == ["first",
+                                                              "second"]
+
+    def test_an_injection_sent_mid_step_waits_for_the_next_one(
+            self, bus, steering):
+        """It does NOT arrive between the model choosing a tool and the tool
+        being called: that would be an instruction landing inside a decision
+        the model had already made."""
+        steer = steering()
+        model = SpeakingModel(
+            steer, 0, [{"control": "inject", "text": "stop searching"}],
+            tool_call("catalog.search", q="x"), '{"answer": "ok"}')
+        events = []
+        MissionRunner(model, bus, ["catalog.search"], control=steer.channel,
+                      observer=events.append).run("go")
+        # The first step's call still happened, and the instruction reached
+        # the SECOND step.
+        assert [r["tool"] for r in events if r["event"] == "tool_call"] == \
+            ["catalog.search"]
+        started = [r for r in events if r["event"] == "step_started"]
+        assert "injected" not in started[0]
+        assert started[1]["injected"] == ["stop searching"]
+
+    def test_the_operators_words_are_scrubbed_on_the_wire(
+            self, bus, steering, monkeypatch):
+        """Free text an operator typed, and an operator quotes paths. The
+        MODEL is told exactly what was sent; the stream states it scrubbed,
+        the same split every other prose field takes."""
+        monkeypatch.setenv("HOME", "/home/someone")
+        steer = steering()
+        steer.send(control="inject", text="read /home/someone/notes.txt")
+        events, model = [], ScriptedModel('{"answer": "ok"}')
+        MissionRunner(model, bus, ["catalog.search"], control=steer.channel,
+                      observer=events.append).run("go")
+        started = [r for r in events if r["event"] == "step_started"][0]
+        assert started["injected"] == ["read <home>/notes.txt"]
+        assert model.seen[0][-1]["content"] == "read /home/someone/notes.txt"
+
+    def test_injected_is_classified_rather_than_scrubbed_by_nobody(self):
+        assert "injected" in redact.SCRUBBED_FIELDS
+        assert "injected" not in redact.VERBATIM_FIELDS
+
+
+class TestCancelOnTheChannelIsTheSameLeverAsSigterm:
+    def test_the_run_winds_up_incomplete_saying_why(self, bus, steering):
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        steer = steering(cancel=switch)
+        model = SpeakingModel(steer, 0, [{"control": "cancel"}],
+                              *[tool_call("catalog.search", q="x")] * 4)
+        events = []
+        transcript = MissionRunner(
+            model, bus, ["catalog.search"], max_steps=4, cancel=switch,
+            control=steer.channel, observer=events.append).run("go")
+
+        assert (transcript.outcome, transcript.reason) == ("incomplete",
+                                                           "cancelled")
+        assert events[-1]["event"] == "mission_finished"
+        assert events[-1]["reason"] == "cancelled"
+
+    def test_it_stops_a_tool_the_model_had_already_named(self, bus, steering):
+        from core.budgets import Cancellation
+
+        switch = Cancellation()
+        steer = steering(cancel=switch)
+        calls = []
+        real = bus.dispatch
+        bus.dispatch = lambda name, **kw: (calls.append(name),
+                                           real(name, **kw))[1]
+        model = SpeakingModel(steer, 0, [{"control": "cancel"}],
+                              tool_call("catalog.search", q="x"))
+        transcript = MissionRunner(
+            model, bus, ["catalog.search"], cancel=switch,
+            control=steer.channel).run("go")
+        assert calls == []
+        assert transcript.reason == "cancelled"
+
+    def test_the_cause_is_control_and_not_sigterm(self, bus, steering):
+        """`exit_as_signalled` must not fire: a platform asked the MISSION
+        to stop, not the process to die of a signal nobody sent."""
+        from core.budgets import Cancellation
+        from core.runtime.mission_stream import SIGTERM_CAUSE
+
+        switch = Cancellation()
+        steer = steering(cancel=switch)
+        steer.send(control="cancel")
+        MissionRunner(ScriptedModel('{"answer": "x"}'), bus,
+                      ["catalog.search"], cancel=switch,
+                      control=steer.channel).run("go")
+        assert switch.cause != SIGTERM_CAUSE
+
+
+class TestCancelStepDropsWhatHasNotGoneOut:
+    def test_the_json_call_is_not_dispatched_and_the_model_is_asked_again(
+            self, bus, steering):
+        steer = steering()
+        calls = []
+        real = bus.dispatch
+        bus.dispatch = lambda name, **kw: (calls.append(name),
+                                           real(name, **kw))[1]
+        model = SpeakingModel(steer, 0, [{"control": "cancel_step"}],
+                              tool_call("catalog.search", q="x"),
+                              '{"answer": "ok without it"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"],
+                                   control=steer.channel).run("go")
+        assert calls == []
+        # Re-asked, not ended: the model gets to decide from what it has.
+        assert transcript.outcome == "answered"
+        assert transcript.answer == "ok without it"
+
+    def test_the_model_is_told_in_as_many_words(self, bus, steering):
+        """A turn whose calls silently produced no results reads, from
+        inside the conversation, exactly like a tool plane that broke."""
+        from core.runtime.mission import CANCEL_STEP_NOTE
+
+        steer = steering()
+        model = SpeakingModel(steer, 0, [{"control": "cancel_step"}],
+                              tool_call("catalog.search", q="x"),
+                              '{"answer": "ok"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"],
+                                   control=steer.channel).run("go")
+        assert model.seen[1][-1] == {"role": "user",
+                                     "content": CANCEL_STEP_NOTE}
+        assert transcript.steps[0].error == CANCEL_STEP_NOTE
+
+    def test_two_asks_are_one_answer(self, bus, steering):
+        """An operator clicking twice wanted the step stopped, not two
+        steps."""
+        steer = steering()
+        calls = []
+        real = bus.dispatch
+        bus.dispatch = lambda name, **kw: (calls.append(name),
+                                           real(name, **kw))[1]
+        model = SpeakingModel(
+            steer, 0, [{"control": "cancel_step"}, {"control": "cancel_step"}],
+            tool_call("catalog.search", q="a"),
+            tool_call("catalog.search", q="b"), '{"answer": "ok"}')
+        MissionRunner(model, bus, ["catalog.search"], max_steps=4,
+                      control=steer.channel).run("go")
+        assert calls == ["catalog.search"]
+
+    def test_one_that_arrives_too_late_is_a_note_and_not_a_skip(
+            self, bus, steering):
+        """It missed its step. The ask becomes a sentence rather than
+        silently cancelling a step nobody asked about."""
+        from core.runtime.mission import CANCEL_STEP_LATE
+
+        steer = steering()
+        calls = []
+        real = bus.dispatch
+
+        def watched(name, **kw):
+            # Sent from INSIDE the dispatch, which is the one window where
+            # the call is already gone and the step is not over: the ask
+            # cannot reach it, and pretending otherwise would cancel a step
+            # nobody asked about.
+            result = real(name, **kw)
+            calls.append(name)
+            if len(calls) == 1:
+                steer.send(control="cancel_step")
+            return result
+
+        bus.dispatch = watched
+        model = ScriptedModel(tool_call("catalog.search", q="a"),
+                              tool_call("catalog.search", q="b"),
+                              '{"answer": "ok"}')
+        MissionRunner(model, bus, ["catalog.search"], max_steps=4,
+                      control=steer.channel).run("go")
+        assert calls == ["catalog.search", "catalog.search"]
+        assert any(m == {"role": "user", "content": CANCEL_STEP_LATE}
+                   for m in model.seen[1])
+
+    def test_it_does_not_swallow_an_injection_sent_beside_it(
+            self, bus, steering):
+        """The mid-step drain takes `cancel_step` and leaves the rest. An
+        injection eaten there would be an instruction the model was never
+        shown, with nothing saying so."""
+        steer = steering()
+        model = SpeakingModel(
+            steer, 0,
+            [{"control": "inject", "text": "try the other corpus"},
+             {"control": "cancel_step"}],
+            tool_call("catalog.search", q="x"), '{"answer": "ok"}')
+        events = []
+        MissionRunner(model, bus, ["catalog.search"], control=steer.channel,
+                      observer=events.append).run("go")
+        started = [r for r in events if r["event"] == "step_started"]
+        assert started[1]["injected"] == ["try the other corpus"]
+
+    def test_a_native_turn_drops_the_calls_that_had_not_gone_out(
+            self, bus, steering):
+        """The boundary this protocol has and the JSON one does not: one
+        turn, several calls, and the operator gets to stop the rest."""
+        from core.runtime.mission import CANCEL_STEP_NOTE
+
+        steer = steering()
+        calls = []
+        real = bus.dispatch
+
+        def watched(name, **kw):
+            calls.append(name)
+            if len(calls) == 1:
+                steer.send(control="cancel_step")
+            return real(name, **kw)
+
+        bus.dispatch = watched
+        model = NativeModel(
+            [native_call("catalog.search", "c0", q="a"),
+             native_call("catalog.get", "c1", asset_id="a1"),
+             native_call("catalog.search", "c2", q="c")],
+            answer_call("done"))
+        transcript = native_runner(bus, model,
+                                   control=steer.channel).run("go")
+        assert calls == ["catalog.search"]
+        skipped = transcript.steps[0].calls[1:]
+        assert [c.tool for c in skipped] == ["catalog.get", "catalog.search"]
+        assert all(c.error == CANCEL_STEP_NOTE for c in skipped)
+
+    def test_every_skipped_native_call_is_still_answered(self, bus, steering):
+        """An assistant turn that declared `tool_calls` and left one
+        unanswered is a 400 from an OpenAI-shaped server. A cancelled call
+        is still a declared one."""
+        steer = steering()
+        real = bus.dispatch
+        seen = []
+
+        def watched(name, **kw):
+            seen.append(name)
+            if len(seen) == 1:
+                steer.send(control="cancel_step")
+            return real(name, **kw)
+
+        bus.dispatch = watched
+        model = NativeModel(
+            [native_call("catalog.search", "c0", q="a"),
+             native_call("catalog.get", "c1", asset_id="a1")],
+            answer_call("done"))
+        native_runner(bus, model, control=steer.channel).run("go")
+        answered = {m.get("tool_call_id") for m in model.seen[-1]
+                    if m.get("role") == "tool"}
+        assert answered == {"c0", "c1"}
+
+
+class TestAGateAnsweredWhileTheRunStandsAtIt:
+    """Today a gated tool ends the turn and somebody decides tomorrow. With
+    a channel open the run waits — and what arrives is still a decision
+    somebody *sent*, recorded in the same store, signed by the name they
+    put on it. Nothing here times out into a yes."""
+
+    def _store(self, tmp_path):
+        from core.runtime.approvals import ApprovalStore
+
+        return ApprovalStore(tmp_path / "approvals")
+
+    def _answering(self, steer, approve=True, who="dana", note="",
+                   delay=0.0):
+        """A channel that answers whatever gate the run opens, once."""
+        import threading
+
+        def answer():
+            import time
+
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                pending = self._pending
+                if pending:
+                    steer.send(control="gate_decision",
+                               approval_id=pending[0], approve=approve,
+                               decided_by=who, note=note)
+                    return
+                time.sleep(0.005)
+
+        self._pending = []
+        threading.Timer(delay, answer).start()
+
+    def _watch(self, events):
+        """Feed `_pending` from the stream, which is how a platform learns
+        the id in the first place."""
+        def observe(record):
+            events.append(record)
+            if record["event"] == "gate_requested" and record.get(
+                    "approval_id"):
+                self._pending.append(record["approval_id"])
+        return observe
+
+    def test_an_approval_dispatches_the_call_in_the_same_step(
+            self, bus, tmp_path, steering):
+        from core.runtime.approvals import SPENT
+
+        store = self._store(tmp_path)
+        steer = steering()
+        events = []
+        self._answering(steer)
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          '{"answer": "asset a1"}'),
+            bus, ["catalog.search", "catalog.get"], gated=["catalog.get"],
+            approvals=store, control=steer.channel, gate_wait_s=5.0,
+            observer=self._watch(events)).run("fetch a1")
+
+        assert transcript.outcome == "answered"
+        # The call it asked about follows the request, under the same index.
+        kinds = [(r["event"], r.get("index")) for r in events
+                 if r["event"] in ("gate_requested", "tool_call",
+                                   "tool_result")]
+        assert kinds[:3] == [("gate_requested", 0), ("tool_call", 0),
+                             ("tool_result", 0)]
+        recorded = store.get(self._pending[0])
+        assert recorded.state == SPENT
+        assert recorded.decided_by == "dana"
+
+    def test_the_record_names_the_person_the_platform_sent(
+            self, bus, tmp_path, steering):
+        store = self._store(tmp_path)
+        steer = steering()
+        self._answering(steer, who="ravi", note="fine by me")
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          '{"answer": "ok"}'),
+            bus, ["catalog.get"], gated=["catalog.get"], approvals=store,
+            control=steer.channel, gate_wait_s=5.0,
+            observer=self._watch([])).run("fetch a1")
+        recorded = store.get(self._pending[0])
+        assert (recorded.decided_by, recorded.note) == ("ravi", "fine by me")
+
+    def test_a_refusal_is_recorded_and_the_model_is_told(
+            self, bus, tmp_path, steering):
+        from core.runtime.approvals import REFUSED
+
+        store = self._store(tmp_path)
+        steer = steering()
+        self._answering(steer, approve=False, who="dana",
+                        note="not on prod")
+        model = ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                              '{"answer": "could not fetch it"}')
+        transcript = MissionRunner(
+            model, bus, ["catalog.search", "catalog.get"],
+            gated=["catalog.get"], approvals=store, control=steer.channel,
+            gate_wait_s=5.0, observer=self._watch([])).run("fetch a1")
+
+        assert transcript.outcome == "answered"
+        assert store.get(self._pending[0]).state == REFUSED
+        told = model.seen[-1][-1]["content"]
+        assert "REFUSED by dana" in told and "not on prod" in told
+
+    def test_nothing_is_dispatched_on_a_refusal(self, bus, tmp_path,
+                                                steering):
+        store = self._store(tmp_path)
+        steer = steering()
+        calls = []
+        real = bus.dispatch
+        bus.dispatch = lambda name, **kw: (calls.append(name),
+                                           real(name, **kw))[1]
+        self._answering(steer, approve=False)
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1"),
+                          '{"answer": "no"}'),
+            bus, ["catalog.get"], gated=["catalog.get"], approvals=store,
+            control=steer.channel, gate_wait_s=5.0,
+            observer=self._watch([])).run("fetch a1")
+        assert calls == []
+
+    def test_a_wait_that_runs_out_ends_exactly_where_it_always_did(
+            self, bus, tmp_path, steering):
+        """Nothing times out into a yes. The record stays pending and
+        `--approval` on a later turn still works."""
+        from core.runtime.approvals import PENDING
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        store = self._store(tmp_path)
+        steer = steering()
+        events = []
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"], approvals=store,
+            control=steer.channel, gate_wait_s=0.15,
+            observer=events.append).run("fetch a1")
+
+        assert transcript.outcome == AWAITING_APPROVAL
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert store.get(gate["approval_id"]).state == PENDING
+        assert transcript.awaiting["approval_id"] == gate["approval_id"]
+
+    def test_a_decision_signed_by_nobody_is_dropped_and_the_wait_goes_on(
+            self, bus, tmp_path, steering):
+        """The command never reaches the loop, so the gate is still open
+        when the wait runs out — which is the difference between refusing
+        a bad command and answering with it."""
+        from core.runtime.approvals import PENDING
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        store = self._store(tmp_path)
+        steer = steering()
+        events = []
+        self._answering(steer, who="")
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"], approvals=store,
+            control=steer.channel, gate_wait_s=0.4,
+            observer=self._watch(events)).run("fetch a1")
+
+        assert transcript.outcome == AWAITING_APPROVAL
+        assert store.get(self._pending[0]).state == PENDING
+
+    def test_a_decision_for_another_gate_is_not_this_gates_answer(
+            self, bus, tmp_path, steering):
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        store = self._store(tmp_path)
+        steer = steering()
+        steer.send(control="gate_decision", approval_id="ap_somebody_else",
+                   approve=True, decided_by="dana")
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"], approvals=store,
+            control=steer.channel, gate_wait_s=0.2).run("fetch a1")
+        assert transcript.outcome == AWAITING_APPROVAL
+
+    def test_without_an_approval_store_there_is_nothing_to_wait_for(
+            self, bus, steering):
+        """No store is no id, and an unrecorded yes is the standing
+        permission the approvals module exists not to have."""
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        steer = steering()
+        events = []
+        started = time.monotonic()
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"], approvals=None,
+            control=steer.channel, gate_wait_s=30.0,
+            observer=events.append).run("fetch a1")
+        assert transcript.outcome == AWAITING_APPROVAL
+        assert time.monotonic() - started < 5.0
+
+    def test_a_run_with_no_channel_does_not_wait_at_all(self, bus, tmp_path):
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        started = time.monotonic()
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"],
+            approvals=self._store(tmp_path), gate_wait_s=30.0,
+        ).run("fetch a1")
+        assert transcript.outcome == AWAITING_APPROVAL
+        assert time.monotonic() - started < 5.0
+
+    def test_the_wait_never_outlasts_the_runs_own_deadline(
+            self, bus, tmp_path, steering):
+        """A run that waited five minutes for a person and then reported
+        that it had run out of seconds would have spent the operator's whole
+        budget standing still."""
+        from core.budgets import Deadline
+
+        clock = _Clock()
+        deadline = Deadline(0.0, monotonic=clock).start()
+        steer = steering()
+        runner = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"],
+            approvals=self._store(tmp_path), control=steer.channel,
+            deadline=deadline, gate_wait_s=300.0)
+        assert runner._gate_window() == 0.0
+
+    def test_the_reason_says_a_decision_can_arrive_in_turn(
+            self, bus, tmp_path, steering):
+        """The request is what the platform reads, so it has to say what
+        answering it will do."""
+        steer = steering()
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"],
+            approvals=self._store(tmp_path), control=steer.channel,
+            gate_wait_s=0.1, observer=events.append).run("fetch a1")
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert "control channel" in gate["reason"]
+
+    def test_that_sentence_is_absent_where_nobody_can_answer(
+            self, bus, tmp_path):
+        events = []
+        MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"],
+            approvals=self._store(tmp_path), observer=events.append,
+        ).run("fetch a1")
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert "control channel" not in gate["reason"]
+
+    def test_a_native_turns_later_calls_run_after_an_approval(
+            self, bus, tmp_path, steering):
+        """The gate held them rather than dropping them, which is what the
+        reason says when a decision can arrive."""
+        store = self._store(tmp_path)
+        steer = steering()
+        calls = []
+        real = bus.dispatch
+        bus.dispatch = lambda name, **kw: (calls.append(name),
+                                           real(name, **kw))[1]
+        self._answering(steer)
+        model = NativeModel(
+            [native_call("catalog.get", "c0", asset_id="a1"),
+             native_call("catalog.search", "c1", q="after")],
+            answer_call("done"))
+        # Built directly rather than through `native_runner`, which owns
+        # the observer keyword and this test needs the one that learns the
+        # `approval_id` off the stream — which is how a platform learns it.
+        transcript = MissionRunner(
+            model, bus, ["catalog.search", "catalog.get"],
+            protocol=NATIVE_PROTOCOL, tool_calls_fn=model.tool_calls,
+            store_tool="", gated=["catalog.get"], approvals=store,
+            control=steer.channel, gate_wait_s=5.0,
+            observer=self._watch([])).run("go")
+        assert calls == ["catalog.get", "catalog.search"]
+        assert transcript.outcome == "answered"
+
+    def test_the_native_reason_says_held_rather_than_dropped(
+            self, bus, tmp_path, steering):
+        steer = steering()
+        events = []
+        model = NativeModel(
+            [native_call("catalog.get", "c0", asset_id="a1"),
+             native_call("catalog.search", "c1", q="after")],
+            answer_call("done"))
+        native_runner(bus, model, gated=["catalog.get"],
+                      approvals=self._store(tmp_path), control=steer.channel,
+                      gate_wait_s=0.1, events=events).run("go")
+        gate = [r for r in events if r["event"] == "gate_requested"][0]
+        assert "HELD" in gate["reason"]
+        assert "NOT dispatched" not in gate["reason"]
+
+    def test_a_decision_that_cannot_be_recorded_fails_closed(
+            self, bus, tmp_path, steering):
+        """Somebody answered the record out of band. The call is not made:
+        failing closed is the only direction a gate may fail in."""
+        from core.runtime.mission import AWAITING_APPROVAL
+
+        store = self._store(tmp_path)
+        steer = steering()
+        calls = []
+        real = bus.dispatch
+        bus.dispatch = lambda name, **kw: (calls.append(name),
+                                           real(name, **kw))[1]
+
+        def answer():
+            import time
+
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if self._pending:
+                    # Resolved underneath the run, by somebody else.
+                    store.decide(self._pending[0], approve=False,
+                                 decided_by="somebody else")
+                    steer.send(control="gate_decision",
+                               approval_id=self._pending[0], approve=True,
+                               decided_by="dana")
+                    return
+                time.sleep(0.005)
+
+        import threading
+
+        self._pending = []
+        threading.Timer(0.0, answer).start()
+        events = []
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.get", asset_id="a1")),
+            bus, ["catalog.get"], gated=["catalog.get"], approvals=store,
+            control=steer.channel, gate_wait_s=3.0,
+            observer=self._watch(events)).run("fetch a1")
+
+        assert calls == []
+        assert transcript.outcome == AWAITING_APPROVAL
+        assert "could NOT be recorded" in transcript.steps[0].error

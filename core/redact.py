@@ -140,6 +140,15 @@ SCRUBBED_FIELDS = frozenset({
     # grounding.unsupported — the tokens themselves, lifted out of the answer.
     # A path-shaped token is a path.
     "unsupported",
+    # step_started.injected — what an operator typed at a running mission
+    # over the control channel. Free text by definition, and scrubbed for
+    # the same reason `problem` is: an operator quotes a path, and the
+    # pane that renders this is the pane `<home>` exists to keep host
+    # detail out of. NOT verbatim: nothing downstream checks these bytes
+    # against a stored copy the way grounding checks `output`, so there is
+    # no second reader for the scrub to disagree with. The MODEL is told
+    # the operator's words exactly; the stream states them scrubbed.
+    "injected",
     # tool — on `tool_call`, `tool_result` and `gate_requested` this is a name
     # the bus resolved and scrubbing it is a no-op; on `reply_rejected` it is
     # whatever string the model put in its JSON, which is model prose and has

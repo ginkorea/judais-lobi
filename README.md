@@ -138,6 +138,7 @@ person's surface and may move.
 | `--skill` | `MISSION_SKILL` | a `SKILL.md` manifest, or a directory holding one |
 | `--swarm` | `MISSION_SWARM` | stage the mission when it needs staging |
 | `--events` | `MISSION_EVENTS` | where the NDJSON account goes: `-`, `fd:N`, or a path |
+| `--control` | `MISSION_CONTROL` | where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-`. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and the only lever into a running turn besides `SIGTERM`. A bad line is dropped with a sentence on stderr, never fatal |
 | `--history` | `MISSION_HISTORY` | a JSON file of prior conversation turns |
 | `--gate-tool` | — | a tool to offer and refuse to call. Repeatable |
 | `--approval` | `MISSION_APPROVAL` | an approval id somebody already decided. Lifts that one tool out of the gated set, for this run only |
@@ -162,9 +163,10 @@ to name. `JUDAIS_LOBI_APPROVALS` does the same
 for the durable approval records — a path moves the directory, `none`/`off`
 keeps none, and then a gate stops a mission and leaves nothing anybody can
 decide against, which the console says out loud. `MISSION_RESUME` is the environment form of
-`--resume`, `MISSION_PROTOCOL` of `--protocol`, and `MISSION_STREAM` of
-`--no-stream` the other way round: `off`, `0`, `false`, `no` or `none` turn the
-streamed answer off and anything else leaves it on.
+`--resume`, `MISSION_PROTOCOL` of `--protocol`, `MISSION_CONTROL` of
+`--control`, and `MISSION_STREAM` of `--no-stream` the other way round: `off`,
+`0`, `false`, `no` or `none` turn the streamed answer off and anything else
+leaves it on.
 
 #### `--protocol native` — the model calls a function instead of writing one
 
@@ -216,6 +218,72 @@ It is **off by default**, and that is the discipline: this and the grounding
 control were probed the same day, and a change switched on before the eval
 harness that scores it produces a delta nobody can attribute (`ROADMAP.md`
 §2.5).
+
+#### `--control` — talking to a mission while it runs
+
+`--events` is what a mission *says*. `--control` is what it can be *told*, and
+until it existed the only lever a platform had on a running turn was `SIGTERM`
+— which is to say, the only thing anybody could do to a mission in progress was
+end it. Three of the things an operator actually wants are not "stop".
+
+```bash
+mkfifo /tmp/mission.ctl
+judais --mission 'survey the corpus' --mcp-url … --control /tmp/mission.ctl &
+echo '{"control":"inject","text":"look at the second corpus, not the first"}' \
+  > /tmp/mission.ctl
+```
+
+`fd:N` is what a platform uses: it keeps the write end of a pipe and the
+mission never has a path on disk to race anybody for. `-` reads stdin, for a
+person typing at a run. One JSON object per line, and the vocabulary is closed:
+
+* **`{"control": "inject", "text": "…"}`** — a user instruction. It is appended
+  as a `user` turn **immediately before the next model call**, which is the one
+  moment it is a message in a conversation rather than an edit to a decision
+  the model already made, and that step's `step_started` carries it back as
+  `injected: ["…"]` so a pane can show that somebody spoke. Both protocols take
+  a user turn, so this works under `native` unchanged;
+* **`{"control": "cancel"}`** — the first `SIGTERM` by another road. The
+  mission's cancellation is thrown from the channel's own reader thread, the
+  loop winds up at its next check, keeps its transcript, and writes its own
+  `mission_finished` — `incomplete` with `reason: "cancelled"`. The process
+  exits normally: a platform asked the *mission* to stop, not the process to
+  die of a signal nobody sent;
+* **`{"control": "cancel_step"}`** — abandon the rest of the current step, which
+  is a much smaller ask than abandoning the run. Under `native`, where one turn
+  may carry several calls, the calls that have not been dispatched are skipped;
+  under `json`, the one proposed call is not dispatched if it has not gone out
+  yet. Either way the model is told in as many words and asked again, so it
+  decides what to do from what it has. **A tool already running is left alone**
+  — the bus owns dispatch, and what a half-killed subprocess did to the world is
+  not knowable from here. An ask that arrives too late is a no-op, and says so
+  to the model rather than vanishing;
+* **`{"control": "gate_decision", "approval_id": "ap_…", "approve": true,
+  "decided_by": "dana", "note": ""}`** — answer a gate **while the run is still
+  standing at it**. With a channel open, a gated call emits its
+  `gate_requested` (with the `approval_id`) and then waits, bounded by
+  `min(what is left of --mission-seconds, 300s)`. A yes is written through the
+  same `ApprovalStore` the `--approval` path reads — `decided`, then `spent`,
+  by the name you sent — and the one call it authorised is dispatched **in that
+  same step**, after which the mission carries on. A no is recorded as a
+  refusal and the model is told. `decided_by` must name somebody: this
+  framework has no identity layer and will not invent one, but an approval
+  signed by nobody is not an approval, and the command is dropped.
+
+Nothing here decides anything on the harness's behalf, and **nothing times out
+into a yes**: the wait running out ends the mission at `awaiting_approval`
+exactly as it always did, with the record left `pending` for `--approval` on a
+later turn. A malformed line, an unknown word, an `inject` with no text or a
+decision signed by nobody is dropped with **one** sentence on stderr and the
+run carries on — a control channel that could crash a mission would be a worse
+lever than no lever. A channel nobody writes to, or one whose writer goes away,
+is not an error.
+
+On `--swarm` there is **one channel for the turn**, shared the way the wall
+clock and the cancellation are, and it reaches the sub-mission that is running.
+The swarm's own roles — the router, the planner, each gate, the synthesizer —
+ignore it: they are single questions asked and answered in one round trip, with
+no "between steps" to speak into.
 
 ### Resuming a mission — `--resume`
 

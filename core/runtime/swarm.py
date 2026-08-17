@@ -454,6 +454,28 @@ class SwarmRunner:
         The mission's stop switch, shared the same way and checked at the
         same points: before triage, before a redraw, before the
         synthesizer, and inside every sub-mission the runners below build.
+    control:
+        The turn's :class:`~core.runtime.control.ControlChannel`, shared
+        exactly as the clock and the switch are: **one channel per turn**,
+        handed to every :class:`MissionRunner` this builds.  ``None`` is a
+        turn nobody can steer, which is the default.
+
+        One and not one apiece, for the reason the clock is one: an
+        operator steering "this mission" is steering the turn, and a
+        channel opened per sub-mission would deliver an injection to
+        whichever of five stages happened to be reading.  Shared, it
+        reaches **the sub-mission that is running** — that runner drains
+        it between its own steps — which is the only stage in a staged
+        turn that is a conversation.
+
+        This runner's **own** roles ignore it, and that is not an omission.
+        The router, the planner, each gate and the synthesizer are single
+        questions asked and answered in one round trip through
+        ``plain_chat_fn``; there is no "between steps" to inject into, and
+        an instruction folded into a yes/no prompt would corrupt the answer
+        that prompt exists to get.  A ``cancel`` still reaches them,
+        because the channel throws the switch from its own thread and
+        :meth:`_stop` is asked before each of those round trips.
     """
 
     def __init__(
@@ -486,6 +508,7 @@ class SwarmRunner:
         rate: Optional[Rate] = None,
         deadline: Optional[Deadline] = None,
         cancel: Any = None,
+        control: Any = None,
     ):
         self._chat = chat_fn
         self._plain_chat = plain_chat_fn or chat_fn
@@ -548,6 +571,11 @@ class SwarmRunner:
         # why seconds are shared where steps are portioned.
         self._deadline = deadline
         self._cancel = cancel
+        # One channel for the whole turn, like the clock and the switch,
+        # and handed to the sub-missions for the same reason: an operator
+        # steering this turn is steering the mission, not whichever stage
+        # happened to be listening.
+        self._control = control
         self._started_at: Optional[float] = None
         self._max_plan_steps = max(1, int(max_plan_steps))
         self._step_budget = max(1, int(step_budget))
@@ -832,6 +860,7 @@ class SwarmRunner:
             # fit inside a one-minute budget.
             deadline=self._deadline,
             cancel=self._cancel,
+            control=self._control,
             started_at=self._started_at,
         )
 
@@ -861,6 +890,7 @@ class SwarmRunner:
             ledger=self._ledger,
             deadline=self._deadline,
             cancel=self._cancel,
+            control=self._control,
             started_at=self._started_at,
         )
         return runner.run(objective)
