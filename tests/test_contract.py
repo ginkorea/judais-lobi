@@ -936,6 +936,7 @@ _FLAG_VALUES = {
     "--top-p": "0.9",
     "--seed": "7",
     "--resume": "run_20260815T131102-9f3a1c04",
+    "--replay": "run_20260815T131102-9f3a1c04",
     "--protocol": "native",
     "--control": "fd:9",
     "--gate-wait": "45",

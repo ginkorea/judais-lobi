@@ -478,6 +478,7 @@ person's surface and may move.
 - `--gate-tool` — offer a tool and refuse to call it. Repeatable. Names resolve through the same `same_tool` rule a manifest's `allowed_tools` uses, so a bare name matches the namespaced one the bus dispatches; a name matching nothing, or matching two offered tools, is a refusal at the door listing what was offered.
 - `--approval` — an approval id somebody has already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched. A pending, refused, spent or abandoned record is refused at the door, naming the state.
 - `--resume` — carry on a recorded mission by its `run_id`. The objective comes off that run, so the positional message may be omitted; a different one is refused. A finished run is refused, except one that ended `awaiting_approval`.
+- `--replay` — run a recorded mission **again**, by its `run_id`: the model's replies are served out of that run's `model.jsonl` in order and its tool results out of `tools.jsonl`, so nothing is dialled and nothing is asked. The objective comes off the record, so the positional message may be omitted; a different one is refused. The replayed run is a **new** run directory whose `meta.json` carries `replay_of` and the `drift` between what this run asked and what was recorded — grounding runs fresh over the recorded answer, which is how a grounding change is scored on yesterday's runs. Not `--resume`: that continues an unfinished run against a live model.
 - `--temperature` — sampling, when it must be stated rather than the server's.
 - `--top-p` — likewise.
 - `--seed` — likewise, for a run somebody intends to reproduce.
@@ -507,6 +508,7 @@ passes the other gets the one it passed.
 - `MISSION_APPROVAL` — the environment form of `--approval`; the flag wins.
 - `MISSION_SECONDS` — the environment form of `--mission-seconds`; the flag wins. Unset, blank, unparseable or ≤ 0 all mean unbounded, because a mistyped budget that killed the run before its first step would look like a broken harness.
 - `MISSION_RESUME` — the environment form of `--resume`.
+- `MISSION_REPLAY` — the environment form of `--replay`; the flag wins. Unset and blank both mean a live run, which is every mission until somebody asks for one back.
 - `MISSION_PROTOCOL` — the environment form of `--protocol`; the flag wins. Unset and blank both mean `json`, which is what a mission runs under unless somebody asks otherwise.
 - `MISSION_STREAM` — the environment form of `--no-stream`, the way round a consumer wants to read it: `off`, `0`, `false`, `no` or `none` turn streaming off and anything else — including unset and blank — leaves it on. The flag wins. It has no effect on a backend that does not declare `supports_streaming`, which is asked first.
 - `MISSION_CONTROL` — the environment form of `--control`; the flag wins. Unset and blank both mean no channel, which is a run that can only be stopped by `SIGTERM`.

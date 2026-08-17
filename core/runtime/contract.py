@@ -573,7 +573,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
     "--history", "--gate-tool", "--approval", "--resume", "--temperature",
     "--top-p", "--seed", "--protocol", "--no-stream", "--control",
-    "--gate-wait",
+    "--gate-wait", "--replay",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -612,6 +612,15 @@ CLI_FLAGS: tuple[str, ...] = (
 #: ``MISSION_RESUME`` is the environment form of ``--resume``, the run id of
 #: a recorded mission to carry on from — the objective comes off that run's
 #: own record, so the positional message may be omitted with it;
+#: ``MISSION_REPLAY`` is the environment form of ``--replay``, the run id of a
+#: recorded mission to run AGAIN from its recording — the model's replies come
+#: out of that run's ``model.jsonl`` in order and its tool results out of
+#: ``tools.jsonl``, so no server is dialled and no model is asked, and the
+#: replayed run is a **new** run directory whose ``meta.json`` carries
+#: ``replay_of`` and the ``drift`` between what it asked and what was
+#: recorded.  It is not ``MISSION_RESUME``: that continues an unfinished run
+#: against a live model, where this re-runs a finished one against a
+#: recording, which is how a grounding change is scored on yesterday's runs;
 #: ``MISSION_CONTROL`` is the environment form of ``--control`` — where a
 #: platform writes NDJSON commands **into** a running mission (``fd:N``, a
 #: FIFO, a path, or ``-`` for stdin), which is the only lever into a turn
@@ -649,6 +658,7 @@ ENV_VARS: tuple[str, ...] = (
     "MISSION_APPROVAL",
     "MISSION_SECONDS",
     "MISSION_RESUME",
+    "MISSION_REPLAY",
     "MISSION_PROTOCOL",
     "MISSION_STREAM",
     "MISSION_CONTROL",

@@ -567,6 +567,8 @@ def _mission(elf, args, name, style):
     This function joins them in that order — who you are, then what you
     are doing — and supplies neither.
     """
+    from contextlib import nullcontext
+
     from core.durable import RUNS_ENV, open_run_store
     from core.budgets import Budgets, Cancellation, Deadline
     from core.redact import scrub
@@ -582,6 +584,10 @@ def _mission(elf, args, name, style):
     )
     from core.runtime.mission_stream import (
         close_on_sigterm, exit_as_signalled, open_sink,
+    )
+    from core.runtime.replay import (
+        MODEL_LOG, TOOLS_LIVE, TOOLS_RECORDED, Recorder, ReplayExhausted,
+        ReplayRefused, open_for_replay,
     )
     from core.runtime.resume import (
         ORPHAN_STALE_S, ResumeRefused, open_for_resume, rebuild,
@@ -610,7 +616,17 @@ def _mission(elf, args, name, style):
         ticket = resolve(approvals, getattr(args, "approval", "") or "")
     except ApprovalError as exc:
         raise SystemExit(f"--approval: {exc}")
-    transport = _build_mcp_transport(args)
+    # A replay serving recorded tool results dials NOTHING, and that is the
+    # whole of what makes it runnable on a laptop with no server and no GPU.
+    # So the transport is not built — `_build_mcp_transport` would refuse a
+    # command line with no --mcp-url and no --mcp-stdio, and refusing a
+    # replay for want of a server it is never going to use would be the
+    # feature refusing itself. `--replay-tools live` takes the ordinary path
+    # and is refused for a missing server like any other mission.
+    replay_id = (getattr(args, "replay", "") or "").strip()
+    replay_tools = (getattr(args, "replay_tools", "") or TOOLS_RECORDED).strip()
+    offline = bool(replay_id) and replay_tools == TOOLS_RECORDED
+    transport = None if offline else _build_mcp_transport(args)
     bus = elf.tools.bus
 
     # Said out loud, both ways round. A path tells an operator where to look
@@ -654,8 +670,41 @@ def _mission(elf, args, name, style):
                  else max(1, int(args.mission_steps)))
     resume_id = (getattr(args, "resume", "") or "").strip()
     recorded = None
+    replay = None
 
-    if resume_id:
+    if replay_id:
+        # The same door `--resume` has, and for the same reason: every
+        # refusal a replay can meet — no store, no such run, no model log,
+        # no recorded plane, the wrong objective — is answered before a run
+        # directory is minted and before a loop is built.
+        try:
+            replay = open_for_replay(run_store, replay_id,
+                                     objective=args.message,
+                                     tools=replay_tools)
+        except ReplayRefused as exc:
+            raise SystemExit(f"--replay: {exc}")
+        objective = replay.objective
+        # The run's, not this command line's — the recorded messages were
+        # made in one protocol's shape and the loop about to be handed them
+        # back has to be reading that shape.
+        protocol = replay.protocol or protocol
+        # A NEW run, always. See the module docstring of core.runtime.replay:
+        # a replay emits the whole stream, and appending it to the log it was
+        # made from would give one run two openings and two endings.
+        run_id = run_store.create(meta={
+            "objective": objective,
+            "flags": _run_meta_flags(args),
+            "replay_of": replay.run_id,
+            "replay_tools": replay.tools,
+        }).run_id
+        console.print(
+            f"🔁 replay of {replay.run_id} — {len(replay.calls)} recorded "
+            f"model call(s), tools {replay.tools}"
+            + (", nothing dialled" if replay.recorded_tools else "")
+            + f"; this run is {run_id}",
+            style=style,
+        )
+    elif resume_id:
         # Every refusal a resume can meet is answered here — before the
         # server is dialled and before the model is asked — for the reason
         # `--skill` and `--history` are read at the door. The worst of them
@@ -717,7 +766,19 @@ def _mission(elf, args, name, style):
     # `Agent` any client, and one that never heard of capabilities has not
     # declared these.
     native = protocol == NATIVE_PROTOCOL
-    if native:
+    if native and replay is not None:
+        # Not asked of a backend that is not going to be asked anything.
+        # The capability check exists so a run cannot be MEASURED as a
+        # protocol it was not running; a replay is not running a protocol,
+        # it is serving replies that were made under one, and refusing it
+        # because this laptop's endpoint is cold would refuse the one
+        # machine the whole feature was built to run on.
+        console.print(
+            f"🔤 protocol: {NATIVE_PROTOCOL} — off the recording, not off "
+            f"this command line; the backend is never asked",
+            style=style,
+        )
+    elif native:
         capabilities = getattr(elf.client, "capabilities", None)
         missing = [capability for capability in ("supports_tool_calls",
                                                  "supports_tool_choice_required")
@@ -877,13 +938,94 @@ def _mission(elf, args, name, style):
     # stream: its callers are the swarm's router, planner, gates and
     # synthesizer, which read one small JSON object or one paragraph and
     # have nowhere to put a fragment.
-    streaming = _mission_streams(args, elf.client)
+    # A recording holds the reply, not the frames it arrived in, so a replay
+    # has nothing to stream and says so rather than pretending. The `answer`
+    # record arrives identically — the same sentence `--no-stream` carries.
+    streaming = replay is None and _mission_streams(args, elf.client)
+    if replay is not None:
+        console.print(
+            "📝 streaming: off for a replay — a recording holds the reply "
+            "and not the fragments it arrived in, so there are no "
+            "answer_delta records; the answer record is the whole of it "
+            "either way",
+            style=style)
     if streaming:
         console.print(
             "📝 streaming: the answer goes out in fragments as the model "
             "writes it (answer_delta), and the answer record that follows "
             "is still the whole of it — --no-stream / MISSION_STREAM=off "
             "turns this off and changes nothing else",
+            style=style)
+
+    replay_model = None
+
+    def _note_drift(drift):
+        """The first divergence, said out loud as it is found.
+
+        An INFO line and not a refusal — see the `core.runtime.replay`
+        module docstring on why there is no `--replay-loose`. Only the
+        console: the run's own record of the drift is written once, in
+        the `finally` below, which runs on every way out of this function
+        including a SIGTERM and a refusal. Writing it here as well would
+        be a second owner of one fact.
+        """
+        console.print(f"🔀 {drift.get('detail', 'replay drift')}",
+                      style="yellow")
+
+    def _ask(messages, **extra):
+        """The ONE call to the backend, and therefore the one seam.
+
+        Everything a model call is — the messages, the tool schemas, the
+        sampling, whether it streams — arrives here as arguments, which
+        is what lets the recorder write the request down and the replay
+        serve it back without either of them knowing which of the two
+        functions below made it.  Splitting the recorder across
+        ``chat_fn`` and ``plain_chat_fn`` would be two copies of one
+        rule, and the swarm's six-of-ten grounding fields are what that
+        looks like a month later.
+        """
+        return elf.client.chat(model=elf.model, messages=messages, **extra)
+
+    # Where `usage_fn` and `tool_calls_fn` read their two side channels: the
+    # backend on a live run, the ReplayModel on a replayed one, which sets
+    # `last_usage` and `last_tool_calls` for exactly this reason. One name,
+    # so the two functions below do not each have to know about replay.
+    side = elf.client
+    mission_ask, plain_ask = _ask, _ask
+    if replay is not None:
+        replay_model = replay.model(on_drift=_note_drift)
+        side = replay_model
+        mission_ask = replay_model.serving("mission")
+        plain_ask = replay_model.serving("plain")
+
+    # The recorded plane goes on FIRST, under the recorder below, so that
+    # what gets written down is what the loop was actually served. Two
+    # proxies rather than two hooks on ToolBus: the bus serves chat turns
+    # and kernel roles as well as missions, and neither recording nor
+    # replay is any of its business.
+    if replay is not None and replay.recorded_tools:
+        bus = replay.bus(bus)
+
+    # The recorder goes OUTSIDE the replay rather than instead of it: a
+    # replayed run is a run, and its directory holds its own model.jsonl
+    # and tools.jsonl so it can be scored, read and replayed like any
+    # other. Nothing is recorded when the run store is off — the same
+    # switch that keeps no transcript keeps no recording.
+    recorder = None
+    if run_store is not None and run_id:
+        recorder = Recorder(run_store, run_id, side=lambda: (
+            getattr(side, "last_usage", None),
+            list(getattr(side, "last_tool_calls", []) or [])))
+        mission_ask = recorder.wrap(mission_ask, kind="mission")
+        plain_ask = recorder.wrap(plain_ask, kind="plain")
+        bus = recorder.bus(bus)
+        console.print(
+            f"🎞  recording: {run_store.directory(run_id) / MODEL_LOG} — "
+            f"every model call with its reply and side channels, and every "
+            f"tool dispatch with its typed payload, so this run can be "
+            f"replayed. As sensitive as the transcript beside it, under the "
+            f"same {RUNS_ENV}: credentials are taken out and NOTHING else "
+            f"is, because the rest is the model's exact input",
             style=style)
 
     def chat_fn(messages):
@@ -911,8 +1053,7 @@ def _mission(elf, args, name, style):
             })
         elif declared and getattr(elf.client, "supports_tool_calls", True):
             extra.update({"tools": declared, "tool_choice": "auto"})
-        return elf.client.chat(model=elf.model, messages=messages,
-                               stream=streaming, **extra)
+        return mission_ask(messages, stream=streaming, **extra)
 
     def plain_chat_fn(messages, **extra):
         # No tool schemas, deliberately: the swarm's router, planner, gate
@@ -924,8 +1065,7 @@ def _mission(elf, args, name, style):
         # `response_format` from `SwarmRunner._json_reply`. Sampling is
         # applied after it so a role cannot quietly re-pin a temperature
         # this run's operator chose.
-        return elf.client.chat(model=elf.model, messages=messages,
-                               stream=False, **extra, **dict(sampling))
+        return plain_ask(messages, stream=False, **extra, **dict(sampling))
 
     def usage_fn():
         # The side channel beside `chat`. Read straight after each of the
@@ -934,7 +1074,7 @@ def _mission(elf, args, name, style):
         # breaking every caller of it. `getattr` with a default because a
         # library caller may hand `Agent` a client that never heard of
         # usage, and a mission must not need one to run.
-        return getattr(elf.client, "last_usage", None)
+        return getattr(side, "last_usage", None)
 
     def tool_calls_fn():
         # The second side channel beside `chat`, read the same way and for
@@ -944,7 +1084,7 @@ def _mission(elf, args, name, style):
         # caller of it. Copied out rather than handed over — the backend
         # clears its own on the next call, and the loop is entitled to a
         # list that does not change underneath it.
-        return list(getattr(elf.client, "last_tool_calls", []) or [])
+        return list(getattr(side, "last_tool_calls", []) or [])
 
     # Read once, here, where a deployment's provider and model are already
     # in hand. There is no price list in this repository and there must not
@@ -1013,17 +1153,33 @@ def _mission(elf, args, name, style):
         )
 
     try:
-        with McpClient(transport) as client:
-            from core.tools.mcp_client import McpToolBridge
-            bridge = McpToolBridge(client, bus)
-            discovered = bridge.sync()
-            bridge.follow_changes()
-            console.print(
-                f"🔌 {name} connected to {transport.describe()} — "
-                f"{len(discovered)} tool(s) discovered: "
-                f"{', '.join(discovered) or '(none)'}",
-                style=style,
-            )
+        # `nullcontext` and not a fake client: an offline replay has no
+        # server, and the honest way to say that is to enter no connection
+        # at all rather than to hand the block something shaped like one.
+        # Everything inside is unchanged for every other run.
+        with (nullcontext(None) if transport is None
+              else McpClient(transport)) as client:
+            if transport is None:
+                discovered = replay.names
+                console.print(
+                    f"🎞  {name} is offline — the tool plane is "
+                    f"{replay.run_id}'s recording: {len(discovered)} tool(s) "
+                    f"and {len(replay.dispatches)} recorded dispatch(es). A "
+                    f"call the recording does not hold ends the step with a "
+                    f"refusal; nothing reaches a server",
+                    style=style,
+                )
+            else:
+                from core.tools.mcp_client import McpToolBridge
+                bridge = McpToolBridge(client, bus)
+                discovered = bridge.sync()
+                bridge.follow_changes()
+                console.print(
+                    f"🔌 {name} connected to {transport.describe()} — "
+                    f"{len(discovered)} tool(s) discovered: "
+                    f"{', '.join(discovered) or '(none)'}",
+                    style=style,
+                )
             tool_names = _mission_tools(manifest, discovered, style, bus)
             # The catalogue is not knowable until the server has answered,
             # so it joins the metadata here rather than at `create`. Through
@@ -1033,6 +1189,15 @@ def _mission(elf, args, name, style):
             # `core.durable` was written around.
             if run_store is not None:
                 run_store.update_meta(run_id, catalogue=list(tool_names))
+            # The plane, written down the moment it is known and read off
+            # the bus's own `describe_tool` — the same rendering the
+            # catalogue in the system prompt is built from, so a replay
+            # rebuilds that prompt from the bytes the recorded run used
+            # rather than from whatever this host happens to have
+            # registered. The line goes in beside the dispatches because a
+            # tool plane is what it offered as well as what it did.
+            if recorder is not None:
+                recorder.catalogue(bus, tool_names)
             declared[:] = _function_schemas(tool_names)
             # The identifier check must not flag the name of a tool this
             # mission offered — the harness wrote that name into the prompt
@@ -1308,8 +1473,17 @@ def _mission(elf, args, name, style):
             # resumption and must not grow a parameter it can never be
             # given — the CLI builds a MissionRunner for every resume, and
             # a staged run is refused at the door before that.
-            transcript = (runner.run(objective) if resumption is None
-                          else runner.run(objective, resumption))
+            try:
+                transcript = (runner.run(objective) if resumption is None
+                              else runner.run(objective, resumption))
+            except ReplayExhausted as exc:
+                # The loop asked for a turn the recording does not have —
+                # a repair turn a stricter grammar bought itself, most
+                # likely. `mission_finished` has already gone out from the
+                # runner's own `finally`, so the stream is closed and the
+                # new run directory is complete as far as it goes; what is
+                # owed is the sentence saying which call ran off the end.
+                raise SystemExit(f"--replay: {exc}")
     except (McpUnavailable, McpConnectionError) as exc:
         # Scrubbed like everything else a mission says about a failure: this
         # message names the transport, and a transport is a URL, a socket path
@@ -1317,6 +1491,13 @@ def _mission(elf, args, name, style):
         console.print(f"❌ {scrub(str(exc))}", style="red")
         return
     finally:
+        # In the `finally` for the reason `mission_finished` is: a replay
+        # that ended badly is exactly the one whose divergence somebody
+        # needs to read. `drift.first` is `None` on a clean replay, which
+        # is a positive statement — the run asked the recording's own
+        # questions all the way through — and not the absence of a field.
+        if replay is not None and run_store is not None and run_id:
+            run_store.update_meta(run_id, drift=replay_model.as_record())
         if sink is not None:
             sink.close()
         # In the same `finally` and for the same reason: the descriptor
@@ -1448,6 +1629,15 @@ def _mission(elf, args, name, style):
 
 
 def _main(AgentClass):
+    # The two words `--replay-tools` takes, off the module that owns them
+    # rather than typed here: a second spelling of "recorded" is a flag
+    # that accepts a value nothing serves. Imported inside the function
+    # because argparse needs the value at `add_argument` time and this
+    # module's header stays light on purpose.
+    from core.runtime.replay import (
+        REPLAY_TOOLS as REPLAY_TOOL_PLANES, TOOLS_RECORDED as REPLAY_RECORDED,
+    )
+
     parser = argparse.ArgumentParser(description=f"{AgentClass.__name__} CLI Interface")
     # Optional at the parser and checked below `parse_args`: it is required
     # for every entry point EXCEPT `--mission --resume` (the recorded run
@@ -1517,6 +1707,34 @@ def _main(AgentClass):
                              "that ended awaiting_approval, which is waiting "
                              "on a person rather than on this harness "
                              "(env: MISSION_RESUME)")
+    parser.add_argument("--replay", type=str,
+                        default=os.getenv("MISSION_REPLAY", ""),
+                        metavar="RUN_ID",
+                        help="Run a recorded mission AGAIN, from its "
+                             "recording: the model's replies come out of that "
+                             "run's model.jsonl in order and, unless "
+                             "--replay-tools live, its tool results come out "
+                             "of tools.jsonl — so no server is dialled and no "
+                             "model is asked. The objective comes off the "
+                             "record, so the message may be omitted. The "
+                             "replayed run is a NEW run directory whose "
+                             "meta.json carries replay_of and any drift, and "
+                             "grounding runs fresh over the recorded answer, "
+                             "which is how a grounding change is scored on "
+                             "yesterday's runs. Not --resume: that continues "
+                             "an unfinished run against a live model "
+                             "(env: MISSION_REPLAY)")
+    parser.add_argument("--replay-tools", type=str, default=REPLAY_RECORDED,
+                        choices=list(REPLAY_TOOL_PLANES),
+                        metavar="recorded|live",
+                        help="Where a replayed run's tool results come from. "
+                             "'recorded' (the default) serves them out of the "
+                             "recording, which is what makes a replay need no "
+                             "server; a call the recording does not hold ends "
+                             "the step with a refusal rather than reaching "
+                             "one. 'live' dispatches against the real plane "
+                             "and needs --mcp-url/--mcp-stdio, for the "
+                             "experiment where the tools are what changed")
     parser.add_argument("--mission-seconds", type=float,
                         default=_env_seconds("MISSION_SECONDS"),
                         help="Wall-clock budget for a mission, in seconds. "
@@ -1728,6 +1946,15 @@ def _main(AgentClass):
         parser.error(
             "--resume continues a recorded MISSION; pass --mission with it. "
             "A chat turn keeps its own history and is not a run.")
+    if getattr(args, "replay", "") and not args.mission:
+        parser.error(
+            "--replay re-runs a recorded MISSION; pass --mission with it. "
+            "A chat turn keeps its own history and is not a run.")
+    if getattr(args, "replay", "") and getattr(args, "resume", ""):
+        parser.error(
+            "--resume and --replay are two different things to do with one "
+            "recording: resume CONTINUES it against a live model, replay "
+            "RE-RUNS it from the recorded replies. Pass one.")
     os.environ.setdefault("COQUI_TTS_LOG_LEVEL", "ERROR")
 
     # BEFORE the agent is built, and before anything reads `message`.
@@ -1740,14 +1967,17 @@ def _main(AgentClass):
             "question. Pass one.")
     if args.approve or args.refuse:
         return _decide_approval(args)
-    if not (args.message or "").strip() and not getattr(args, "resume", ""):
+    if (not (args.message or "").strip() and not getattr(args, "resume", "")
+            and not getattr(args, "replay", "")):
         # ONE check for the positional, after the two commands that never
-        # take one have returned. The remaining exception is a resume: the
-        # recorded run already holds the objective.
+        # take one have returned. The remaining exceptions are a resume and
+        # a replay: the recorded run already holds the objective, and both
+        # refuse a different one rather than run it.
         raise SystemExit(
             "a message is required — the question, or the mission's "
             "objective. The exceptions: `--mission --resume <run-id>` takes "
-            "the objective from the run it continues, and --approve/--refuse "
+            "the objective from the run it continues, `--mission --replay "
+            "<run-id>` from the run it re-runs, and --approve/--refuse "
             "answer a gate rather than ask anything.")
 
     print(f"{GREEN}👤 You: {args.message}{RESET}")

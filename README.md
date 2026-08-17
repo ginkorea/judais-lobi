@@ -150,6 +150,7 @@ program that spawns this harness may rely on them. The table below is in
 | `--gate-tool` | — | a tool to offer and refuse to call. Repeatable. Resolved by `same_tool`, so a bare name matches the namespaced one; a name that matches nothing, or two things, is a refusal at the door |
 | `--approval` | `MISSION_APPROVAL` | an approval id somebody already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched |
 | `--resume` | `MISSION_RESUME` | carry on a recorded mission by its run id. The objective comes off the record, so the message may be omitted |
+| `--replay` | `MISSION_REPLAY` | run a recorded mission **again** from its recording: the replies come out of that run's `model.jsonl` in order and the tool results out of `tools.jsonl`, so no server is dialled and no model is asked. The objective comes off the record, so the message may be omitted. The replayed run is a **new** run directory carrying `replay_of` and any `drift`, and grounding runs fresh over the recorded answer — which is how a grounding change is scored on yesterday's runs. `--replay-tools live` dispatches against the real plane instead |
 | `--temperature` | — | sampling. Unset sends **nothing** and the server's own default applies |
 | `--top-p` | — | nucleus sampling. Unset sends nothing |
 | `--seed` | — | a seed where the server honours one. Not a determinism guarantee |
