@@ -201,6 +201,62 @@ class TestResolvingAgainstWhatWasDiscovered:
         assert "matches 2" in str(exc.value)
 
 
+class TestAdmittingAToolThePlaneGrew:
+    """`resolve` answers the door; `admits` answers the doorbell.
+
+    A discovered server may register a tool mid-run and notify. The bus
+    picks it up, and a running mission asks the manifest whether its
+    closed set lets the new name join — because the closed set is the
+    manifest's and a loop that widened its own would not be under one.
+    """
+
+    def manifest(self, tmp_path, tools='[echo, "late_arrival?"]'):
+        return load_skill(write(tmp_path, f"""\
+            ---
+            name: growable
+            allowed_tools: {tools}
+            when_to_use: A plane that can grow.
+            ---
+            Body.
+            """))
+
+    def test_an_optional_entry_admits_the_late_arrival(self, tmp_path):
+        """The `?` case, which is exactly this: an entry the server had
+        not advertised at the door is the entry a late arrival fills."""
+        assert self.manifest(tmp_path).admits(
+            ["mcp.late_arrival"], ["mcp.echo"]) == ["mcp.late_arrival"]
+
+    def test_a_name_the_closed_set_never_mentioned_is_refused(self, tmp_path):
+        """The whole point of a closed set. A server that registers
+        `run_shell_command` mid-run has not been given one."""
+        assert self.manifest(tmp_path).admits(
+            ["mcp.run_shell_command"], ["mcp.echo"]) == []
+
+    def test_an_entry_already_bound_admits_no_second_tool(self, tmp_path):
+        """`echo` asked for the plane's echo, not for every echo. A server
+        that later registers one under another namespace must not slide a
+        tool in through an entry that is already spent."""
+        assert self.manifest(tmp_path).admits(
+            ["other.echo"], ["mcp.echo"]) == []
+
+    def test_the_same_entry_admits_it_when_nothing_filled_it_yet(
+            self, tmp_path):
+        """The other half of that rule, so it is a rule about SPENT
+        entries and not a rule about namespaces."""
+        assert self.manifest(tmp_path).admits(["other.echo"], []) == [
+            "other.echo"]
+
+    def test_it_answers_with_the_bus_names_it_was_given(self, tmp_path):
+        """The mission dispatches by the name the bus registered, so what
+        comes back is that name and never the manifest's spelling."""
+        assert self.manifest(tmp_path).admits(["mcp.late_arrival"], []) == [
+            "mcp.late_arrival"]
+
+    def test_nothing_offered_and_nothing_grown_is_nothing_admitted(
+            self, tmp_path):
+        assert self.manifest(tmp_path).admits([], ["mcp.echo"]) == []
+
+
 class TestTheRefusals:
     def test_a_file_without_frontmatter(self, tmp_path):
         path = write(tmp_path, "# Just a heading\n\nAnd a paragraph.\n")
@@ -529,9 +585,22 @@ class TestTheCodePlaneGate:
         assert "run_python_code" in message
         assert "install_project" in message
 
-    def test_a_namespaced_spelling_is_caught_too(self, tmp_path):
-        """A code plane reached through a bridge is still a code plane,
-        and `same_tool` is the harness's one answer to that."""
+    def test_a_namespaced_spelling_is_the_servers_and_is_not_gated(
+            self, tmp_path):
+        """REVERSED on 16 Aug 2026, and the reason is what the gate asks
+        for.
+
+        Lane L (0.9.0) held that "a code plane reached through a bridge is
+        still a code plane". The gate's demand is `sandbox: bwrap`, which
+        is a wrapper THIS bus puts around a subprocess IT spawns; a
+        bridged tool spawns nothing here — the mission sends `tools/call`
+        and the interpreter runs on the far end. Requiring bwrap for that
+        made a manifest declare an untruth about where the code runs, and
+        it made the in-repo eval suite refuse to load on any host without
+        bubblewrap over a stub server's Python function. So the bridged
+        spelling resolves, and what governs it is the server, the closed
+        set, the `mcp.call` capability and `--gate-tool`.
+        """
         path = write(tmp_path, """\
             ---
             name: bridged
@@ -540,9 +609,49 @@ class TestTheCodePlaneGate:
             ---
             Body.
             """)
+        manifest = load_skill(path)
+        assert manifest.resolve(["mcp.run_python_code"], sandbox="none") == [
+            "mcp.run_python_code"]
+        assert manifest.code_plane_entries() == []
+        # And it is not silently invisible: the fact has an owner, so a
+        # caller can say a manifest bridges a shell rather than leave it
+        # to be discovered in a transcript.
+        assert manifest.bridged_code_plane_entries() == [
+            ("mcp.run_python_code", "run_python_code")]
+
+    def test_the_bare_spelling_is_this_hosts_and_is_still_gated(
+            self, tmp_path):
+        """The other side of the same line, asserted beside it so the two
+        cannot be read apart: `run_python_code` with no namespace is this
+        process's own descriptor, dispatched by this bus's sandbox."""
+        path = write(tmp_path, """\
+            ---
+            name: local
+            allowed_tools: [run_python_code]
+            when_to_use: On this host.
+            ---
+            Body.
+            """)
+        manifest = load_skill(path)
+        assert [entry for entry, _tool, _scopes
+                in manifest.code_plane_entries()] == ["run_python_code"]
         with pytest.raises(SkillToolsUnavailable) as exc:
-            load_skill(path).resolve(["mcp.run_python_code"])
-        assert "mcp.run_python_code" in str(exc.value)
+            manifest.resolve(["run_python_code"])
+        assert "run_python_code" in str(exc.value)
+
+    def test_the_refusal_points_a_bridged_author_at_the_namespace(
+            self, tmp_path):
+        """A refusal names the reason and the fix. The author who meant
+        the server's shell has one character of namespace to write, and a
+        message that did not say so would send them to install bwrap for
+        a subprocess this host never spawns."""
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            load_skill(self.shell_skill(tmp_path)).resolve(
+                ["governed_read", "run_shell_command"])
+        message = str(exc.value)
+        assert "ON THIS HOST" in message
+        assert "`mcp.run_shell_command`" in message
+        assert "isolate nothing about it" in message
 
     def test_an_optional_code_plane_tool_still_needs_the_declaration(
             self, tmp_path):

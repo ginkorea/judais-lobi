@@ -1634,19 +1634,9 @@ class TestResumingFromTheCommandLine:
         """A run with no `mission_finished`, untouched past the staleness
         rule, is closed by the next mission that comes along — so a follower
         of its stream is told it is over rather than waiting forever."""
-        import datetime
-
-        from core.runtime.resume import ORPHAN_STALE_S
-
         MockClass, agent = elf
         store = self.runs(tmp_path)
-        orphan = store.create(meta={"objective": "one that died"}).run_id
-        record = json.loads(store.meta_path(orphan).read_text())
-        record["updated_at"] = (
-            datetime.datetime.now(datetime.timezone.utc)
-            - datetime.timedelta(seconds=ORPHAN_STALE_S + 10)
-        ).isoformat(timespec="seconds")
-        store.meta_path(orphan).write_text(json.dumps(record))
+        orphan = self.stale_orphan(tmp_path)
 
         agent.replies = ['{"answer": "no tools needed"}']
         run_cli(MockClass)
@@ -1661,6 +1651,88 @@ class TestResumingFromTheCommandLine:
         agent.replies = ['{"answer": "no tools needed"}']
         run_cli(MockClass)
         assert "reconciled" not in capsys.readouterr().out
+
+    def stale_orphan(self, tmp_path):
+        """A run with no `mission_finished`, untouched past the rule."""
+        import datetime
+
+        from core.runtime.resume import ORPHAN_STALE_S
+
+        store = self.runs(tmp_path)
+        orphan = store.create(meta={"objective": "one that died"}).run_id
+        record = json.loads(store.meta_path(orphan).read_text())
+        record["updated_at"] = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=ORPHAN_STALE_S + 10)
+        ).isoformat(timespec="seconds")
+        store.meta_path(orphan).write_text(json.dumps(record))
+        return orphan
+
+    def test_the_approval_of_an_orphaned_run_is_abandoned_and_announced(
+            self, elf, tmp_path, approvals_dir, capsys):
+        """`ApprovalStore.reconcile` shipped in 0.9.0 with no caller: nothing
+        in this repository could yet say which runs were alive. This is the
+        caller.
+
+        A gate the dead run stopped at is a question addressed to a person
+        about a run that is gone, and left pending it can still be answered
+        yes — `--approval` would then widen the closed set of some LATER
+        mission on a decision made about a mission nobody can read.
+        """
+        from core.runtime.approvals import ABANDONED
+
+        MockClass, agent = elf
+        orphan = self.stale_orphan(tmp_path)
+        approval_id = approvals_dir.request(
+            tool="mcp.governed_read", arguments={"asset_id": "asset.5f21"},
+            run_id=orphan)
+
+        agent.replies = ['{"answer": "no tools needed"}']
+        run_cli(MockClass)
+
+        out = capsys.readouterr().out
+        assert "reconciled: 1 approval(s) abandoned" in out
+        assert approval_id in out
+        assert approvals_dir.get(approval_id).state == ABANDONED
+
+    def test_a_fresh_awaiting_run_keeps_the_approval_it_is_waiting_on(
+            self, elf, skill_file, tmp_path, approvals_dir):
+        """THE case this must not break, and it is not hypothetical: a run
+        that stopped at `awaiting_approval` a minute ago is FINISHED, not
+        orphaned, and its pending record is exactly what `--approve` and
+        then `--approval` on the next turn are for. Abandoning approvals for
+        "every run that is not this one" would make the gate unanswerable.
+
+        The order is the test. The gated run goes FIRST, so its pending
+        record is already on disk when a later mission sweeps; the orphan is
+        planted after it, because without an orphan the reconciliation does
+        not run at all and this would pass over a rule that abandons
+        everything.
+        """
+        from core.runtime.approvals import ABANDONED, PENDING, resolve
+
+        MockClass, agent = elf
+        agent.replies = [json.dumps(
+            {"tool": "mcp.governed_read",
+             "arguments": {"asset_id": "asset.5f21"}})]
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--gate-tool", "governed_read")
+        waiting = approvals_dir.pending()
+        assert len(waiting) == 1, "the gated run wrote no pending record"
+        waiting_id = waiting[0].approval_id
+
+        orphan = self.stale_orphan(tmp_path)
+        doomed = approvals_dir.request(tool="mcp.governed_read",
+                                       run_id=orphan)
+
+        agent.replies = ['{"answer": "no tools needed"}']
+        run_cli(MockClass)
+
+        assert approvals_dir.get(doomed).state == ABANDONED
+        assert approvals_dir.get(waiting_id).state == PENDING
+        # And it is still answerable, which is the whole of what was kept.
+        decide_cli(MockClass, "--approve", waiting_id, "--decided-by", "dana")
+        assert resolve(approvals_dir, waiting_id).tool == "mcp.governed_read"
 
 
 # ---------------------------------------------------------------------------

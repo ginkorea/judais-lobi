@@ -4735,6 +4735,282 @@ class TestTheSecondOpinionRidesTheGroundingRecord:
             [[] for _ in records]
 
 
+class TestThePlaneChangesUnderneathTheRun:
+    """A mission's offered set is reconciled against the bus, not frozen.
+
+    The finding the eval harness surfaced (`the_plane_grew_mid_run`, ROADMAP
+    §2.5): a discovered server may register a tool mid-run and notify, the
+    bridge picks it up and registers it on the bus — and the mission went on
+    offering the set it was constructed with, so the model that named the new
+    tool was told there is no such tool and spent a step on it.
+
+    What must NOT follow from fixing that is a run whose closed set drifts.
+    Every test here is one of the two halves: the plane is learned, and the
+    manifest still decides.
+    """
+
+    LATE = "catalog.late"
+
+    def grow(self, bus, name=None):
+        """Register one more tool on *bus*, the way a bridge's re-sync does."""
+        bus.register(
+            ToolDescriptor(tool_name=name or self.LATE,
+                           description="Registered after the run began."),
+            lambda **kw: (0, "arrived late", ""),
+        )
+
+    def growing_bus(self, bus):
+        """`bus` with a tool that registers another one when it is called."""
+        def grow_it(**kw):
+            self.grow(bus)
+            return 0, "registered catalog.late", ""
+
+        bus.register(
+            ToolDescriptor(tool_name="catalog.grow",
+                           description="Register one more tool."),
+            grow_it,
+        )
+        return bus
+
+    def run(self, bus, *replies, **kwargs):
+        events = []
+        model = ScriptedModel(*replies)
+        runner = MissionRunner(model, bus, ["catalog.grow"],
+                               observer=events.append, **kwargs)
+        return runner, model, runner.run("grow the plane"), events
+
+    # ── the plane is learned ────────────────────────────────────────────
+
+    def test_a_tool_the_bus_grew_is_offered_and_dispatched(self, bus):
+        """The finding, closed. No manifest, so whatever the plane grew is
+        offered — the run was already offered the whole bridge."""
+        runner, _model, transcript, _events = self.run(
+            self.growing_bus(bus),
+            tool_call("catalog.grow"), tool_call(self.LATE),
+            '{"answer": "used it"}')
+        assert self.LATE in runner.offered
+        assert [step.tool for step in transcript.steps] == [
+            "catalog.grow", self.LATE, None]
+        assert transcript.steps[1].output == "arrived late"
+        assert transcript.steps[1].error == ""
+
+    def test_the_model_is_told_in_a_note_before_it_has_to_guess(self, bus):
+        """Told, not left to discover. An agent that has to name a tool it
+        was never offered in order to find out that it exists has already
+        spent the step this exists to save."""
+        _r, model, _t, _e = self.run(
+            self.growing_bus(bus),
+            tool_call("catalog.grow"), '{"answer": "noted"}')
+        note = model.seen[1][-1]
+        assert note["role"] == "user"
+        assert "the tool plane changed" in note["content"].lower()
+        assert f"+{self.LATE}" in note["content"]
+
+    def test_the_next_system_turn_carries_the_new_catalogue(self, bus):
+        """The prefix moves, and this is the one reason it may. A model told
+        about a tool in a note and shown a catalogue without it has been told
+        two different things."""
+        _r, model, _t, _e = self.run(
+            self.growing_bus(bus),
+            tool_call("catalog.grow"), '{"answer": "noted"}')
+        assert self.LATE not in model.seen[0][0]["content"]
+        assert f"- {self.LATE}: Registered after the run began." in \
+            model.seen[1][0]["content"]
+
+    def test_a_step_that_changed_nothing_re_renders_the_same_bytes(self, bus):
+        """The byte-stable prefix survives, because the rule was never "the
+        bytes never move" — it is "they never move for a reason nobody can
+        point at". Two steps, no growth, one prefix."""
+        model = ScriptedModel(tool_call("catalog.search", q="x"),
+                              '{"answer": "done"}')
+        runner = MissionRunner(model, bus, ["catalog.search"],
+                               system_message="You are Tai.")
+        runner.run("find things")
+        assert model.seen[1][0] == model.seen[0][0]
+
+    def test_the_change_is_announced_on_the_next_step_started(self, bus):
+        """The whole new list, on the step where it changed and no other."""
+        _r, _m, _t, events = self.run(
+            self.growing_bus(bus),
+            tool_call("catalog.grow"), '{"answer": "noted"}')
+        steps = [r for r in events if r["event"] == "step_started"]
+        assert "catalogue" not in steps[0]
+        assert steps[1]["catalogue"] == ["catalog.grow", self.LATE,
+                                         RESULT_TOOL]
+        assert [conforms(record) for record in events] == \
+            [[] for _ in events]
+
+    def test_a_tool_registered_while_the_model_wrote_is_not_refused(self, bus):
+        """The last look before a refusal.
+
+        The bridge re-lists on its own thread, so a registration can land
+        between the dispatch that caused it and the reply that names it.
+        "No such tool" has to be a statement about the bus and not about a
+        snapshot of it, or the race is a rejected reply.
+        """
+        outer = self
+
+        class GrowsWhileThinking(ScriptedModel):
+            def __call__(self, messages):
+                reply = super().__call__(messages)
+                if len(self.seen) == 1:
+                    outer.grow(bus)
+                return reply
+
+        events = []
+        model = GrowsWhileThinking(tool_call(self.LATE),
+                                   '{"answer": "used it"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"],
+                                   observer=events.append).run("go")
+        assert not [r for r in events if r["event"] == "reply_rejected"]
+        assert transcript.steps[0].output == "arrived late"
+
+    def test_a_plane_that_grew_with_no_dispatch_is_still_announced(self, bus):
+        """The boundary look, on its own.
+
+        A dispatch is the moment a plane can change and it is not the only
+        one: the bridge re-lists on ITS OWN THREAD when a server notifies,
+        so the registration can land after the dispatch that caused it —
+        or after a step that dispatched nothing at all, which is what this
+        run is. Nothing here calls a tool; the plane grows during a reply
+        the loop then rejects, and the next step must still carry the note
+        and the new catalogue.
+        """
+        outer = self
+
+        class GrowsWhileThinking(ScriptedModel):
+            def __call__(self, messages):
+                reply = super().__call__(messages)
+                if len(self.seen) == 1:
+                    outer.grow(bus)
+                return reply
+
+        events = []
+        model = GrowsWhileThinking("not json at all", '{"answer": "noted"}')
+        MissionRunner(model, bus, ["catalog.search"],
+                      observer=events.append).run("go")
+        assert [r["event"] for r in events].count("tool_call") == 0
+        assert f"+{self.LATE}" in model.seen[1][-1]["content"]
+        steps = [r for r in events if r["event"] == "step_started"]
+        assert steps[1]["catalogue"] == ["catalog.search", self.LATE,
+                                         RESULT_TOOL]
+
+    def test_the_note_lands_after_every_tool_message_of_a_native_turn(
+            self, bus):
+        """Where the note goes is a wire question under the native
+        protocol, not a preference. An assistant turn that declared
+        `tool_calls` must be answered by a `tool` message for each of them,
+        and a `user` message dropped BETWEEN two of them is a 400 from an
+        OpenAI-shaped server. So the note is drained at the step boundary —
+        after the whole turn — and never at the dispatch that noticed the
+        change.
+        """
+        model = NativeModel(
+            [native_call("catalog.grow", "c1"),
+             native_call("catalog.search", "c2", q="x")],
+            answer_call("noted"))
+        native_runner(self.growing_bus(bus), model,
+                      tools=("catalog.grow", "catalog.search")).run("go")
+        sent = model.seen[1]
+        assert sent[-1]["role"] == "user"
+        assert f"+{self.LATE}" in sent[-1]["content"]
+        answered = [m["tool_call_id"] for m in sent if m["role"] == "tool"]
+        assert answered == ["c1", "c2"]
+        assert self.LATE in sent[0]["content"]
+
+    def test_a_tool_the_bus_lost_leaves_the_offered_set(self, bus):
+        """Withdrawal needs nobody's permission: the call would fail at the
+        far end anyway, and leaving it in the catalogue spends a step
+        teaching the model that."""
+        def withdraw(**kw):
+            bus.unregister("catalog.get")
+            return 0, "gone", ""
+
+        bus.register(ToolDescriptor(tool_name="catalog.drop",
+                                    description="Withdraw a tool."), withdraw)
+        events = []
+        runner = MissionRunner(
+            ScriptedModel(tool_call("catalog.drop"), '{"answer": "noted"}'),
+            bus, ["catalog.drop", "catalog.get"], observer=events.append)
+        runner.run("drop it")
+        assert "catalog.get" not in runner.offered
+        step = [r for r in events if r["event"] == "step_started"][1]
+        assert step["catalogue"] == ["catalog.drop", RESULT_TOOL]
+
+    # ── the manifest still decides ──────────────────────────────────────
+
+    def test_a_name_the_closed_set_refuses_does_not_join(self, bus):
+        """`admits` is the caller's, and the caller is the manifest. A run
+        that widened itself by whatever a server chose to advertise would
+        have no closed set at all."""
+        runner, _m, transcript, events = self.run(
+            self.growing_bus(bus),
+            tool_call("catalog.grow"), tool_call(self.LATE),
+            '{"answer": "could not"}',
+            admits=lambda grew, offered: [])
+        assert self.LATE not in runner.offered
+        rejected = [r for r in events if r["event"] == "reply_rejected"]
+        assert [r["tool"] for r in rejected] == [self.LATE]
+        assert "There is no tool named" in transcript.steps[1].error
+
+    def test_it_is_asked_only_about_what_the_bus_GREW(self, bus):
+        """A tool that was on the bus when the run started is not an
+        arrival. `catalog.get` was deliberately left out of this mission's
+        set, and no later reconciliation may read that as a gap."""
+        seen = []
+
+        def admits(grew, offered):
+            seen.append(list(grew))
+            return list(grew)
+
+        runner, _m, _t, _e = self.run(
+            self.growing_bus(bus),
+            tool_call("catalog.grow"), '{"answer": "noted"}', admits=admits)
+        assert seen == [[self.LATE]]
+        assert "catalog.get" not in runner.offered
+
+    def test_what_is_offered_now_is_handed_to_the_caller(self, bus):
+        """The seam for the native protocol: the CLI re-renders its declared
+        function schemas here, so a decoder constrained to the namespace can
+        call the tool the catalogue just gained."""
+        told = []
+        self.run(self.growing_bus(bus),
+                 tool_call("catalog.grow"), '{"answer": "noted"}',
+                 plane_changed=told.append)
+        assert told == [["catalog.grow", self.LATE, RESULT_TOOL]]
+
+    def test_a_hook_that_throws_does_not_end_the_mission(self, bus):
+        """A caller's hook is not allowed to kill a run, for the reason an
+        observer is not: what is lost is a declared name, not an answer."""
+        def boom(_offered):
+            raise RuntimeError("the caller's list went away")
+
+        _r, _m, transcript, _e = self.run(
+            self.growing_bus(bus),
+            tool_call("catalog.grow"), '{"answer": "still answered"}',
+            plane_changed=boom)
+        assert transcript.outcome == "answered"
+
+    def test_a_bus_that_cannot_list_itself_runs_as_it_always_did(self):
+        """A fake bus owes this runner `dispatch` and `describe_tool`, and
+        a bus that cannot say what it holds is a run whose set never moves
+        — which is what every run did before any of this existed."""
+        class Minimal:
+            def describe_tool(self, name):
+                return {"description": "A tool.", "input_schema": {}}
+
+            def dispatch(self, name, **kw):
+                return SimpleNamespace(exit_code=0, stdout="ok", stderr="",
+                                       evidence="")
+
+        runner = MissionRunner(
+            ScriptedModel(tool_call("whatever"), '{"answer": "fine"}'),
+            Minimal(), ["whatever"], store_tool="")
+        transcript = runner.run("go")
+        assert transcript.outcome == "answered"
+        assert runner.offered == ["whatever"]
+
+
 class _Opinion:
     """The one method `MissionRunner` calls on a critic's answer."""
 

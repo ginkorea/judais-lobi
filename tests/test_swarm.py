@@ -703,6 +703,225 @@ class TestTheRepairTurnIsVisible:
         assert events.index("grounding") < events.index("answer")
 
 
+class TestASubMissionIsGovernedWhenThePlaneGrows:
+    """`--swarm` must not be the looser of the two governance paths.
+
+    A `MissionRunner` reconciles its offered set against the bus and asks
+    `admits` — the manifest's closed set — about anything the plane grew.
+    A swarm builds those runners, so a swarm that dropped the question on
+    the way down would give a staged turn tools the same manifest refuses
+    the direct one.
+    """
+
+    def grow(self, bus):
+        bus.register(
+            ToolDescriptor(tool_name="catalog.late",
+                           description="Registered after the run began."),
+            lambda **kw: (0, "arrived late", ""))
+        return 0, "registered catalog.late", ""
+
+    def growable(self, bus):
+        bus.register(ToolDescriptor(tool_name="catalog.grow",
+                                    description="Register one more tool."),
+                     lambda **kw: self.grow(bus))
+        return bus
+
+    def test_the_closed_set_is_asked_on_the_direct_route(self, bus):
+        asked = []
+
+        def admits(grew, offered):
+            asked.append(list(grew))
+            return []
+
+        plain = ScriptedModel(DIRECT)
+        executor = ScriptedModel(tool_call("catalog.grow"),
+                                 tool_call("catalog.late"),
+                                 '{"answer": "could not"}')
+        sink = Sink()
+        SwarmRunner(executor, self.growable(bus),
+                    ["catalog.search", "run_code", "catalog.grow"],
+                    plain_chat_fn=plain, admits=admits,
+                    observer=sink).run("grow it")
+        assert asked == [["catalog.late"]]
+        assert [r["tool"] for r in sink.of("reply_rejected")] == [
+            "catalog.late"]
+
+    def test_the_closed_set_is_asked_inside_a_staged_step(self, bus):
+        """TWO steps, because a plan of one step IS the direct path and
+        this runner says so — a one-step plan here would be asserting the
+        route above by another name."""
+        asked = []
+
+        def admits(grew, offered):
+            asked.append(list(grew))
+            return []
+
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "grow the plane", "rung": "tool"},
+                 {"id": "s2", "goal": "use what arrived", "rung": "tool",
+                  "needs": ["s1"]}),
+            "final")
+        executor = ScriptedModel(tool_call("catalog.grow"),
+                                 '{"answer": "registered it"}',
+                                 tool_call("catalog.late"),
+                                 '{"answer": "could not"}')
+        SwarmRunner(executor, self.growable(bus),
+                    ["catalog.search", "run_code", "catalog.grow"],
+                    plain_chat_fn=plain, admits=admits).run("grow it")
+        assert asked == [["catalog.late"]]
+
+    def test_what_a_sub_mission_now_offers_reaches_the_caller(self, bus):
+        """The native seam again: the declared namespace has to follow a
+        sub-mission's plane, not only the direct loop's."""
+        told = []
+        plain = ScriptedModel(DIRECT)
+        executor = ScriptedModel(tool_call("catalog.grow"),
+                                 '{"answer": "noted"}')
+        SwarmRunner(executor, self.growable(bus),
+                    ["catalog.grow"], plain_chat_fn=plain,
+                    plane_changed=told.append).run("grow it")
+        assert told and "catalog.late" in told[0]
+
+
+# ── the second opinion, on the answer a staged turn actually writes ──────
+
+
+class _Opinion:
+    """The one method a critic's answer owes the harness."""
+
+    def __init__(self, row):
+        self.row = row
+
+    def as_check(self):
+        return dict(self.row)
+
+
+class _Critic:
+    """A stand-in for `core.critic.mission.MissionCritic`.
+
+    Duck-typed here for the reason both runners duck-type it: `core.critic`
+    pulls in pydantic and a transport, and a turn not using a critic must
+    not pay for either.
+    """
+
+    ROW = {"check": "critic", "advisory": True, "configured": True,
+           "grounded": False, "verdict": "fail", "considered": 1,
+           "minimum": 0, "unsupported": ["the chart step never ran"],
+           "detail": "stub disputes this answer"}
+
+    def __init__(self):
+        self.seen = []
+
+    def review(self, answer, evidence, **kw):
+        self.seen.append({"answer": answer, "evidence": list(evidence), **kw})
+        return _Opinion(self.ROW) if kw.get("answered_with_caveat") else None
+
+
+class TestTheStagedPathGetsTheSecondOpinionToo:
+    """The critic was wired to the direct path in 0.13.0 and to the staged
+    path in 0.14, and it had to be the same function doing it.
+
+    A staged turn writes exactly one answer — the synthesis — so that is
+    where the opinion belongs, beside the grounding verdict and never
+    inside it. The row is built by `core.runtime.mission.second_opinion`,
+    which the direct path also calls: the swarm hand-listing six of
+    `grounding`'s ten fields is the incident this repository names whenever
+    a record grows a second author, and `advisory: true` is exactly the key
+    such a copy loses.
+    """
+
+    def _run(self, bus, sink, critic, drafts=("the score is 80.847",
+                                              "the score is 80.848")):
+        validator = GroundingValidator.from_config(
+            GroundingConfig.from_mapping(
+                {"number_pattern": r"\d+\.\d{2,}", "max_repairs": 1}))
+        plain = ScriptedModel(
+            STAGED, TWO_STEP_PLAN,
+            '{"pass": true}',                       # LLM gate over s1's done
+            *drafts)
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        return swarm(plain, executor, bus, validator=validator,
+                     critic=critic, observer=sink).run("score the corpus")
+
+    def test_the_row_rides_the_verdict_of_the_synthesized_answer(self, bus):
+        sink = Sink()
+        critic = _Critic()
+        transcript = self._run(bus, sink, critic)
+        assert transcript.outcome == "answered_with_caveat"
+        final = sink.of("grounding")[-1]
+        row = next(r for r in final["checks"] if r["check"] == "critic")
+        assert row["advisory"] is True
+        assert row["detail"] == "stub disputes this answer"
+
+    def test_it_is_shown_the_draft_and_not_the_harness_caveat(self, bus):
+        """The critic reviews what the model wrote. The caveat is this
+        harness's own sentence about that text, and a critic shown it is
+        being asked to review the grader."""
+        critic = _Critic()
+        transcript = self._run(bus, Sink(), critic)
+        assert critic.seen[-1]["answer"] == "the score is 80.848"
+        assert transcript.answer.startswith("the score is 80.848")
+        assert transcript.answer != critic.seen[-1]["answer"]
+
+    def test_it_is_shown_the_evidence_every_step_produced(self, bus):
+        """The direct path hands over its own store's evidence; a staged
+        turn has several stores, and what it hands over is the same list
+        the grounding check was run against."""
+        critic = _Critic()
+        self._run(bus, Sink(), critic)
+        evidence = "\n".join(critic.seen[-1]["evidence"])
+        assert "corpus.abc123" in evidence
+        assert critic.seen[-1]["unsupported"] == ["80.848"]
+
+    def test_a_grounded_answer_asks_and_the_critic_declines(self, bus):
+        """Asked on the clean path too, so the trigger policy has ONE
+        owner. A branch that skipped asking would be a second copy of it,
+        written in `if`s."""
+        sink = Sink()
+        critic = _Critic()
+        transcript = self._run(bus, sink, critic,
+                               drafts=("found corpus.abc123",))
+        assert transcript.outcome == "answered"
+        assert critic.seen[-1]["answered_with_caveat"] is False
+        assert all(row["check"] != "critic"
+                   for record in sink.of("grounding")
+                   for row in record["checks"])
+
+    def test_no_critic_is_the_stream_the_swarm_always_emitted(self, bus):
+        sink = Sink()
+        self._run(bus, sink, None)
+        assert all(row["check"] != "critic"
+                   for record in sink.of("grounding")
+                   for row in record["checks"])
+        assert all(row["advisory"] is False
+                   for record in sink.of("grounding")
+                   for row in record["checks"])
+
+    def test_the_direct_route_of_a_staged_turn_carries_it_as_well(self, bus):
+        """`--swarm` that triages DIRECT is the direct loop, and it must
+        not quietly be a run with no second opinion: the critic goes to the
+        MissionRunner that writes that turn's answer."""
+        validator = GroundingValidator.from_config(
+            GroundingConfig.from_mapping(
+                {"number_pattern": r"\d+\.\d{2,}", "max_repairs": 1}))
+        sink = Sink()
+        critic = _Critic()
+        plain = ScriptedModel(DIRECT)
+        executor = ScriptedModel('{"answer": "the score is 80.847"}',
+                                 '{"answer": "the score is 80.848"}')
+        transcript = swarm(plain, executor, bus, validator=validator,
+                           critic=critic, observer=sink).run("score it")
+        assert transcript.outcome == "answered_with_caveat"
+        row = next(r for r in sink.of("grounding")[-1]["checks"]
+                   if r["check"] == "critic")
+        assert row["verdict"] == "fail"
+
+
 # ── the approval gate ends the whole turn, holding the proposed call ─────
 
 
