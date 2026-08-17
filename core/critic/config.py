@@ -52,7 +52,7 @@ DEFAULT_PROVIDERS = [
     ),
     CriticProviderConfig(
         provider="anthropic",
-        model="claude-sonnet-4-20250514",
+        model="claude-opus-5",
         api_key_env_var="ANTHROPIC_API_KEY",
         keyring_key="anthropic_api_key",
     ),

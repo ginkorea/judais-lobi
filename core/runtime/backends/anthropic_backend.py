@@ -75,13 +75,12 @@ try:  # pragma: no cover - exercised by the install that lacks it
 except Exception:  # noqa: BLE001 - any import failure is "not installed"
     _Anthropic = None
 
-#: The model used when a caller names none.  Sonnet tier on purpose: the
-#: sibling defaults are ``gpt-4o-mini`` and ``codestral-latest``, and a
-#: framework default that quietly costs Opus money is a decision a
-#: deployment should make rather than inherit.  Undated, because a dated
-#: snapshot pinned here goes stale silently — ``--model`` and
-#: ``DEFAULT_MODELS`` are where a deployment says otherwise.
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"
+#: The model used when a caller names none.  Opus 5, by the owner's
+#: decision (16 Aug 2026): the framework's Anthropic default is the
+#: current Opus, not a cheaper tier — a deployment that wants Sonnet or
+#: Haiku says so with ``--model`` or ``DEFAULT_MODELS``.  Undated,
+#: because a dated snapshot pinned here goes stale silently.
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 
 #: What to send as ``max_tokens`` when the caller names none.  The API
 #: refuses a request without it, so there is no "unset" to pass through.
@@ -94,7 +93,7 @@ DEFAULT_MAX_TOKENS = 16000
 #: guessed context window is how a prompt gets truncated silently, so a
 #: model that is not listed reports ``None`` rather than a plausible
 #: number.  Matched by longest prefix, so a dated snapshot
-#: (``claude-sonnet-5-20260101``) inherits its family's limits.
+#: (``claude-haiku-4-5-20251001``) inherits its family's limits.
 MODEL_LIMITS: Dict[str, Tuple[int, int]] = {
     "claude-fable-5": (1_000_000, 128_000),
     "claude-mythos-5": (1_000_000, 128_000),

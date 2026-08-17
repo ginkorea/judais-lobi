@@ -1206,8 +1206,9 @@ class TestAnthropicBackend:
 
     def test_a_dated_snapshot_inherits_its_familys_window(self):
         caps = self._backend(_StubAnthropic(),
-                             model="claude-sonnet-5-20260101").capabilities
-        assert caps.max_context_tokens == 1_000_000
+                             model="claude-haiku-4-5-20251001").capabilities
+        assert caps.max_context_tokens == 200_000
+        assert caps.max_output_tokens == 64_000
 
     def test_an_unknown_model_claims_no_window_rather_than_guessing(self):
         caps = self._backend(_StubAnthropic(), model="claude-next").capabilities

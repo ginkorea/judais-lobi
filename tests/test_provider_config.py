@@ -23,10 +23,10 @@ class TestDefaultModels:
         assert DEFAULT_MODELS["local"] == "local-model"
 
     def test_anthropic_default(self):
-        """Sonnet tier and undated, for the same reason the OpenAI default
-        is `gpt-4o-mini`: a default nobody chose should not be the
-        expensive one, and a dated snapshot pinned here goes stale."""
-        assert DEFAULT_MODELS["anthropic"] == "claude-sonnet-5"
+        """The current Opus, undated: the owner chose Opus 5 as the
+        framework's Anthropic default, and a dated snapshot pinned here
+        goes stale."""
+        assert DEFAULT_MODELS["anthropic"] == "claude-opus-5"
 
     def test_keys(self):
         assert set(DEFAULT_MODELS.keys()) == {

@@ -63,6 +63,9 @@ DEFAULT_MODEL_CONTEXTS: Dict[str, ModelContextProfile] = {
 
 DEFAULT_PROVIDER_CONTEXTS: Dict[str, int] = {
     "openai": 128000,
+    # Conservative floor (Haiku 4.5); the anthropic backend's MODEL_LIMITS
+    # is the owner and reaches here through backend_caps when the model is known.
+    "anthropic": 200000,
     "mistral": 32768,
     "local": 32768,
 }

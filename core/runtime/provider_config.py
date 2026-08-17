@@ -5,12 +5,10 @@ from typing import Optional
 
 DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
-    # Sonnet tier, undated, for the same reason `gpt-4o-mini` is the
-    # OpenAI default: a framework default that quietly costs top-tier
-    # money is a decision a deployment should make, not inherit. See
-    # `core.runtime.backends.anthropic_backend.DEFAULT_ANTHROPIC_MODEL`,
-    # which is the same string and the reason it is undated.
-    "anthropic": "claude-sonnet-5",
+    # The current Opus, undated (a dated snapshot pinned here goes stale
+    # silently); owner's decision, 16 Aug 2026. Same string as
+    # `core.runtime.backends.anthropic_backend.DEFAULT_ANTHROPIC_MODEL`.
+    "anthropic": "claude-opus-5",
     "mistral": "codestral-latest",
     # The served name of a local endpoint is whatever it was started with, so
     # this is only the last resort: LOCAL_MODEL, then GET /models, then this.

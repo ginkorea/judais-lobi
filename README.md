@@ -92,6 +92,10 @@ export LOCAL_MODEL=gpt-oss-20b                   # optional; else GET /models de
 lobi --provider local "summarize this repo"
 ```
 
+`--provider anthropic` speaks the Messages API through the official SDK
+(`pip install 'judais-lobi[anthropic]'`, `ANTHROPIC_API_KEY`); it defaults to
+`claude-opus-5` and its context window comes from the backend's own model table.
+
 `capabilities` are probed from `GET {base}/models`, so the context window is the
 served model's real `max_model_len` and not a guess. Unlike the other two
 providers, `local` is never silently fallen back away from when a key is
@@ -139,7 +143,7 @@ program that spawns this harness may rely on them. The table below is in
 | `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps` |
 | `--mission-steps` | — | hard cap on **model turns**, and it counts parse-error turns too. Default `DEFAULT_MISSION_STEPS` = **8** (`core/cli.py`). Under `--resume` it is read as that many *further* steps; unset, a resumed run is held to the total it started with |
 | `--mission-seconds` | `MISSION_SECONDS` | wall-clock cap on the whole run, in seconds. **Unset means unbounded** — steps bound the work, seconds bound the waiting, and a default nobody chose would kill a slow local model mid-answer. Checked between steps and before each model call; one clock for the whole of a `--swarm` turn. A call already in flight is not interrupted, so the real bound is this plus one round trip |
-| `--provider` | — | `openai`, `mistral` or `local` |
+| `--provider` | — | `openai`, `mistral`, `anthropic` or `local`. `anthropic` needs `pip install 'judais-lobi[anthropic]'` and `ANTHROPIC_API_KEY`; its default model is `claude-opus-5` (`core/runtime/provider_config.py`), overridden with `--model` |
 | `--model` | — | which model on it |
 | `--profile` | `JUDAIS_LOBI_PROFILE` | the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. A refusal names the scope and the profile that grants it. Arrives back as `mission_started.profile` |
 | `--unsandboxed` | `JUDAIS_LOBI_SANDBOX=none` | run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists; `JUDAIS_LOBI_SANDBOX=bwrap` forces it and refuses on a host without it. Arrives back as `mission_started.sandbox` |
@@ -1255,7 +1259,7 @@ providers:
   - provider: openai
     model: gpt-4o
   - provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-opus-5
 ```
 
 ---
