@@ -15,7 +15,7 @@ of the model, and the model names the tool.
 The loop is deliberately small and its refusals are deliberately loud:
 
 * every call goes through ``ToolBus.dispatch``, so capability gating,
-  the panic switch and the audit log all still apply.  The runner never
+  the sandbox and the audit log all still apply.  The runner never
   touches a store, a path or a compute plane itself, and holds no HTTP
   client of its own;
 * the model replies with **one** JSON object and nothing else.  A reply

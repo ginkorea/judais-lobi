@@ -401,20 +401,294 @@ self-report.
   (§2.4's residual) stays behind them in priority until the harness scores
   swarm as the better default.
 
-### 2.6 Phase 11 — one runtime (0.12)
+### 2.6 Phase 11 — one runtime (0.12→0.14)
 
-Property 5.
+Property 5. §1.2's "two agent runtimes" row is the whole case, and it has grown
+a third claimant since it was written: `MissionRunner` (2,858 lines),
+`SwarmRunner` (1,547, of which roughly 300 are a second copy of the first),
+and the kernel `Orchestrator` + `LLMRoleDispatcher`. The run store, `--resume`,
+the wall clock, the usage ledger, the native protocol, recording/replay and the
+control channel all landed on the mission path only.
 
-- Collapse `MissionRunner`/`SwarmRunner` and the kernel `Orchestrator` onto one
-  loop object: `Run(personality, tools, policy, budgets, store, observer)`.
-  Modes become compositions — chat is no tools; mission is tools + grounding;
-  swarm is a planner that spawns child `Run`s; coding is roles that are `Run`s
-  with a judge. Result bounding, context management, budgets and governance are
-  then written once, and the two governance surfaces (`PolicyPack` and the
-  kernel's `set_scope_constraints`) become one.
-- **Async core, sync façade.** The MCP client already runs a loop thread; make
-  the run loop `async` so tool calls, streaming and cancellation are natural,
-  and keep `judais` synchronous at the CLI edge.
+The measure of this phase is not lines removed. It is that **every duplicated
+fact loses its second emitter**, which is the principle §3 states and which the
+swarm has already violated once at a cost (six of ten `grounding` fields).
+
+#### 2.6.1 The one loop object
+
+`Run` is the loop. Its constructor is **data** — six cohesive objects, each the
+one owner of a class of fact, and nothing else:
+
+```python
+Run(personality, plane, bounds, store, observer, model)
+
+    def run(self, objective: str, resumption=None) -> Transcript      # façade
+    async def arun(self, objective: str, resumption=None) -> Transcript
+    def child(self, *, personality=None, bounds=None, branch="") -> "Run"
+```
+
+```python
+@dataclass(frozen=True)
+class Personality:              # what the model is told, and what it is held to
+    system_message: str = ""            # cli.py — persona + manifest.prompt
+    history: Sequence[Mapping[str, str]] = ()
+    grounding: Optional[GroundingValidator] = None
+    critic: Any = None
+    sdk_import: str = ""
+
+@dataclass(frozen=True)
+class ToolPlane:                # the only way out, and who may say yes to it
+    bus: Any
+    offered: Sequence[str] = ()
+    store_tool: str = RESULT_TOOL
+    gated: FrozenSet[str] = frozenset()
+    schemas: Sequence[Mapping[str, Any]] = ()
+    # sandbox / audit_ref / profile are PROPERTIES read off the bus, never
+    # fields: mission.py's sandbox_of/audit_ref_of/_profile_field are already
+    # the one owner of each, and the swarm already reads all three from there.
+    def lease(self, branch: str = "") -> "ToolPlane": ...
+    def narrow(self, scopes: Sequence[str]) -> "ToolPlane": ...
+
+@dataclass(frozen=True)
+class Bounds:                   # every number that can stop a run, in one place
+    max_steps: int = 8
+    deadline: Optional[Deadline] = None
+    cancel: Any = None
+    control: Any = None
+    gate_wait_s: float = GATE_WAIT_S
+    max_result_bytes: int = MAX_RESULT_BYTES
+    started_at: Optional[float] = None
+    def stop(self) -> Optional[Stop]: ...              # mission._stop, once
+    def portion(self, steps: int) -> "Bounds": ...     # steps split, clock shared
+
+@dataclass(frozen=True)
+class Store:                    # what survives the process
+    runs: Optional[RunStore] = None
+    run_id: str = ""
+    recorder: Optional[Recorder] = None
+    approvals: Optional[ApprovalStore] = None
+    ticket: Optional[ApprovalTicket] = None
+
+class Observer:                 # every record out, and the redaction choke point
+    def __init__(self, *sinks, branch: str = ""): ...  # cli `_watchers`
+    def emit(self, event: str, **fields) -> None: ...
+    def branch(self, name: str) -> "Observer": ...     # what `_StageObserver` was
+
+@dataclass
+class Model:                    # the client, the protocol, and the side channels
+    ask: Callable[..., Any]                            # cli chat_fn
+    plain: Optional[Callable[..., Any]] = None         # cli plain_chat_fn
+    protocol: str = JSON_PROTOCOL
+    window: Optional[MissionWindow] = None
+    streaming: bool = True
+    json_mode: bool = False
+    usage_fn: Optional[Callable] = None
+    tool_calls_fn: Optional[Callable] = None
+    rate: Optional[Rate] = None
+    ledger: Ledger = field(default_factory=Ledger)
+    def spend(self) -> Dict[str, Any]: ...             # mission._spent, once
+```
+
+Note what is **not** a field. `audit_ref` stays a property of `ToolPlane`
+because `mission.py`'s `audit_ref_of` already argues, at length, why a second
+resolver of "where the audit log is" is worse than none. `sandbox` and
+`profile` likewise. Six objects is the count; six *owners* is the point.
+
+Deleted as duplicates the moment `Run` exists — the second emitter named for
+each fact:
+
+| Fact | The one owner, kept | The second emitter, deleted |
+|---|---|---|
+| `mission_finished` | `_finished_record` (mission.py), called from `arun`'s `finally` | three more call sites in swarm.py |
+| `mission_started` | the opening built in `MissionRunner.run` | `SwarmRunner._opening`, whose own comment admits it is a hand-written copy |
+| the grounding loop | `_answered`/`_ground`/`_second_opinion` (mission.py) | `SwarmRunner._ground` — and it had already drifted: no `critic=` on `SwarmRunner` until lane AF |
+| the ledger fold | `Model.spend()`, from `MissionRunner._spent` | `SwarmRunner._spent`, `_usage_kw`, `_totals` — the same four lines twice |
+| the deadline start | `Bounds`, over `Deadline.start` (first start wins) | the second `if self._deadline is not None: start()` in swarm.py |
+| the stop verdict | `Bounds.stop()` (mission.py `_stop`) | `SwarmRunner._stop` and `_stopped`, line-for-line the mission's |
+| the catalogue | `ToolPlane.offered` + `Run.catalogue()` | `SwarmRunner._offered`; `_short_catalogue` survives as a *rendering* |
+| emit + redaction | `Observer.emit` (mission.py `_emit`) | `SwarmRunner._emit`/`_recording` |
+| a child's records | `Observer.branch()` | `_OpenedAlready` and `_StageObserver` collapse into it |
+| bounding a summary | `core.bounding.bound_result` | `SwarmRunner._bound_summary` |
+
+Two Phase 10 findings (§2.5) land here and nowhere else: the offered set is
+fixed at mission start although the bus can grow mid-run — `ToolPlane.lease()`
+is where a refresh becomes expressible (lane AF ships the first form of it on
+`MissionRunner`); and the manifest code gate fires on a bridged
+`mcp.run_shell_command` NAME, which is `ToolPlane`'s question now that there is
+an object to ask.
+
+#### 2.6.2 The four modes compose
+
+They stop being four loops and become four ways of *withholding* a collaborator.
+
+* **chat** — `Run(personality, ToolPlane.none(), Bounds(max_steps=1),
+  Store.none(), Observer.none(), model)`. No tools, so `stacked` drops the
+  catalogue section and the seed is persona + objective; no validator, so
+  `_ground` returns `None`; no observer and no store, so `_emit` returns at its
+  first line and chat emits exactly the nothing it emits today. `Agent.chat` is
+  the caller, and the second window owner it uses — `ContextWindowManager`
+  beside the `MissionWindow` every other path uses — becomes one.
+* **mission** — tools + grounding. This is today's `MissionRunner`, unchanged
+  on the wire.
+* **swarm** — a `PlannerRole` that spawns child `Run`s via `Run.child()`,
+  sharing **one** `Bounds` (clock shared, steps portioned — `Bounds.portion`,
+  which is swarm.py's "two budgets, two behaviours" made data), one `Store`,
+  one `Observer`, one `Model` (therefore one `Ledger`). `_direct` and `_runner`
+  become one `child()`. The renumbering is the Observer's: `Observer.branch()`
+  allocates the global `index` at emit time and carries the pending `plan` onto
+  the next `step_started`, which is what `_StageObserver.__call__` does by hand.
+* **coding kernel** — roles that are `Run`s with a judge. `RoleWindow` **is** a
+  `MissionWindow` already (`class RoleWindow(MissionWindow)`), and
+  `RoleContext.ask` is a hand-rolled `Model`+`Bounds`. `Orchestrator` stays
+  above `Run` — see §2.6.5.
+
+**Parallel child runs are the first new capability this buys**, and are the
+reason to do the work rather than a reward for having done it. What parallel
+needs, concretely:
+
+1. *Per-child result stores, merged.* Each `Run` already owns one, but
+   `MissionResultStore.register_on` raises `ResultStoreConflict` when the name
+   is taken, so two children on one bus collide on `mission_result`.
+   `ToolPlane.lease(branch)` returns a plane whose store tool is namespaced; the
+   synthesizer reads the union, which the swarm already does by hand for
+   `called_tools` (`_note_calls`).
+2. *One ledger.* `Ledger.absorb` exists, is tested, and has **no caller in
+   `core/`**. Children fold at join through it; `_fold` needs a lock or the join
+   must be single-threaded. Prefer the join.
+3. *One clock.* `Deadline` is shared and first-start-wins already.
+4. *The audit column.* `bus.audit_context["step"]` is a mutable dict on a
+   shared bus. Two children interleaving make that column *wrong* rather than
+   absent. The step rides `dispatch` as a bus-named keyword, exactly as
+   `deadline_s` already does.
+5. *Ordering on the wire.* `RunStore.append` is already locked and monotonic.
+   What is new is that `index` can no longer be the child's own: the `Observer`
+   allocates it under a lock, and each record carries a new **OPTIONAL**
+   `branch` so a consumer can demultiplex. An added optional field is a minor
+   release; a consumer that never heard of `branch` reads a correctly-ordered
+   single sequence.
+
+#### 2.6.3 Async core, sync façade
+
+`McpClient` already owns one background thread running one event loop and
+every dispatch is an `asyncio.run_coroutine_threadsafe` into it. So the async
+is already here; what is missing is a caller that can await it.
+
+* `async def Run.arun(...)` is the loop. `def Run.run(...)` is
+  `asyncio.run`/`run_until_complete` and nothing else, and it is what `judais`
+  calls.
+* **Natural, once it is async:** parallel children (`asyncio.gather` over
+  `Run.child`); streaming as an async iterator instead of `drain_answer`'s
+  callback; the control channel as a queue instead of a reader thread plus
+  `poll()`; cancellation as `CancelledError` at the same drain points the loop
+  already chose.
+* **Must not change, and there is a test for each:** the wire (`contract.py`,
+  `tests/test_contract.py`); byte-identical json-mode messages — `seed`'s
+  most-constant-first order and `stacked`'s whitespace are a *served endpoint's
+  KV cache key*, so an `await` that moves one byte of the prompt costs a
+  deployment money; `contract.CLI_FLAGS` and the exit contract.
+* The MCP client's own loop thread stays for the sync façade. Under `arun` the
+  plane awaits the session directly and the second loop disappears — a lane-C
+  refinement, not a precondition.
+
+#### 2.6.4 Migration in lanes
+
+Five lanes, each shippable and green alone, ordered so the wire is
+byte-identical at every step.
+
+**Lane A — the extraction. No behaviour change.** Lift the six objects out of
+`mission.py` into `core/runtime/run.py`; `MissionRunner.__init__`'s parameters
+become an adapter that builds the six and delegates. `SwarmRunner` is not
+touched. **Guard: the corpus diff.** A new `tests/test_run_corpus.py` replays
+every fixture in `tests/fixtures/runs/` and every stream in
+`tests/fixtures/eval/` through the new `Run` via `--replay`'s own machinery and
+asserts the emitted records are equal, in order, field for field, to the
+recorded ones. Lane A ships when that diff is empty.
+
+**Lane B — the swarm becomes a `Run` client.** Delete the ten second emitters
+in the table above; `_StageObserver`/`_OpenedAlready` → `Observer.branch`;
+`_runner`/`_direct` → `Run.child`. Lane B owes the corpus a staged fixture —
+`run_corpusswarm-0001`, recorded against `master` *before* the lane's first
+edit (lane AH records it).
+
+**Lane C — async core, sync façade.** `arun` is the loop, `run` is the wrapper,
+the corpus diff runs again unchanged.
+
+**Lane D — parallel children.** The five items of §2.6.2, the OPTIONAL `branch`
+field, and the first eval-harness column that can show it: a staged suite run
+serial vs parallel, same score, less wall time. Minor bump.
+
+**Lane E — chat and the roles.** `Agent.chat` through `Run`; `RoleContext.ask`
+through `Model` + `Bounds`; `set_scope_constraints` through `ToolPlane.narrow`,
+which closes §1.2's "two governance surfaces" residual without moving the
+state machine.
+
+**Which tests move.** None, for four lanes. `tests/test_contract.py`,
+`tests/test_cli_mission_skill.py`, `tests/test_mission_end_to_end.py`,
+`tests/test_agui.py`, `tests/test_record_replay.py` and `tests/test_eval_*`
+stay untouched and green throughout — if one of them needs editing, the lane
+changed the seam and is wrong. `tests/test_mission.py` stays on
+`MissionRunner`: it is the adapter's conformance suite, and it is the reason the
+adapter exists. New `Run`-shaped tests go in a new file. `tests/test_swarm.py`
+stays on `SwarmRunner` through lane B — the class becomes a composition, its
+tests do not move.
+
+**Mutation-checking a refactor.** The usual rule — every new assertion must be
+shown to fail — is unsatisfiable here, because a correct refactor's assertions
+pass against the old code too. **The corpus diff is the mutation check**, and it
+is mutated at the *implementation*: drop `verified` from `_grounding_record`;
+swap the `grounding`-before-`answer` order; drop `elapsed_s` from
+`_finished_record`. Each must turn the diff red, and each must be reverted with
+`__pycache__` cleared — a same-size same-second revert keeps stale bytecode and
+lies.
+
+#### 2.6.5 Risks and non-goals
+
+* **The kernel path is a `Run` client, not a `Run`.** Phase 11 makes the
+  *roles* `Run`s (lane E) and leaves `Orchestrator`, `CampaignOrchestrator`,
+  the judge and the patch engine above it. Folding the state machine into `Run`
+  would put phase transitions inside the loop the model drives, which §3's
+  "Static Graphs, Adaptive Phases" forbids in as many words. What Phase 11 owes
+  the kernel is that its roles get the run store, the clock, the ledger and the
+  control channel by construction — not that its graph disappears.
+  `core/kernel/budgets.py` keeps `PhaseRetriesExhausted` (`which="retries"`,
+  the one budget the mission has no word for) and folds the other two into
+  `Bounds`.
+* **`Agent.run_task` — delete, in lane E.** No caller in `core/` or `main.py`;
+  `run_campaign` keeps `_make_task_dispatcher` alive. Put the six lines a caller
+  would write in `PLATFORMS.md`.
+* **`wip/web-research-fetcher` is irrelevant.** Do not rebase Phase 11 onto it,
+  do not merge it first, do not let it decide `ToolPlane`'s shape.
+* **The reference deployment is frozen on 0.12.2 and nothing here may reach it.**
+  No `SCHEMA_VERSION` bump, no required field added or renamed, no flag removed
+  from `contract.CLI_FLAGS`, no change to `EXIT_CONTRACT`. Lane D's `branch` is
+  the only wire addition in the whole phase and it is OPTIONAL.
+  `tests/test_contract.py` is the tripwire; the reference platform's bridge and
+  pin tests are run against the tree before every tag, even though nobody is
+  being told about the release.
+
+#### 2.6.6 What Phase 13 becomes once `Run` exists
+
+* `Run(personality, plane, bounds, store, observer, model)` **is** the API.
+  `_mission` in `core/cli.py` becomes argparse building six objects — the CLI
+  as a client of the library, which is what "library API first, the CLI second"
+  was asking for.
+* **The import path, without a fourth top-level package.** The wheel's
+  top-level names are `core`, `judais`, `lobi`, and `tests/test_packaging.py`
+  pins exactly that set. Ship `judais_lobi.py` at the root as a single
+  **module** via `py_modules=["judais_lobi"]`: `find_packages()` never sees it,
+  the pinned set is unchanged, and `from judais_lobi import Run` works. Grow
+  `test_packaging.py` a companion assertion over `py_modules` in the same
+  commit. A fourth top-level *package* is warranted only when the façade needs
+  submodules — a decision to take then, on that evidence.
+* **Model-state events** (`cold`, `asking`, `queued`, `loading`, `loaded`,
+  `failed`, `absent`) get exactly one emitter for free: after Phase 11,
+  `Model.ask` is the only place a run touches a backend. Today those words would
+  need emitting from `chat_fn`, `plain_chat_fn`, the critic and the reading tier.
+* **The `[server]` extra** needs nothing from `Run`. It follows
+  `RunStore.follow`, so it is a `Store` client and can ship on its own schedule.
+
+#### 2.6.7 Still to delete or promote
+
 - Delete or promote what is left vestigial: the second vector index, if FAISS
   is required at all. (`curl`-Mistral went in 0.8.2; `tools/recon/*` and
   `bootstrap.py` are gone — nothing imported either, and the recon pair wanted
