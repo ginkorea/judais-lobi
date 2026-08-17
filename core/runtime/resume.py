@@ -29,6 +29,17 @@ this module would drift from the loop's the first time either changed, and
 the resumed model would read a differently-worded transcript of its own
 previous turns.
 
+A **staged** (``--swarm``) run is rebuilt differently, and the difference
+is the design of :mod:`core.runtime.swarm` rather than a shortcut: a
+staged step runs in its own small :class:`MissionRunner` with its own
+seed, and what travels between steps is a *summary* and never a
+transcript.  So :class:`StagedResumption` carries no message list at all,
+and its absence is not a loss — the resumed steps read exactly what they
+would have read had the process never died.  What it carries instead is
+what the plan carries: the checkpointed plan, the settled steps'
+summaries, and the results the recorded stretch's tools returned.  See
+:func:`_rebuild_staged`.
+
 What cannot come back is written down rather than papered over — see
 :attr:`Resumption.lost` and the ``LOST_*`` sentences below.
 
@@ -65,8 +76,9 @@ from core.runtime.results import MissionResultStore
 
 __all__ = [
     "ORPHAN_OUTCOME", "ORPHAN_STALE_S", "RESUMABLE_OUTCOMES", "RESUMED",
-    "ResumeRefused", "Recorded", "Resumption",
+    "ResumeRefused", "Recorded", "Resumption", "StagedResumption",
     "open_for_resume", "rebuild", "reconcile_orphans", "recorded_outcome",
+    "resumed_record",
 ]
 
 
@@ -155,6 +167,13 @@ LOST_SCRUBBED = (
     "at the emitter, so what the resumed model reads back is the scrubbed "
     "sentence a watcher saw"
 )
+LOST_STAGED_EVIDENCE = (
+    "the raw tool output behind {n} completed plan step{s}: a staged "
+    "resume rebuilds its grounding evidence from `tool_result.output` on "
+    "the event stream, which is scrubbed and bounded, so the validator "
+    "that checks the synthesized answer sees what a watcher saw rather "
+    "than what the tool returned"
+)
 LOST_NATIVE_IDS = (
     "the provider's own ids for {n} replayed tool call{s}: a `tool_call_id` "
     "is the server's and never travelled on the event stream, so the "
@@ -215,6 +234,19 @@ class Recorded:
     #: Rebuilding one shape and then sending the other is a 400 at best
     #: and a model reading somebody else's transcript at worst.
     protocol: str = JSON_PROTOCOL
+    #: Whether this run was a staged (``--swarm``) turn.  Read off the
+    #: metadata and not off the stream: the plan rides one ``step_started``
+    #: and a run killed before its first step never emitted one, while its
+    #: checkpoint was written before that step was asked.
+    staged: bool = False
+    #: The checkpointed plan, every field of every step, as
+    #: :meth:`core.runtime.swarm.PlanStep.as_state` wrote it.
+    plan: List[Dict[str, Any]] = field(default_factory=list)
+    #: The checkpointed step outcomes, as
+    #: :meth:`core.runtime.swarm.SwarmRunner._step_done` wrote them.
+    steps_done: List[Dict[str, Any]] = field(default_factory=list)
+    #: Whether the staged run has already spent its one plan redraw.
+    replanned: bool = False
 
     def total_steps(self, more: Optional[int]) -> int:
         """The step budget for the whole run — recorded steps included.
@@ -316,13 +348,19 @@ def open_for_resume(store: Optional[RunStore], run_id: str, *,
             f"{', '.join(repr(o) for o in RESUMABLE_OUTCOMES if o)} and a "
             f"log with no `mission_finished` at all.")
 
-    if meta.meta.get("plan") is not None:
+    # A staged run is admitted on its CHECKPOINT and not on its stream. The
+    # plan rides one `step_started`, so a turn killed before its first step
+    # emitted no plan at all — while `_staged` wrote the checkpoint before
+    # asking for that step. What is refused is only what cannot be rebuilt:
+    # a run that says it was staged and does not say what the plan was.
+    staged, plan, steps_done = _checkpointed_plan(meta)
+    if staged and not plan:
         raise ResumeRefused(
-            f"staged resume not yet supported: run {run_id} is a staged "
-            f"(--swarm) mission and its plan is checkpointed in meta.json. "
-            f"Steps done: {_steps_done_sentence(meta)}. Resuming it with "
-            f"the direct loop would restart the plan rather than continue "
-            f"it, so it is refused rather than half done.")
+            f"run {run_id} was a staged (--swarm) mission and its plan is "
+            f"not in meta.json, so there is nothing to continue with: the "
+            f"steps it had left are unknown, and asking the planner again "
+            f"would put a different mission under this run's id. Steps "
+            f"done: {_steps_done_sentence(meta)}. Start a fresh mission.")
 
     # Read before the objective check and refused beside it, because it is
     # the same class of mistake: a resume that ran the recorded mission in
@@ -362,11 +400,42 @@ def open_for_resume(store: Optional[RunStore], run_id: str, *,
         max_steps=int(opening[-1].get("max_steps") or 0),
         outcome=outcome,
         protocol=recorded_protocol,
+        staged=staged,
+        plan=plan,
+        steps_done=steps_done,
+        replanned=bool(meta.meta.get("replanned")),
     )
 
 
+def _checkpointed_plan(meta: Run):
+    """``(staged, plan, steps_done)`` off a run's metadata.
+
+    A run is staged when it carries *either* half of the checkpoint
+    :meth:`core.runtime.swarm.SwarmRunner._checkpoint` writes, because the
+    two are written together and a run holding one of them is a run whose
+    store took half a write.  Reading only ``plan`` would call that run
+    direct and hand it to the ordinary loop, which is the half-continued
+    resume this whole path exists to refuse.
+    """
+    plan = meta.meta.get("plan")
+    done = meta.meta.get("steps_done")
+    staged = plan is not None or done is not None
+    steps = [dict(entry) for entry in plan
+             if isinstance(entry, Mapping) and entry.get("id")] \
+        if isinstance(plan, list) else []
+    outcomes = [dict(entry) for entry in done
+                if isinstance(entry, Mapping) and entry.get("id")] \
+        if isinstance(done, list) else []
+    return staged, steps, outcomes
+
+
 def _steps_done_sentence(meta: Run) -> str:
-    """The swarm's checkpoint as one line, for the refusal above."""
+    """The swarm's checkpoint as one line, for the refusal above.
+
+    Shown when a staged run cannot be continued, because "what was already
+    done" is the half an operator deciding what to do next actually needs
+    — a refusal that says only *no* leaves them to read a JSONL by hand.
+    """
     done = meta.meta.get("steps_done") or []
     if not isinstance(done, list) or not done:
         return "(none recorded)"
@@ -395,6 +464,23 @@ class _Result:
     exit_code: int
     stdout: str
     stderr: str
+
+
+def resumed_record(from_seq: int, steps_replayed: int) -> Dict[str, Any]:
+    """The ``resumed`` field of the first ``step_started`` after a resume.
+
+    ``from_seq`` is where the earlier half of this run's log ends, so a
+    consumer that joined late can fetch it; ``steps_replayed`` is how many
+    steps precede the one it is about to render, so the ``index`` on that
+    record — which continues the earlier numbering rather than starting
+    again — is not read as a gap.
+
+    One function and not a method apiece, because a direct resume and a
+    staged one produce the same record for the same reason, and a second
+    hand-listing of a contract-declared shape is the arrangement that let
+    the swarm emit six of the ``grounding`` record's ten fields.
+    """
+    return {"from_seq": int(from_seq), "steps_replayed": int(steps_replayed)}
 
 
 @dataclass
@@ -436,16 +522,69 @@ class Resumption:
         return len(self.steps)
 
     def as_record(self) -> Dict[str, Any]:
-        """The ``resumed`` field of the first ``step_started`` after this.
+        """The ``resumed`` field of the first ``step_started`` after this."""
+        return resumed_record(self.from_seq, self.steps_replayed)
 
-        ``from_seq`` is where the earlier half of this run's log ends, so a
-        consumer that joined late can fetch it; ``steps_replayed`` is how
-        many steps precede the one it is about to render, so the ``index``
-        on that record — which continues the earlier numbering rather than
-        starting again — is not read as a gap.
-        """
-        return {"from_seq": self.from_seq,
-                "steps_replayed": self.steps_replayed}
+
+@dataclass
+class StagedResumption:
+    """A staged run's checkpoint, back in the shapes the swarm carries.
+
+    Handed to :meth:`core.runtime.swarm.SwarmRunner.run` as its
+    ``resumption``, and it is a much smaller thing than :class:`Resumption`
+    on purpose: **a staged step has no conversation to give back.**  Each
+    step of a plan runs in its own small
+    :class:`~core.runtime.mission.MissionRunner` with its own seed, and what
+    travels between steps is a *summary* rather than a transcript — which is
+    the whole design of :mod:`core.runtime.swarm`.  So there is no message
+    tail here, and its absence is not a loss: the resumed steps read exactly
+    what they would have read had the process never died.
+
+    What is here is what the plan carries: the plan itself, the settled
+    steps' summaries, the evidence the grounding validator will check the
+    synthesized answer against, and the numbers that keep one run one run.
+    """
+
+    run_id: str
+    objective: str
+    from_seq: int
+    #: The checkpointed plan, every field of every step.
+    plan: List[Dict[str, Any]] = field(default_factory=list)
+    #: The checkpointed step outcomes, in the order they were reached.
+    steps_done: List[Dict[str, Any]] = field(default_factory=list)
+    #: The results the recorded stretch's tools returned, re-recorded from
+    #: the event log.  The swarm does not adopt this store — each
+    #: sub-mission keeps its own — but it is the one owner of *what was
+    #: called* and *what came back*, so the evidence and the plane-claim
+    #: set below are read off it rather than derived a second time.
+    store: MissionResultStore = field(default_factory=MissionResultStore)
+    #: The global step index the resumed stretch starts numbering at.
+    next_index: int = 0
+    #: How many tool turns the recorded stretch spent, against the run's
+    #: ``max_steps`` total.
+    steps_spent: int = 0
+    #: Whether the run has already spent its one plan redraw.
+    replanned: bool = False
+    #: What the stream could not give back, in sentences.
+    lost: List[str] = field(default_factory=list)
+
+    @property
+    def evidence(self) -> List[str]:
+        """What the grounding validator checks the answer against."""
+        return self.store.evidence_texts()
+
+    @property
+    def called(self) -> List[str]:
+        """Every tool the recorded stretch dispatched, once each."""
+        return self.store.called_tools()
+
+    @property
+    def steps_replayed(self) -> int:
+        return self.steps_spent
+
+    def as_record(self) -> Dict[str, Any]:
+        """The ``resumed`` field of the first ``step_started`` after this."""
+        return resumed_record(self.from_seq, self.steps_replayed)
 
 
 def rebuild(runner: Any, recorded: Recorded) -> Resumption:
@@ -472,6 +611,13 @@ def rebuild(runner: Any, recorded: Recorded) -> Resumption:
     that is not an oversight: it is the one text the contract deliberately
     does not carry.
     """
+    if recorded.staged:
+        # *runner* is not used, and that is the fact worth reading: a
+        # staged rebuild renders no conversation, because a staged step's
+        # conversation is its own sub-mission's and is built fresh. The
+        # parameter stays in the signature so one call site serves both
+        # kinds of run — see `StagedResumption`.
+        return _rebuild_staged(recorded)
     resumption = Resumption(run_id=recorded.run_id,
                             objective=recorded.objective,
                             from_seq=recorded.from_seq)
@@ -576,6 +722,61 @@ def rebuild(runner: Any, recorded: Recorded) -> Resumption:
     if scrubbed:
         resumption.lost.append(LOST_SCRUBBED.format(
             n=scrubbed, s="" if scrubbed == 1 else "s"))
+    return resumption
+
+
+def _rebuild_staged(recorded: Recorded) -> StagedResumption:
+    """A staged run's checkpoint and stream, back into the swarm's state.
+
+    Two sources, each for what it owns.  The **checkpoint** owns the plan
+    and the settled steps: those are decisions the staged runner made and
+    wrote down, and no amount of reading the stream back recovers a
+    ``done`` condition or a step's bounded summary.  The **stream** owns
+    what the tools returned, because the checkpoint never held it — so the
+    results are re-recorded here into a
+    :class:`~core.runtime.results.MissionResultStore`, which is then the
+    one owner of both the grounding evidence and the plane-claim set, the
+    same as it is on a live turn.
+
+    The store is re-recorded rather than the evidence being collected into
+    a list here, and that is not ceremony: ``evidence_texts`` skips failed
+    results and ``called_tools`` does not, and a second reading of the log
+    beside them would be a second answer to the two questions the live path
+    already has one answer each for.
+    """
+    store = MissionResultStore()
+    for record in recorded.records:
+        if record.get("event") != TOOL_RESULT:
+            continue
+        store.record(
+            str(record.get("tool") or ""),
+            dict(record.get("arguments") or {}),
+            text=str(record.get("output") or ""),
+            # Empty for `LOST_STRUCTURED`'s reason: the typed payload never
+            # travelled on the event stream.
+            evidence="",
+            exit_code=int(record.get("exit_code") or 0),
+        )
+    resumption = StagedResumption(
+        run_id=recorded.run_id,
+        objective=recorded.objective,
+        from_seq=recorded.from_seq,
+        plan=[dict(step) for step in recorded.plan],
+        steps_done=[dict(entry) for entry in recorded.steps_done],
+        store=store,
+        # The same number for both, and it is the log's: every tool turn a
+        # sub-mission spent emitted one `step_started` under the global
+        # numbering `_StageObserver` gave it, so the high-water mark is at
+        # once what was spent and where the next one starts.
+        next_index=recorded.spent_steps,
+        steps_spent=recorded.spent_steps,
+        replanned=recorded.replanned,
+    )
+    settled = sum(1 for entry in resumption.steps_done
+                  if str(entry.get("outcome") or "") in ("ok", "failed"))
+    if store.results:
+        resumption.lost.append(LOST_STAGED_EVIDENCE.format(
+            n=settled, s="" if settled == 1 else "s"))
     return resumption
 
 

@@ -7,12 +7,20 @@ per model call, streaming and not, the side channels, the typed payload,
 the ordinal, the drift, the refusals.
 
 The other half is the corpus, and it is the point of the whole thing.
-``tests/fixtures/runs/`` holds two complete recorded runs made against
-the real FastMCP stub over stdio — one under each protocol, events plus
-``model.jsonl`` plus ``tools.jsonl`` — and the tests below **replay
-them**: no server is spawned, the backend is wired to raise if anything
-asks it a question, and the replayed stream is compared to the recorded
-one record for record.
+``tests/fixtures/runs/`` holds three complete recorded runs made against
+the real FastMCP stub over stdio — one under each protocol and one
+**staged** ``--swarm`` turn, events plus ``model.jsonl`` plus
+``tools.jsonl`` — and the tests below **replay them**: no server is
+spawned, the backend is wired to raise if anything asks it a question,
+and the replayed stream is compared to the recorded one record for
+record.
+
+The staged run is the one that pins the ordinal.  A ``--swarm`` turn
+makes its calls through *two* functions — the loop's ``chat_fn`` and the
+roles' ``plain_chat_fn``, which declares no tools — and they are numbered
+in one sequence because they happened in one sequence.  A replay that
+served them from two queues would run the router against the executor's
+second turn, and nothing about the resulting stream would look wrong.
 
 The headline is :class:`TestTheGroundingExperiment`.  It replays the JSON
 corpus run under a manifest whose *only* difference is its ``grounding:``
@@ -60,6 +68,10 @@ CORPUS = Path(__file__).parent / "fixtures" / "runs"
 #: assertion below quote the afternoon somebody generated the fixture.
 JSON_RUN = "run_corpusjson-0001"
 NATIVE_RUN = "run_corpusnative-0001"
+SWARM_RUN = "run_corpusswarm-0001"
+
+#: Every committed run, for the checks that are true of all of them.
+CORPUS_RUNS = (JSON_RUN, NATIVE_RUN, SWARM_RUN)
 
 #: The identifier the corpus mission cites, and the one thing the
 #: grounding grammar below is looking for.
@@ -139,6 +151,12 @@ def scripted_elf(replies=(), *, native=False, tool_calls=(), usage=None,
     agent.client.capabilities.supports_streaming = bool(streams)
     agent.client.capabilities.supports_tool_calls = bool(native)
     agent.client.capabilities.supports_tool_choice_required = bool(native)
+    # Stated for the same reason `supports_streaming` is. The swarm asks
+    # this one of the CLIENT to decide whether its three object-returning
+    # roles get `response_format`, and an unset MagicMock attribute is
+    # truthy — a corpus recorded with a grammar constraint nobody chose is
+    # a corpus of requests this fixture cannot explain.
+    agent.client.capabilities.supports_json_mode = False
     agent.tools.bus = ToolBus(
         capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
         sandbox=NoneSandbox(),
@@ -222,6 +240,36 @@ NATIVE_CALLS = (
 )
 
 
+#: The scripted STAGED mission: a plan of two steps, each one governed
+#: view, then a synthesis over both. Two steps because a plan of one step
+#: IS the direct path and the swarm says so, and no ``done`` conditions
+#: because a mechanical gate needs no model call — which keeps the
+#: recording to the seven calls listed below and the fixture readable.
+#:
+#: The seven, in the one order they happened in:
+#: ``plain`` (the router), ``plain`` (the planner), ``mission`` ×2 (step
+#: one's call and its answer), ``mission`` ×2 (step two's), ``plain`` (the
+#: synthesizer).
+SWARM_PLAN = json.dumps({"steps": [
+    {"id": "s1", "goal": "read the run's totals", "rung": "tool",
+     "needs": []},
+    {"id": "s2", "goal": "read the second run's totals", "rung": "tool",
+     "needs": ["s1"]},
+]})
+
+SWARM_REPLIES = (
+    '{"route": "staged"}',
+    SWARM_PLAN,
+    json.dumps({"tool": "mcp.governed_view",
+                "arguments": {"run_id": ASSET, "section": "totals"}}),
+    json.dumps({"answer": f"{ASSET}: 12481 records."}),
+    json.dumps({"tool": "mcp.governed_view",
+                "arguments": {"run_id": "asset.9c40", "section": "totals"}}),
+    json.dumps({"answer": "asset.9c40: 12481 records."}),
+    f"Both runs hold 12481 records: {ASSET} and asset.9c40.",
+)
+
+
 def record_json_run(tmp_path):
     """Record the JSON-protocol corpus run.  Returns ``(root, run_id)``."""
     MockClass, _ = scripted_elf(JSON_REPLIES)
@@ -238,6 +286,15 @@ def record_native_run(tmp_path):
     run_cli(MockClass, *mission_argv("what are the totals?",
                                      write_skill(tmp_path),
                                      "--protocol", "native"))
+    root = Path(os.environ[RUNS_ENV])
+    return root, only_run(root)
+
+
+def record_swarm_run(tmp_path):
+    """Record the staged (``--swarm``) corpus run.  ``(root, run_id)``."""
+    MockClass, _ = scripted_elf(SWARM_REPLIES)
+    run_cli(MockClass, *mission_argv("what do the two runs hold?",
+                                     write_skill(tmp_path), "--swarm"))
     root = Path(os.environ[RUNS_ENV])
     return root, only_run(root)
 
@@ -289,7 +346,8 @@ def record_corpus(destination, tmp_path):
     destination.mkdir(parents=True, exist_ok=True)
     made = []
     for record, wanted in ((record_json_run, JSON_RUN),
-                           (record_native_run, NATIVE_RUN)):
+                           (record_native_run, NATIVE_RUN),
+                           (record_swarm_run, SWARM_RUN)):
         root, run_id = record(tmp_path)
         rename_run(root, run_id, wanted)
         if (destination / wanted).exists():
@@ -311,7 +369,7 @@ def corpus(tmp_path, monkeypatch):
     """
     root = Path(os.environ[RUNS_ENV])
     root.mkdir(parents=True, exist_ok=True)
-    for run in (JSON_RUN, NATIVE_RUN):
+    for run in CORPUS_RUNS:
         shutil.copytree(CORPUS / run, root / run)
     return root
 
@@ -749,7 +807,7 @@ class TestTheDoorRefusesAnUnusableRecording:
 
 
 class TestTheCorpusIsComplete:
-    @pytest.mark.parametrize("run_id", [JSON_RUN, NATIVE_RUN])
+    @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_every_file_a_replay_needs_is_committed(self, run_id):
         for name in ("meta.json", "events.jsonl", MODEL_LOG, TOOL_LOG):
             assert (CORPUS / run_id / name).exists(), name
@@ -774,6 +832,55 @@ class TestTheCorpusIsComplete:
         # the event stream carries only the text rendering of it.
         assert structured["result"]["totals"] == {"records": 12481, "blocks": 7}
 
+    def test_the_staged_run_numbers_both_kinds_in_one_sequence(self):
+        """The one thing this fixture exists for.
+
+        A ``--swarm`` turn asks through two functions — the loop's, with
+        the tools declared, and the roles', with none — and they happened
+        in one order. A recording that numbered them separately would
+        replay the router against the executor's second turn, and the
+        resulting stream would look perfectly ordinary.
+        """
+        written = lines(CORPUS / SWARM_RUN / MODEL_LOG)
+        assert [line["call"] for line in written] == [1, 2, 3, 4, 5, 6, 7]
+        assert [line["kind"] for line in written] == [
+            "plain", "plain", "mission", "mission", "mission", "mission",
+            "plain"]
+
+    def test_the_staged_runs_roles_were_asked_without_tools(self):
+        """Which is why they are a different ``kind`` at all: a harmony
+        model handed a function namespace answers a yes/no question with a
+        tool call."""
+        written = lines(CORPUS / SWARM_RUN / MODEL_LOG)
+        assert not any(line["request"]["extra"].get("tools")
+                       for line in written if line["kind"] == "plain")
+        assert all(line["request"]["extra"]["tools"]
+                   for line in written if line["kind"] == "mission")
+
+    def test_the_staged_run_checkpointed_its_plan_and_its_steps(self):
+        """The half of a staged run that is not on the event stream, and
+        the half `--resume` reads."""
+        meta = json.loads(
+            (CORPUS / SWARM_RUN / "meta.json").read_text(encoding="utf-8"))
+        assert [step["id"] for step in meta["meta"]["plan"]] == ["s1", "s2"]
+        assert [entry["outcome"] for entry
+                in meta["meta"]["steps_done"]] == ["ok", "ok"]
+
+    def test_the_staged_run_reads_as_one_mission_on_the_wire(self):
+        # Through the store, because a line of `events.jsonl` is a record
+        # in an envelope carrying its `seq` — and the envelope is the
+        # store's to open.
+        recorded = records(CORPUS, SWARM_RUN)
+        events = [r["event"] for r in recorded]
+        assert events.count("mission_started") == 1
+        assert events.count("mission_finished") == 1
+        started = [r for r in recorded if r["event"] == "step_started"]
+        assert [step["id"] for step in started[0]["plan"]] == ["s1", "s2"]
+        assert [r["index"] for r in started] == list(range(len(started)))
+        # Four turns under one numbering: two sub-missions of two turns
+        # each, renumbered into the sequence a watcher reads.
+        assert len(started) == 4
+
     def test_the_native_run_kept_the_decision_that_was_not_in_the_string(self):
         first = lines(CORPUS / NATIVE_RUN / MODEL_LOG)[0]
         assert first["reply"]["content"] == ""
@@ -786,7 +893,7 @@ class TestTheCorpusIsComplete:
         The mission path scrubs its own errors through `core.redact` for
         exactly this reason; a recording made on a laptop and checked in
         is the same hazard by another road."""
-        for run_id in (JSON_RUN, NATIVE_RUN):
+        for run_id in CORPUS_RUNS:
             for path in (CORPUS / run_id).iterdir():
                 text = path.read_text(encoding="utf-8")
                 assert "/home/" not in text, path
@@ -794,7 +901,7 @@ class TestTheCorpusIsComplete:
 
     def test_the_committed_runs_are_small(self):
         """A corpus is only grown if it stays openable."""
-        for run_id in (JSON_RUN, NATIVE_RUN):
+        for run_id in CORPUS_RUNS:
             for path in (CORPUS / run_id).iterdir():
                 assert path.stat().st_size < 64_000, path
 
@@ -829,6 +936,16 @@ class TestTheCorpusIsWhatThisHarnessProduces:
         assert [line["request"] for line in lines(root / run_id / MODEL_LOG)] \
             == [line["request"] for line in lines(CORPUS / NATIVE_RUN / MODEL_LOG)]
 
+    def test_the_staged_run_records_the_same_requests_and_kinds(self,
+                                                                tmp_path):
+        root, run_id = record_swarm_run(tmp_path)
+        fresh = lines(root / run_id / MODEL_LOG)
+        committed = lines(CORPUS / SWARM_RUN / MODEL_LOG)
+        assert [line["request"] for line in fresh] == \
+            [line["request"] for line in committed]
+        assert [line["kind"] for line in fresh] == \
+            [line["kind"] for line in committed]
+
 
 # ── replaying it ────────────────────────────────────────────────────────────
 
@@ -859,17 +976,68 @@ def replay_argv(run_id, skill, *extra):
     return ["--mission", "--replay", run_id, "--skill", skill, *extra]
 
 
+#: The flags a recorded run has to be replayed under.  A replay rebuilds
+#: the prompts the recorded run built, and a ``--swarm`` turn builds a
+#: router's and a planner's that the ordinary loop never builds at all —
+#: so the flag is part of *which run this is*, and it rides here rather
+#: than being guessed at.  ``meta.json`` carries it as ``flags.swarm``.
+REPLAY_FLAGS = {SWARM_RUN: ("--swarm",)}
+
+
 class TestReplayingTheCorpus:
-    @pytest.mark.parametrize("run_id", [JSON_RUN, NATIVE_RUN])
+    @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_replayed_stream_is_the_recorded_stream(
             self, corpus, tmp_path, run_id):
         MockClass, _ = scripted_elf(refuse=True)
-        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path)))
+        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path),
+                                        *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
         assert comparable(records(corpus, fresh.run_id)) == \
             comparable(records(corpus, run_id))
 
-    @pytest.mark.parametrize("run_id", [JSON_RUN, NATIVE_RUN])
+    def test_the_staged_replay_served_every_recorded_call_in_order(
+            self, corpus, tmp_path):
+        """Record for record is the headline; this is the mechanism under
+        it. Seven calls of two kinds, all served, none drifted — a replay
+        that had queued the roles separately would have served the router
+        the executor's messages and reported drift on every one of them."""
+        MockClass, _ = scripted_elf(refuse=True)
+        run_cli(MockClass, *replay_argv(SWARM_RUN, write_skill(tmp_path),
+                                        "--swarm"))
+        drift = replayed(corpus, SWARM_RUN).meta["drift"]
+        assert drift["first"] is None
+        assert drift["calls"] == 0
+        assert drift["served"] == drift["recorded"] == 7
+
+    def test_the_staged_replay_checkpoints_its_own_plan(self, corpus,
+                                                        tmp_path):
+        """A replayed run is an ordinary run directory: it can be scored,
+        read and replayed again, and a staged one carries the checkpoint a
+        staged run carries."""
+        MockClass, _ = scripted_elf(refuse=True)
+        run_cli(MockClass, *replay_argv(SWARM_RUN, write_skill(tmp_path),
+                                        "--swarm"))
+        fresh = replayed(corpus, SWARM_RUN)
+        assert [step["id"] for step in fresh.meta["plan"]] == ["s1", "s2"]
+        assert [entry["outcome"] for entry
+                in fresh.meta["steps_done"]] == ["ok", "ok"]
+
+    def test_a_staged_recording_replayed_without_the_flag_says_so(
+            self, corpus, tmp_path, capsys):
+        """It is not refused — there is no flag that turns the comparison
+        off, and none that turns it into a refusal either — but it must
+        never be silent. The ordinary loop's first prompt is not the
+        router's, so the run diverges at call one and the drift is on the
+        console and in the replayed run's metadata."""
+        MockClass, _ = scripted_elf(refuse=True)
+        run_cli(MockClass, *replay_argv(SWARM_RUN, write_skill(tmp_path)))
+        out = capsys.readouterr().out
+        assert "replay drift" in out
+        drift = replayed(corpus, SWARM_RUN).meta["drift"]
+        assert drift["first"]["call"] == 1
+        assert drift["calls"] >= 1
+
+    @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_nothing_is_asked_and_nothing_is_spawned(
             self, corpus, tmp_path, run_id):
         """The backend raises if it is called and no transport is named.
@@ -879,7 +1047,8 @@ class TestReplayingTheCorpus:
         one that asked the model would meet the AssertionError above.
         """
         MockClass, agent = scripted_elf(refuse=True)
-        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path)))
+        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path),
+                                        *REPLAY_FLAGS.get(run_id, ())))
         assert agent.seeds == []
 
     def test_the_replay_is_a_new_run_that_names_the_recorded_one(

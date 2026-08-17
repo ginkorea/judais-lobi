@@ -74,7 +74,9 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple,
+)
 
 from core.durable import RunStore
 from core.runtime.control import GATE_WAIT_S
@@ -236,6 +238,37 @@ class PlanStep:
     needs: List[str] = field(default_factory=list)
     done: str = ""
 
+    def as_state(self) -> Dict[str, Any]:
+        """Every field of this step, for the run's checkpoint.
+
+        All five, not the three a watcher is shown: ``needs`` decides which
+        earlier summaries the executor of this step is given and ``done`` is
+        the condition the gate asks the model about, so a restart that read
+        back only the watcher's three would continue a *different* plan
+        under the same run id — the failure the staged resume exists to
+        avoid, reintroduced by the record it reads.
+        """
+        return {"id": self.id, "goal": self.goal, "rung": self.rung,
+                "needs": list(self.needs), "done": self.done}
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, Any]) -> "PlanStep":
+        """One checkpointed step, back.  ``.get`` throughout on purpose.
+
+        A run checkpointed by a harness that wrote only ``{id, goal, rung}``
+        — every staged run recorded before :meth:`as_state` existed — comes
+        back as a step with no ``needs`` and no ``done``, which is a plan
+        this runner can execute rather than a resume it has to refuse.
+        """
+        needs = state.get("needs")
+        return cls(
+            id=str(state.get("id") or ""),
+            goal=str(state.get("goal") or ""),
+            rung=str(state.get("rung") or "tool"),
+            needs=[str(n) for n in needs] if isinstance(needs, list) else [],
+            done=str(state.get("done") or ""),
+        )
+
 
 @dataclass
 class _StepOutcome:
@@ -247,6 +280,21 @@ class _StepOutcome:
     why: str = ""
 
 
+#: The keys of a plan step a *watcher* is shown, which is deliberately
+#: fewer than the keys a *restart* needs.  See :meth:`PlanStep.as_state`.
+_PLAN_FIELDS = ("id", "goal", "rung")
+
+
+def _plan_state(plan: Sequence[PlanStep]) -> List[Dict[str, Any]]:
+    """A plan as the run's checkpoint holds it — every field of every step.
+
+    The checkpoint's shape and the stream's are two renderings of one fact,
+    so the stream's is a *projection* of this one rather than a second
+    hand-listing beside it.
+    """
+    return [step.as_state() for step in plan]
+
+
 def _plan_record(plan: Sequence[PlanStep]) -> List[Dict[str, str]]:
     """A plan as the observer's ``plan`` field.
 
@@ -255,8 +303,79 @@ def _plan_record(plan: Sequence[PlanStep]) -> List[Dict[str, str]]:
     the ``grounding`` record came to carry six of the ten fields its own
     contract required.
     """
-    return [{"id": step.id, "goal": step.goal, "rung": step.rung}
-            for step in plan]
+    return [{key: state[key] for key in _PLAN_FIELDS}
+            for state in _plan_state(plan)]
+
+
+#: The two checkpointed outcomes that mean a step is FINISHED with.
+#:
+#: ``awaiting_approval`` is deliberately not one of them.  Nothing was
+#: called, nothing was produced, and the next move belongs to a person —
+#: which is why :data:`core.runtime.resume.RESUMABLE_OUTCOMES` admits that
+#: word at the door in the first place.  A resume carrying the decision is
+#: precisely the run that has to reach that call again, so the step goes
+#: back on the queue rather than into the results.
+_SETTLED = ("ok", "failed")
+
+
+def _steps_done(resumption: Optional[Any]) -> List[Dict[str, str]]:
+    """The checkpointed steps a resumed turn is NOT going to run again."""
+    if resumption is None:
+        return []
+    return [dict(entry) for entry in resumption.steps_done
+            if isinstance(entry, Mapping)
+            and str(entry.get("outcome") or "") in _SETTLED
+            and entry.get("id")]
+
+
+def _resumed_outcome(entry: Mapping[str, Any],
+                     plan: Sequence[PlanStep]) -> "_StepOutcome":
+    """One checkpointed step, back as the outcome this loop carries.
+
+    The inverse of :meth:`SwarmRunner._step_done`, and next to nothing else
+    on purpose: those two are the whole of what a staged run persists about
+    a step, and a reader written anywhere but beside the writer is the
+    second owner that drifts.  ``summary`` and ``why`` are the same slot —
+    the field answers *what came of this step* — so which of the two it
+    lands in here is decided by the word, exactly as the word decided which
+    of them was written.
+
+    The :class:`PlanStep` is looked up in the plan where the plan still has
+    it, and reconstructed from the id where it does not: a step completed
+    under a plan that was then redrawn around it is a real thing to have
+    happened, and its summary is still what the synthesizer is owed.
+    """
+    sid = str(entry.get("id") or "")
+    step = next((s for s in plan if s.id == sid), None) or PlanStep(
+        id=sid, goal=str(entry.get("goal") or sid))
+    ok = str(entry.get("outcome") or "") == "ok"
+    text = str(entry.get("summary") or "")
+    return _StepOutcome(step=step, ok=ok,
+                        summary=text if ok else "",
+                        why="" if ok else text)
+
+
+def _dispatched(step: Any) -> Sequence[Any]:
+    """What one turn called, whichever protocol it called it under.
+
+    A JSON turn is one decision and keeps it in :class:`MissionStep`'s own
+    ``tool``/``exit_code``; a native turn may make several and keeps them
+    in :attr:`~core.runtime.mission.MissionStep.calls`, leaving the step's
+    own fields unset rather than mirroring the first call into them.  The
+    field *names* are the same on both classes on purpose (see
+    :class:`~core.runtime.mission.MissionCall`), so one expression reads
+    either.
+
+    Written down because the mechanical gate got this wrong for as long as
+    the native protocol existed: it asked ``step.tool`` and nothing else,
+    so **every** native sub-mission "made no successful tool call", failed
+    its gate, retried, and had its plan redrawn around a step that had in
+    fact worked.  Nothing failed loudly — the turn just did three times the
+    work and then said so in a caveat.
+    """
+    if step.calls:
+        return list(step.calls)
+    return [step] if step.tool else []
 
 
 class _OpenedAlready:
@@ -308,18 +427,28 @@ class _StageObserver:
     no plan and may never be one — so it rides the first ``step_started`` the
     plan produces, which is the next thing a watcher hears and the moment the
     plan starts being true.  See :data:`core.runtime.contract.OPTIONAL`.
+
+    *start_index* is where the global numbering begins, and it is ``0``
+    everywhere except a resumed staged turn: those records go into the log
+    the earlier stretch wrote, and an index that started again would put two
+    records with the same ``index`` in one run.  *resumed* rides the first
+    ``step_started`` of the new stretch beside the plan, for the reason the
+    plan does — one record announcing what a watcher is about to see, and
+    not a fact restated on every step.
     """
 
     _PASS = frozenset({
         STEP_STARTED, REPLY_REJECTED, TOOL_CALL, TOOL_RESULT, GATE_REQUESTED,
     })
 
-    def __init__(self, emit: Callable[..., None]):
+    def __init__(self, emit: Callable[..., None], *, start_index: int = 0,
+                 resumed: Optional[Dict[str, Any]] = None):
         self._emit = emit
-        self._next_index = 0
-        self._offset = 0
+        self._next_index = max(0, int(start_index))
+        self._offset = self._next_index
         self._seen_high = -1
         self._pending_plan: Optional[List[Dict[str, str]]] = None
+        self._pending_resumed = dict(resumed) if resumed else None
 
     def begin_stage(self) -> None:
         """A new sub-mission is starting; its indexes begin at zero."""
@@ -347,12 +476,17 @@ class _StageObserver:
             fields["index"] = self._offset + local
             self._next_index = max(self._next_index,
                                    self._offset + self._seen_high + 1)
-        if self._pending_plan is not None and event == STEP_STARTED:
-            # On ``step_started`` and nowhere else: ``plan`` is declared
-            # optional on that event alone, and a field an event does not
-            # declare is a field a consumer meets with no sentence for it.
-            fields["plan"] = self._pending_plan
-            self._pending_plan = None
+        if event == STEP_STARTED:
+            # On ``step_started`` and nowhere else: ``plan`` and ``resumed``
+            # are declared optional on that event alone, and a field an event
+            # does not declare is a field a consumer meets with no sentence
+            # for it.
+            if self._pending_plan is not None:
+                fields["plan"] = self._pending_plan
+                self._pending_plan = None
+            if self._pending_resumed is not None:
+                fields["resumed"] = self._pending_resumed
+                self._pending_resumed = None
         self._emit(event, **fields)
 
 
@@ -688,7 +822,8 @@ class SwarmRunner:
 
     # ── the one entry point ─────────────────────────────────────────────
 
-    def run(self, objective: str) -> MissionTranscript:
+    def run(self, objective: str,
+            resumption: Optional[Any] = None) -> MissionTranscript:
         """Announce, triage, then one path or the other.
 
         The announcement is FIRST, before triage — because triage is itself
@@ -700,6 +835,22 @@ class SwarmRunner:
         that never started.  A swarm that died in there emitted no events at
         all and was reported as never having run, while it had in fact run
         and asked.
+
+        *resumption* is a
+        :class:`core.runtime.resume.StagedResumption` — a staged run's
+        checkpointed plan and completed steps, read back — and ``None`` is
+        every turn that starts cold, which is the shape this method had
+        before staged resuming existed.  Duck-typed rather than imported,
+        for the reason :meth:`core.runtime.mission.MissionRunner.run`
+        duck-types its own.
+
+        **A resumed staged turn announces nothing and decides nothing.**
+        There is no second ``mission_started`` — it is the same mission,
+        one objective, one id, one log — and the router and the planner
+        are not asked again: the plan is on the record, and re-deciding it
+        would be a different mission continuing under the run id of this
+        one.  What the resumed stretch does is run the steps the plan has
+        left, and say so on its first ``step_started``.
         """
         # One ledger for the whole turn, made here: the router's call is
         # already part of what this turn spent, and every runner below is
@@ -712,6 +863,14 @@ class SwarmRunner:
         if self._deadline is not None:
             self._deadline.start()
         self._started_at = time.monotonic()
+        if resumption is not None:
+            plan = [PlanStep.from_state(state) for state in resumption.plan]
+            # Every tool the recorded stretch dispatched, so the answer's
+            # plane-claim check sees the whole turn and not the half of it
+            # this process ran. Same owner as the live path's: the result
+            # store, here rebuilt from the log rather than from a dispatch.
+            self._called = list(resumption.called)
+            return self._staged(objective, plan, resumption=resumption)
         self._emit(MISSION_STARTED, **self._opening(objective))
         stop = self._stop()
         if stop is not None:
@@ -1093,25 +1252,46 @@ class SwarmRunner:
         failure's ``why`` goes in the same slot its success's ``summary``
         would: the field answers "what came of this step", and two fields
         only one of which is ever populated is two fields to read wrong.
+
+        :func:`_resumed_outcome` is the reader, and the two are written to
+        be read together: this method decides which of ``summary`` and
+        ``why`` the one slot holds, and that one decides which of them it
+        comes back out as.
         """
         return {"id": outcome.step.id,
                 "outcome": "ok" if outcome.ok else "failed",
                 "summary": outcome.summary if outcome.ok else outcome.why}
 
-    def _staged(self, objective: str, plan: List[PlanStep]) -> MissionTranscript:
+    def _staged(self, objective: str, plan: List[PlanStep],
+                resumption: Optional[Any] = None) -> MissionTranscript:
         transcript = MissionTranscript(objective=objective,
                                        catalogue=list(self._offered),
                                        usage=self._ledger)
         # `run` opened the stream before triage; the plan did not exist then.
-        # It travels on the first `step_started` instead.
-        stage = _StageObserver(self._emit)
+        # It travels on the first `step_started` instead. On a resumed turn
+        # the numbering continues the log this stretch is being appended to,
+        # and the first new `step_started` says that it does.
+        stage = _StageObserver(
+            self._emit,
+            start_index=resumption.next_index if resumption else 0,
+            resumed=resumption.as_record() if resumption else None)
         stage.announce(plan)
         # The plan, before the first step of it runs. A checkpoint written
         # after the work is a checkpoint that is missing exactly when the
         # work was what died.
-        self._checkpoint(plan=_plan_record(plan), steps_done=[])
+        #
+        # `steps_done` is restated rather than left alone, because the whole
+        # list is what every later checkpoint writes: a resumed turn that
+        # wrote `[]` here would erase the steps it is resuming past, and one
+        # that wrote nothing would leave the plan and the progress written by
+        # two different runs of two different lengths.
+        self._checkpoint(plan=_plan_state(plan),
+                         steps_done=list(_steps_done(resumption)),
+                         replanned=bool(resumption.replanned)
+                         if resumption else False)
         try:
-            outcome = self._work_through(objective, plan, transcript, stage)
+            outcome = self._work_through(objective, plan, transcript, stage,
+                                         resumption=resumption)
         finally:
             # The direct path's own renderer, not a second hand-listing of
             # the same record.
@@ -1127,13 +1307,39 @@ class SwarmRunner:
 
     def _work_through(self, objective: str, plan: List[PlanStep],
                       transcript: MissionTranscript,
-                      stage: _StageObserver) -> MissionTranscript:
+                      stage: _StageObserver,
+                      resumption: Optional[Any] = None) -> MissionTranscript:
         budget = self._max_steps
         evidence: List[str] = []
         results: Dict[str, _StepOutcome] = {}
         replanned = False
         queue = list(plan)
         done: List[Dict[str, str]] = []
+
+        if resumption is not None:
+            # Everything the recorded stretch left behind, put back where
+            # this loop keeps it — and nothing else. There is no message
+            # tail to replay: a staged step's conversation belongs to the
+            # sub-mission that had it and is thrown away when the step ends,
+            # so what carries forward here is exactly what carried forward
+            # the first time, the step's summary.
+            done = list(_steps_done(resumption))
+            results = {entry["id"]: _resumed_outcome(entry, plan)
+                       for entry in done}
+            evidence = list(resumption.evidence)
+            replanned = bool(resumption.replanned)
+            # `max_steps` bounds a MISSION and not a process, exactly as it
+            # does across a direct resume: the tool turns the recorded
+            # stretch spent count against it, so a plan that spent 5 of 8
+            # has 3 left. See `Recorded.total_steps`, which is where the
+            # caller works the total out.
+            budget = max(0, self._max_steps - int(resumption.steps_spent))
+            # A step the plan already has an outcome for is not run again.
+            # One stopped at a gate is NOT such a step: nothing was called,
+            # the decision belongs to a person, and a resume carrying their
+            # approval is precisely the run that has to reach that call
+            # again — so it is left on the queue. See `_steps_done`.
+            queue = [step for step in plan if step.id not in results]
 
         # No check at the top of this loop either, for the reason `run` does
         # not repeat one after planning: the next thing that happens is a
@@ -1202,7 +1408,8 @@ class SwarmRunner:
                     # the reason `_StageObserver.announce` is called again:
                     # what is checkpointed has to be the plan the steps
                     # arriving next belong to.
-                    self._checkpoint(plan=_plan_record(fresh))
+                    self._checkpoint(plan=_plan_state(fresh),
+                                     replanned=True)
                     continue
             # Out of moves for this step: the failure is now part of the
             # answer.  The steps still queued are dropped rather than run
@@ -1335,8 +1542,9 @@ class SwarmRunner:
                 + (f": {sub.steps[-1].error}" if sub.steps
                    and sub.steps[-1].error else "")
             )
-        acted = any(s.tool and not s.refused and s.tool != RESULT_TOOL
-                    for s in sub.steps)
+        acted = any(call.tool and not call.refused
+                    and call.tool != RESULT_TOOL
+                    for step in sub.steps for call in _dispatched(step))
         if not acted:
             return False, (
                 "the step made no successful tool call, so its result is "

@@ -1957,6 +1957,258 @@ class TestTheStagedRunIsCheckpointed:
                      run_id="run_abcd1234").run("find it").completed
 
 
+# ── the checkpoint is read back, not only written ────────────────────────
+
+
+class _Resumption:
+    """What `SwarmRunner.run` reads off a resumption, and nothing else.
+
+    Duck-typed here for the reason the runner duck-types it: this file
+    tests the swarm's half of the seam, and building a real
+    :class:`core.runtime.resume.StagedResumption` would make every
+    assertion below depend on the door as well. The door's half is
+    `tests/test_resume.py`.
+    """
+
+    def __init__(self, plan, steps_done=(), *, next_index=0, steps_spent=0,
+                 evidence=(), called=(), replanned=False, from_seq=7):
+        self.plan = list(plan)
+        self.steps_done = [dict(entry) for entry in steps_done]
+        self.next_index = next_index
+        self.steps_spent = steps_spent
+        self.evidence = list(evidence)
+        self.called = list(called)
+        self.replanned = replanned
+        self.from_seq = from_seq
+
+    def as_record(self):
+        from core.runtime.resume import resumed_record
+        return resumed_record(self.from_seq, self.steps_spent)
+
+
+TWO_STEP_STATE = [
+    {"id": "s1", "goal": "find the corpus", "rung": "tool", "needs": [],
+     "done": "an asset id is named"},
+    {"id": "s2", "goal": "chart the counts", "rung": "code",
+     "needs": ["s1"], "done": ""},
+]
+
+S1_DONE = [{"id": "s1", "outcome": "ok", "summary": "found corpus.abc123"}]
+
+
+class TestThePlanSurvivesBeingWrittenDown:
+    """A step round-trips through the checkpoint with every field intact.
+
+    Three of the five are what a *watcher* is shown. The other two decide
+    what the executor of a later step is given (`needs`) and what its gate
+    asks the model about (`done`), so a plan rebuilt from the watcher's
+    three is a different plan wearing the same ids.
+    """
+
+    def test_every_field_goes_into_the_state(self):
+        from core.runtime.swarm import PlanStep
+
+        step = PlanStep(id="s2", goal="chart it", rung="code",
+                        needs=["s1"], done="a png exists")
+        assert step.as_state() == {"id": "s2", "goal": "chart it",
+                                   "rung": "code", "needs": ["s1"],
+                                   "done": "a png exists"}
+
+    def test_and_comes_back_out_of_it(self):
+        from core.runtime.swarm import PlanStep
+
+        step = PlanStep(id="s2", goal="chart it", rung="code",
+                        needs=["s1"], done="a png exists")
+        assert PlanStep.from_state(step.as_state()) == step
+
+    def test_a_step_checkpointed_before_the_full_state_existed_still_reads(
+            self):
+        """Every staged run recorded before this wrote three keys. A reader
+        that refused them would arrive unable to resume the runs it was
+        written for."""
+        from core.runtime.swarm import PlanStep
+
+        step = PlanStep.from_state({"id": "s1", "goal": "look",
+                                    "rung": "tool"})
+        assert (step.needs, step.done) == ([], "")
+
+    def test_the_watchers_plan_is_a_projection_of_the_checkpointed_one(self):
+        """One owner for the fields. The stream's shape is contract-declared
+        and the checkpoint's is not, and a second hand-listing of either is
+        how `grounding` came to carry six of its ten fields."""
+        from core.runtime.swarm import PlanStep, _plan_record, _plan_state
+
+        plan = [PlanStep.from_state(state) for state in TWO_STEP_STATE]
+        assert _plan_state(plan) == TWO_STEP_STATE
+        assert _plan_record(plan) == [
+            {key: state[key] for key in ("id", "goal", "rung")}
+            for state in TWO_STEP_STATE]
+
+    def test_the_checkpoint_carries_what_a_restart_needs(self, bus, tmp_path):
+        from core.durable import RunStore
+
+        store = RunStore(tmp_path / "runs")
+        run_id = store.create().run_id
+        plain = ScriptedModel(STAGED, TWO_STEP_PLAN, '{"pass": true}',
+                              "Final: done")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        swarm(plain, executor, bus, run_store=store,
+              run_id=run_id).run("find it and chart it")
+        checkpointed = store.meta(run_id).meta["plan"]
+        assert checkpointed[1]["needs"] == ["s1"]
+        assert checkpointed[0]["done"] == "an asset id is named"
+
+
+class TestAStagedTurnReEntersOnWhatItsPlanHasLeft:
+    """`run(objective, resumption)` — the staged half of `--resume`.
+
+    Announcing, triaging and planning are all skipped, because all three
+    already happened: this turn is the same mission continuing, and a
+    router asked again could route it a different way under an id that
+    says it is one run.
+    """
+
+    def _resumed(self, bus, plain, executor, resumption, **kw):
+        runner = swarm(plain, executor, bus, **kw)
+        return runner, runner.run("find it and chart it", resumption)
+
+    def test_nothing_is_announced_because_the_mission_already_was(self, bus):
+        sink = Sink()
+        _runner, _transcript = self._resumed(
+            bus, ScriptedModel("Final: done"),
+            ScriptedModel(tool_call("run_code", code="plot()"),
+                          '{"answer": "chart.png written"}'),
+            _Resumption(TWO_STEP_STATE, S1_DONE, next_index=2,
+                        steps_spent=2),
+            observer=sink)
+        assert sink.of("mission_started") == []
+        # And the stream still CLOSES: a resumed stretch owes its watcher
+        # the record that says the mission is over.
+        assert len(sink.of("mission_finished")) == 1
+
+    def test_the_settled_step_is_not_run_and_the_rest_is(self, bus, calls):
+        plain = ScriptedModel("Final: done")
+        executor = ScriptedModel(tool_call("run_code", code="plot()"),
+                                 '{"answer": "chart.png written"}')
+        self._resumed(bus, plain, executor,
+                      _Resumption(TWO_STEP_STATE, S1_DONE, next_index=2,
+                                  steps_spent=2))
+        assert [name for name, _ in calls] == ["run_code"]
+
+    def test_the_recorded_summary_reaches_the_step_that_declared_it_needs_it(
+            self, bus):
+        """`needs` is why the full plan is checkpointed. s2 declared it
+        needs s1, and what s1 found is on the record and nowhere else."""
+        plain = ScriptedModel("Final: done")
+        executor = ScriptedModel(tool_call("run_code", code="plot()"),
+                                 '{"answer": "chart.png written"}')
+        self._resumed(bus, plain, executor,
+                      _Resumption(TWO_STEP_STATE, S1_DONE, next_index=2,
+                                  steps_spent=2))
+        assert "s1: found corpus.abc123" in executor.seen[0][-1]["content"]
+
+    def test_a_failed_step_comes_back_failed_and_says_so_in_the_synthesis(
+            self, bus):
+        """`summary` and `why` are one slot on the record, and the word is
+        what decides which of them it lands in."""
+        plain = ScriptedModel("Final: partly")
+        executor = ScriptedModel(tool_call("run_code", code="plot()"),
+                                 '{"answer": "chart.png written"}')
+        self._resumed(
+            bus, plain, executor,
+            _Resumption(TWO_STEP_STATE,
+                        [{"id": "s1", "outcome": "failed",
+                          "summary": "the catalogue was empty"}],
+                        next_index=2, steps_spent=2))
+        shown = plain.seen[0][-1]["content"]
+        assert "s1 (find the corpus): FAILED — the catalogue was empty" in shown
+
+    def test_the_first_new_step_carries_the_resumption_and_the_plan(self, bus):
+        sink = Sink()
+        self._resumed(
+            bus, ScriptedModel("Final: done"),
+            ScriptedModel(tool_call("run_code", code="plot()"),
+                          '{"answer": "chart.png written"}'),
+            _Resumption(TWO_STEP_STATE, S1_DONE, next_index=2, steps_spent=2,
+                        from_seq=11),
+            observer=sink)
+        started = sink.of("step_started")
+        assert started[0]["resumed"] == {"from_seq": 11, "steps_replayed": 2}
+        assert [step["id"] for step in started[0]["plan"]] == ["s1", "s2"]
+        assert not [r for r in started[1:] if "resumed" in r]
+
+    def test_the_numbering_continues_from_where_the_log_stopped(self, bus):
+        """A resumed stretch that began at zero would put two records with
+        the same ``index`` in one log."""
+        sink = Sink()
+        self._resumed(
+            bus, ScriptedModel("Final: done"),
+            ScriptedModel(tool_call("run_code", code="plot()"),
+                          '{"answer": "chart.png written"}'),
+            _Resumption(TWO_STEP_STATE, S1_DONE, next_index=2, steps_spent=2),
+            observer=sink)
+        assert [r["index"] for r in sink.of("step_started")] == [2, 3]
+
+    def test_the_redraw_is_not_bought_a_second_time(self, bus):
+        """One redraw per mission, and a resume that reset the flag would
+        make it one per process — which anybody could spend again by
+        killing the run."""
+        plain = ScriptedModel(
+            # No plan reply here on purpose: if the runner tried to redraw
+            # it would consume this synthesis as a plan and the assertion
+            # below would see a second planning call.
+            "Final: nothing worked")
+        executor = ScriptedModel('{"answer": "no tool called"}',
+                                 '{"answer": "still no tool"}')
+        _runner, transcript = self._resumed(
+            bus, plain, executor,
+            _Resumption(TWO_STEP_STATE, S1_DONE, next_index=2, steps_spent=2,
+                        replanned=True))
+        assert plain.calls == 1
+        assert transcript.answer == "Final: nothing worked"
+
+    def test_the_recorded_evidence_and_the_recorded_calls_are_carried(
+            self, bus):
+        """The synthesized answer is checked against what the WHOLE turn's
+        tools returned, not the half this process ran. A resume that
+        dropped the earlier evidence would caveat every figure the first
+        half found."""
+        validator = GroundingValidator.from_config(
+            GroundingConfig.from_mapping(
+                {"identifier_pattern": r"\bcorpus\.[0-9a-z]+\b"}))
+        plain = ScriptedModel("Final: corpus.abc123 is charted")
+        executor = ScriptedModel(tool_call("run_code", code="plot()"),
+                                 '{"answer": "chart.png written"}')
+        _runner, transcript = self._resumed(
+            bus, plain, executor,
+            _Resumption(TWO_STEP_STATE, S1_DONE, next_index=2, steps_spent=2,
+                        evidence=["corpus abc123 (id corpus.abc123)"],
+                        called=["catalog.search"]),
+            validator=validator)
+        assert transcript.grounding.caveat == ""
+        assert transcript.outcome == "answered"
+
+    def test_the_budget_left_is_the_total_minus_what_was_already_spent(
+            self, bus):
+        """``max_steps`` bounds a mission and not a process."""
+        plain = ScriptedModel("Final: done")
+        executor = ScriptedModel(tool_call("run_code", code="plot()"),
+                                 '{"answer": "chart.png written"}')
+        _runner, transcript = self._resumed(
+            bus, plain, executor,
+            _Resumption(TWO_STEP_STATE, S1_DONE, next_index=6,
+                        steps_spent=6),
+            max_steps=7)
+        # One turn left, and a step that has to call and then answer needs
+        # two — so it fails rather than quietly overspending the total.
+        assert "FAILED" in plain.seen[0][-1]["content"]
+        assert transcript.outcome == "answered_with_caveat"
+
+
 # ── the roles that must return an object are given the grammar ───────────
 
 
@@ -2207,6 +2459,60 @@ class TestTheProtocolReachesEverySubMission:
         # Both calls of one native turn reached the bus, through the
         # sub-mission the swarm built.
         assert [name for name, _kw in calls] == ["catalog.search", "run_code"]
+
+    def test_the_mechanical_gate_can_see_a_native_turns_calls(self, bus,
+                                                              calls):
+        """A native turn leaves `MissionStep.tool` unset on purpose and
+        keeps what it called in `calls`. The gate asked the first and
+        nothing else, so every native step of every staged turn "made no
+        successful tool call" — it failed, retried, and had the plan
+        redrawn around work that had actually succeeded. Nothing failed
+        loudly; the turn just cost three times what it should have and
+        then apologised in a caveat.
+
+        A TWO-step plan, because a plan of one step is the direct path and
+        the gate is never reached on it — which is why the staged native
+        path went untested for as long as it existed.
+        """
+        executor = NativeModel(
+            [NativeModel.call("catalog.search", "c0", q="corpus")],
+            NativeModel.answer("found corpus.abc123"),
+            [NativeModel.call("run_code", "c1", code="plot()")],
+            NativeModel.answer("wrote chart.png"))
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"},
+                 {"id": "s2", "goal": "chart", "rung": "code",
+                  "needs": ["s1"]}),
+            "Final: corpus.abc123 charted in chart.png")
+        transcript = self._native(bus, executor, plain).run("find it")
+        assert transcript.answer == "Final: corpus.abc123 charted in chart.png"
+        assert transcript.outcome == "answered"
+        # Once each, with no retry and no redraw: the planner was asked
+        # exactly once, and the synthesizer is plain's third call.
+        assert [name for name, _kw in calls] == ["catalog.search", "run_code"]
+        assert plain.calls == 3
+
+    def test_a_native_step_that_called_nothing_still_fails_the_gate(self,
+                                                                    bus):
+        """The other half. A turn that answered without dispatching
+        anything is unsupported by anything that actually ran, and reading
+        `calls` must not turn the check into one that always passes."""
+        executor = NativeModel(
+            NativeModel.answer("I remember corpus.abc123"),
+            NativeModel.answer("I still remember it"),
+            [NativeModel.call("run_code", "c1", code="plot()")],
+            NativeModel.answer("wrote chart.png"))
+        plain = ScriptedModel(
+            STAGED,
+            plan({"id": "s1", "goal": "search", "rung": "tool"},
+                 {"id": "s2", "goal": "chart", "rung": "code",
+                  "needs": ["s1"]}),
+            "Final: s1 failed")
+        transcript = self._native(bus, executor, plain).run("find it")
+        assert "s1 (search): FAILED" in plain.seen[-1][-1]["content"]
+        assert "no successful tool call" in plain.seen[-1][-1]["content"]
+        assert transcript.outcome == "answered_with_caveat"
 
     def test_the_opening_frame_announces_it_from_the_same_owner(self, bus):
         events = []

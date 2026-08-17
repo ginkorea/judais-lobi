@@ -2229,3 +2229,810 @@ class TestTheControlChannelFromTheCommandLine:
         monkeypatch.setenv("MISSION_CONTROL", f"fd:{fd}")
         run_cli(MockClass, "--skill", str(skill_file))
         assert agent.seeds[0][-1]["content"] == "from the environment"
+
+
+# ── the swarm, end to end, with everything else switched on ─────────────────
+
+
+SWARM_SKILL = textwrap.dedent("""\
+    ---
+    name: recon
+    skill:
+      skill_id: recon
+      when_to_use: Arriving at a mission cold.
+      allowed_tools:
+        - governed_read
+        - governed_view
+      policy:
+        - Never invent an asset id.
+      output_format: A table.
+      grounding:
+        identifier_pattern: '\\basset\\.[0-9a-z]{4,}\\b'
+    ---
+
+    # Recon
+
+    Start broad, then narrow by facet.
+    """)
+
+
+#: The staged plan every test in the class below runs: one governed read,
+#: then one governed view over what it named. Two steps, because a plan of
+#: one step IS the direct path and the swarm says so — and no ``done``
+#: conditions, so the gates are mechanical and the model script holds one
+#: reply per role rather than one per role plus a verdict.
+SWARM_PLAN = json.dumps({"steps": [
+    {"id": "s1", "goal": "read the governed asset", "rung": "tool",
+     "needs": []},
+    {"id": "s2", "goal": "read the run view", "rung": "tool",
+     "needs": ["s1"]},
+]})
+
+STAGED_SCRIPT = (
+    '{"route": "staged"}',
+    SWARM_PLAN,
+    json.dumps({"tool": "mcp.governed_read",
+                "arguments": {"asset_id": "asset.5f21"}}),
+    json.dumps({"answer": "asset.5f21 is results only"}),
+    json.dumps({"tool": "mcp.governed_view",
+                "arguments": {"run_id": "r-3", "section": "totals"}}),
+    json.dumps({"answer": "run r-3 holds 12481 records"}),
+    "asset.5f21 is results only, and run r-3 holds 12481 records.",
+)
+
+
+class _Clock:
+    """A monotonic that moves only when a fake model says so."""
+
+    def __init__(self, start=1_000.0):
+        self.now = float(start)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += float(seconds)
+
+
+def swarm_argv(*extra, objective="find the asset and read its run"):
+    return ["test", objective, "--mission",
+            "--mcp-stdio", f"{sys.executable} {STUB}", "--swarm", *extra]
+
+
+def run_swarm(MockClass, *extra, objective="find the asset and read its run"):
+    from core.cli import _main
+    with patch("sys.argv", swarm_argv(*extra, objective=objective)):
+        _main(MockClass)
+
+
+def ndjson(path):
+    return [json.loads(line) for line in
+            Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+class TestTheSwarmEndToEnd:
+    """A staged `--swarm` turn through the real CLI and the real stub.
+
+    `tests/test_swarm.py` exercises each of these collaborators against a
+    `SwarmRunner` built by hand. What is asserted here is that each one
+    **survives the wiring**: the CLI builds the staged runner with a
+    different constructor call from the direct one, and every collaborator
+    it forgets to hand over is a feature that is off on exactly the path
+    that needs it most — a staged turn runs more steps than a direct one,
+    not fewer.
+
+    One method per collaborator, because a single "it all works" test
+    fails as one line and says nothing about which of eleven wires came
+    loose.
+    """
+
+    @pytest.fixture
+    def skill(self, tmp_path):
+        path = tmp_path / "SWARM.md"
+        path.write_text(SWARM_SKILL, encoding="utf-8")
+        return str(path)
+
+    def script(self, agent, *replies, clock=None, seconds=0.0):
+        """One flat queue for every role of the turn, in the order they ask.
+
+        The router, the planner, each executor turn and the synthesizer all
+        reach the same backend — one leased endpoint, no second model — so
+        one list is the honest shape. *clock* makes every call cost fake
+        seconds, which is how a wall clock is exercised without a sleep.
+        """
+        queue = list(replies)
+
+        def _chat(**kw):
+            if clock is not None:
+                clock.advance(seconds)
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            agent.asked.append(kw)
+            return queue.pop(0) if queue else '{"answer": "done"}'
+
+        agent.asked = []
+        agent.client.chat.side_effect = _chat
+        return agent
+
+    def runs(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def only_run(self, tmp_path):
+        listed = self.runs(tmp_path).list()
+        assert len(listed) == 1, [run.run_id for run in listed]
+        return listed[0].run_id
+
+    # ── the machine channel ─────────────────────────────────────────────
+
+    def test_every_record_of_a_staged_turn_conforms(self, elf, skill,
+                                                    tmp_path):
+        """`--events`, read back and checked against the contract itself.
+
+        The staged path writes three records nothing else writes — the
+        opening, the synthesized answer and the swarm's own grounding
+        verdict — and none of them goes through a `MissionRunner`. That is
+        the arrangement that once shipped six of `grounding`'s ten required
+        fields.
+        """
+        from core.runtime.contract import conforms
+
+        MockClass, agent = elf
+        self.script(agent, *STAGED_SCRIPT)
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--events", str(events))
+
+        records = ndjson(events)
+        assert records, "the staged turn wrote no stream at all"
+        for record in records:
+            assert not conforms(record), (conforms(record), record)
+        events_seen = [r["event"] for r in records]
+        # One mission, whatever the router decided: five little missions
+        # rendered as five is the thing `_StageObserver` exists to stop.
+        assert events_seen.count("mission_started") == 1
+        assert events_seen.count("mission_finished") == 1
+        assert events_seen[0] == "mission_started"
+        assert events_seen[-1] == "mission_finished"
+        started = [r for r in records if r["event"] == "step_started"]
+        assert [step["id"] for step in started[0]["plan"]] == ["s1", "s2"]
+        assert not [r for r in started[1:] if "plan" in r]
+        assert [r["index"] for r in started] == list(range(len(started)))
+
+    def test_the_durable_log_holds_the_stream_and_holds_it_first(
+            self, elf, skill, tmp_path, monkeypatch):
+        """The sink is a client of the log, not a second truth beside it.
+
+        Asserted with a sink that throws: a staged turn whose watcher is
+        broken must still leave a complete run directory, because the
+        directory is what a resume, a replay and a scorer all read.
+        """
+        import core.runtime.mission_stream as stream
+
+        class Angry:
+            def __call__(self, record):
+                raise RuntimeError("the pane went away")
+
+            def close(self):
+                pass
+
+        MockClass, agent = elf
+        monkeypatch.setattr(stream, "open_sink", lambda spec: Angry())
+        self.script(agent, *STAGED_SCRIPT)
+        run_swarm(MockClass, "--skill", skill, "--events", "-")
+
+        records = self.runs(tmp_path).records(self.only_run(tmp_path))
+        assert [r["event"] for r in records].count("mission_started") == 1
+        assert records[-1]["event"] == "mission_finished"
+        assert records[-1]["outcome"].startswith("answered")
+
+    # ── the clock ───────────────────────────────────────────────────────
+
+    def test_the_wall_clock_is_one_for_the_whole_turn(
+            self, elf, skill, tmp_path, monkeypatch):
+        """`--mission-seconds` reaches the staged runner and bounds the
+        turn, not each stage of it. Five sub-missions of a minute each
+        fitting inside a one-minute budget is the bug, and a clock the CLI
+        forgot to hand over is how it comes back."""
+        import core.runtime.swarm as swarm_module
+        from core.budgets import Deadline
+
+        clock = _Clock()
+        MockClass, agent = elf
+        self.script(agent, *STAGED_SCRIPT, clock=clock, seconds=4.0)
+
+        real = swarm_module.SwarmRunner
+
+        class Spy(real):
+            def __init__(self, *args, **kwargs):
+                # The operator's number, on a clock a test can move. The
+                # seam is the one `tests/test_swarm.py` uses; what is new
+                # here is that the CLI is what built the runner.
+                assert kwargs["deadline"].seconds == 10.0
+                kwargs["deadline"] = Deadline(10.0, monotonic=clock)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--mission-seconds", "10",
+                  "--events", str(events))
+
+        last = ndjson(events)[-1]
+        assert last["event"] == "mission_finished"
+        assert last["outcome"] == "budget_exhausted"
+        assert last["budget"]["which"] == "seconds"
+        assert last["budget"]["limit"] == 10.0
+
+    def test_the_finished_record_says_how_long_the_turn_took(
+            self, elf, skill, tmp_path):
+        """`elapsed_s` is the harness's own clock and rides the staged
+        path's `mission_finished` as it rides the direct one's — from the
+        same renderer, so the two cannot disagree about what the field
+        means."""
+        MockClass, agent = elf
+        self.script(agent, *STAGED_SCRIPT)
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--events", str(events))
+
+        last = ndjson(events)[-1]
+        assert last["event"] == "mission_finished"
+        assert isinstance(last["elapsed_s"], float)
+        assert last["elapsed_s"] >= 0.0
+
+    # ── what the turn spent ─────────────────────────────────────────────
+
+    def test_the_usage_total_is_the_roles_plus_the_sub_missions(
+            self, elf, skill, tmp_path):
+        """One ledger per turn. The swarm's own four roles are outside any
+        `MissionRunner`, and a CLI that handed the staged runner no
+        `usage_fn` would report a turn costing only what its sub-missions
+        cost."""
+        from core.runtime.backends.base import Usage
+
+        MockClass, agent = elf
+        agent.client.last_usage = Usage(prompt_tokens=10, completion_tokens=2,
+                                        total_tokens=12)
+        self.script(agent, *STAGED_SCRIPT)
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--events", str(events))
+
+        records = ndjson(events)
+        calls = agent.client.chat.call_count
+        # Seven: the router, the planner, two turns of each sub-mission,
+        # and the synthesizer. Every one of them is on the total.
+        assert calls == 7
+        assert records[-1]["usage"]["total_tokens"] == 12 * calls
+        assert records[-1]["usage"]["calls"] == calls
+        # And the answer carries the cost of the call that wrote it, which
+        # is the swarm's own synthesizer and not a sub-mission's.
+        answer = [r for r in records if r["event"] == "answer"][-1]
+        assert answer["usage"]["total_tokens"] == 12
+
+    # ── steering ────────────────────────────────────────────────────────
+
+    def _pipe(self, *payloads):
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(write_fd, "w", encoding="utf-8") as writer:
+            for payload in payloads:
+                writer.write(json.dumps(payload) + "\n")
+        return read_fd
+
+    def test_an_injection_reaches_the_sub_mission_that_is_running(
+            self, elf, skill, tmp_path):
+        """One channel for the turn, handed to every sub-mission. The
+        swarm's own roles are single round trips with no "between steps"
+        to inject into, so the instruction has to land on a sub-mission —
+        and it lands on the one that is running."""
+        MockClass, agent = elf
+        self.script(agent, *STAGED_SCRIPT)
+        fd = self._pipe({"control": "inject", "text": "the SECOND corpus"})
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--control", f"fd:{fd}",
+                  "--events", str(events))
+
+        started = [r for r in ndjson(events) if r["event"] == "step_started"]
+        injected = [r for r in started if "injected" in r]
+        assert injected, "the instruction reached no step"
+        assert injected[0]["injected"] == ["the SECOND corpus"]
+        # ... and it reached a sub-mission, not the router: the router's
+        # own turn is not a step and emits nothing.
+        assert injected[0]["index"] == 0
+
+    def _channels(self, monkeypatch):
+        """Every channel the CLI opens, so a test can write into it and
+        know when the command has crossed the reader thread."""
+        from core.runtime.control import ControlChannel
+
+        made = []
+        real = ControlChannel.open.__func__
+
+        def opened(cls, spec, **kwargs):
+            channel = real(cls, spec, **kwargs)
+            if channel is not None:
+                made.append(channel)
+            return channel
+
+        monkeypatch.setattr(ControlChannel, "open", classmethod(opened))
+        return made
+
+    def test_cancel_step_drops_the_call_that_had_not_gone_out(
+            self, elf, skill, tmp_path, monkeypatch):
+        """Cooperative and bounded to one step: the sub-mission is asked
+        again rather than the turn being ended.
+
+        Sent while the sub-mission's model call is in flight, which is the
+        only timing that means anything — a `cancel_step` waiting at the
+        step boundary missed the call it meant to stop, and the loop says
+        so instead of skipping the next one.
+        """
+        import time
+
+        MockClass, agent = elf
+        made = self._channels(monkeypatch)
+        read_fd, write_fd = os.pipe()
+        writer = os.fdopen(write_fd, "w", encoding="utf-8")
+        queue = [
+            '{"route": "staged"}',
+            SWARM_PLAN,
+            json.dumps({"tool": "mcp.governed_read",
+                        "arguments": {"asset_id": "asset.5f21"}}),
+            json.dumps({"answer": "asset.5f21 without reading it"}),
+            json.dumps({"tool": "mcp.governed_view",
+                        "arguments": {"run_id": "r-3", "section": "totals"}}),
+            json.dumps({"answer": "run r-3 holds 12481 records"}),
+            "asset.5f21, and run r-3 holds 12481 records.",
+        ]
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            reply = queue.pop(0) if queue else '{"answer": "done"}'
+            if "governed_read" in reply:
+                before = made[0].waiting
+                writer.write(json.dumps({"control": "cancel_step"}) + "\n")
+                writer.flush()
+                until = time.monotonic() + 2.0
+                while made[0].waiting <= before and time.monotonic() < until:
+                    time.sleep(0.002)
+            return reply
+
+        agent.client.chat.side_effect = _chat
+        events = tmp_path / "events.ndjson"
+        try:
+            run_swarm(MockClass, "--skill", skill, "--control",
+                      f"fd:{read_fd}", "--events", str(events))
+        finally:
+            writer.close()
+
+        records = ndjson(events)
+        called = [r["tool"] for r in records if r["event"] == "tool_call"]
+        # The first sub-mission's read never went out; the second's view
+        # did, which is what "bounded to this step" means.
+        assert called == ["mcp.governed_view"]
+        assert records[-1]["event"] == "mission_finished"
+
+    def test_a_cancel_winds_the_whole_turn_up_saying_why(self, elf, skill,
+                                                         tmp_path):
+        """The switch is the turn's, not a stage's. A staged turn that
+        swallowed a cancel would be a turn an operator cannot stop."""
+        MockClass, agent = elf
+        self.script(agent, *STAGED_SCRIPT)
+        fd = self._pipe({"control": "cancel"})
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--control", f"fd:{fd}",
+                  "--events", str(events))
+
+        last = ndjson(events)[-1]
+        assert last["event"] == "mission_finished"
+        assert last["reason"] == "cancelled"
+        assert last["outcome"] == "incomplete"
+
+    # ── the other protocol ──────────────────────────────────────────────
+
+    def native(self, agent, *turns, plain=()):
+        """Two queues, split by whether the request declared tools.
+
+        That split IS the seam: the swarm's own roles go through
+        `plain_chat_fn`, which declares no tools at all, and a harmony
+        model handed a function namespace answers a yes/no question with a
+        tool call. So a native staged turn is a native loop underneath and
+        prose on top, and one queue could not express it.
+        """
+        agent.client.capabilities = SimpleNamespace(
+            supports_tool_calls=True, supports_tool_choice_required=True,
+            supports_streaming=False, supports_json_mode=False)
+        calls, prose = list(turns), list(plain)
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            agent.asked.append(kw)
+            if not kw.get("tools"):
+                agent.client.last_tool_calls = []
+                return prose.pop(0) if prose else '{"route": "direct"}'
+            agent.client.last_tool_calls = list(
+                calls.pop(0) if calls else [native_answer("done")])
+            return ""
+
+        agent.asked = []
+        agent.client.chat.side_effect = _chat
+
+    def test_every_sub_mission_speaks_the_protocol_the_turn_opened_with(
+            self, elf, skill, tmp_path):
+        """A staged turn that spoke one protocol at the top and another
+        underneath would be a turn whose opening frame is false of most of
+        its records."""
+        MockClass, agent = elf
+        self.native(
+            agent,
+            # Two calls in ONE native turn, which is the shape the JSON
+            # protocol cannot express at all: the sub-mission is where a
+            # staged turn meets the other protocol, so the ordinal has to
+            # survive the renumbering on the way out.
+            [native_call("mcp.governed_read", "c0", asset_id="asset.5f21"),
+             native_call("mcp.governed_view", "c1", run_id="r-3",
+                         section="totals")],
+            [native_answer("asset.5f21 is results only")],
+            [native_call("mcp.governed_view", "c2", run_id="r-4",
+                         section="totals")],
+            [native_answer("run r-3 holds 12481 records")],
+            plain=['{"route": "staged"}', SWARM_PLAN,
+                   "asset.5f21, and run r-3 holds 12481 records."])
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--protocol", "native",
+                  "--events", str(events))
+
+        records = ndjson(events)
+        assert records[0]["protocol"] == "native"
+        calls = [r for r in records if r["event"] == "tool_call"]
+        assert [r["tool"] for r in calls] == [
+            "mcp.governed_read", "mcp.governed_view", "mcp.governed_view"]
+        # `call` is the ordinal WITHIN a turn, absent on the first of them
+        # and present after — and the two calls of one reply share the
+        # step `index` the stage observer renumbered them to.
+        assert "call" not in calls[0] and calls[1]["call"] == 1
+        assert calls[0]["index"] == calls[1]["index"] == 0
+        assert "call" not in calls[2]
+        # The roles on top were still asked in prose: a request with no
+        # tools declared is the whole reason `plain_chat_fn` exists.
+        prose = [kw for kw in agent.asked if not kw.get("tools")]
+        assert len(prose) == 3
+
+    # ── the gate ────────────────────────────────────────────────────────
+
+    def test_a_gated_sub_mission_tool_stops_the_whole_turn_for_a_person(
+            self, elf, skill, approvals_dir, tmp_path):
+        """Staging changes nothing about who answers for a gated act. The
+        sub-runner writes the durable request itself, so the id a watcher
+        reads off `gate_requested` is the id an operator approves."""
+        MockClass, agent = elf
+        self.script(agent, '{"route": "staged"}', SWARM_PLAN,
+                    json.dumps({"tool": "mcp.governed_read",
+                                "arguments": {"asset_id": "asset.5f21"}}))
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--gate-tool", "governed_read",
+                  "--events", str(events))
+
+        records = ndjson(events)
+        gate = [r for r in records if r["event"] == "gate_requested"]
+        assert len(gate) == 1
+        pending = approvals_dir.pending()
+        assert len(pending) == 1
+        assert gate[0]["approval_id"] == pending[0].approval_id
+        assert records[-1]["outcome"] == "awaiting_approval"
+        # And no answer was synthesized over an act nobody approved.
+        assert not [r for r in records if r["event"] == "answer"]
+
+    def test_an_approval_widens_the_gate_on_the_next_staged_turn(
+            self, elf, skill, approvals_dir, tmp_path):
+        """One decision, spent once.
+
+        Two halves, and the CLI owns one each. The *widening* is the
+        command line's — the ticket subtracts the tool from `gated` before
+        either runner is built, which is why the opening frame no longer
+        names it. The *spending* is the runner's, and it only happens if
+        the ticket was handed to the runner that made the dispatch: a
+        staged turn built without one would call the approved tool and
+        leave the decision lying around approved and unspent, ready to be
+        used again on the next run.
+        """
+        from core.runtime.approvals import SPENT
+
+        MockClass, agent = elf
+        self.script(agent, '{"route": "staged"}', SWARM_PLAN,
+                    json.dumps({"tool": "mcp.governed_read",
+                                "arguments": {"asset_id": "asset.5f21"}}))
+        run_swarm(MockClass, "--skill", skill, "--gate-tool", "governed_read")
+        approval_id = approvals_dir.pending()[0].approval_id
+        approvals_dir.decide(approval_id, approve=True, decided_by="dana")
+
+        self.script(agent, *STAGED_SCRIPT)
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--gate-tool", "governed_read",
+                  "--approval", approval_id, "--events", str(events))
+
+        records = ndjson(events)
+        assert records[0]["gated"] == []
+        assert [r["tool"] for r in records if r["event"] == "tool_call"] == \
+            ["mcp.governed_read", "mcp.governed_view"]
+        assert records[-1]["outcome"].startswith("answered")
+        assert approvals_dir.get(approval_id).state == SPENT
+
+    # ── streaming ───────────────────────────────────────────────────────
+
+    def test_a_sub_missions_fragments_do_not_reach_the_stream(
+            self, elf, skill, tmp_path):
+        """A sub-mission's answer is not the mission's, and neither are its
+        fragments: five little missions rendered as five answers is not
+        what happened. The one `answer` a watcher gets is the synthesized
+        one, and it arrives whole because the synthesizer goes through
+        `plain_chat_fn`, which does not stream."""
+        MockClass, agent = elf
+        replies = list(STAGED_SCRIPT)
+
+        def frames(reply):
+            for at in range(0, len(reply), 4):
+                yield SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=reply[at:at + 4],
+                                          tool_calls=None))])
+
+        agent.streamed = []
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            agent.streamed.append(kw.get("stream"))
+            reply = replies.pop(0) if replies else '{"answer": "done"}'
+            return frames(reply) if kw.get("stream") else reply
+
+        agent.client.chat.side_effect = _chat
+        agent.client.capabilities = SimpleNamespace(supports_streaming=True,
+                                                    supports_json_mode=False)
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--events", str(events))
+
+        records = ndjson(events)
+        assert True in agent.streamed, "no sub-mission was asked to stream"
+        assert not [r for r in records if r["event"] == "answer_delta"]
+        answers = [r["text"] for r in records if r["event"] == "answer"]
+        assert answers == [STAGED_SCRIPT[-1]]
+
+    # ── the window ──────────────────────────────────────────────────────
+
+    def test_a_tiny_window_compacts_inside_a_sub_mission_and_says_so(
+            self, elf, skill, tmp_path):
+        """The window is handed to every sub-mission, and a staged turn is
+        the path that needs bounding most. Without it the run is identical
+        until the conversation outgrows the served model — and then it is
+        evicted inside the server, which is the failure that still produces
+        an answer."""
+        from core.runtime.backends.base import BackendCapabilities
+
+        MockClass, agent = elf
+        agent.client.capabilities = BackendCapabilities(
+            max_context_tokens=2200, max_output_tokens=200)
+        self.script(
+            agent,
+            '{"route": "staged"}',
+            SWARM_PLAN,
+            # Four turns in ONE sub-mission, each pulling the 200-actor
+            # view: the conversation outgrows the window inside the step.
+            json.dumps({"tool": "mcp.governed_view",
+                        "arguments": {"run_id": "r-1", "section": "actors"}}),
+            json.dumps({"tool": "mcp.governed_view",
+                        "arguments": {"run_id": "r-2", "section": "actors"}}),
+            json.dumps({"tool": "mcp.governed_view",
+                        "arguments": {"run_id": "r-3", "section": "actors"}}),
+            json.dumps({"answer": "asset.5f21 read three views"}),
+            json.dumps({"tool": "mcp.governed_read",
+                        "arguments": {"asset_id": "asset.5f21"}}),
+            json.dumps({"answer": "asset.5f21 is results only"}),
+            "asset.5f21 across three views.")
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--events", str(events))
+
+        compacted = [r for r in ndjson(events)
+                     if r["event"] == "step_started" and "compacted" in r]
+        assert compacted, "the sub-mission's window never bound anything"
+        assert compacted[0]["compacted"]["dropped_turns"] >= 1
+        assert compacted[0]["compacted"]["limit_tokens"] == 2200 - 200
+
+    # ── a reply the loop could not read ─────────────────────────────────
+
+    def test_a_rejected_reply_in_a_sub_mission_joins_the_one_numbering(
+            self, elf, skill, tmp_path):
+        """`reply_rejected` comes out of a sub-mission like any other
+        record and is renumbered into the turn's sequence. A run where it
+        kept the sub-mission's own index would put two records with the
+        same `index` in one log."""
+        MockClass, agent = elf
+        self.script(
+            agent,
+            '{"route": "staged"}',
+            SWARM_PLAN,
+            "I will read the asset now.",            # not a decision at all
+            json.dumps({"tool": "mcp.governed_read",
+                        "arguments": {"asset_id": "asset.5f21"}}),
+            json.dumps({"answer": "asset.5f21 is results only"}),
+            json.dumps({"tool": "mcp.governed_view",
+                        "arguments": {"run_id": "r-3", "section": "totals"}}),
+            json.dumps({"answer": "run r-3 holds 12481 records"}),
+            "asset.5f21, and run r-3 holds 12481 records.")
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--events", str(events))
+
+        records = ndjson(events)
+        rejected = [r for r in records if r["event"] == "reply_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["index"] == 0
+        indices = [r["index"] for r in records if r["event"] == "step_started"]
+        assert indices == sorted(set(indices)) == list(range(len(indices)))
+        assert records[-1]["outcome"].startswith("answered")
+
+    # ── the routing regression, at the level an operator sees it ────────
+
+    def test_a_quick_lookup_the_router_sends_direct_carries_no_plan(
+            self, elf, skill, tmp_path):
+        """ROADMAP §2.5's first regression case, at the CLI.
+
+        The defect is *ceremony*: a router that stages a question one call
+        answers makes a quick lookup slower for nothing. What a consumer
+        sees when the router gets it right is a plain mission — no `plan`
+        on any `step_started`, and one answer written by the loop rather
+        than synthesized over a plan of one.
+        """
+        MockClass, agent = elf
+        self.script(
+            agent,
+            '{"route": "direct"}',
+            json.dumps({"tool": "mcp.governed_read",
+                        "arguments": {"asset_id": "asset.5f21"}}),
+            json.dumps({"answer": "asset.5f21 is results only"}))
+        events = tmp_path / "events.ndjson"
+        run_swarm(MockClass, "--skill", skill, "--events", str(events),
+                  objective="[quick web] what is asset.5f21")
+
+        records = ndjson(events)
+        assert not [r for r in records
+                    if r["event"] == "step_started" and "plan" in r]
+        assert [r["event"] for r in records].count("mission_started") == 1
+        assert [r["text"] for r in records if r["event"] == "answer"] == \
+            ["asset.5f21 is results only"]
+        # And the router was asked exactly once, in prose.
+        assert "tools" not in agent.asked[0]
+
+
+class TestResumingAStagedRunFromTheCommandLine:
+    """`--resume` over a run the swarm was half way through.
+
+    The recorded run is what decides which runner continues it — the same
+    rule `--protocol` and the objective are read under — so `--swarm` is
+    not typed on the resuming command line here. A staged run continues as
+    a staged run, or it is not the same mission.
+    """
+
+    @pytest.fixture
+    def skill(self, tmp_path):
+        path = tmp_path / "SWARM.md"
+        path.write_text(SWARM_SKILL, encoding="utf-8")
+        return str(path)
+
+    def runs(self, tmp_path):
+        from core.durable import RunStore
+        return RunStore(tmp_path / "runs")
+
+    def killed(self, MockClass, agent, skill, tmp_path):
+        """A staged turn whose model goes away inside its second step."""
+        queue = list(STAGED_SCRIPT[:4])
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            if not queue:
+                raise RuntimeError("the model server went away")
+            return queue.pop(0)
+
+        agent.client.chat.side_effect = _chat
+        with pytest.raises(SystemExit):
+            run_swarm(MockClass, "--skill", skill)
+        listed = self.runs(tmp_path).list()
+        assert len(listed) == 1
+        return listed[0].run_id
+
+    def finish(self, agent, *replies):
+        queue = list(replies)
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            return queue.pop(0) if queue else '{"answer": "done"}'
+
+        agent.client.chat.side_effect = _chat
+
+    REST = (
+        json.dumps({"tool": "mcp.governed_view",
+                    "arguments": {"run_id": "r-3", "section": "totals"}}),
+        json.dumps({"answer": "run r-3 holds 12481 records"}),
+        "asset.5f21 is results only, and run r-3 holds 12481 records.",
+    )
+
+    def test_the_console_says_the_recorded_run_was_staged(
+            self, elf, skill, tmp_path, capsys):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, skill, tmp_path)
+        capsys.readouterr()
+        self.finish(agent, *self.REST)
+        run_resume(MockClass, run_id, "--skill", skill)
+        out = capsys.readouterr().out
+        assert "the recorded run was STAGED" in out
+        assert "2 planned step(s), 1 settled" in out
+
+    def test_it_finishes_in_the_same_run_directory_with_one_opening(
+            self, elf, skill, tmp_path):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, skill, tmp_path)
+        self.finish(agent, *self.REST)
+        run_resume(MockClass, run_id, "--skill", skill)
+
+        assert [run.run_id for run in self.runs(tmp_path).list()] == [run_id]
+        records = self.runs(tmp_path).records(run_id)
+        assert [r["event"] for r in records].count("mission_started") == 1
+        assert records[-1]["event"] == "mission_finished"
+        assert records[-1]["outcome"].startswith("answered")
+
+    def test_the_settled_step_is_not_run_again(self, elf, skill, tmp_path):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, skill, tmp_path)
+        before = len(self.runs(tmp_path).records(run_id))
+        self.finish(agent, *self.REST)
+        run_resume(MockClass, run_id, "--skill", skill)
+
+        fresh = self.runs(tmp_path).records(run_id)[before:]
+        assert [r["tool"] for r in fresh if r["event"] == "tool_call"] == \
+            ["mcp.governed_view"]
+
+    def test_the_router_and_the_planner_are_not_asked_again(
+            self, elf, skill, tmp_path):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, skill, tmp_path)
+        agent.seeds.clear()
+        self.finish(agent, *self.REST)
+        run_resume(MockClass, run_id, "--skill", skill)
+
+        systems = [seed[0]["content"] for seed in agent.seeds]
+        assert not [text for text in systems if "You are a router" in text]
+        assert not [text for text in systems if "You are a planner" in text]
+
+    def test_the_first_new_step_says_it_is_a_resumption(self, elf, skill,
+                                                        tmp_path):
+        MockClass, agent = elf
+        run_id = self.killed(MockClass, agent, skill, tmp_path)
+        before = [r for r in self.runs(tmp_path).records(run_id)
+                  if r["event"] == "step_started"]
+        self.finish(agent, *self.REST)
+        run_resume(MockClass, run_id, "--skill", skill)
+
+        started = [r for r in self.runs(tmp_path).records(run_id)
+                   if r["event"] == "step_started"]
+        fresh = started[len(before):]
+        assert fresh
+        assert fresh[0]["resumed"]["steps_replayed"] == len(before)
+        assert [r["index"] for r in started] == list(range(len(started)))
+
+    def test_a_swarm_flag_on_a_direct_recording_is_still_set_aside(
+            self, elf, skill_file, tmp_path, capsys):
+        """The rule cuts both ways: a run recorded by the ordinary loop is
+        continued by the ordinary loop even when `--swarm` is typed."""
+        MockClass, agent = elf
+        first = [json.dumps({"tool": "mcp.governed_read",
+                             "arguments": {"asset_id": "asset.5f21"}})]
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            if first:
+                return first.pop(0)
+            raise RuntimeError("the model server went away")
+
+        agent.client.chat.side_effect = _chat
+        with pytest.raises(SystemExit):
+            run_cli(MockClass, "--skill", str(skill_file))
+        run_id = self.runs(tmp_path).list()[0].run_id
+        capsys.readouterr()
+
+        agent.client.chat.side_effect = lambda **kw: json.dumps(
+            {"answer": "The asset is asset.5f21."})
+        run_resume(MockClass, run_id, "--skill", str(skill_file), "--swarm")
+        assert "swarm: set aside for this turn" in capsys.readouterr().out

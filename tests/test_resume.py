@@ -268,17 +268,66 @@ class TestTheDoor:
             open_for_resume(store, run_id)
         assert "never got as far as opening" in str(exc.value)
 
-    def test_a_staged_run_is_refused_and_the_refusal_names_its_steps(
+    def test_a_staged_run_is_admitted_with_its_plan_and_its_settled_steps(
             self, bus, store):
+        """The checkpoint is the door's evidence, not the stream.
+
+        A staged turn writes its plan before asking for the first step of
+        it, so a run killed inside that step has a plan in ``meta.json``
+        and no ``plan`` on any record. Reading the stream would call it a
+        direct run and hand its remaining steps to the ordinary loop."""
         run_id = self._killed(bus, store)
         store.update_meta(
             run_id,
-            plan=[{"id": "s1", "goal": "look", "rung": "tool"}],
+            plan=[{"id": "s1", "goal": "look", "rung": "tool", "needs": [],
+                   "done": "an id is named"},
+                  {"id": "s2", "goal": "count", "rung": "code",
+                   "needs": ["s1"], "done": ""}],
+            steps_done=[{"id": "s1", "outcome": "ok", "summary": "found abc"}])
+        recorded = open_for_resume(store, run_id)
+        assert recorded.staged is True
+        assert [step["id"] for step in recorded.plan] == ["s1", "s2"]
+        # Every field, not the three a watcher is shown: `needs` decides
+        # what the executor of s2 is given and `done` is what its gate asks
+        # about, and a plan rebuilt without them is a different plan.
+        assert recorded.plan[1]["needs"] == ["s1"]
+        assert recorded.plan[0]["done"] == "an id is named"
+        assert recorded.steps_done[0]["summary"] == "found abc"
+
+    def test_an_ordinary_run_is_not_staged(self, bus, store):
+        assert open_for_resume(store, self._killed(bus, store)).staged is False
+
+    def test_a_staged_run_with_no_plan_in_its_meta_is_refused_saying_why(
+            self, bus, store):
+        """The one thing a staged resume cannot rebuild, and the refusal
+        says so rather than falling through to the direct loop.
+
+        Half a checkpoint is still a staged run — the plan and the progress
+        are written together — so a run holding only ``steps_done`` is
+        refused rather than continued as if it had never had a plan."""
+        run_id = self._killed(bus, store)
+        store.update_meta(
+            run_id,
             steps_done=[{"id": "s1", "outcome": "ok", "summary": "found abc"}])
         with pytest.raises(ResumeRefused) as exc:
             open_for_resume(store, run_id)
-        assert "staged resume not yet supported" in str(exc.value)
+        assert "plan is not in meta.json" in str(exc.value)
+        # And it still names what WAS done, because that is the half an
+        # operator deciding what to do next actually needs.
         assert "s1 ok — found abc" in str(exc.value)
+
+    def test_a_staged_run_recorded_before_the_full_plan_was_kept_still_opens(
+            self, bus, store):
+        """Three keys is what every staged run before this checkpointed.
+        Refusing them would make the feature arrive already unable to read
+        the runs it was written for."""
+        run_id = self._killed(bus, store)
+        store.update_meta(run_id,
+                          plan=[{"id": "s1", "goal": "look", "rung": "tool"}],
+                          steps_done=[])
+        recorded = open_for_resume(store, run_id)
+        assert recorded.staged is True
+        assert recorded.plan == [{"id": "s1", "goal": "look", "rung": "tool"}]
 
 
 # ── the step budget across a resume ──────────────────────────────────────────
@@ -563,6 +612,279 @@ class TestAGatedRunResumes:
             bus, ScriptedModel(tool_call("catalog.wipe", asset_id="a")),
             store, run_id, gated=["catalog.wipe"])
         assert transcript.outcome == "awaiting_approval"
+
+
+# ── a staged run picks its plan back up ──────────────────────────────────────
+
+
+STAGED_PLAN = json.dumps({"steps": [
+    {"id": "s1", "goal": "search the catalogue", "rung": "tool", "needs": []},
+    {"id": "s2", "goal": "fetch the asset", "rung": "tool", "needs": ["s1"]},
+]})
+
+
+class Died(RuntimeError):
+    """The endpoint going away in the middle of a plan's second step."""
+
+
+class StagedScript(ScriptedModel):
+    """:class:`ScriptedModel`, plus a reply that is the server dying.
+
+    A separate sentinel from :data:`Stop` because this one has to travel
+    through a `plain_chat_fn` too, and that one is called with keyword
+    extras when a backend can be told to emit JSON.
+    """
+
+    def __call__(self, messages, **extra):
+        self.seen.append([dict(m) for m in messages])
+        reply = self.replies.pop(0) if self.replies else '{"answer": "done"}'
+        if reply is Died:
+            raise Died("the model server went away")
+        return reply
+
+    @property
+    def calls(self):
+        return len(self.seen)
+
+
+def staged_swarm(bus, plain, executor, store, run_id, **kw):
+    """A `SwarmRunner` wired the way the CLI wires one for this store."""
+    from core.runtime.swarm import SwarmRunner
+
+    kw.setdefault("max_steps", 8)
+    return SwarmRunner(executor, bus,
+                       ["catalog.search", "catalog.get", "catalog.wipe"],
+                       system_message="You are Tai.",
+                       plain_chat_fn=plain, run_store=store, run_id=run_id,
+                       **kw)
+
+
+def called(store, run_id, since=0):
+    """The tools dispatched in the records after *since*, in order."""
+    return [r["tool"] for r in store.records(run_id)[since:]
+            if r.get("event") == "tool_call"]
+
+
+def steps_of(store, run_id):
+    return [r for r in store.records(run_id)
+            if r.get("event") == "step_started"]
+
+
+class TestAStagedRunPicksItsPlanBackUp:
+    """Killed after step 1 of 2, resumed, and it does not start again.
+
+    Checkpointing a plan was only ever worth doing because of this, and
+    until now the checkpoint was read for one purpose: writing a refusal.
+    What is asserted here is the four things that make a resumed staged
+    turn *the same mission* — the settled step is not re-run, the
+    remaining one is, the log has one opening, and the indices continue.
+    """
+
+    def _killed(self, bus, store):
+        """A staged run that dies inside the second step. Returns its id."""
+        run_id = store.create(meta={"objective": "find it"}).run_id
+        plain = StagedScript('{"route": "staged"}', STAGED_PLAN)
+        executor = StagedScript(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found asset.5f21"}',
+            Died)
+        with pytest.raises(Died):
+            staged_swarm(bus, plain, executor, store, run_id).run("find it")
+        return run_id
+
+    def _resumed(self, bus, store, run_id, *, executor_replies=(
+            tool_call("catalog.get", asset_id="asset.5f21"),
+            '{"answer": "asset.5f21 fetched"}'),
+            plain_replies=("asset.5f21 was found and fetched",), **kw):
+        recorded = open_for_resume(store, run_id)
+        # `rebuild`'s runner argument is unused on the staged path: there
+        # is no conversation to render, because a staged step's is its own
+        # sub-mission's and is built fresh.
+        resumption = rebuild(None, recorded)
+        plain = StagedScript(*plain_replies)
+        executor = StagedScript(*executor_replies)
+        kw.setdefault("max_steps", recorded.total_steps(None))
+        runner = staged_swarm(bus, plain, executor, store, run_id, **kw)
+        return plain, executor, runner.run(recorded.objective, resumption)
+
+    def test_step_one_is_not_re_run_and_step_two_is(self, bus, store):
+        """The dispatch that already happened is the whole cost the
+        checkpoint exists to save."""
+        run_id = self._killed(bus, store)
+        assert called(store, run_id) == ["catalog.search"]
+        cursor = len(store.records(run_id))
+        self._resumed(bus, store, run_id)
+        assert called(store, run_id, cursor) == ["catalog.get"]
+
+    def test_the_router_and_the_planner_are_not_asked_again(self, bus, store):
+        """A resumed staged turn decides nothing. Re-triaging would be a
+        different mission continuing under this one's id, and the plan is
+        already on the record."""
+        run_id = self._killed(bus, store)
+        plain, _executor, _transcript = self._resumed(bus, store, run_id)
+        # One call, and it is the synthesizer: no route, no plan.
+        assert plain.calls == 1
+        assert "router" not in plain.seen[0][0]["content"]
+        assert "planner" not in plain.seen[0][0]["content"]
+
+    def test_the_synthesis_reads_both_steps_including_the_recorded_one(
+            self, bus, store):
+        run_id = self._killed(bus, store)
+        plain, _executor, transcript = self._resumed(bus, store, run_id)
+        shown = plain.seen[0][-1]["content"]
+        assert "found asset.5f21" in shown          # off the checkpoint
+        assert "asset.5f21 fetched" in shown        # run just now
+        assert transcript.answer == "asset.5f21 was found and fetched"
+        assert transcript.outcome == "answered"
+
+    def test_the_log_holds_one_mission_started_for_the_whole_run(
+            self, bus, store):
+        """It is the same mission: one objective, one catalogue, one id."""
+        run_id = self._killed(bus, store)
+        self._resumed(bus, store, run_id)
+        events = [r["event"] for r in store.records(run_id)]
+        assert events.count("mission_started") == 1
+        assert events[0] == "mission_started"
+
+    def test_the_first_new_step_says_it_is_a_resumption(self, bus, store):
+        run_id = self._killed(bus, store)
+        before = steps_of(store, run_id)
+        self._resumed(bus, store, run_id)
+        fresh = steps_of(store, run_id)[len(before):]
+        assert fresh, "the resumed stretch ran no steps"
+        assert fresh[0]["resumed"]["steps_replayed"] == len(before)
+        assert fresh[0]["resumed"]["from_seq"] > 0
+        # ... and only the first of them, like the plan it rides beside.
+        assert not [r for r in fresh[1:] if "resumed" in r]
+
+    def test_the_indices_continue_rather_than_starting_again(self, bus,
+                                                             store):
+        """Two records with the same ``index`` in one log is the thing the
+        global renumbering exists to prevent, and a resumed stretch that
+        began at zero would put one there for every step it ran."""
+        run_id = self._killed(bus, store)
+        self._resumed(bus, store, run_id)
+        indices = [r["index"] for r in steps_of(store, run_id)]
+        assert indices == sorted(set(indices)) == list(range(len(indices)))
+
+    def test_the_plan_rides_the_first_new_step_too(self, bus, store):
+        """A watcher that joined during the resumed stretch has never seen
+        this plan, and the record it is about to render belongs to it."""
+        run_id = self._killed(bus, store)
+        before = len(steps_of(store, run_id))
+        self._resumed(bus, store, run_id)
+        fresh = steps_of(store, run_id)[before:]
+        assert [step["id"] for step in fresh[0]["plan"]] == ["s1", "s2"]
+
+    def test_the_checkpoint_grows_rather_than_starting_over(self, bus,
+                                                            store):
+        """A resumed turn that wrote ``steps_done: []`` would erase the
+        steps it is resuming past — and the next resume would run them
+        all over again."""
+        run_id = self._killed(bus, store)
+        self._resumed(bus, store, run_id)
+        assert [entry["id"] for entry
+                in store.meta(run_id).meta["steps_done"]] == ["s1", "s2"]
+
+    def test_every_record_in_the_resumed_log_conforms(self, bus, store):
+        run_id = self._killed(bus, store)
+        self._resumed(bus, store, run_id)
+        for record in store.records(run_id):
+            assert not conforms(record), conforms(record)
+
+    def test_the_step_budget_is_the_runs_and_not_this_processs(self, bus,
+                                                               store):
+        """The tool turns the recorded stretch spent count against the
+        total, exactly as they do across a direct resume. A staged resume
+        that started the count again would let anybody widen ``max_steps``
+        by killing the run and picking it up again."""
+        run_id = self._killed(bus, store)
+        # Three turns are already on the record — s1's call, s1's answer,
+        # and the turn s2 died in — so a total of four leaves exactly one,
+        # which is not enough for a step that has to call and then answer.
+        _plain, _executor, _transcript = self._resumed(bus, store, run_id,
+                                                       max_steps=4)
+        done = store.meta(run_id).meta["steps_done"]
+        assert [entry["id"] for entry in done] == ["s1", "s2"]
+        assert done[-1]["outcome"] == "failed"
+
+    def test_the_spent_redraw_comes_back_off_the_checkpoint(self, bus,
+                                                            store):
+        """One redraw per mission. The flag is the only part of that rule
+        the log cannot reconstruct — the checkpoint holds the plan as
+        redrawn and not the fact that it was — so it is checkpointed, and
+        a resume that read it back as `False` would hand the turn a second
+        redraw nobody allowed."""
+        run_id = self._killed(bus, store)
+        assert rebuild(None, open_for_resume(store, run_id)).replanned is False
+        store.update_meta(run_id, replanned=True)
+        assert rebuild(None, open_for_resume(store, run_id)).replanned is True
+
+    def test_the_settled_steps_survive_a_second_death(self, bus, store):
+        """The resumed turn re-states the whole `steps_done` list before it
+        runs anything, and that is the checkpoint that matters: a turn that
+        wrote `[]` there and then died again would have erased the work of
+        the run it was resuming, and the third attempt would do it all
+        over."""
+        run_id = self._killed(bus, store)
+        recorded = open_for_resume(store, run_id)
+        resumption = rebuild(None, recorded)
+        plain = StagedScript()
+        executor = StagedScript(Died)
+        runner = staged_swarm(bus, plain, executor, store, run_id,
+                              max_steps=recorded.total_steps(None))
+        with pytest.raises(Died):
+            runner.run(recorded.objective, resumption)
+        assert [entry["id"] for entry
+                in store.meta(run_id).meta["steps_done"]] == ["s1"]
+
+    def test_the_grounding_evidence_comes_back_off_the_stream(self, bus,
+                                                              store):
+        """The recorded step's tool output is what the validator checks the
+        synthesized answer against. Without it a resumed turn would caveat
+        every figure the first half of the run found."""
+        run_id = self._killed(bus, store)
+        resumption = rebuild(None, open_for_resume(store, run_id))
+        assert any("corpus" in text for text in resumption.evidence)
+        assert resumption.called == ["catalog.search"]
+        assert any("raw tool output" in sentence
+                   for sentence in resumption.lost)
+
+    def test_a_step_stopped_at_a_gate_is_run_again_rather_than_settled(
+            self, bus, store):
+        """The one outcome that is not a step being finished with. Nothing
+        was called and the decision belongs to a person, so a resume
+        carrying that person's answer is precisely the run that has to
+        reach the call again."""
+        run_id = store.create(meta={"objective": "wipe it"}).run_id
+        plain = StagedScript('{"route": "staged"}', json.dumps({"steps": [
+            {"id": "s1", "goal": "wipe the asset", "rung": "tool"},
+            {"id": "s2", "goal": "confirm", "rung": "tool", "needs": ["s1"]},
+        ]}))
+        executor = StagedScript(tool_call("catalog.wipe", asset_id="a"))
+        transcript = staged_swarm(bus, plain, executor, store, run_id,
+                                  gated=["catalog.wipe"]).run("wipe it")
+        assert transcript.outcome == "awaiting_approval"
+        assert store.meta(run_id).meta["steps_done"][0]["outcome"] == \
+            "awaiting_approval"
+
+        resumption = rebuild(None, open_for_resume(store, run_id))
+        # Nothing is settled, so the whole plan is still to run.
+        assert [entry["id"] for entry in resumption.steps_done] == ["s1"]
+        cursor = len(store.records(run_id))
+        # No gated set on the resumed turn: that is what an operator
+        # passing `--approval` produces, and it is the run that has to
+        # reach the call the first one only proposed.
+        plain = StagedScript("wiped and confirmed")
+        executor = StagedScript(
+            tool_call("catalog.wipe", asset_id="a"),
+            '{"answer": "wiped"}',
+            tool_call("catalog.get", asset_id="a"),
+            '{"answer": "gone"}')
+        staged_swarm(bus, plain, executor, store, run_id).run(
+            "wipe it", resumption)
+        assert called(store, run_id, cursor) == ["catalog.wipe",
+                                                 "catalog.get"]
 
 
 # ── the credential is not persisted ──────────────────────────────────────────
