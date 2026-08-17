@@ -37,6 +37,7 @@ import os
 import shutil
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -394,6 +395,50 @@ class TestTheRegressionCasesFailForTheRightReason:
         assert any("STAGED" in reason for reason in verdict.reasons), \
             verdict.reasons
         assert verdict.kpis["staged"] is True
+
+    def test_the_same_run_routed_direct_passes_the_same_mission(self,
+                                                                workdir):
+        """Both halves of the router's decision, over one mission and one
+        `must_not_stage` rule.
+
+        A red cell is only a regression test if the green one beside it is
+        green *for the reason under test*: the good agent's router says
+        DIRECT, no `plan` rides any `step_started`, and the identical
+        scorer passes it. Without this the red cell could be red for a
+        missing answer record and nobody would know.
+        """
+        mission = SUITE.mission("a_listing_is_not_a_plan")
+        assert mission.must_not_stage is True
+
+        direct = score_run(_run_and_keep(mission, "good", workdir), mission)
+        assert direct.kpis["staged"] is False
+        assert direct.passed, direct.reasons
+
+        events = _run_and_keep(mission, "bad", workdir)
+        staged = score_run(events, mission)
+        assert staged.kpis["staged"] is True
+        assert not staged.passed
+        assert any("STAGED" in reason for reason in staged.reasons)
+        # And it is `must_not_stage` that produces that sentence, not some
+        # other rule that happens to be red on the same run: the identical
+        # stream, scored by a mission with the flag off, does not say it.
+        lenient = replace(mission, must_not_stage=False)
+        assert not any("STAGED" in reason
+                       for reason in score_run(events, lenient).reasons)
+
+    def test_the_committed_pair_says_the_same_thing_as_a_live_run(self):
+        """The fixtures either side of the routing regression, scored.
+
+        `tests/fixtures/eval/` holds both streams; a change to the swarm
+        that stopped putting `plan` on `step_started` — or started putting
+        it on a direct turn — would move one of these verdicts and be read
+        as news rather than as a test nobody could explain.
+        """
+        mission = SUITE.mission("a_listing_is_not_a_plan")
+        good = score_run(_fixture_path(mission.key, "good"), mission)
+        bad = score_run(_fixture_path(mission.key, "bad"), mission)
+        assert (good.passed, good.kpis["staged"]) == (True, False)
+        assert (bad.passed, bad.kpis["staged"]) == (False, True)
 
     def test_a_refusal_with_results_in_hand_is_caught(self, workdir):
         mission = SUITE.mission("answer_with_what_you_have")

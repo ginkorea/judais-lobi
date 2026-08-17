@@ -220,6 +220,22 @@ carries the refusal, and the reply is precisely the thing that did not parse.
 The harness says which of these applied on the console rather than replaying
 in silence.
 
+**A staged (`--swarm`) run resumes as a staged run.** Which loop continues a
+recorded mission is a property of the *run* and not of the resuming command
+line — the same rule `protocol` and the objective are read under — so a run
+whose `meta.json` carries a checkpointed `plan` is picked back up by the
+staged runner whether or not `--swarm` is typed, and a run recorded by the
+ordinary loop is picked back up by the ordinary loop even when it is. The
+router and the planner are **not** asked again: the plan is on the record, and
+re-deciding it would put a different mission under this run's id. The steps
+whose checkpointed outcome is `ok` or `failed` are not re-run and their
+summaries go straight to the synthesizer; a step checkpointed
+`awaiting_approval` is run again, because nothing was called and the decision
+belonged to a person. The plan and `resumed` both ride the first
+`step_started` of the new stretch, and its `index` continues the earlier
+numbering. The one staged run that is refused is one whose metadata holds no
+plan: the steps it had left are unknown, and the refusal says so.
+
 ### `compacted` — the conversation had to be shortened
 
 `compacted` is `{dropped_turns, dropped_messages, freed_chars, tokens_before,

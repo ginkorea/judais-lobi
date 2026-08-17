@@ -766,6 +766,22 @@ def _mission(elf, args, name, style):
                if recorded.outcome else ""),
             style=style,
         )
+        if recorded.staged:
+            # Off the record and not off this command line, exactly as the
+            # protocol above is. A staged run continues as a staged run
+            # whether or not `--swarm` was typed: its plan is checkpointed,
+            # the steps it has left are on it, and handing those steps to
+            # the direct loop would restart the mission rather than
+            # continue it.
+            done = sum(1 for entry in recorded.steps_done
+                       if entry.get("outcome") in ("ok", "failed"))
+            console.print(
+                f"🐝 swarm: the recorded run was STAGED — "
+                f"{len(recorded.plan)} planned step(s), {done} settled; the "
+                f"remaining ones run from the checkpointed plan and the "
+                f"router and the planner are not asked again",
+                style=style,
+            )
     elif run_store is not None:
         # `objective` and the flags, and NOT the transport: an --mcp-url can
         # carry a token in its query string and an --mcp-stdio command line
@@ -1440,29 +1456,37 @@ def _mission(elf, args, name, style):
                 sink,
                 _ProgressiveAnswer(console, style, name) if streaming
                 else None)
-            if getattr(args, "swarm", False) and recorded is not None:
+            # Which runner continues a recorded run is the RUN's fact and
+            # not this command line's — the same rule `--protocol` and the
+            # objective are read under. A run that was staged is continued
+            # by the staged runner whether or not `--swarm` was typed, and
+            # a run that was not is continued by the loop that recorded it
+            # even when it was.
+            staged_resume = recorded is not None and recorded.staged
+            if (getattr(args, "swarm", False) and recorded is not None
+                    and not staged_resume):
                 # A resume continues the loop that was recorded, and what
                 # was recorded is a MissionRunner's: the swarm's own
                 # records are its sub-missions' renumbered into one stream.
                 # Re-triaging and re-planning would be a different mission
-                # under the same id, so `--swarm` is set aside for this
+                # under the same run id, so `--swarm` is set aside for this
                 # turn and said out loud rather than silently honoured.
-                # (A run that was actually STAGED never reaches here — it
-                # carries a checkpointed plan and is refused at the door.)
                 console.print(
                     "🐝 swarm: set aside for this turn — --resume continues "
                     "the recorded loop, and re-triaging would be a different "
                     "mission under the same run id",
                     style="yellow",
                 )
-            if getattr(args, "swarm", False) and recorded is None:
+            if staged_resume or (getattr(args, "swarm", False)
+                                 and recorded is None):
                 from core.runtime.swarm import SwarmRunner
-                console.print(
-                    "🐝 swarm: triage first; small questions run direct, "
-                    "complex ones are planned, executed in small steps, "
-                    "gated and synthesized — same model throughout",
-                    style=style,
-                )
+                if not staged_resume:
+                    console.print(
+                        "🐝 swarm: triage first; small questions run direct, "
+                        "complex ones are planned, executed in small steps, "
+                        "gated and synthesized — same model throughout",
+                        style=style,
+                    )
                 runner = SwarmRunner(
                     chat_fn, bus, tool_names,
                     system_message=system_message,
@@ -1560,10 +1584,10 @@ def _mission(elf, args, name, style):
                 for sentence in resumption.lost:
                     console.print(f"   ⚠️  not replayed: {sentence}",
                                   style="yellow")
-            # Passed only when there is one: `SwarmRunner.run` takes no
-            # resumption and must not grow a parameter it can never be
-            # given — the CLI builds a MissionRunner for every resume, and
-            # a staged run is refused at the door before that.
+            # Passed only when there is one, and both runners take it: a
+            # direct resume hands a `Resumption` to a `MissionRunner` and a
+            # staged one hands a `StagedResumption` to a `SwarmRunner`, and
+            # which of the two was built was decided above off the record.
             try:
                 transcript = (runner.run(objective) if resumption is None
                               else runner.run(objective, resumption))
