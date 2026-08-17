@@ -16,7 +16,7 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v0.14.0**, 17 Aug 2026. 3,858 tests collected (`pytest --collect-only -q`);
+**v0.14.1**, 17 Aug 2026. 3,877 tests collected (`pytest --collect-only -q`);
 39,224 lines in `core/`+`judais/`+`lobi/` and 45,067 lines of tests (`wc -l`
 over `*.py`, so blanks and docstrings are in both numbers — this repository
 writes a lot of both on purpose).
@@ -443,7 +443,23 @@ self-report.
   resume, so each drops the other's step results — one owner is needed, the
   union of results in plan order then arrival; (3) compaction did exactly what
   it was built for, twice in one step (two 34 kB views, 17,194 → 9,080 tokens
-  against a 14,000 limit, the whole result kept in the store).
+  against a 14,000 limit, the whole result kept in the store). **Closed
+  0.14.1** (lane AI, proved live on `gemini-3.6-flash` with the window probed
+  at 1,048,576 tokens): the swarm's one `MissionWindow` bounds the router,
+  planner, gates and synthesizer as well as the sub-missions (`_fit`); the
+  step budget defaults to the mission's remainder, `max_plan_steps` to
+  `max(2, max_steps // 2)`, and `summary_chars` to "the window decides" —
+  the synthesizer is given every settled step's whole tool output and drops
+  oldest-first only when the window says so; `_settled_order` is the one
+  owner of the union after a redraw (a plan/queue aliasing bug fell out of
+  the mutation check); the executor is told the objective as context; the
+  figure check reads the answer with the same `FIGURE` boundary rule as the
+  evidence, so `a.0000` is an actor and not the number zero. Still open: a
+  resumed turn's evidence is the log's bounded `tool_result.output`; one
+  greedy step can spend the whole mission budget (by design, documented);
+  the planner may tag a step `code` on a plane with no code tool (prose
+  clause, not a gate — a generic gate would withhold the rung from a bridged
+  code tool).
 
 ### 2.6 Phase 11 — one runtime (0.12→0.14)
 
