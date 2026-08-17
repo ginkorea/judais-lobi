@@ -923,6 +923,8 @@ def _mission_parser() -> argparse.ArgumentParser:
 #: than merely spelled the same as something in the source.
 _FLAG_VALUES = {
     "--mcp-url": "http://127.0.0.1:8000/mcp",
+    "--mcp-stdio": "python -m some_server",
+    "--mcp-token": "not-a-real-token",
     "--mission-steps": "6",
     "--mission-seconds": "90",
     "--model": "gpt-oss-20b",

@@ -372,11 +372,80 @@ same coverage without a second copy of the missions to keep in step.
 
 ---
 
-## 10. What this harness is for
+## 10. Recording and replay
+
+Every mission with a run store on — the default — writes two more files beside
+`events.jsonl`:
+
+- **`model.jsonl`** — one fsync'd line per model call, in call order:
+  `{"call": n, "at", "kind": "mission"|"plain", "request": {"messages",
+  "extra"}, "reply": {"content", "tool_calls", "usage"}}`. `kind` separates the
+  loop's own calls from the swarm's roles; both are numbered in one sequence
+  because they happened in one sequence. `tool_calls` and `usage` are the side
+  channels read off the backend after the call — under `--protocol native` the
+  decision is in `tool_calls` and not in the returned string.
+- **`tools.jsonl`** — the tool plane. Line one is the catalogue as
+  `describe_tool` renders it (`"call": 0`); every line after it is one dispatch,
+  with `structured` carrying the MCP `structuredContent` that `tool_result` on
+  the event stream never carried.
+
+Both are as sensitive as `events.jsonl`, live in the same directory, and are
+governed by the same `JUDAIS_LOBI_RUNS`. They are scrubbed **less**: credentials
+only, never paths or hostnames, because those are the model's input and a
+recording whose input was rewritten is a recording of a run nobody made.
+
+`judais --mission --replay <run-id>` runs that recording again. The replies are
+served by ordinal, the tool results come from `tools.jsonl` (`--replay-tools
+live` dispatches against a real plane instead), no server is dialled and no
+model is asked. **The loop is the real loop** — same `MissionRunner`, same
+grounding validator, same records out — so grounding runs *fresh* over the
+recorded answer:
+
+```
+# yesterday, live
+judais --mission --skill recon/SKILL.md --mcp-url … 'what changed?'
+  🧾 run: run_20260816T104412-2b7f1a09
+  🔎 grounded: identifiers — 1/1 supported by a tool result in this run
+
+# today, after tightening recon/SKILL.md's `grounding:` block, on a laptop
+judais --mission --replay run_20260816T104412-2b7f1a09 --skill recon/SKILL.md
+  🔁 replay of run_20260816T104412-2b7f1a09 — 2 recorded model call(s), tools recorded, nothing dialled
+  🔎 UNGROUNDED: identifiers — 1 of the 2 this skill requires
+```
+
+Same model output, different verdict, in a second and with no GPU.
+
+**Drift.** Before serving call *n* the replay compares the messages it was
+handed against the messages recorded for call *n*. A difference is drift:
+reported on the console, written into the replayed run's `meta.json` as
+`drift: {first: {call, message, detail}, calls, served, recorded}`, and **not
+refused** — a changed repair sentence or caveat is a prompt change worth
+measuring, and refusing it would make the feature useless for the experiment it
+exists for. What is not allowed is for the change to be invisible. There is no
+`--replay-loose`: a comparison you turned off measures nothing.
+
+A change that buys the run a *turn* the recording does not have ends the
+replay rather than inventing a reply. The run writes its own `mission_finished`
+as `incomplete` and stderr names the call that ran off the end.
+
+**The replayed run is a new run directory** with a new id, carrying `replay_of`
+and `drift` in its meta and the whole stream in its log — so `python -m
+core.eval score` scores it exactly like a live run, and it can itself be
+replayed. The recorded run is never written to. Two things a replay
+legitimately does not reproduce: `answer_delta` (a recording holds the reply,
+not the frames) and the wall clock.
+
+**The corpus.** `tests/fixtures/runs/` holds two complete recorded runs made
+against the real MCP stub, one per protocol; `tests/test_record_replay.py`
+replays both with nothing spawned and compares the replayed stream to the
+recorded one record for record.
+
+## 11. What this harness is for
 
 ROADMAP §3: **measure before default.** Nothing becomes on-by-default until the
 harness scores it against a held-out set. Three questions are waiting on it —
 whether `--swarm` should be the default, whether `--protocol native` should be,
-and whether `runtime/reading.py` should become a grounding tier — and until
+and whether the `reading`, `planes` and `critic` grounding tiers (shipped off
+by default in 0.13.0) should be on — and until
 this package existed there was no way to answer any of them except by somebody's
 memory of a demo.

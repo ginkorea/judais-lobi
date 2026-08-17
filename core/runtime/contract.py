@@ -568,7 +568,8 @@ OUTCOMES: tuple[str, ...] = (
 #: accepted by the parser :func:`core.cli._main` builds and there is a test
 #: that says so; the rest of the CLI is a person's surface and may move.
 CLI_FLAGS: tuple[str, ...] = (
-    "--mission", "--mcp-url", "--mission-steps", "--mission-seconds",
+    "--mission", "--mcp-url", "--mcp-stdio", "--mcp-token",
+    "--mission-steps", "--mission-seconds",
     "--provider", "--model",
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
     "--history", "--gate-tool", "--approval", "--resume", "--temperature",

@@ -16,7 +16,7 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v0.12.0**, 16 Aug 2026. 3,341 tests collected (`pytest --collect-only -q`);
+**v0.13.0**, 17 Aug 2026. 3,676 tests collected (`pytest --collect-only -q`);
 32,468 lines in `core/`+`judais/`+`lobi/` and 38,320 lines of tests (`wc -l`
 over `*.py`, so blanks and docstrings are in both numbers — this repository
 writes a lot of both on purpose).
@@ -111,7 +111,7 @@ merges. Version bump every phase.
 | 9 | Durable and bounded (0.10) | ✅ 0.10.0 — properties 2 and 3, less the residuals in §2.4 |
 | — | *Release 0.11.0 — native tool calling* | ✅ Phase 12's constrained-decoding bullet, pulled forward on evidence; **off by default** |
 | — | *Release 0.12.0 — streamed and steerable* | ✅ Phase 12's `answer_delta` and AG-UI bullets and Phase 13's control channel, likewise pulled forward |
-| 10 | Measurable (0.11) | ⏳ **next.** Property 4; absorbs February's Phase 10. Nothing here is measured until it lands, which is why `native` is not a default |
+| 10 | Measurable (0.11) | ✅ 0.13.0 — the harness, recording + `--replay`, the tiers wired off-by-default; the *measurements* (swarm, native, tiers on/off) are what remains, and they gate every default |
 | 11 | One runtime (0.12) | ⏳ property 5. Not started; §1.2's "two agent runtimes" is its whole case |
 | 12 | Providers and streaming (0.13) | ◑ properties 4 and 6 — constrained decoding (0.11.0) and `answer_delta` + the AG-UI translator + the control channel (0.12.0) shipped early; the httpx/retry/Anthropic **provider** work is what remains |
 | 13 | Embeddable (1.0) | ⏳ property 6. The control channel came out of its list early; the library API has not started |
@@ -293,9 +293,18 @@ list.
 - Fsync the audit file while the durability primitive is being written; it is
   the same lesson in the same week.
 
-### 2.5 Phase 10 — measurable (0.11)
+### 2.5 Phase 10 — measurable (0.11) — shipped 17 Aug 2026 (0.13.0)
 
-Property 4. **This phase absorbs February's Phase 10 (Evaluation &
+Property 4. The *instruments* shipped in 0.13.0 (lanes AA/AB/AC): the harness,
+recording + replay, and the three grounding tiers wired off by default. The
+*measurements* are the residual — running the stub suite twice with `--swarm`,
+with `--protocol native`, and with the tiers on, and reading the deltas — and
+they gate every default the roadmap has deferred. Two framework findings the
+harness surfaced, for Phase 11: the offered tool set is fixed at mission start
+although the bus can grow mid-run (`the_plane_grew_mid_run`); and the manifest
+code gate fires on a bridged `mcp.run_shell_command` NAME, so a manifest that
+gates a bridged shell tool needs bwrap even though the shell is on the server.
+ **This phase absorbs February's Phase 10 (Evaluation &
 Benchmarks).** February wanted an internal task suite scored on success rate,
 iteration count, wall time, token usage and human interventions, compared
 against the Phase 0 baseline. That is the same document as an eval harness, and
@@ -325,21 +334,30 @@ self-report.
   real stream per mission — a good agent for each and a bad one for every
   regression case — produced in-process against the stub by
   `tests/test_eval_stub_suite.py`.
-- **Recorded-run replay.** A recorder that captures model I/O and tool I/O so a
-  mission can be replayed deterministically and a grounding change scored on
-  yesterday's runs. Grow `tests/fixtures/` from one fabrication file into a
-  corpus.
-- **Wire what is built.** `runtime/reading.py` (the field-misreading tier — the
-  `total_s: 80.847` lesson) becomes a grounding tier behind a manifest flag;
-  `critic/triggers.py` fires the external critic on `answered_with_caveat` when
-  a provider is configured, which also gives the critic its first production
-  caller. Both measured by the harness before either is on by default.
-- **Plane-claim grounding check.** `grounding.py` already carries
-  `tools_offered` and uses it only to derive the ignore list. Refuse a claim of
-  a plane whose tools were not offered *and called* this turn. The prompt-level
-  version of this rule exists in a deployment's personality file and says in
-  its own comment that it belongs here.
-- Decide `god_mode` and the preflight hook: measured and wired, or deleted.
+- ~~**Recorded-run replay.**~~ **Shipped 0.13.0** — `core/runtime/replay.py`:
+  every run with a store on writes `model.jsonl` (each model call: request,
+  reply, side channels) and `tools.jsonl` (each dispatch with its typed
+  payload) beside `events.jsonl`; `--replay <run-id>` (`MISSION_REPLAY`)
+  re-runs a finished run with the recorded model and recorded tools — no
+  server, no GPU — into a NEW run dir carrying `replay_of` and any `drift`,
+  so grounding runs fresh over yesterday's answer and `python -m core.eval
+  score` scores it like a live run. `tests/fixtures/runs/` holds two recorded
+  corpus runs (json + native). See EVAL.md §"Recording and replay".
+- ~~**Wire what is built.**~~ **Shipped 0.13.0, off by default** —
+  `grounding: reading: true` (needs `claim_table: true`) runs `reading.py` as
+  a grounding tier; `grounding: critic: true` asks a second model on
+  `answered_with_caveat` (local first via `LOCAL_API_BASE`, then a keyed
+  provider), its verdict a `critic` row in `grounding.checks` marked
+  `advisory: true` beside `grounded`, never inside it. Measured by the harness
+  before either goes on by default — that measurement is still owed.
+- ~~**Plane-claim grounding check.**~~ **Shipped 0.13.0, off by default** —
+  `grounding: planes: {name: {tools: [...], claims: [...]}}`; a claim phrase
+  with no call to that plane's tools this run fails the check; "what was called
+  this run" has one owner (`MissionResultStore.called_tools`).
+- ~~Decide `god_mode` and the preflight hook.~~ **Deleted in 0.13.0**: nothing
+  ever passed either; the bus's capability check, `runtime/schema_check` and
+  `--profile god` are their reachable forms. `GodModeGrant`/`HIGH_RISK_ACTIONS`
+  remain in the schemas without a consumer.
 - **First regression cases, from the reference deployment's A/B of 16 Aug
   2026** (same pane, same 10-scenario behavioural driver, 0.9.0): direct 10/10,
   `--swarm` 9/10. The one failure was the suite's simplest prompt — a

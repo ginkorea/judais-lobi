@@ -135,8 +135,8 @@ program that spawns this harness may rely on them. The table below is in
 | --- | --- | --- |
 | `--mission` | — | run as a mission rather than a chat turn |
 | `--mcp-url` | `MCP_URL` | the tool plane, over streamable HTTP |
-| `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. One of the two, never both. (The flag is not in `CLI_FLAGS`; `MCP_STDIO` is in `ENV_VARS`) |
-| `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps`. (Same standing: the env name is published, the flag is not) |
+| `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. One of the two, never both |
+| `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps` |
 | `--mission-steps` | — | hard cap on **model turns**, and it counts parse-error turns too. Default `DEFAULT_MISSION_STEPS` = **8** (`core/cli.py`). Under `--resume` it is read as that many *further* steps; unset, a resumed run is held to the total it started with |
 | `--mission-seconds` | `MISSION_SECONDS` | wall-clock cap on the whole run, in seconds. **Unset means unbounded** — steps bound the work, seconds bound the waiting, and a default nobody chose would kill a slow local model mid-answer. Checked between steps and before each model call; one clock for the whole of a `--swarm` turn. A call already in flight is not interrupted, so the real bound is this plus one round trip |
 | `--provider` | — | `openai`, `mistral` or `local` |
@@ -702,7 +702,7 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.12.2 — 3349 tests collected.** Mission mode, skill manifests, the
+**v0.13.0 — 3676 tests collected.** Mission mode, skill manifests, the
 grounding validator, `--swarm`, the NDJSON mission stream and the published
 contract are all in this release. What 0.12.0 **is**, rather than what each
 release added:
@@ -738,7 +738,7 @@ release added:
   NDJSON commands *into* a running mission — `inject`, `cancel`, `cancel_step`,
   `gate_decision`. `core/runtime/agui.py` translates the stream into AG-UI
   frames for a browser that speaks them.
-* **One roadmap.** `ROADMAP.md`: §1 is where 0.12.2 stands and what is still
+* **One roadmap.** `ROADMAP.md`: §1 is where 0.13.0 stands and what is still
   missing, §2 is Phases 9–13, §3 the principles, §5 the history — the Feb 2026
   blueprint, the Phase 8 disposition, and what two weeks in production taught.
   `NEXT_STEPS.md` and `PHASE_8.md` were folded into it on 15 Aug 2026.
@@ -755,6 +755,7 @@ One line each. The commit for every one of these is `release: <version> — …`
 | 0.12.0 | 16 Aug 2026 | `answer_delta` at the source, a `--control` channel into a running mission, an AG-UI translator |
 | 0.12.1 | 16 Aug 2026 | `--gate-wait` / `MISSION_GATE_WAIT`: an unattended caller can turn the in-turn gate wait down to `0` (the 0.11 behaviour); default unchanged |
 | 0.12.2 | 17 Aug 2026 | the credential redactor is linear on long unbroken payloads (a 200 KB tool result took minutes; now ~50 ms) |
+| 0.13.0 | 17 Aug 2026 | Phase 10: the eval harness (`core/eval/`, `EVAL.md`), recording + `--replay`, the reading/planes/critic grounding tiers off by default, `god_mode`/preflight deleted |
 | 0.11.0 | 16 Aug 2026 | native tool calling behind `--protocol native`; arguments schema-checked before dispatch; a byte-stable prompt prefix, and a window that evicts tool round trips first |
 | 0.10.0 | 16 Aug 2026 | durable and bounded: the fsync'd run log and `--resume`, a wall clock and a cancel that finish cleanly, the usage ledger and `elapsed_s`, approvals as durable records |
 | 0.9.0 | 15 Aug 2026 | safe by default: sandbox on, the `safe` profile, audit on every bus, one redactor. Phase 8 closed |
@@ -864,7 +865,10 @@ If you are **running this from another program**, read:
 
 If you want to understand **where this is going**, read:
 
-* 🗺️ `ROADMAP.md` — the only roadmap: where 0.12.2 stands (§1), Phases 9–13
+* 🗺️ `ROADMAP.md` — the only roadmap: where 0.13.0 stands (§1), Phases 9–13
+* 🧪 `EVAL.md` — the eval harness: missions × behavioural flags, a held-out
+  split, scoring from the recorded stream, `--replay`, and how a platform
+  writes its own suite
   (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 
 If you want to understand the **current implementation**, inspect:

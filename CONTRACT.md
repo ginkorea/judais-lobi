@@ -460,7 +460,9 @@ The mission-mode flags, in `contract.CLI_FLAGS` order. The rest of the CLI is a
 person's surface and may move.
 
 - `--mission` — run as a mission rather than a chat turn.
-- `--mcp-url` — the tool plane, over streamable HTTP. (`--mcp-stdio` is the other transport and is not itself in `CLI_FLAGS`; its environment form `MCP_STDIO` is.)
+- `--mcp-url` — the tool plane, over streamable HTTP.
+- `--mcp-stdio` — the other transport: a tool plane to spawn on this host, as a command line. One of the two, never both.
+- `--mcp-token` — bearer token for `--mcp-url`. Prefer `MCP_TOKEN`: an argument is visible in `ps`.
 - `--mission-steps` — the budget in **model turns**; arrives back as `max_steps`. Default 8. Under `--resume` it is read as that many *further* steps, and unset the resumed run is held to the total it started with.
 - `--mission-seconds` — the wall-clock budget for the whole run. Unset is
   **unbounded**. Checked between steps and before each model call, and shared by
