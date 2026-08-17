@@ -74,8 +74,9 @@ SCHEMA_VERSION = 1
 
 #: The mission has begun.  ``objective``, ``catalogue`` (the tool names the
 #: model was offered, in order), ``gated`` (offered but needing a person),
-#: ``max_steps``, ``history`` (how many prior conversation turns were seeded
-#: ahead of the objective — a count, so a watcher can tell a continued
+#: ``max_steps`` (the operator's step ceiling, or **0** for the default,
+#: which is no ceiling), ``history`` (how many prior conversation turns were
+#: seeded ahead of the objective — a count, so a watcher can tell a continued
 #: conversation from a cold start without the turns travelling twice), and
 #: ``schema_version``.
 #:
@@ -98,6 +99,13 @@ MISSION_STARTED = "mission_started"
 #: run's control channel: the instructions that were put in front of the
 #: model for **this** step, in the order they were sent.  See
 #: :data:`OPTIONAL`.
+#:
+#: And ``review`` on the step that follows a supervisor review turn — this
+#: harness bounds a mission by watching for repetition rather than by
+#: counting turns, and that field is the record of the watcher having asked
+#: the model what a pattern means.  A ``nudge`` verdict also arrives as
+#: ``injected`` on the same record, because the note is delivered the way an
+#: operator's instruction is.  See :data:`OPTIONAL`.
 STEP_STARTED = "step_started"
 
 #: The model's reply was not a decision this loop could act on — unparseable,
@@ -228,10 +236,17 @@ GROUNDING = "grounding"
 #: twenty-four is not an agent that ran out of room, and a consumer holding
 #: only ``steps`` has no way to keep a reader from reading it as one.
 #:
+#: ``max_steps`` is **0 when the run had no step ceiling**, which is the
+#: default: this harness imposes no step budget of its own, so the number is
+#: an operator's or it is nothing.  A consumer rendering "6 of 0" wants "6
+#: steps" instead, and the same zero rides
+#: :data:`MISSION_STARTED`.
+#:
 #: It may carry ``usage``: the run's ledger — every model call this turn made,
 #: summed — rather than one call's; ``budget`` when the outcome is
-#: ``budget_exhausted``, naming which budget ran out; and ``reason`` when the
-#: run was cancelled.  See :data:`OPTIONAL`.
+#: ``budget_exhausted``, naming which of the operator's ceilings was reached;
+#: and ``reason`` when the run was cancelled or was wound up as stuck.  See
+#: :data:`OPTIONAL`.
 MISSION_FINISHED = "mission_finished"
 
 #: The closed vocabulary, so a consumer can assert it knows all of them.
@@ -414,7 +429,38 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: The whole list and not a delta: a consumer holding a set should be
     #: able to replace it rather than do arithmetic on it, and a consumer
     #: that joined late has no earlier list to apply a delta to.
-    STEP_STARTED: ("plan", "compacted", "resumed", "injected", "catalogue"),
+    #: ``review`` — ``{signal, verdict, reviews_left}`` and ``note`` when
+    #: the verdict carries one, present on the step that **follows a
+    #: supervisor review turn** and on no other.
+    #:
+    #: This harness imposes no step budget (``max_steps`` is an operator's
+    #: optional ceiling and ``0`` means there is none), so what catches a
+    #: run that is going nowhere is a watcher rather than a count.  It
+    #: notices a repetition — the same call returning the same result, a
+    #: run of rejected replies, steps with no new evidence, an A-B-A-B
+    #: oscillation — and asks the model what the pattern means.  This field
+    #: is the record that it did.
+    #:
+    #: ``signal`` is which pattern fired; the words are
+    #: :data:`core.runtime.supervisor.SIGNALS` and a consumer should render
+    #: an unknown one rather than assert the set, because a signal added
+    #: later is a minor change like this field was.  ``verdict`` is one of
+    #: ``progressing`` (a false alarm — nothing happened, and the field is
+    #: here to say that something looked wrong and was judged fine),
+    #: ``nudge`` (the note was put in front of the model as a user turn, so
+    #: this step also carries ``injected``), ``stuck`` (this step is the
+    #: run's last: it is being asked for its best answer, and
+    #: ``mission_finished`` will say ``reason: "stuck"``) and — on a staged
+    #: turn only — ``replan`` (the plan is redrawn, so this step also
+    #: carries ``plan``).  ``reviews_left`` is how many reviews the run has
+    #: after this one, which is the difference between a run being helped
+    #: and a run about to be wound up.
+    #:
+    #: Absent on every step of every run nothing looked wrong in, which is
+    #: nearly every step of nearly every run, so a consumer that has never
+    #: heard of it reads the stream it always read.
+    STEP_STARTED: ("plan", "compacted", "resumed", "injected", "catalogue",
+                   "review"),
     #: ``tool`` — the name the model wrote, when it wrote one.  Absent when
     #: the reply was rejected before a name could be read out of it.
     #:
@@ -505,14 +551,27 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: consumer was already told to expect.
     #:
     #: ``reason`` — why a run ended, when the outcome word does not say.
-    #: Today it carries exactly one value, ``"cancelled"``, beside
-    #: ``outcome: "incomplete"``: somebody asked this run to wind up and it
-    #: did, keeping its transcript and closing its own stream.  Cancellation
-    #: is not a sixth :data:`OUTCOMES` word on purpose — a cancelled run
-    #: *is* a run that stopped without an answer, which is what
-    #: ``incomplete`` has always meant, and what it was missing is the
-    #: reason.  A consumer that ignores this field renders a cancelled run
-    #: exactly as it rendered one before the field existed.
+    #: Two values.
+    #:
+    #: ``"cancelled"``, beside ``outcome: "incomplete"``: somebody asked
+    #: this run to wind up and it did, keeping its transcript and closing
+    #: its own stream.  Cancellation is not a sixth :data:`OUTCOMES` word on
+    #: purpose — a cancelled run *is* a run that stopped without an answer,
+    #: which is what ``incomplete`` has always meant, and what it was
+    #: missing is the reason.  A consumer that ignores this field renders a
+    #: cancelled run exactly as it rendered one before the field existed.
+    #:
+    #: ``"stuck"``: the supervisor judged the run to be going in circles
+    #: and wound it up (see ``review`` on :data:`STEP_STARTED`).  It may sit
+    #: beside **any** outcome and most often sits beside ``answered`` or
+    #: ``answered_with_caveat``, because a wound-up run is asked for its
+    #: best answer with what it has and usually writes one.  That is the
+    #: whole reason this is a field and not an outcome word: what the run
+    #: produced and why it stopped producing are two facts, and folding
+    #: them into one word would have made "stuck" mean "no answer".  A
+    #: consumer that ignores it renders the answer, which is the right
+    #: thing to render; one that reads it can say the answer was written
+    #: under protest.
     #:
     #: ``elapsed_s`` — wall-clock seconds from the mission's first record to
     #: this one, on the harness's own clock (the one ``--mission-seconds``
@@ -562,10 +621,18 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
 #: a cost paid by every consumer, where an optional field is paid for by the
 #: ones that want the detail.
 #:
-#: ``budget_exhausted`` says the run hit a **hard bound** — it never means the
-#: model gave up.  Which bound is on the record, as ``budget``, and reading the
-#: word without it is reading half a sentence: ``steps`` and ``seconds`` are
-#: both this word, and only one of them is fixed by asking a smaller question.
+#: ``budget_exhausted`` says the run hit a **hard bound an operator set** — it
+#: never means the model gave up, and it never means the harness decided the
+#: question had gone on long enough: nothing here bounds a run that nobody
+#: bounded.  Which bound is on the record, as ``budget``, and reading the word
+#: without it is reading half a sentence: ``steps`` and ``seconds`` are both
+#: this word, and only one of them is fixed by asking a smaller question.
+#:
+#: A run the **supervisor** wound up is not this word.  It ends on whatever
+#: the answer it was asked for earned — usually ``answered`` — with
+#: ``reason: "stuck"`` beside it, because "it repeated itself" and "it ran
+#: past a number you chose" are different facts and a consumer acts on them
+#: differently.
 OUTCOMES: tuple[str, ...] = (
     "answered",
     "answered_with_caveat",

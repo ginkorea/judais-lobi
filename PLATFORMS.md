@@ -567,9 +567,12 @@ constrain output with `tools` + `tool_choice="required"` under `--protocol
 native`, not with `response_format`. Like `local`, `anthropic` is never fallen
 back away from. The default model is `claude-opus-5`.
 
-`--mission-steps` defaults to **8**, and it counts parse-error turns as well as
-tool turns. TAIPAN runs at 24, after a mission was graded as an agent that "stops
-dead" when it had simply run out of room.
+`--mission-steps` is an operator's optional ceiling and **defaults to none**
+(`0` on the wire): this harness imposes no step budget, because how many turns a
+question is worth is not a thing it can know — the mission graded as an agent
+that "stops dead" had simply run out of room. When you do set one it counts
+parse-error turns as well as tool turns. What catches a run that is going in
+circles instead is the supervisor; see *Bounding a run, and stopping one*.
 
 ### Two channels, and only one of them is yours
 
@@ -674,15 +677,34 @@ For a driver that means three things it could not do before:
   refused: those are conclusions. `incomplete`, `awaiting_approval` and a log
   with no ending at all are resumable. A **staged** (`--swarm`) run is refused
   today, and the refusal names the steps that are done. `max_steps` counts the
-  whole run, so killing and resuming cannot buy extra steps; passing
-  `--mission-steps` on the resumed spawn asks for that many *further* ones. The
+  whole run, so killing and resuming cannot buy extra steps — and a run
+  started with no ceiling resumes with none, rather than the resume inventing
+  a bound nobody set; passing `--mission-steps` on the resumed spawn asks for
+  that many *further* ones. The
   credential is deliberately not persisted — `MCP_TOKEN` is read from the
   resuming process's own environment.
 
 ### Bounding a run, and stopping one
 
+**Nothing bounds a run that nobody bounded.** Both ceilings are an operator's
+and both are unset by default: `--mission-steps` (no ceiling; `max_steps: 0` on
+the stream) and `--mission-seconds` (no wall clock).
+
+What stops a run that is going nowhere is the **supervisor**
+(`core/runtime/supervisor.py`), and it watches for repetition rather than for
+length — the same call returning the same result three times within the last
+six, three rejected replies running, four steps with nothing new in them, an
+A-B-A-B oscillation.
+Each fires one plain model call asking what the pattern means; the verdict
+rides the next `step_started` as `review: {signal, verdict, note?,
+reviews_left}`. `nudge` puts a note in front of the model (and the same record
+carries `injected`); `stuck` asks for a best answer and ends the run with
+`reason: "stuck"` beside whatever outcome that answer earned — usually
+`answered`, so **a driver must not read `stuck` as a failure**. At most three
+reviews a run, and the last cannot say `progressing`.
+
 `--mission-seconds` (env `MISSION_SECONDS`) is the wall clock, and **unset means
-unbounded** — steps bound the work, seconds bound the waiting. It is checked
+unbounded**. It is checked
 between steps and before each model call, and one clock covers the whole of a
 `--swarm` turn; a call already in flight is not interrupted, so the real bound is
 this plus one round trip.

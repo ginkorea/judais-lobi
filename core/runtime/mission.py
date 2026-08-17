@@ -34,10 +34,24 @@ The loop is deliberately small and its refusals are deliberately loud:
   cannot catch;
 * a tool the model invented is a refused step with the real catalogue
   repeated, not a crash;
-* the budgets are hard stops.  Steps, and — when a caller supplies a
-  :class:`~core.budgets.Deadline` — wall-clock seconds.  Running out of
-  either is a recorded outcome (``budget_exhausted``) that **names which
-  one**, and not a silent truncation;
+* **this loop imposes no budget of its own.**  It runs until the model
+  answers, until somebody stops it, or until a bound an *operator* asked
+  for is reached: ``max_steps`` when one was given, and wall-clock
+  seconds when a caller supplied a :class:`~core.budgets.Deadline`.
+  Running out of either is a recorded outcome (``budget_exhausted``) that
+  **names which one**, and not a silent truncation.  Neither is set by
+  default, and that is the whole of the change: the eight-step cap
+  this loop used to carry decided how much work a question was worth,
+  which is not a thing a framework can know;
+* what catches a run that is going nowhere is a
+  :class:`~core.runtime.supervisor.Supervisor` and not a counter.  It
+  watches for repetition — the same call returning the same bytes, three
+  rejected replies running, steps that produce nothing new — asks the
+  model what the pattern means, and hands back ``nudge`` (a note this
+  loop injects at the next step boundary), ``stuck`` (this loop asks for
+  a best answer and ends, ``reason: "stuck"``) or ``progressing``
+  (nothing happens).  ``None`` is a run nobody is watching, which is what
+  every run of this loop was;
 * a caller may ask a running mission to wind up, with a
   :class:`~core.budgets.Cancellation` checked at the same points the
   deadline is.  A cancelled run ends ``incomplete`` with ``reason``, and
@@ -74,6 +88,7 @@ loop supplies the mechanism and nothing else.
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import re
 import time
@@ -103,6 +118,9 @@ from core.runtime.mission_stream import (
 )
 from core.runtime.results import RESULT_TOOL, MissionResultStore
 from core.runtime.schema_check import check as check_arguments
+from core.runtime.supervisor import (
+    NUDGE, NUDGE_NOTE, STUCK, WIND_UP,
+)
 from core.runtime.usage import Ledger, Rate
 from core.tools.descriptors import same_tool, summarize_input_schema
 
@@ -627,8 +645,12 @@ def _finished_record(*, outcome: str, steps: int, max_steps: int,
     :data:`core.runtime.contract.OPTIONAL` makes: a consumer may branch on
     the outcome and index the field, and a consumer that sees the field
     knows the run ran out rather than inferring it from a step count that
-    happens to equal its cap.  ``reason`` is present only when there is one
-    — today, only for a cancelled run.
+    happens to equal its cap.  ``reason`` is present only when there is one,
+    and there are two: :data:`CANCELLED` for a run somebody stopped, and
+    :data:`~core.runtime.supervisor.STUCK` for one the supervisor wound up.
+    The second may sit beside ``answered`` — a wound-up run is asked for its
+    best answer and often writes one — which is the point of the field
+    being beside the outcome rather than being a word inside it.
     """
     record: Dict[str, Any] = {
         "outcome": outcome, "steps": steps, "max_steps": max_steps,
@@ -765,8 +787,15 @@ class MissionTranscript:
     #: cannot say of what leaves a consumer guessing between a step cap and
     #: a wall clock, which are different problems with different fixes.
     budget: Optional[BudgetExhausted] = None
-    #: Why the run ended, when the outcome word does not say.  Today that is
-    #: :data:`CANCELLED` and nothing else; ``""`` means the word was enough.
+    #: Why the run ended, when the outcome word does not say: :data:`CANCELLED`
+    #: for a run somebody stopped, :data:`~core.runtime.supervisor.STUCK` for
+    #: one the supervisor wound up.  ``""`` means the word was enough.
+    #:
+    #: Written the moment the reason becomes true rather than at the end —
+    #: a `stuck` verdict sets it before the wind-up turn is asked — and
+    #: overwritten by :meth:`MissionRunner._stopped` if a person or a clock
+    #: gets there first, which is the right precedence: somebody threw a
+    #: switch, and that is the sentence they are owed.
     reason: str = ""
 
     @property
@@ -801,6 +830,49 @@ class MissionRunner:
         :meth:`core.runtime.skills.SkillManifest.resolve`.
     system_message:
         Persona and skill prompt, already joined by the caller.
+    max_steps:
+        An operator's **hard ceiling** on model turns, or ``0`` — the
+        default — for no ceiling at all.
+
+        Zero and not eight, and that is the whole change stated in one
+        parameter.  A cap of eight stopped an endless loop, which is a
+        real job, and it also decided that no question was worth a ninth
+        turn, which is not a decision this loop can make: a mission that
+        needed a fifth governed view spent the cap on the fourth and
+        reported what it had.  The endless loop is now caught by
+        ``supervisor`` below, which watches for repetition rather than
+        for quantity, and this number went back to being what
+        ``--mission-seconds`` already was — a thing an operator asks for,
+        absent unless they do.
+
+        When it IS given it behaves exactly as it always did: a total for
+        the run and not an allowance per process (a resumed run counts
+        its recorded steps against it), hit is ``budget_exhausted`` with
+        ``budget.which == "steps"``, and it counts model turns including
+        the ones spent on a parse error.  ``0`` travels on
+        ``mission_started.max_steps`` as ``0``, which is how the wire says
+        "no ceiling".
+    supervisor:
+        A :class:`~core.runtime.supervisor.Supervisor`, or ``None`` for a
+        run nobody is watching — which is what every run of this loop was,
+        and is what a library caller gets unless it asks.
+
+        It is what replaced the step budget.  At each step boundary it is
+        told what the last step did and answers with a
+        :class:`~core.runtime.supervisor.Review` or with nothing; three
+        verdicts reach this loop and each one is acted on in exactly one
+        place (:meth:`_supervise`): ``progressing`` changes nothing,
+        ``nudge`` puts the reviewer's note in front of the model as a user
+        turn — the same delivery an operator's ``inject`` gets, and it
+        rides the same ``injected`` field — and ``stuck`` asks the model
+        for its best answer with what it has and ends the run with
+        ``reason: "stuck"``.
+
+        **A run with no ceiling and no supervisor can loop forever**, and
+        that is stated rather than defended against: a library caller that
+        passes neither has asked for a loop with no bound, the CLI always
+        builds one, and a bound this loop invented for itself is the thing
+        that was removed.
     validator:
         A :class:`~core.runtime.grounding.GroundingValidator`, or
         ``None`` for a mission nobody configured a grammar for.  ``None``
@@ -1027,13 +1099,12 @@ class MissionRunner:
         nobody put a wall clock on — which is the default, and which is
         how every mission ran before this parameter existed.
 
-        Unbounded by default on purpose.  ``max_steps`` bounds the work;
-        seconds bound the *waiting*, and the two are not the same bound
-        — a 20B at 59 tok/s can spend eight honest steps over several
-        minutes, and a framework that killed it at some number nobody
-        chose would be a regression for every operator running a slow
-        local model.  The reference deployment bounds a turn at its own
-        layer today.  A deadline is a thing an operator asks for.
+        Unbounded by default on purpose, and now for the same reason
+        ``max_steps`` is: a framework that killed a run at some number
+        nobody chose would be a regression for every operator running a
+        slow local model — a 20B at 59 tok/s spends minutes on one honest
+        answer.  The reference deployment bounds a turn at its own layer
+        today.  A deadline is a thing an operator asks for.
 
         Checked **between steps and before each model call**, which in
         this loop is the same point, and again before a tool is
@@ -1130,9 +1201,10 @@ class MissionRunner:
         tool_names: Sequence[str],
         *,
         system_message: str = "",
-        max_steps: int = 8,
+        max_steps: int = 0,
         validator: Optional[GroundingValidator] = None,
         critic: Any = None,
+        supervisor: Any = None,
         admits: Optional[Callable[[Sequence[str], Sequence[str]],
                                   Sequence[str]]] = None,
         plane_changed: Optional[Callable[[List[str]], None]] = None,
@@ -1161,8 +1233,25 @@ class MissionRunner:
         self._bus = bus
         self._tool_names = list(tool_names)
         self._system_message = system_message
-        self._max_steps = max_steps
+        # Zero — or anything below it, which is a caller saying "no" in a
+        # different dialect — is NO CEILING, and it is the default. See the
+        # `max_steps` parameter, and `_indices`, which is the one place the
+        # number becomes a range or an unbounded count.
+        self._max_steps = max(0, int(max_steps))
         self._validator = validator
+        #: The watcher that replaced the step budget, or ``None``. Duck-typed
+        #: rather than imported for its type, like `critic`: what this loop
+        #: needs is `look`, `saw_call` and `saw_rejection`, and a caller with
+        #: its own is not obliged to subclass ours.
+        self._supervisor = supervisor
+        #: Set by a `stuck` verdict: the next turn is the LAST one, and it
+        #: is a request for the best answer the run can write. Per run, so
+        #: `run` resets it.
+        self._winding_up = False
+        #: Whether the step that just ran was a grounding repair turn — the
+        #: one path that legitimately continues after an answer, and
+        #: therefore the one thing that may follow a wind-up turn.
+        self._repairing = False
         #: A :class:`~core.critic.mission.MissionCritic`, or ``None``.
         #:
         #: ``None`` is the default and the whole behaviour: a mission with
@@ -1775,6 +1864,84 @@ class MissionRunner:
             healed.append(message)
         return healed
 
+    # ── how far the loop may go, and who is watching it ─────────────────
+
+    def _indices(self, start: int):
+        """The step numbers this run may use.
+
+        A ``range`` when an operator set a ceiling and an unbounded count
+        when nobody did — which is the default, and is the whole of "the
+        framework imposes no step budget".  ONE place decides which, so
+        the ``for`` below reads the same either way and there is no second
+        spelling of "unbounded" to disagree with this one.
+
+        An unbounded run leaves the loop by answering, by being stopped,
+        or by being wound up: the ``budget_exhausted`` tail after the loop
+        is reachable only when there is a ceiling to exhaust.
+        """
+        if self._max_steps <= 0:
+            return itertools.count(start)
+        return range(start, self._max_steps)
+
+    def _supervise(self, objective: str, transcript: MissionTranscript,
+                   messages: List[Dict[str, Any]],
+                   injected: List[str]) -> Optional[Any]:
+        """Ask the supervisor about the step that just ran, and act on it.
+
+        ``None`` — no supervisor, or nothing to say — is a step that
+        proceeds exactly as it did before this existed, and a
+        ``step_started`` without a ``review`` field on it.
+
+        The one place a verdict becomes behaviour, which is why the
+        verdicts are read here and nowhere else:
+
+        * ``progressing`` does nothing at all.  It still rides the record,
+          because "something looked wrong and was judged fine" is a fact a
+          watcher wants and an absence cannot state;
+        * ``nudge`` says the note to the model **through the same
+          mechanism an operator's ``inject`` uses** and appends it to the
+          same ``injected`` list, because it is the same act — somebody
+          outside the conversation putting a turn in it — and a second
+          field for it would be a second thing to render.  A nudge whose
+          reviewer wrote no note says nothing: there is nothing to say,
+          and inventing a sentence here would be this loop writing the
+          review;
+        * ``stuck`` asks for the best answer this run can write and marks
+          the transcript ``stuck`` **now** rather than at the end.  The
+          reason is true from this moment whichever way the last turn
+          goes, and a cancellation or a deadline arriving during it
+          overwrites it on purpose: a person who threw the switch, or a
+          clock an operator set, is the truer thing to report.
+        """
+        if self._supervisor is None:
+            return None
+        review = self._supervisor.look(objective, ledger=transcript.usage)
+        if review is None:
+            return None
+        if review.verdict == NUDGE and review.note:
+            note = NUDGE_NOTE.format(signal=review.sentence(),
+                                     note=review.note)
+            self._say(messages, note)
+            injected.append(note)
+        elif review.verdict == STUCK:
+            self._say(messages, WIND_UP.format(signal=review.sentence()))
+            self._winding_up = True
+            transcript.reason = STUCK
+        return review
+
+    def _reject(self, index: int, problem: str, **fields: Any) -> None:
+        """One rejected reply: on the stream, and in front of the watcher.
+
+        Both halves in one method because there are five places a reply can
+        be refused and five places to forget the second half of it — and a
+        supervisor shown four rejections out of five is counting a pattern
+        it cannot see the whole of.  The record is byte for byte the one
+        this loop always emitted.
+        """
+        self._emit(REPLY_REJECTED, index=index, problem=problem, **fields)
+        if self._supervisor is not None:
+            self._supervisor.saw_rejection()
+
     # ── the loop ────────────────────────────────────────────────────────
 
     def run(self, objective: str,
@@ -1804,6 +1971,10 @@ class MissionRunner:
             self._deadline.start()
         if self._started_at is None:
             self._started_at = time.monotonic()
+        # Per run and not per runner: a runner used twice must not open its
+        # second run already winding up from the first one's verdict.
+        self._winding_up = False
+        self._repairing = False
         offered = self.offered
         transcript = MissionTranscript(
             objective=objective, catalogue=list(offered),
@@ -1926,12 +2097,23 @@ class MissionRunner:
             start = resumption.next_index
             opening = {"resumed": resumption.as_record()}
 
-        # `self._max_steps` is the TOTAL for the run and not an allowance
-        # for this process — see `Recorded.total_steps`, which is where the
-        # caller works out what that total is. A resumed run whose recorded
-        # steps already met it runs no steps and ends `budget_exhausted`,
-        # which is the truth about it.
-        for index in range(start, self._max_steps):
+        # Unbounded unless an operator asked for a ceiling — see `_indices`.
+        # When they did, `self._max_steps` is the TOTAL for the run and not
+        # an allowance for this process (see `Recorded.total_steps`, which
+        # is where the caller works out what that total is), so a resumed
+        # run whose recorded steps already met it runs no steps and ends
+        # `budget_exhausted`, which is the truth about it.
+        for index in self._indices(start):
+            # The wind-up turn has been asked and did not answer. Ending
+            # here rather than inside the turn keeps every path a turn can
+            # take — a parse error, a refused tool, a dispatch — exactly as
+            # it was; what a wind-up changes is that there is no turn after
+            # it. A grounding repair is the one continuation that is not a
+            # further attempt at the mission, so it is allowed through.
+            if self._winding_up and not self._repairing:
+                transcript.outcome = "incomplete"
+                return transcript
+            self._repairing = False
             # Between steps AND before the model call, which in this loop
             # is one point: every path that continues — a parse error, a
             # refused tool, a grounding repair — comes back through here,
@@ -1968,6 +2150,15 @@ class MissionRunner:
             # made. A cancellation sent on the same channel was applied by
             # the channel's own thread and was caught by `_stop` above.
             injected = self._steer(messages)
+            # After the operator and before the ask, at the same boundary
+            # and for the same reason: the supervisor's note is somebody
+            # outside the conversation speaking into it, and the one moment
+            # that is safe is the one where the model has finished a turn
+            # and not begun the next. It goes after `_steer` so that an
+            # operator who spoke on the same boundary is heard first — a
+            # person outranks a watcher.
+            review = self._supervise(objective, transcript, messages,
+                                     injected)
             # Before the ask, not after the reply: what is compacted is
             # what this step is about to send, and a watcher told about it
             # afterwards has already rendered the turn it applied to.
@@ -1981,6 +2172,14 @@ class MissionRunner:
             self._emit(STEP_STARTED, index=index, **opening,
                        **({"catalogue": self.offered} if changed else {}),
                        **({"injected": injected} if injected else {}),
+                       # On the step that FOLLOWS a review turn and no
+                       # other, exactly as `compacted` is on the step whose
+                       # conversation was shortened: the field is the record
+                       # that a review happened, and one that arrived every
+                       # step would be a state restated rather than an event
+                       # announced.
+                       **({"review": review.as_record()}
+                          if review is not None else {}),
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
             opening = {}
@@ -2011,8 +2210,7 @@ class MissionRunner:
             if problem:
                 step.error = problem
                 transcript.steps.append(step)
-                self._emit(REPLY_REJECTED, index=index, problem=problem,
-                           **spent)
+                self._reject(index, problem, **spent)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -2033,8 +2231,7 @@ class MissionRunner:
                 )
                 step.tool, step.error = name, problem
                 transcript.steps.append(step)
-                self._emit(REPLY_REJECTED, index=index, tool=name,
-                           problem=problem, **spent)
+                self._reject(index, problem, tool=name, **spent)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -2046,8 +2243,7 @@ class MissionRunner:
                 problem = self._no_such_tool(name, self.offered)
                 step.error = problem
                 transcript.steps.append(step)
-                self._emit(REPLY_REJECTED, index=index, tool=name,
-                           problem=problem, **spent)
+                self._reject(index, problem, tool=name, **spent)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -2073,8 +2269,7 @@ class MissionRunner:
             if problem:
                 step.error = problem
                 transcript.steps.append(step)
-                self._emit(REPLY_REJECTED, index=index, tool=name,
-                           problem=problem, **spent)
+                self._reject(index, problem, tool=name, **spent)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -2205,6 +2400,16 @@ class MissionRunner:
         call = dict(arguments)
         call.update(self._deadline_ceiling())
         result = self._bus.dispatch(name, **call)
+        if self._supervisor is not None:
+            # The WHOLE result and the exit code with it, not the bounded
+            # rendering the model is shown: what makes a repetition a
+            # repetition is whether the bytes are the same, two different
+            # 40 KB listings cut to the same first 4 KB are not the same
+            # result, and a tool that starts succeeding is progress even
+            # when its output has not changed.
+            self._supervisor.saw_call(
+                name, arguments,
+                f"{result.exit_code}\x00{result.stdout}\x00{result.stderr}")
         slot.exit_code = result.exit_code
         slot.output = result.stdout
         slot.error = result.stderr
@@ -2269,6 +2474,12 @@ class MissionRunner:
                 self._emit(GROUNDING, **_grounding_record(
                     report, repairs=repairs, repairing=True))
                 self._say(messages, problem, call_id)
+                # The one continuation that is not another attempt at the
+                # mission: the model answered and is being asked to say the
+                # same thing with its citations in it. A wind-up turn that
+                # produced an unsupported answer gets its repair turn for
+                # exactly this reason — see the top of `_loop`.
+                self._repairing = True
                 return None, repairs
             # One repair turn was spent and the claim is still
             # unsupported. The answer is kept — deleting it would
@@ -2659,8 +2870,8 @@ class MissionRunner:
             return taken
 
         def reject(problem: str, call_id: str = "", tool: str = "") -> None:
-            self._emit(REPLY_REJECTED, index=index, problem=problem,
-                       **({"tool": tool} if tool else {}), **cost())
+            self._reject(index, problem,
+                         **({"tool": tool} if tool else {}), **cost())
             self._say(messages, problem, call_id)
 
         if not calls:

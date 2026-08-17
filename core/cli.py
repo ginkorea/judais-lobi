@@ -497,15 +497,26 @@ RUN_META_FLAGS = (
     "top_p", "seed",
 )
 
-#: The step budget a mission runs under when nobody says otherwise.
+#: The step ceiling a mission runs under when nobody says otherwise: **none**.
 #:
-#: A constant rather than an argparse ``default=`` because ``--mission-steps``
-#: now has to be distinguishable from its own default: on ``--resume`` the
-#: number means *this many further steps* and its absence means *the total the
-#: run was started with* (see :meth:`core.runtime.resume.Recorded
-#: .total_steps`), and a flag that defaults to ``8`` cannot tell "nobody said"
-#: from "somebody said eight".
-DEFAULT_MISSION_STEPS = 8
+#: Zero, and zero means no ceiling — the same thing an unset
+#: ``--mission-seconds`` means about the clock, and the same thing
+#: ``mission_started.max_steps: 0`` says on the wire.
+#:
+#: It was ``8``, and eight was doing two jobs: it stopped an endless loop, and
+#: it decided that no question was worth a ninth turn.  Only the first is a
+#: job a framework can do, and it is done now by
+#: :mod:`core.runtime.supervisor` — which watches for a run REPEATING itself
+#: rather than for a run being long, so a mission that needs forty turns takes
+#: forty and a mission that asks the same question three times is reviewed on
+#: the third.
+#:
+#: Still a constant rather than an argparse ``default=`` because
+#: ``--mission-steps`` has to be distinguishable from its own default: on
+#: ``--resume`` the number means *this many further steps* and its absence
+#: means *the total the run was started with* (see
+#: :meth:`core.runtime.resume.Recorded.total_steps`).
+DEFAULT_MISSION_STEPS = 0
 
 
 def _run_meta_flags(args) -> dict:
@@ -627,6 +638,10 @@ def _mission(elf, args, name, style):
         reconcile_orphans,
     )
     from core.runtime.results import RESULT_TOOL
+    from core.runtime.supervisor import (
+        REJECTIONS as SUP_REJECTIONS, REPEATS as SUP_REPEATS,
+        REVIEWS as SUP_REVIEWS, STALE_STEPS as SUP_STALE, STUCK, Supervisor,
+    )
     from core.runtime.usage import PricingTable
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
@@ -1205,7 +1220,11 @@ def _mission(elf, args, name, style):
     # `mission_finished`, the `finally` below closes the sink, and
     # `exit_as_signalled` then makes the exit status the signal's.
     cancel = Cancellation()
-    budgets = Budgets(max_steps=max_steps,
+    # `None` and not `0` for the steps: this dataclass says unbounded with
+    # `None` in every field, and the loop says it with `0` because
+    # `mission_started.max_steps` is a required integer on the wire. One
+    # translation, here, where the two vocabularies meet.
+    budgets = Budgets(max_steps=max_steps or None,
                       max_seconds=getattr(args, "mission_seconds", None))
     deadline = Deadline.of(budgets)
     close_on_sigterm(sink, cancel)
@@ -1420,9 +1439,34 @@ def _mission(elf, args, name, style):
             # mistyped the variable should see that nothing is bounding the
             # waiting, at the top of a run that may last hours.
             console.print(
-                f"⏱  budget: {budgets.describe()} — steps bound the work, "
-                f"seconds bound the waiting; a mission that runs out says "
-                f"which on its last record",
+                f"⏱  ceilings: {budgets.describe()} — neither is set by "
+                f"default and this harness imposes no budget of its own; a "
+                f"run that hits one you set says which on its last record. "
+                f"What stops a run that is going in circles is the "
+                f"supervisor, not a count",
+                style=style,
+            )
+            # ONE supervisor for the turn, built here for the reason the
+            # window is: this function is where a deployment's model and
+            # endpoint meet, and a library caller constructing a runner of
+            # its own gets the same behaviour by passing one.
+            #
+            # `plain_chat_fn` and not `chat_fn`: a review is a question to
+            # be answered, and a model handed a function namespace answers a
+            # question with a tool call — the failure that function exists
+            # to prevent. Through the same recorder and the same replay, so
+            # a run with a review in it replays with the review in it.
+            supervisor = Supervisor(plain_chat_fn, window=window,
+                                    usage_fn=usage_fn)
+            console.print(
+                f"👁  supervisor: watching for repetition — the same call "
+                f"returning the same result {SUP_REPEATS}x, "
+                f"{SUP_REJECTIONS} rejected replies running, "
+                f"{SUP_STALE} steps with no new evidence, or an A-B-A-B "
+                f"oscillation. Each one is put to the model, which says "
+                f"progressing, nudge or stuck; at most {SUP_REVIEWS} "
+                f"reviews a run, and the last of them cannot say "
+                f"progressing",
                 style=style,
             )
             # The same word `mission_started` carries on the stream, printed
@@ -1492,6 +1536,10 @@ def _mission(elf, args, name, style):
                     system_message=system_message,
                     max_steps=max_steps,
                     validator=validator,
+                    # ONE watcher for the turn, handed down to every
+                    # sub-mission this builds and asked about every failed
+                    # gate. See `SwarmRunner`'s `supervisor` parameter.
+                    supervisor=supervisor,
                     # The staged path's second opinion, asked of the
                     # SYNTHESIZED answer — which is the only text a staged
                     # turn answers with — through the same function the
@@ -1539,6 +1587,10 @@ def _mission(elf, args, name, style):
                     max_steps=max_steps,
                     validator=validator,
                     critic=critic,
+                    # What catches a run that is going nowhere, now that
+                    # nothing counts its turns. See `MissionRunner`'s
+                    # `supervisor` and `max_steps` parameters.
+                    supervisor=supervisor,
                     # The plane may grow under this run — a server
                     # registers a tool and notifies, the bridge picks it
                     # up. The manifest decides whether the new name is
@@ -1672,6 +1724,18 @@ def _mission(elf, args, name, style):
         )
 
     if transcript.completed:
+        # Before the answer, like the grounding verdict above it: an answer a
+        # run was asked for because it had stopped getting anywhere is still
+        # the answer, and a reader deciding how much to lean on it wants to
+        # know that before they read it rather than after.
+        if transcript.reason == STUCK:
+            console.print(
+                f"👁  The supervisor judged this run stuck after "
+                f"{len(transcript.steps)} step(s) — it was going round "
+                f"rather than getting anywhere — and asked for the best "
+                f"answer it could write from what it had. Nothing ran out: "
+                f"read what follows as partial.",
+                style="yellow")
         # The same text the stream carried on `answer`, scrubbed the same way,
         # so the console and the record a pane renders say the same thing.
         console.print(Markdown(f"🧞 **{name}:** {scrub(transcript.answer)}"),
@@ -1722,6 +1786,16 @@ def _mission(elf, args, name, style):
         console.print(
             f"⏹️  Mission ran out of {spent.which}: {spent.spent} of "
             f"{spent.limit}. Nothing failed — the run hit a bound you set.",
+            style="yellow",
+        )
+    elif transcript.reason == STUCK:
+        # Not a budget and not a failure of the plane: the run was repeating
+        # itself, was asked for its best answer, and had none to give.
+        console.print(
+            f"👁  The supervisor judged this run stuck after "
+            f"{len(transcript.steps)} step(s) and wound it up. It was asked "
+            f"for its best answer with what it had and did not write one; "
+            f"nothing ran out and no ceiling was reached.",
             style="yellow",
         )
     else:
@@ -1808,11 +1882,18 @@ def _main(AgentClass):
                         help="Bearer token for --mcp-url (env: MCP_TOKEN). "
                              "Prefer the env var; an argument is visible in ps")
     parser.add_argument("--mission-steps", type=int, default=None,
-                        help=f"Hard cap on tool calls in a mission "
-                             f"(default {DEFAULT_MISSION_STEPS}). With "
-                             f"--resume it is read as that many FURTHER "
-                             f"steps; unset, the resumed run is held to the "
-                             f"total it was started with")
+                        help="Hard ceiling on model turns in a mission. "
+                             "UNSET MEANS NO CEILING, like --mission-seconds: "
+                             "this harness imposes no step budget of its own, "
+                             "because how many turns a question is worth is "
+                             "not a thing it can know. A run that goes in "
+                             "circles is caught by the supervisor instead — "
+                             "it watches for repetition, asks the model what "
+                             "the pattern means, and nudges or winds the run "
+                             "up. Set this when you want a hard stop anyway; "
+                             "with --resume it is read as that many FURTHER "
+                             "steps, and unset the resumed run keeps whatever "
+                             "the run was started with")
     parser.add_argument("--resume", type=str,
                         default=os.getenv("MISSION_RESUME", ""),
                         metavar="RUN_ID",

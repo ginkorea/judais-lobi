@@ -147,7 +147,7 @@ program that spawns this harness may rely on them. The table below is in
 | `--mcp-url` | `MCP_URL` | the tool plane, over streamable HTTP |
 | `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. One of the two, never both |
 | `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps` |
-| `--mission-steps` | — | hard cap on **model turns**, and it counts parse-error turns too. Default `DEFAULT_MISSION_STEPS` = **8** (`core/cli.py`). Under `--resume` it is read as that many *further* steps; unset, a resumed run is held to the total it started with |
+| `--mission-steps` | — | an operator's hard ceiling on **model turns**, counting parse-error turns too. **Unset means no ceiling** (`DEFAULT_MISSION_STEPS` = `0`, `core/cli.py`) — this harness imposes no step budget of its own; see [the supervisor](#no-step-budget--the-supervisor) for what catches a run that is going in circles. Under `--resume` it is read as that many *further* steps; unset, a resumed run keeps whatever the run was started with, ceiling or none |
 | `--mission-seconds` | `MISSION_SECONDS` | wall-clock cap on the whole run, in seconds. **Unset means unbounded** — steps bound the work, seconds bound the waiting, and a default nobody chose would kill a slow local model mid-answer. Checked between steps and before each model call; one clock for the whole of a `--swarm` turn. A call already in flight is not interrupted, so the real bound is this plus one round trip |
 | `--provider` | — | `openai`, `mistral`, `anthropic` or `local`. `anthropic` needs `pip install 'judais-lobi[anthropic]'` and `ANTHROPIC_API_KEY`; its default model is `claude-opus-5` (`core/runtime/provider_config.py`), overridden with `--model` |
 | `--model` | — | which model on it |
@@ -190,6 +190,62 @@ environment form of `--protocol`, `MISSION_CONTROL` of
 `--control`, `MISSION_GATE_WAIT` of `--gate-wait`, and `MISSION_STREAM` of `--no-stream` the other way round: `off`,
 `0`, `false`, `no` or `none` turn the streamed answer off and anything else
 leaves it on.
+
+#### No step budget — the supervisor
+
+**This harness does not decide how many turns a question is worth.** Until
+0.14 a mission was capped at eight model turns, and that number was doing two
+jobs: it caught an endless loop, which is a real job, and it decided that no
+question deserved a ninth turn, which is not a thing a framework can know. A
+mission that needed a fifth governed view spent the cap on the fourth.
+
+So the counting is gone. `--mission-steps` survives only as an operator's
+optional ceiling — exactly what `--mission-seconds` already was — and
+`max_steps: 0` on the stream says there is none. A run ends when it answers,
+when somebody cancels it, when a ceiling *you* set is reached
+(`budget_exhausted`, naming which), or when the supervisor judges it stuck.
+
+The supervisor (`core/runtime/supervisor.py`) watches for **repetition**,
+never for quantity. Nothing in it counts tokens, output length or thinking
+time: a model that spends nine minutes on one honest turn trips nothing. What
+trips it, evaluated free at every step boundary:
+
+| signal | what it means |
+| --- | --- |
+| `repeated_call` | the same tool, the same arguments and the same result, three times within the last six calls — not necessarily consecutive, because a run polling for something that never arrives threads other reads between its attempts. A *different* result is progress: a paging loop is not a stall |
+| `rejected_replies` | three replies in a row that were not decisions this loop could act on |
+| `no_new_evidence` | four steps with no new tool call and no result the run had not already seen |
+| `oscillation` | the run is going A B A B rather than forward from either |
+| `failed_gate` | (`--swarm` only) a plan step just failed its gate |
+
+When one fires, the **same model** is asked in one plain call — no tools
+declared — what the pattern means, and answers with one word:
+
+* **`progressing`** — a false alarm. Nothing happens, and that signal's
+  threshold is raised so the same pattern does not buy a second review;
+* **`nudge`** — stuck but helpable. The verdict carries a note, which is put
+  in front of the model as a user turn at the next step boundary, through the
+  same mechanism `--control inject` uses;
+* **`stuck`** — the model is asked for its best answer with what it has, so
+  the transcript still ends with an `answer` wherever one is possible, and
+  `mission_finished` carries `reason: "stuck"` beside whatever outcome that
+  answer earned. It is **not** `budget_exhausted`: nothing ran out;
+* **`replan`** — `--swarm` only, from the review of a failed gate: the plan is
+  redrawn around what already succeeded.
+
+The step that follows a review carries `review: {signal, verdict, note?,
+reviews_left}` — and `injected` too, on a nudge. There are at most **three**
+reviews a run and **the last one is not offered `progressing`**: a run that
+keeps tripping signals and keeps being told it is fine is exactly the endless
+loop this exists to catch, so after the last review the next signal winds the
+run up with no further call. A review is a model call like any other — it is
+on the ledger, in the recording, and served back by `--replay`.
+
+`SwarmRunner` uses the same object for the whole turn, so a plan that loops
+*across* its steps is a pattern something can see. A gate that says no is put
+to it rather than retried a fixed number of times: `retries_per_step` and the
+one-redraw counter are gone, and so is `step_budget` — a step takes the turns
+its work takes.
 
 #### `--protocol native` — the model calls a function instead of writing one
 
@@ -336,8 +392,10 @@ the same mission. The first new `step_started` carries
 
 `max_steps` counts the whole run: recorded steps included. Without
 `--mission-steps` the resumed stretch is held to the total the run started
-with, so killing and resuming cannot buy extra steps; with it, the number is
-read as that many *further* steps.
+with — and a run started with no ceiling resumes with no ceiling — so killing
+and resuming can neither buy extra steps nor invent a bound nobody set; with
+it, the number is read as that many *further* steps, which is how a ceiling is
+put on a run that had none.
 
 Two things do not come back, and the harness says so on the console rather
 than replaying in silence: the typed payload of a tool result
@@ -638,15 +696,18 @@ path's, so a watcher sees one mission with more steps.
 the planner, each sub-mission, each gate and the synthesizer — is bounded by the
 same `MissionWindow` the direct path uses, resolved from the backend's real
 `max_context_tokens`. Nothing inside the swarm is bounded by a character count
-standing in for it: a step may spend what the mission's `--mission-steps` budget
-has left rather than a fixed slice of it, a plan may be as long as that budget
-can pay for, and **the synthesizer is given the whole of every settled step's
-tool output** — so the final answer can quote an actor list a step read and
+standing in for it: a step may spend whatever an operator's `--mission-steps`
+ceiling has left — and everything, when there is no ceiling — rather than a
+fixed slice of it, and **the synthesizer is given the whole of every settled
+step's tool output** — so the final answer can quote an actor list a step read and
 summarised in one sentence. When the window cannot hold all of it, whole results
 are dropped oldest-first, tool output before conversation, and the prompt says
-how many were left out. `SwarmRunner` keeps `summary_chars`, `step_budget` and
+how many were left out. `SwarmRunner` keeps `summary_chars` and
 `max_plan_steps` as knobs for a caller who wants a tighter cut than the window
-gives; their defaults are "ask the window" and "ask the mission budget".
+gives; `step_budget` and `retries_per_step` are gone, because a slice of a
+budget and a retry counter were both guesses about how much work a step is
+worth — the supervisor decides that now, and a failed gate is a question put
+to it rather than a countdown.
 
 Each planned step is tagged with a **rung** — `tool`, `code`, or `code+sdk`. The
 last one is offered only when the skill manifest declares `sdk_import`, because
@@ -684,7 +745,7 @@ The vocabulary is ten record types, in the order a run tends to produce them
 | event | when |
 | --- | --- |
 | `mission_started` | before the first model call and before the tool plane is touched. Carries the objective, the catalogue, the gated names, `max_steps`, and the run's posture — `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol` |
-| `step_started` | a model turn is about to be asked for. Carries the staged `plan`, a `compacted` record, `resumed`, or `injected` when there is one |
+| `step_started` | a model turn is about to be asked for. Carries the staged `plan`, a `compacted` record, `resumed`, `injected`, or `review` — the supervisor's verdict on a repeating pattern — when there is one |
 | `reply_rejected` | the model's reply was not a decision this loop could act on. A recorded step, never a crash |
 | `tool_call` | **before** the call is dispatched, so a watcher shows what is about to happen |
 | `tool_result` | the bus answered. `output` is the whole result; the bound is what the *model* was shown |
@@ -833,8 +894,13 @@ release added:
   field that reaches the stream or stderr.
 * **Durable and bounded.** Every mission leaves a numbered, fsync'd log behind
   (`core/durable.py`, `run_id` on `mission_started`) and `--resume <run-id>`
-  picks a killed one back up from it. `--mission-seconds` bounds the wall clock
-  and `budget_exhausted` names which budget ran out. `SIGTERM` lets the run
+  picks a killed one back up from it. **No bound is imposed by the framework**:
+  `--mission-seconds` and `--mission-steps` are an operator's, unset by
+  default, and `budget_exhausted` names which of them was reached. What stops
+  a run that is going in circles is the supervisor
+  (`core/runtime/supervisor.py`), which watches for repetition rather than for
+  length and ends a hopeless run with `reason: "stuck"` and the best answer it
+  can still write. `SIGTERM` lets the run
   write its own `mission_finished` (`reason: cancelled`). A gate writes a
   durable approval record (`approval_id`) that a later run carries with
   `--approval <id>` — one tool, one run, nothing defaults to yes. Every store

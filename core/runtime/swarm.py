@@ -21,10 +21,13 @@ Five roles, one backend, no second model:
   with a checkable result, each tagged with its rung: a registered tool,
   code via a code-execution tool, or code that composes platform data
   with computation (the SDK inside the code).
-* **EXECUTE** — one step, one small :class:`MissionRunner` with a tight
-  step budget.  The sub-mission's transcript holds only its own step's
-  tool results; earlier steps arrive as short summaries, never as their
-  raw output.
+* **EXECUTE** — one step, one small :class:`MissionRunner`, under the
+  same supervisor and the same operator ceiling as the whole turn.  There
+  is no per-step slice of a budget any more: a step takes the turns it
+  needs, and the turn stops where an operator said it stops or where the
+  supervisor says it is going round.  The sub-mission's transcript holds
+  only its own step's tool results; earlier steps arrive as short
+  summaries, never as their raw output.
 * **GATE** — did the step produce what the plan needed.  Mechanical
   first (the runner answered; a tool call succeeded), because a check
   the runtime can evaluate cannot be talked out of its verdict.  An LLM
@@ -34,11 +37,18 @@ Five roles, one backend, no second model:
   results and nothing else, then held to the same grounding validator
   the direct path uses.
 
-Failure is contained, never silent: a failed step retries once with the
-error in context, then the plan is redrawn once around what already
-succeeded, and if that still fails the answer says plainly which step
-failed and why.  There is no path that stalls and no path that reports
-success it did not have.
+Failure is contained, never silent, and **who decides is the supervisor**
+(:mod:`core.runtime.supervisor`).  A step whose gate says no is not
+retried a fixed number of times: the failed gate is a signal, the
+reviewing model is shown the step and the gate's sentence, and it says
+``nudge`` (try again with this note), ``replan`` (the plan is what is
+wrong — redraw it around what already succeeded), ``progressing`` (the
+gate is wrong and the step stands) or ``stuck`` (this step has failed;
+the plan carries on past it and the answer says so).  Review turns are
+capped for the whole turn, so retries and redraws are bounded by the
+same arithmetic rather than by two counters nobody can relate to each
+other.  There is no path that stalls and no path that reports success it
+did not have.
 
 Everything a sub-mission does still goes through the one
 :class:`~core.tools.bus.ToolBus`; the closed tool set, the gating and
@@ -97,9 +107,26 @@ from core.runtime.mission_stream import (
     Observer, REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
 )
 from core.runtime.results import RESULT_TOOL
+from core.runtime.supervisor import NUDGE, PROGRESSING, REPLAN
 from core.runtime.usage import Ledger, Rate
 
-__all__ = ["SwarmRunner", "PlanStep", "RUNGS", "RUNGS_WITHOUT_SDK", "SDK_RUNG"]
+__all__ = ["SwarmRunner", "PlanStep", "RUNGS", "RUNGS_WITHOUT_SDK",
+           "SDK_RUNG", "MAX_PLAN_STEPS"]
+
+#: How long a plan may be when nothing else bounds it.
+#:
+#: A cap on a **list the planner writes in one reply**, not on work: every
+#: step of a plan of eight may take as many turns as it needs.  It exists
+#: because a planner that answers a two-part question with a plan of
+#: nineteen steps has misread the question, and the cheapest place to say
+#: so is in the prompt that asks for the plan and in the refusal that reads
+#: it back (:meth:`SwarmRunner._read_plan`).
+#:
+#: It used to be derived from the mission's step budget — the longest plan
+#: whose every step could still afford a call and an answer — and there is
+#: no such budget to derive it from now.  Where an operator DID set a
+#: ceiling that derivation still applies, because it is still true.
+MAX_PLAN_STEPS = 8
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
@@ -299,6 +326,11 @@ class _StepOutcome:
     why: str = ""
     #: Every successful tool result of every attempt at this step, whole.
     evidence: List[str] = field(default_factory=list)
+    #: Whether the supervisor said the PLAN is what is wrong, rather than
+    #: this step.  The one thing that redraws a plan now — see
+    #: :meth:`SwarmRunner._work_through`, which used to redraw on any
+    #: failure, once, from a counter.
+    replan: bool = False
 
 
 #: The keys of a plan step a *watcher* is shown, which is deliberately
@@ -470,6 +502,7 @@ class _StageObserver:
         self._seen_high = -1
         self._pending_plan: Optional[List[Dict[str, str]]] = None
         self._pending_resumed = dict(resumed) if resumed else None
+        self._pending_review: Optional[Dict[str, Any]] = None
 
     def begin_stage(self) -> None:
         """A new sub-mission is starting; its indexes begin at zero."""
@@ -484,6 +517,21 @@ class _StageObserver:
         than the one that was abandoned.
         """
         self._pending_plan = _plan_record(plan)
+
+    def reviewed(self, review: Any) -> None:
+        """Carry a step-level review on the next ``step_started``.
+
+        The staged path's reviews happen BETWEEN sub-missions — a gate said
+        no and the supervisor was asked what that means — so they have no
+        step of their own to ride.  They ride the next one, which is
+        exactly what ``review`` is documented to mean on the direct path
+        too: *the step that follows a review turn*.  A review with no step
+        after it — the last step of a plan, settled ``stuck`` — is not
+        announced, and ``mission_finished`` is what says how the turn
+        ended; inventing a record type for it would be the one additive
+        change a consumer cannot absorb quietly.
+        """
+        self._pending_review = review.as_record() if review is not None else None
 
     def __call__(self, record: Dict[str, Any]) -> None:
         event = record.get("event")
@@ -508,6 +556,9 @@ class _StageObserver:
             if self._pending_resumed is not None:
                 fields["resumed"] = self._pending_resumed
                 self._pending_resumed = None
+            if self._pending_review is not None:
+                fields["review"] = self._pending_review
+                self._pending_review = None
         self._emit(event, **fields)
 
 
@@ -537,33 +588,41 @@ class SwarmRunner:
         off the client it built, because the swarm holds a function and
         not a client.  ``False`` is every backend that cannot, and is the
         behaviour this class had before the flag existed.
+    max_steps:
+        An operator's ceiling on model turns for the WHOLE turn — every
+        sub-mission's steps summed — or ``0``, the default, for no ceiling.
+        Exactly :class:`~core.runtime.mission.MissionRunner`'s parameter,
+        with the same meaning and the same default, because a staged turn
+        is a mission and an operator who typed ``--mission-steps 20``
+        typed it once.
+    supervisor:
+        The turn's :class:`~core.runtime.supervisor.Supervisor`, or
+        ``None``.  **One per turn**, shared exactly as the clock and the
+        switch are: it is handed to every :class:`MissionRunner` this
+        builds, so a plan that loops *across* its steps — step two reading
+        what step one read, step three reading it again — is a pattern
+        something can see, and so the review budget is the turn's rather
+        than five copies of it.
+
+        It is also what this class asks about a **failed gate**, which is
+        the one signal reported to it rather than noticed by it: only the
+        plan knows what a step promised.  ``None`` is a staged turn with
+        no retries and no redraw at all — a gate that says no settles the
+        step as failed and the plan carries on — which is the honest
+        reading of a turn nobody is watching, and is why the CLI always
+        builds one.
     max_plan_steps:
-        Hard cap on plan length.  ``None`` — the default — derives it from
-        the mission's own budget: ``max(2, max_steps // 2)``, which is the
-        longest plan whose every step can still afford a call and an
-        answer.  It was a flat five, and five was a stand-in for the
-        thing that actually bounds a plan: a plan cannot have more steps
-        than the mission has tool turns to spend on them.  A caller who
-        wants a shorter plan than the budget allows still says so.
-    step_budget:
-        Tool-turns per sub-mission.  ``None`` — the default — is *what the
-        mission has left*: a step may spend the whole remaining budget.
-        It was four, and four is what starved the live run of 16 August: a
-        planner-written step reading two governed runs needs two views and
-        two ``mission_result`` reads, which is four turns before it can
-        say a word, so it exhausted its slice, failed its gate on
-        ``budget_exhausted``, retried, and had the plan redrawn around the
-        work that had happened to fit.  ``max_steps`` already bounds the
-        turn; a second, smaller number inside it was bounding the wrong
-        thing.  Portioning is kept as a knob for a caller who wants a
-        slice — with the trade stated: one greedy step can now spend the
-        whole mission, and the mission stops when it does, which is the
-        same stop it always had.
-    retries_per_step:
-        Bounded retries before the plan is redrawn.  Stays a small fixed
-        number, and it is not a stand-in for a context bound: it counts
-        *attempts at the same failure*, and the second attempt of a step
-        that failed for a reason retrying cannot fix is spent, not saved.
+        Hard cap on plan **length**, which is a different kind of number
+        from the ones that were deleted around it: it bounds a list the
+        planner writes in one reply, it is stated in the planner's own
+        prompt, and a longer plan is refused at :meth:`_read_plan` with a
+        sentence telling it to merge steps.  Nothing about it bounds how
+        much work a step may do.
+
+        ``None`` — the default — is :data:`MAX_PLAN_STEPS`, and no more
+        than what an operator's ceiling could pay for when there is one
+        (``max(2, max_steps // 2)``, the longest plan whose every step can
+        still afford a call and an answer).
     sdk_import:
         What the platform's SDK is called to ``import``, from the skill
         manifest's ``sdk_import`` field.  Naming it offers the planner the
@@ -636,11 +695,13 @@ class SwarmRunner:
         Shared and not divided, because a staged turn is one question:
         an operator who allows a mission ninety seconds has allowed the
         *mission* ninety seconds, and a clock handed out per stage would
-        give a five-step plan five times what was asked for.  This is the
-        opposite of how ``max_steps`` travels — the step budget is
-        deliberately *portioned*, a slice per sub-mission, because steps
-        are the thing staging exists to spend in small amounts.  Two
-        budgets, two behaviours, on purpose.
+        give a five-step plan five times what was asked for.  ``max_steps``
+        travels the same way now and used to travel the other: it was
+        *portioned*, a slice per sub-mission, and the slice is what starved
+        the live run of 16 August — a step needing two governed views and
+        two store reads had four turns, exhausted them, failed its gate on
+        ``budget_exhausted`` and had the plan redrawn around whatever had
+        fitted.  One turn, one ceiling, one clock, one supervisor.
     cancel:
         The mission's stop switch, shared the same way and checked at the
         same points: before triage, before a redraw, before the
@@ -676,9 +737,10 @@ class SwarmRunner:
         tool_names: Sequence[str],
         *,
         system_message: str = "",
-        max_steps: int = 24,
+        max_steps: int = 0,
         validator: Optional[GroundingValidator] = None,
         critic: Any = None,
+        supervisor: Any = None,
         admits: Optional[Callable[[Sequence[str], Sequence[str]],
                                   Sequence[str]]] = None,
         plane_changed: Optional[Callable[[List[str]], None]] = None,
@@ -690,8 +752,6 @@ class SwarmRunner:
         plain_chat_fn: Optional[Callable[..., Any]] = None,
         json_mode: bool = False,
         max_plan_steps: Optional[int] = None,
-        step_budget: Optional[int] = None,
-        retries_per_step: int = 1,
         summary_chars: Optional[int] = None,
         sdk_import: str = "",
         window: Optional[MissionWindow] = None,
@@ -715,8 +775,15 @@ class SwarmRunner:
         self._bus = bus
         self._tool_names = list(tool_names)
         self._system_message = system_message
-        self._max_steps = max(1, int(max_steps))
+        # Zero is NO CEILING and is the default, exactly as it is on
+        # `MissionRunner`: the turn runs until it answers, until somebody
+        # stops it, or until the supervisor says it is going round.
+        self._max_steps = max(0, int(max_steps))
         self._validator = validator
+        #: ONE watcher for the whole turn, handed to every runner below.
+        #: See the class docstring; `None` is a turn with no retries and
+        #: no redraw.
+        self._supervisor = supervisor
         #: A :class:`~core.critic.mission.MissionCritic`, or ``None``, and
         #: it belongs to the SYNTHESIZER.
         #:
@@ -810,15 +877,14 @@ class SwarmRunner:
         self._control = control
         self._gate_wait_s = max(0.0, float(gate_wait_s))
         self._started_at: Optional[float] = None
-        # All three default to "ask the thing that actually bounds this"
-        # rather than to a number. See the class docstring for what each
-        # one used to be and what it cost.
-        self._max_plan_steps = (max(1, int(max_plan_steps))
-                                if max_plan_steps is not None
-                                else max(2, self._max_steps // 2))
-        self._step_budget = (max(1, int(step_budget))
-                             if step_budget is not None else None)
-        self._retries = max(0, int(retries_per_step))
+        # A cap on the LENGTH of a list the planner writes, and no longer
+        # than an operator's ceiling could pay for when there is one. See
+        # the class docstring for why this is not one of the numbers that
+        # was deleted around it.
+        self._max_plan_steps = (
+            max(1, int(max_plan_steps)) if max_plan_steps is not None
+            else (min(MAX_PLAN_STEPS, max(2, self._max_steps // 2))
+                  if self._max_steps else MAX_PLAN_STEPS))
         #: ``None`` is "the window decides": a step's result travels whole
         #: and `_fit` bounds the prompt it lands in. An int is a caller
         #: asking for a cut in characters, which is what this was.
@@ -1151,6 +1217,10 @@ class SwarmRunner:
             system_message=system_message,
             max_steps=max_steps,
             validator=None,
+            # THE SAME watcher, not one per stage: a plan that loops across
+            # its steps is precisely the pattern one sub-mission cannot see,
+            # and five supervisors would be five review budgets for one turn.
+            supervisor=self._supervisor,
             admits=self._admits,
             plane_changed=self._plane_changed,
             gated=self._gated,
@@ -1182,6 +1252,7 @@ class SwarmRunner:
             max_steps=self._max_steps,
             validator=self._validator,
             critic=self._critic,
+            supervisor=self._supervisor,
             admits=self._admits,
             plane_changed=self._plane_changed,
             gated=self._gated,
@@ -1463,7 +1534,10 @@ class SwarmRunner:
                       transcript: MissionTranscript,
                       stage: _StageObserver,
                       resumption: Optional[Any] = None) -> MissionTranscript:
-        budget = self._max_steps
+        # `None` is no ceiling — the default — and an int is what an
+        # operator's ceiling has left for the whole turn. There is no
+        # per-step slice of it any more: see `_execute_step`.
+        left: Optional[int] = self._max_steps or None
         evidence: List[str] = []
         results: Dict[str, _StepOutcome] = {}
         replanned = False
@@ -1487,7 +1561,8 @@ class SwarmRunner:
             # stretch spent count against it, so a plan that spent 5 of 8
             # has 3 left. See `Recorded.total_steps`, which is where the
             # caller works the total out.
-            budget = max(0, self._max_steps - int(resumption.steps_spent))
+            if left is not None:
+                left = max(0, left - int(resumption.steps_spent))
             # A step the plan already has an outcome for is not run again.
             # One stopped at a gate is NOT such a step: nothing was called,
             # the decision belongs to a person, and a resume carrying their
@@ -1504,8 +1579,9 @@ class SwarmRunner:
         while queue:
             step = queue.pop(0)
             outcome, attempts, gathered, spent = self._execute_step(
-                objective, step, results, stage, budget)
-            budget -= spent
+                objective, step, results, stage, left)
+            if left is not None:
+                left = max(0, left - spent)
             # Every attempt is folded in, not only the one that stuck: the
             # transcript is the record of what ran, and a failed attempt's
             # tool output is still real evidence the grounding check may
@@ -1541,14 +1617,21 @@ class SwarmRunner:
             # A redraw is one or two more model round trips, and the step
             # that just failed may have failed BECAUSE the clock ran out
             # inside it — in which case replanning is the harness spending
-            # the budget it has already exceeded on planning work it cannot
+            # a bound it has already exceeded on planning work it cannot
             # then do.
             stop = self._stop()
             if stop is not None:
                 return self._stopped(transcript, stop)
 
-            if not replanned and budget > 0:
-                # One redraw around the failure, carrying what succeeded.
+            # The supervisor's verdict and not a counter. A redraw used to
+            # be "once per turn, on any failure", which meant a plan that
+            # was right and a step that was unlucky bought the same redraw
+            # as a plan that could never have worked — and meant the second
+            # genuinely wrong plan of a turn could not be fixed. Now the
+            # step's own review says which of those this is, and the review
+            # budget bounds how many times it may say so.
+            if outcome.replan and (left is None or left > 0):
+                # A redraw around the failure, carrying what succeeded.
                 replanned = True
                 carried = {sid: r.summary for sid, r in results.items()
                            if r.ok}
@@ -1609,17 +1692,35 @@ class SwarmRunner:
 
     def _execute_step(self, objective: str, step: PlanStep,
                       results: Dict[str, _StepOutcome],
-                      stage: _StageObserver, budget: int):
-        """Run one step with bounded retries.
+                      stage: _StageObserver, left: Optional[int]):
+        """Run one step, and let the supervisor say what a failed gate means.
 
         Returns ``(outcome, attempts, evidence, tool_turns_spent)`` —
         every attempt's transcript oldest first, and every attempt's tool
         evidence, so nothing that ran goes unrecorded.
+
+        *left* is what an operator's ceiling has left for the whole turn,
+        or ``None`` when there is no ceiling.  **There is no slice of it
+        for this step.**  A step takes the turns its work takes; the turn
+        stops where the operator said it stops.  The four-turn slice this
+        parameter replaced is what starved the live run of 16 August, and
+        the general lesson is the one this whole change is about: a
+        number that bounds *work* is a guess about how much a question is
+        worth.
+
+        The retry loop is gone too, and what is here instead is not a
+        smaller version of it: a failed gate is put to the supervisor, and
+        the step is attempted again ONLY on a ``nudge``, carrying the
+        reviewer's note. ``replan`` and ``stuck`` settle the step —
+        differently, and :attr:`_StepOutcome.replan` is which — and
+        ``progressing`` is the reviewer overruling the gate, which is a
+        thing a gate needs: its mechanical half can be wrong about a step
+        that did the work under a name the plan did not use.
         """
-        if budget <= 0:
+        if left is not None and left <= 0:
             return _StepOutcome(
                 step=step, ok=False,
-                why="the mission's step budget was exhausted before this "
+                why="the operator's step ceiling was reached before this "
                     "step could run",
             ), [], [], 0
 
@@ -1627,15 +1728,9 @@ class SwarmRunner:
         failure = ""
         attempts: List[MissionTranscript] = []
         evidence: List[str] = []
-        for attempt in range(1 + self._retries):
-            # What the MISSION has left, unless a caller portioned it.
-            # `budget` is already `max_steps` minus everything spent, so
-            # the default lets a step that needs five tool turns take five
-            # — and the turn still stops at `max_steps`, which is the bound
-            # an operator actually set.
-            allowance = (budget - spent if self._step_budget is None
-                         else min(self._step_budget, budget - spent))
-            if allowance <= 0:
+        while True:
+            allowance = 0 if left is None else left - spent
+            if left is not None and allowance <= 0:
                 break
             stage.begin_stage()
             runner = self._runner(
@@ -1668,6 +1763,37 @@ class SwarmRunner:
                                      evidence=list(evidence)),
                         attempts, evidence, spent)
             failure = why
+            if self._supervisor is None:
+                # Nobody is watching, so nothing decides to try again. A
+                # turn with no supervisor settles a failed gate as a failed
+                # step and carries on, which is the honest behaviour of a
+                # harness with no judgement available to it.
+                break
+            review = self._supervisor.review_gate(
+                objective, goal=step.goal, why=why,
+                ledger=self._ledger)
+            stage.reviewed(review)
+            if review.verdict == PROGRESSING:
+                # The gate is overruled. What the step reported stands, and
+                # it stands as the step's own summary — the same text a
+                # passed gate would have carried forward.
+                return (_StepOutcome(step=step, ok=True,
+                                     summary=self._bound_summary(
+                                         sub.answer or ""),
+                                     evidence=list(evidence)),
+                        attempts, evidence, spent)
+            if review.verdict == NUDGE:
+                # Round again, with the reviewer's note in the executor's
+                # own instructions — where the gate's sentence already goes,
+                # because to the executor they are the same kind of fact:
+                # this is what was wrong last time.
+                if review.note:
+                    failure = f"{why}\n{review.note}"
+                continue
+            return (_StepOutcome(step=step, ok=False, why=failure,
+                                 evidence=list(evidence),
+                                 replan=review.verdict == REPLAN),
+                    attempts, evidence, spent)
         return (_StepOutcome(step=step, ok=False, why=failure or
                              "the step produced no checkable result",
                              evidence=list(evidence)),
