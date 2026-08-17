@@ -337,6 +337,58 @@ class TestFiguresAreComparedAsNumbers:
         assert not self.report("a confidence of 0.7448.").grounded
 
 
+class TestAFigureIsTheSameThingOnBothSides:
+    """One owner for *what a figure is*, in the answer and in the evidence.
+
+    `NumericGroundingCheck.prepare` reads the evidence with the check's own
+    `FIGURE`, which refuses a run of digits that follows a dot — so an actor
+    handle of `a.0000` puts no figure `0000` into the evidence set. The
+    answer used to be read with the manifest's `number_pattern` alone, and
+    an ordinary one pulls `0000` straight out of `a.0000`.
+
+    Live, 16 August: a staged mission answered "Run r-7 actor at top of
+    actor list: a.0000", the identifier check passed it 2/2, the figure
+    check called `0000` unsupported, and the repair turn took the actor
+    back out of an answer that was right.
+    """
+
+    #: The naive pattern almost every manifest writes.
+    CONFIG = GroundingConfig(
+        identifier_pattern=r"\b(?:asset|a|rec)\.[0-9a-z]{4,}\b",
+        number_pattern=r"\b\d[\d,]*(?:\.\d+)?\b")
+    VIEW = ['{"run_id": "r-7", "actors": [{"handle": "a.0000", '
+            '"score": 1.0}], "totals": {"records": 12481}}']
+
+    def report(self, answer):
+        return GroundingValidator.from_config(self.CONFIG).validate(
+            answer, self.VIEW)
+
+    def test_the_digits_inside_an_identifier_are_not_a_figure(self):
+        """THE test. The whole answer is true and every part of it was read
+        from the payload."""
+        report = self.report("top actor a.0000, 12481 records.")
+        assert report.grounded
+        assert report.unsupported == ()
+
+    def test_the_identifier_is_still_checked_as_an_identifier(self):
+        """Narrowing the figure check must not stop the identifier check
+        catching an invented handle."""
+        report = self.report("top actor a.9999, 12481 records.")
+        assert report.unsupported == ("a.9999",)
+
+    def test_a_figure_that_stands_alone_is_still_checked(self):
+        assert self.report("top actor a.0000, 99999 records.").unsupported \
+            == ("99999",)
+
+    def test_a_run_of_digits_inside_a_word_is_not_a_figure_either(self):
+        """`(?![\\w])` is the other half of the same boundary, and a
+        manifest pattern that ignores it must not be able to invent work."""
+        report = GroundingValidator.from_config(
+            GroundingConfig(number_pattern=r"\b\d[\d,]*\b")).validate(
+                "the shard is 12481a.", ['{"records": 12481}'])
+        assert report.unsupported == ()
+
+
 class TestNoOpinionIsNotAPass:
     def test_an_unconfigured_check_is_not_grounded(self, ):
         result = IdentifierGroundingCheck(GroundingConfig()).check("anything", [])

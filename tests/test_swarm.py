@@ -96,6 +96,33 @@ def _paging_bus():
     return b
 
 
+def _view_bus(marker):
+    """One tool that returns a big fresh view, with *marker* only inside it.
+
+    Fresh per call for the reason `_paging_bus` is: the mission store
+    collapses a byte-identical re-fetch, and two steps reading the same
+    bytes are one thing to quote.
+    """
+    b = ToolBus(capability_engine=CapabilityEngine(
+        PolicyPack(allowed_scopes=["*"])))
+    seen = {"n": 0}
+
+    def view(**_kw):
+        seen["n"] += 1
+        return (0, f"run r-{seen['n']} actor list\ntop actor: {marker}\n"
+                   + "filler row\n" * 900, "")
+
+    b.register(ToolDescriptor(tool_name="governed.view",
+                              description="One view. Second sentence."), view)
+    return b
+
+
+VIEW_PLAN = plan(
+    {"id": "s1", "goal": "read the view for r-7", "rung": "tool"},
+    {"id": "s2", "goal": "read the view for r-9", "rung": "tool",
+     "needs": ["s1"]})
+
+
 def _tiny_window():
     from core.runtime.context_window import ContextConfig, MissionWindow
     return MissionWindow(config=ContextConfig(
@@ -337,6 +364,38 @@ TWO_STEP_PLAN = plan(
      "needs": ["s1"]})
 
 
+class TestTheRolesSeeTheWholeConversation:
+    """`history[-2:]` was a count standing in for a context bound.
+
+    Three roles took the last two turns of the conversation because
+    nothing in the swarm knew how big the window was. The window knows,
+    and `_fit` is where the bound belongs — so a follow-up whose
+    antecedent is four turns back is still a follow-up.
+    """
+
+    HISTORY = [{"role": "user", "content": "list the runs"},
+               {"role": "assistant", "content": "r-7 and r-9"},
+               {"role": "user", "content": "and the assets?"},
+               {"role": "assistant", "content": "asset.5f21"}]
+
+    def _run(self, bus):
+        plain = ScriptedModel(STAGED, TWO_STEP_PLAN, '{"pass": true}',
+                              "Final: done")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            tool_call("run_code", code="plot()"),
+            '{"answer": "chart.png written"}')
+        swarm(plain, executor, bus, history=self.HISTORY).run("compare them")
+        return plain
+
+    def test_the_planner_is_given_all_four_turns(self, bus):
+        assert self._run(bus).seen[1][1:5] == self.HISTORY
+
+    def test_so_is_the_synthesizer(self, bus):
+        assert self._run(bus).seen[-1][1:5] == self.HISTORY
+
+
 class TestStagedHappyPath:
     def run_it(self, bus, calls, sink=None):
         plain = ScriptedModel(
@@ -368,6 +427,20 @@ class TestStagedHappyPath:
         step2 = executor.seen[2][-1]["content"]
         assert "code-execution tool" in step2
         assert "print the values" in step2
+
+    def test_a_step_is_told_the_objective_it_serves(self, bus, calls):
+        """Withheld until the live run of 16 August: the objective asked
+        for each run's top ACTOR, the planner wrote the step as "retrieve
+        details for run r-7", and the executor — reading only the step —
+        fetched totals and no actor list at all. Marked as context, and
+        the word ONE step is said again beside it, because an executor
+        handed a whole objective answers the whole objective."""
+        _, _, executor = self.run_it(bus, calls)
+        step1 = executor.seen[0][-1]["content"]
+        assert "find the corpus and chart it" in step1
+        assert "for context only" in step1
+        assert step1.index("find the corpus and chart it") \
+            < step1.index("Step s1 of a plan")
 
     def test_a_step_sees_only_the_summaries_it_declared_it_needs(self, bus, calls):
         _, _, executor = self.run_it(bus, calls)
@@ -951,7 +1024,7 @@ class TestApprovalGate:
 
 
 class TestContextIsBounded:
-    def test_a_steps_long_answer_reaches_the_next_step_cut_to_the_bound(self, bus):
+    def _long_answer_run(self, bus, **kw):
         long_answer = "corpus.abc123 " + "x" * 10_000
         plain = ScriptedModel(
             STAGED,
@@ -964,12 +1037,27 @@ class TestContextIsBounded:
             json.dumps({"answer": long_answer}),
             tool_call("run_code", code="c"),
             '{"answer": "counted"}')
-        swarm(plain, executor, bus).run("q")
-        step2 = executor.seen[2][-1]["content"]
+        swarm(plain, executor, bus, **kw).run("q")
+        return executor.seen[2][-1]["content"]
+
+    def test_a_caller_who_asks_for_a_cut_gets_exactly_that_cut(self, bus):
+        """`summary_chars` is still a knob, and it still says so in the
+        text: a reader of the next step's prompt can tell a short result
+        from a shortened one."""
+        step2 = self._long_answer_run(bus, summary_chars=1_200)
         assert "[cut at 1200 characters]" in step2
         assert len(step2) < 3_000
 
-    def test_raw_tool_output_never_reaches_the_planner_or_the_synthesizer(self, calls):
+    def test_by_default_the_whole_of_a_steps_result_reaches_the_next_step(
+            self, bus):
+        """The default was 1,200 characters, and 1,200 characters is what
+        starved the run of 16 August. The bound is the window now: a step's
+        result travels whole and `_fit` bounds the prompt it lands in."""
+        step2 = self._long_answer_run(bus)
+        assert "[cut at" not in step2
+        assert "corpus.abc123 " + "x" * 10_000 in step2
+
+    def test_raw_tool_output_never_reaches_the_planner_or_an_executor(self, calls):
         marker = "RAW_OUTPUT_MARKER_" + "z" * 50_000
         b = ToolBus(capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])))
         b.register(ToolDescriptor(tool_name="catalog.search", description="Search."),
@@ -988,11 +1076,16 @@ class TestContextIsBounded:
         runner = SwarmRunner(executor, b, ["catalog.search", "run_code"],
                              plain_chat_fn=plain, system_message="Tai.")
         runner.run("q")
-        for call in plain.seen:
+        # The router and the planner, and every executor. NOT the
+        # synthesizer, which is now given the whole of what the steps read
+        # — see `TestTheSynthesizerSeesWhatTheMissionRead`.
+        for call in plain.seen[:2]:
             for message in call:
                 assert "RAW_OUTPUT_MARKER" not in message["content"]
-        step2 = executor.seen[2][-1]["content"]
-        assert "RAW_OUTPUT_MARKER" not in step2
+        # And no LATER step's executor: s1's own executor read it, which is
+        # the point of s1. What must not travel is one step's raw output
+        # into another step's prompt.
+        assert "RAW_OUTPUT_MARKER" not in executor.seen[2][-1]["content"]
 
     def test_the_window_reaches_the_direct_path(self):
         """The direct path IS a mission loop, and a window handed to the
@@ -1030,6 +1123,26 @@ class TestContextIsBounded:
         assert max(window.estimate(sent) for sent in executor.seen) \
             <= window.limit_tokens
 
+    def test_the_window_bounds_this_runners_own_role_calls(self):
+        """The router, the planner, each gate and the synthesizer went out
+        unbounded on the argument that each builds "one short list and
+        sends it once". The planner carries the catalogue and every one of
+        them carries the conversation."""
+        window = _tiny_window()
+        history = [{"role": "user", "content": "first " + "q" * 2_000},
+                   {"role": "assistant", "content": "then " + "a" * 2_000},
+                   {"role": "user", "content": "next " + "b" * 2_000},
+                   {"role": "assistant", "content": "last " + "c" * 2_000}]
+        plain = ScriptedModel(DIRECT)
+        SwarmRunner(ScriptedModel('{"answer": "ok"}'), _paging_bus(),
+                    ["catalog.page"], plain_chat_fn=plain,
+                    system_message="Tai.", history=history,
+                    window=window).run("and now?")
+        router = plain.seen[0]
+        assert len(router) < 2 + len(history)
+        assert any("[context]" in message["content"] for message in router)
+        assert window.estimate(router) <= window.limit_tokens
+
     def test_every_role_prompt_is_short(self):
         from core.runtime import swarm as module
         for name in ("TRIAGE_PROMPT", "PLAN_PROMPT", "EXECUTE_PROMPT",
@@ -1037,6 +1150,209 @@ class TestContextIsBounded:
             prompt = getattr(module, name)
             assert len(prompt.splitlines()) <= 20, name
             assert len(prompt) < 1_600, name
+
+
+class TestTheSynthesizerSeesWhatTheMissionRead:
+    """The 16 August starvation, as a test.
+
+    Two steps each read a governed view whose actor list is thousands of
+    characters long, and each reports one sentence about it. The objective
+    asks for a name that appears only inside the views. The synthesizer used
+    to be given the sentences and nothing else, and answered "the actor list
+    was not reported in the step results" — of a list the mission had read
+    twice. It is given the whole of both now, and the window decides how
+    much of that survives.
+    """
+
+    MARKER = "maru.7c1f"
+
+    def _run(self, **kw):
+        plain = ScriptedModel(STAGED, VIEW_PLAN,
+                              f"Final: the top actor is {self.MARKER}")
+        executor = ScriptedModel(
+            tool_call("governed.view", run="r-7"),
+            '{"answer": "read the view for r-7"}',
+            tool_call("governed.view", run="r-9"),
+            '{"answer": "read the view for r-9"}')
+        SwarmRunner(executor, _view_bus(self.MARKER), ["governed.view"],
+                    plain_chat_fn=plain, system_message="You are Tai.",
+                    **kw).run("name the actor at the top of each view")
+        return plain
+
+    def test_the_whole_of_every_step_s_result_is_in_the_synthesis_prompt(self):
+        plain = self._run()
+        shown = plain.seen[-1][-1]["content"]
+        assert SwarmRunner.EVIDENCE_HEADER in shown
+        assert shown.count(self.MARKER) == 2
+        assert "[s1]" in shown and "[s2]" in shown
+
+    def test_the_executor_s_own_sentence_is_still_there_beside_it(self):
+        """The summary is what the step SAID; the evidence is what it read.
+        An answer written from one without the other is written from half
+        of what happened."""
+        shown = self._run().seen[-1][-1]["content"]
+        assert "s1 (read the view for r-7): read the view for r-7" in shown
+
+    def test_a_window_too_small_drops_whole_results_oldest_first(self):
+        """The correct degradation, and it is the window's own policy: tool
+        output before conversation, oldest before newest."""
+        window = _tiny_window()
+        plain = self._run(window=window)
+        shown = plain.seen[-1][-1]["content"]
+        assert self.MARKER not in shown
+        assert "left out to fit the context window" in shown
+        assert window.estimate(plain.seen[-1]) <= window.limit_tokens
+
+    def test_the_step_lines_survive_when_the_results_cannot(self):
+        """What is dropped is the bulk, never the account of what ran."""
+        shown = self._run(window=_tiny_window()).seen[-1][-1]["content"]
+        assert "s1 (read the view for r-7)" in shown
+        assert "s2 (read the view for r-9)" in shown
+
+
+class TestTheStepBudgetIsWhatTheMissionHasLeft:
+    """`step_budget` defaults to the remaining mission budget.
+
+    It was four tool turns per sub-mission, and four is what the live run
+    of 16 August could not fit a step into: two governed views and two
+    result reads is four turns before the executor can say a word, so the
+    step exhausted its slice, failed its gate on `budget_exhausted`,
+    retried, and had the plan redrawn around whatever had fitted.
+    `max_steps` already bounds the turn.
+    """
+
+    FIVE = plan({"id": "s1", "goal": "page the catalogue", "rung": "tool"},
+                {"id": "s2", "goal": "chart it", "rung": "code",
+                 "needs": ["s1"]})
+
+    def _executor(self):
+        return ScriptedModel(
+            *([tool_call("catalog.search", q="p")] * 5),
+            '{"answer": "five pages read"}',
+            tool_call("run_code", code="c"),
+            '{"answer": "charted"}')
+
+    def test_a_step_that_needs_five_tool_turns_completes_on_the_default(
+            self, bus, calls):
+        """`retries_per_step=0` so this measures the SLICE and not the
+        retry: a step cut off at four turns whose second attempt happens to
+        finish the work would hide the very thing being asked about."""
+        plain = ScriptedModel(STAGED, self.FIVE, "Final: done")
+        transcript = swarm(plain, self._executor(), bus, max_steps=20,
+                           retries_per_step=0).run("page it and chart it")
+        assert transcript.outcome == "answered"
+        assert [name for name, _ in calls].count("catalog.search") == 5
+        assert "five pages read" in plain.seen[-1][-1]["content"]
+
+    def test_a_caller_may_still_portion_the_budget_into_slices(self, bus,
+                                                               calls):
+        """And the slice behaves exactly as the default used to: the step
+        runs out of turns, and the answer says which step failed and why
+        rather than pretending it did not."""
+        plain = ScriptedModel(STAGED, self.FIVE, "no json", "still no json",
+                              "Final: partial")
+        transcript = swarm(plain, self._executor(), bus, max_steps=6,
+                           step_budget=2, retries_per_step=0,
+                           ).run("page it and chart it")
+        assert [name for name, _ in calls].count("catalog.search") == 2
+        assert transcript.outcome == "answered_with_caveat"
+        assert "s1 (page the catalogue): FAILED" in plain.seen[-1][-1]["content"]
+
+    def test_the_plan_cap_is_derived_from_the_mission_budget(self, bus):
+        """A plan cannot have more steps than the mission has turns to
+        spend on them — two turns each, a call and an answer. Five was a
+        number; this is the thing the number stood for."""
+        runner = SwarmRunner(ScriptedModel(), bus, ["catalog.search"],
+                             max_steps=24)
+        assert runner._max_plan_steps == 12
+        assert SwarmRunner(ScriptedModel(), bus, ["catalog.search"],
+                           max_steps=2)._max_plan_steps == 2
+        assert SwarmRunner(ScriptedModel(), bus, ["catalog.search"],
+                           max_steps=24,
+                           max_plan_steps=3)._max_plan_steps == 3
+
+
+class TestTheSynthesisIsTheUnionOfWhatSettled:
+    """Everything that settled, whichever plan it settled under.
+
+    There used to be two owners of "which steps the answer is written from"
+    and they disagreed exactly where it mattered: after a redraw the live
+    path handed `_synthesize` the plan as DRAWN — so the redrawn steps'
+    results were dropped — and a resume handed it the plan as CHECKPOINTED
+    — so the steps completed before the redraw were dropped. Each lost the
+    other's half.
+    """
+
+    REDRAWN = plan({"id": "s9", "goal": "count by hand", "rung": "tool"})
+    INITIAL = plan({"id": "s1", "goal": "find the corpus", "rung": "tool"},
+                   {"id": "s2", "goal": "chart the counts", "rung": "code",
+                    "needs": ["s1"]})
+
+    def test_a_redrawn_plan_keeps_the_step_that_had_already_succeeded(
+            self, bus):
+        plain = ScriptedModel(STAGED, self.INITIAL, self.REDRAWN,
+                              "Final: 41 rows for corpus.abc123")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="corpus"),
+            '{"answer": "found corpus.abc123"}',
+            '{"answer": "no tool called"}',
+            '{"answer": "still no tool"}',
+            tool_call("catalog.search", q="rows"),
+            '{"answer": "counted 41 rows"}')
+        swarm(plain, executor, bus).run("find it and count it")
+        shown = plain.seen[-1][-1]["content"]
+        assert "s1 (find the corpus): found corpus.abc123" in shown
+        assert "s9 (count by hand): counted 41 rows" in shown
+        assert "s2 (chart the counts): FAILED" in shown
+        # The plan the steps belong to LEADS, and it is the redrawn one.
+        # `_settled_order` is plan order then arrival order, so a runner
+        # still holding the abandoned plan would put s1 and s2 first and
+        # the step that actually answered the question last.
+        assert shown.index("s9 (count") < shown.index("s1 (find")
+
+    def test_a_resumed_redraw_keeps_the_steps_the_new_plan_never_had(
+            self, bus):
+        """The same union from the other side: the checkpoint's plan is the
+        REDRAWN one, and s1 settled under the plan it replaced."""
+        plain = ScriptedModel("Final: 41 rows for corpus.abc123")
+        executor = ScriptedModel(tool_call("catalog.search", q="rows"),
+                                 '{"answer": "counted 41 rows"}')
+        swarm(plain, executor, bus).run(
+            "find it and count it",
+            _Resumption([{"id": "s9", "goal": "count by hand",
+                          "rung": "tool", "needs": [], "done": ""}],
+                        [{"id": "s1", "goal": "find the corpus",
+                          "outcome": "ok",
+                          "summary": "found corpus.abc123"},
+                         {"id": "s2", "goal": "chart the counts",
+                          "outcome": "failed",
+                          "summary": "the chart tool was not there"}],
+                        next_index=4, steps_spent=4, replanned=True))
+        shown = plain.seen[0][-1]["content"]
+        assert "s9 (count by hand): counted 41 rows" in shown
+        assert "s1 (find the corpus): found corpus.abc123" in shown
+        assert "s2 (chart the counts): FAILED — the chart tool was not there" \
+            in shown
+
+    def test_the_recorded_stretch_s_tool_output_reaches_the_synthesizer_too(
+            self, bus):
+        """A resumed turn's evidence belongs to no step this process ran —
+        it was read back off the log — so it is labelled and goes first."""
+        plain = ScriptedModel("Final: done")
+        executor = ScriptedModel(tool_call("catalog.search", q="rows"),
+                                 '{"answer": "counted 41 rows"}')
+        swarm(plain, executor, bus).run(
+            "find it and count it",
+            _Resumption([{"id": "s9", "goal": "count by hand",
+                          "rung": "tool", "needs": [], "done": ""}],
+                        [{"id": "s1", "goal": "find the corpus",
+                          "outcome": "ok",
+                          "summary": "found corpus.abc123"}],
+                        next_index=2, steps_spent=2,
+                        evidence=["the r-7 view, read before the kill"]))
+        shown = plain.seen[0][-1]["content"]
+        assert "[earlier] the r-7 view, read before the kill" in shown
+        assert shown.index("[earlier]") < shown.index("[s9]")
 
 
 # ── the budget is a hard stop, said out loud ─────────────────────────────
@@ -1053,7 +1369,11 @@ class TestBudget:
         executor = ScriptedModel(
             tool_call("catalog.search", q="a"), '{"answer": "a done"}',
             tool_call("catalog.search", q="b"), '{"answer": "b done"}')
-        runner = swarm(plain, executor, bus, max_steps=4)
+        # `max_plan_steps` is stated, because the default now derives it
+        # from `max_steps` and would refuse a three-step plan under a
+        # four-turn budget at the door. A caller may still buy the plan
+        # this test is about; what it must not buy is a stall.
+        runner = swarm(plain, executor, bus, max_steps=4, max_plan_steps=3)
         transcript = runner.run("three things")
         assert transcript.outcome == "answered_with_caveat"
         synth_request = plain.seen[-1][-1]["content"]
@@ -2014,8 +2334,10 @@ class TestTheStagedRunIsCheckpointed:
         run_id = store.create().run_id
         self.staged(bus, store, run_id)
         assert store.meta(run_id).meta["steps_done"] == [
-            {"id": "s1", "outcome": "ok", "summary": "found corpus.abc123"},
-            {"id": "s2", "outcome": "ok", "summary": "chart.png written"},
+            {"id": "s1", "goal": "find the corpus", "outcome": "ok",
+             "summary": "found corpus.abc123"},
+            {"id": "s2", "goal": "chart the counts", "outcome": "ok",
+             "summary": "chart.png written"},
         ]
 
     def test_a_failed_step_records_why_in_the_same_field(self, bus, tmp_path):

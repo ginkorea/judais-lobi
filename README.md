@@ -629,10 +629,24 @@ it can still see. The fix is not a longer prompt; it is *shorter ones*.
 the same tool bus**: triage, plan, execute, gate, synthesize. Triage is one cheap
 call and is biased to running the ordinary loop — a swarm that makes "what's
 trending" slower is a regression, so every failure of the router falls back to
-DIRECT. Each executed step is its own small mission with a tight budget; earlier
-steps arrive as short summaries, never as raw output. The closed tool set, the
-gating, the audit and the events vocabulary are all exactly the direct path's, so
-a watcher sees one mission with more steps.
+DIRECT. Each executed step is its own small mission; earlier steps reach the next
+one as the executor's own stated result, never as raw output. The closed tool
+set, the gating, the audit and the events vocabulary are all exactly the direct
+path's, so a watcher sees one mission with more steps.
+
+**One window, and it is the model's.** Every stage of a staged turn — the router,
+the planner, each sub-mission, each gate and the synthesizer — is bounded by the
+same `MissionWindow` the direct path uses, resolved from the backend's real
+`max_context_tokens`. Nothing inside the swarm is bounded by a character count
+standing in for it: a step may spend what the mission's `--mission-steps` budget
+has left rather than a fixed slice of it, a plan may be as long as that budget
+can pay for, and **the synthesizer is given the whole of every settled step's
+tool output** — so the final answer can quote an actor list a step read and
+summarised in one sentence. When the window cannot hold all of it, whole results
+are dropped oldest-first, tool output before conversation, and the prompt says
+how many were left out. `SwarmRunner` keeps `summary_chars`, `step_budget` and
+`max_plan_steps` as knobs for a caller who wants a tighter cut than the window
+gives; their defaults are "ask the window" and "ask the mission budget".
 
 Each planned step is tagged with a **rung** — `tool`, `code`, or `code+sdk`. The
 last one is offered only when the skill manifest declares `sdk_import`, because
