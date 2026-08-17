@@ -31,11 +31,13 @@ validator, the mission stream and its contract, the MCP client, the skill
 manifest as the only content channel, the swarm's failure containment — and it
 is recorded in §5.9. What it also exposed is that a framework can make *one*
 deployment truthful while its *default* deployment is still not one you would
-run unattended. Five releases in two days closed most of it: 0.9.0 safe by
+run unattended. Six releases in three days closed most of it: 0.9.0 safe by
 default, 0.10.0 durable and bounded, 0.11.0 native tool calling behind a flag,
-0.12.0 the answer streamed at the source and a channel back into a running run.
-What is left is §2, and the largest piece of it is that none of this is
-*measured* yet.
+0.12.0 the answer streamed at the source and a channel back into a running run,
+0.13.0 the eval harness, recorded-run replay and the three grounding tiers
+wired off by default. What is left is §2 — and the largest piece of it is now
+not that measurement is *impossible* but that it has not been *done*: the
+harness exists and nothing has been scored with it yet.
 
 ### 1.1 The six properties
 
@@ -57,24 +59,24 @@ one of them.
 
 ### 1.2 The honest gap table
 
-Written 15 Aug 2026; **every row re-verified against `master` at 0.12.0 on
-16 Aug 2026**, by grep rather than by memory. A struck row is closed: it names
+Written 15 Aug 2026; **every row re-verified against `master` at 0.13.0 on
+17 Aug 2026**, by grep rather than by memory. A struck row is closed: it names
 the release that closed it and, where one survives, the residual. An unstruck
 row is open today. Re-verify before acting on any of it.
 
 | Gap | Where it lives | Property |
 |---|---|---|
 | ~~**No sandbox by default.**~~ Closed 0.9.0: `select_sandbox` picks bwrap wherever it exists, the child env is an allow-list, and the choice rides `mission_started.sandbox`. **Still open:** the `fs` tool is in-process pathlib and no sandbox bounds it. | `core/tools/sandbox.py`, `core/tools/fs_tools.py` | 1 |
-| ~~**Allow-everything policy by default.**~~ Closed 0.9.0: `Tools()` builds `SAFE`, `--profile`/`JUDAIS_LOBI_PROFILE` opt up, refusals name the scope and the profile that grants it, and `AuditLogger` is on every default bus (`audit_ref`). **Still open:** god-mode and the preflight hook are constructor parameters nothing passes; the kernel path governs through `set_scope_constraints`, a second surface. | `core/tools/__init__.py`, `core/policy/`, `core/kernel/orchestrator.py` | 1 |
+| ~~**Allow-everything policy by default.**~~ Closed 0.9.0: `Tools()` builds `SAFE`, `--profile`/`JUDAIS_LOBI_PROFILE` opt up, refusals name the scope and the profile that grants it, and `AuditLogger` is on every default bus (`audit_ref`). **Still open:** the kernel path governs through `set_scope_constraints`, a second surface. (God-mode and the preflight hook were the other half of this row and were **deleted in 0.13.0** rather than wired.) | `core/tools/__init__.py`, `core/policy/`, `core/kernel/orchestrator.py` | 1 |
 | ~~**Tracebacks leak absolute paths.**~~ Closed 0.9.0: one redactor at the emitter. **Still open:** it covers the mission stream and mission-mode stderr, not the kernel/campaign/chat error prints. | `core/redact.py`, `core/cli.py` | 1 |
 | ~~**The real agent path persists nothing.**~~ Closed 0.10.0: `core/durable.py` `RunStore` is the mission's transcript store (fsync'd, monotonic `seq`, atomic meta), `--resume` replays it, orphans are reconciled, every `core/` store write is atomic (guard test), audit is fsync'd. **Still open:** staged-run resume; the kernel path's `SessionManager` is atomic but still its own layout. | `core/durable.py`, `core/runtime/resume.py` | 2 |
 | ~~**No wall-clock bound, no cancellation.**~~ Closed 0.10.0: `--mission-seconds`, one clock per mission shared by every stage, `budget` names which budget, cooperative cancel + SIGTERM winds up cleanly. **Still open:** `bytes`/`tokens` budgets declared, not enforced. | `core/budgets.py` | 3 |
 | ~~**No usage or cost accounting.**~~ Closed 0.10.0: `Backend.last_usage` on every backend, one `Ledger`, `usage` per call and per run on the stream, `cost` from a `pricing:` table, `elapsed_s` on `mission_finished`. **Still open:** it is reported, never enforced — there is no dollar or token budget that stops a run, and the `tokens` budget in `core/budgets.WHICH` is still declared and unwired. | `core/runtime/usage.py`, `core/budgets.py` | 3, 4 |
-| **No reproducible eval.** Unchanged at 0.12.0, and now the biggest one: `tests/fixtures/` still holds exactly one file (`field_misreadings.json`) and `tests/mcp_stub_server.py` is still the only endpoint a suite can run against. The Aug 2026 measurements live in docstrings. Nothing scores a release. | `tests/fixtures/`, `tests/mcp_stub_server.py` | 4 |
+| ~~**No reproducible eval.**~~ Closed 0.13.0: `core/eval/` is a suite of missions × behavioural flags with a mechanical held-out split, scored **only from the recorded stream** (`check`/`run`/`score`); `tests/fixtures/eval/` holds a real stream per mission — a good agent for each and a bad one for every regression case; `core/runtime/replay.py` records `model.jsonl`/`tools.jsonl` beside `events.jsonl` and `--replay` re-runs a finished mission with no server and no GPU, so a grounding change is scored on yesterday's runs. `EVAL.md` is the guide. **Still open:** the *measurements themselves* — swarm versus direct, `json` versus `native`, each grounding tier on versus off. The harness exists; nothing has been scored with it yet, and every one of those defaults waits on it. | `core/eval/`, `core/runtime/replay.py`, `tests/fixtures/eval/`, `tests/fixtures/runs/` | 4 |
 | **Two agent runtimes**, and the gap widened. `MissionRunner`/`SwarmRunner` and the kernel `Orchestrator`+roles still do not share sessions, budgets or governance. Shared owners keep arriving — `core/bounding.py` (0.8.2), the context window (0.9.0), `core/budgets.py` and `core/durable.py` (0.10.0) — but the run store, `--resume`, the wall clock, the usage ledger, the native protocol and the control channel all landed on the **mission** path only, so the kernel path has none of them. | `core/runtime/mission.py` vs `core/kernel/` | 5 |
-| ~~**No token streaming or constrained decoding in agentic runs.**~~ Closed 0.11.0 and 0.12.0: `--protocol native` asks for `tool_choice=required` over the declared functions and validates arguments against each tool's schema before dispatch (`core/runtime/schema_check.py`, both protocols); the answer streams by default and its fragments go out as `answer_delta` (`core/runtime/answer_stream.py`), with `--no-stream` to turn it off. **Still open:** `native` is off by default until Phase 10 scores it, and the *kernel* path streams nothing and constrains nothing. | `core/runtime/answer_stream.py`, `core/runtime/backends/` | 4, 6 |
+| ~~**No token streaming or constrained decoding in agentic runs.**~~ Closed 0.11.0 and 0.12.0: `--protocol native` asks for `tool_choice=required` over the declared functions and validates arguments against each tool's schema before dispatch (`core/runtime/schema_check.py`, both protocols); the answer streams by default and its fragments go out as `answer_delta` (`core/runtime/answer_stream.py`), with `--no-stream` to turn it off. **Still open:** `native` is off by default until the harness (0.13.0) actually scores it, and the *kernel* path streams nothing and constrains nothing. | `core/runtime/answer_stream.py`, `core/runtime/backends/` | 4, 6 |
 | **Thin provider layer.** Unchanged at 0.12.0: three backends (`openai`, `mistral`, `local`), retry only on a refused connect, and `mistral_backend.py` still imports the timeout/retry policy from the local backend rather than from somewhere neutral — its own docstring says so. What 0.11.0/0.12.0 added is a capability declaration per backend (`supports_streaming`, `supports_tool_calls`, `supports_tool_choice_required`) that the door refuses against, which is a seam and not a provider layer. | `core/runtime/backends/` | 6 |
-| **Built, tested, unreachable.** All four re-verified 16 Aug 2026 and all four still hold: `runtime/reading.py` is imported only by its own tests; `GodModeSession` is exported from `core/policy/__init__.py` and constructed nowhere (`ToolBus` takes a `god_mode=` nothing passes); `Agent.run_task` has no caller in `core/`; `critic/triggers.py` is imported only by `Orchestrator`, and only when a `critic=` is injected, which nothing in `core/` does. **Closed 0.9.0:** `policy/audit` is on every default bus. **Deleted rather than wired, 0.9.0:** `kv_prefix.py`, `runtime/gpu.py`. Also new and unwired: `ApprovalStore.reconcile(live_run_ids)` — the run store can say which runs were *recorded*, not which are alive, so the caller has to be the platform. | importer scans | 4 |
+| **Built, tested, unreachable.** Re-verified by importer scan at 0.13.0, and the row shrank: `Agent.run_task` still has no caller in `core/`; `ApprovalStore.reconcile(live_run_ids)` is still uncalled — the run store can say which runs were *recorded*, not which are alive, so the caller has to be the platform; and the critic's **coding-tier** orchestrator is still reached only through an injected `critic=`, which nothing in `core/` passes. **Wired 0.13.0:** `runtime/reading.py` is the `reading` grounding tier and `critic/triggers.py` + the new `critic/mission.py` are the `critic` tier — reachable, off by default, and measurable. **Deleted rather than wired:** `kv_prefix.py`, `runtime/gpu.py` (0.9.0); `policy/god_mode.py` and the bus's `preflight_hook`/`god_mode` parameters (0.13.0 — nothing ever passed either, and `--profile god` is the reachable form). **Closed 0.9.0:** `policy/audit` is on every default bus. | importer scans | 4 |
 
 None of this is a design flaw. It is the honest shape of a framework whose
 production fortnight was spent making one deployment truthful. The work in §2
@@ -99,7 +101,7 @@ merges. Version bump every phase.
 | 1 | Extract runtime & stabilise the spine | ✅ runtime extracted, `elf.py` provider-free |
 | 2 | Kernel state machine & hard budgets | ✅ state machine, budgets, orchestrator |
 | 3 | Session artifacts, contracts & KV prefixing | ✅ `elf.py` deleted, Agent class, Pydantic contracts, `SessionManager` (the KV-prefix builder was deleted unused at 0.9.0) |
-| 4 | MCP-style tool bus, sandboxing & capability gating | ✅ `ToolBus`, `CapabilityEngine`, `BwrapSandbox`, profiles, god mode, audit |
+| 4 | MCP-style tool bus, sandboxing & capability gating | ✅ `ToolBus`, `CapabilityEngine`, `BwrapSandbox`, profiles, audit (the god-mode *session* it also built was deleted at 0.13.0; `--profile god` is what survives) |
 | 5 | The repo map (context compression) | ✅ 3-tier extraction, dependency graph, ranked excerpts, caching |
 | 6 | Repository-native patch engine | ✅ parser, exact-match matcher, path-jailed applicator, worktree isolation |
 | 7 | Pluggable workflows, campaign orchestrator, composite judge & external critic | ✅ 7.0–7.4 |
@@ -119,8 +121,8 @@ merges. Version bump every phase.
 The release numbers in the second column are February's guesses at which
 version a phase would land in, kept so the phase numbers do not move. They are
 now wrong in both directions — Phase 12's work partly shipped in 0.11.0 and
-0.12.0 while Phase 10 has not started — and the version a phase actually lands
-in is decided when it lands.
+0.12.0, and Phase 10 landed in 0.13.0 rather than 0.11 — and the version a
+phase actually lands in is decided when it lands.
 
 ### 2.2 As built
 
@@ -128,10 +130,11 @@ February's Phases 0–8 are detailed in §5.4, with Phase 8's milestone-by-
 milestone disposition in §5.10. They keep their numbers, so the docstrings that
 cite "ROADMAP Phase 8" stay true.
 
-Six releases of August 2026 did phase-sized work in two days. `NEXT_STEPS.md`
-numbered the first three 0, 0.5 and 1; that numbering is retired here so no
-reader meets a second Phase 1. One of the six (0.10.0) *is* a phase — Phase 9 —
-and is written up in §2.4; the other five took no number.
+Seven releases of August 2026 did phase-sized work in three days.
+`NEXT_STEPS.md` numbered the first three 0, 0.5 and 1; that numbering is
+retired here so no reader meets a second Phase 1. Two of the seven *are*
+phases — 0.10.0 is Phase 9 (§2.4) and 0.13.0 is Phase 10 (§2.5); the other
+five took no number.
 
 **0.8.0 — the separation (15 Aug 2026).** Contract as data
 (`core/runtime/contract.py`: `SCHEMA_VERSION`, `EVENTS`, `FIELDS`, `OPTIONAL`,
@@ -169,9 +172,8 @@ became false. The kernel's role prompts joined the same context-window owner
 the mission uses, and their compactions became a phase artifact rather than a
 shrug. `kv_prefix.py` and `runtime/gpu.py` were deleted rather than wired.
 
-**0.10.0 — durable and bounded (16 Aug 2026).** Phase 9, and the only one of
-these six that took a number; the bullet-by-bullet account is §2.4. A run now
-survives the process: `core/durable.py` is the durability primitive the whole
+**0.10.0 — durable and bounded (16 Aug 2026).** Phase 9; the bullet-by-bullet
+account is §2.4. A run now survives the process: `core/durable.py` is the durability primitive the whole
 tree writes through — atomic replace, `fsync_append`, and a `RunStore` of one
 directory per run holding an fsync'd `events.jsonl` of `{seq, at, record}`
 envelopes. Every record is appended there *before* it reaches the `--events`
@@ -223,6 +225,33 @@ and `Translator.feed/close` for a live follower — so the next browser does not
 rewrite the mapping, with the design lesson kept: the grounding verdict rides
 the answer's own frames and never a sibling event a reconnect could separate
 from it.
+
+**0.13.0 — measurable (17 Aug 2026).** Phase 10, and it is the release that
+makes every deferred default decidable. `core/eval/` is a suite of missions ×
+behavioural flags with a mechanical held-out split, a rubric-change log, and a
+verdict computed **only from the recorded stream** — `python -m core.eval
+check|run|score`, eleven in-repo missions over the MCP stub, and a committed
+stream per mission (a good agent for each, a bad one for every regression case)
+so the corpus cannot drift away from the harness quietly. `core/runtime/replay.py`
+is the other half: every run with a store on now writes `model.jsonl` (each
+model call, its request, its reply and its side channels) and `tools.jsonl`
+(each dispatch with the typed payload the event stream never carried) beside
+`events.jsonl`, scrubbed for credentials and nothing else because the rest is
+the model's input; `--replay <run-id>` (`MISSION_REPLAY`) runs a finished
+mission again out of that recording — the real loop, the real validator, no
+server and no GPU — into a **new** run directory carrying `replay_of` and any
+prompt `drift`. That is what makes "if the grounding grammar had been stricter
+yesterday, what would yesterday's ten missions have said?" an answerable
+question. Three grounding tiers were wired to go with it, all **off by
+default**: `reading` (the field-misreading reader, needs `claim_table`),
+`planes` (an answer claiming a tool family nothing on it was called from), and
+`critic` (a second model, local first via `LOCAL_API_BASE`, its verdict an
+`advisory: true` row **beside** `grounded` and never inside it). And two things
+were deleted rather than wired: `core/policy/god_mode.py` and the bus's
+`preflight_hook`/`god_mode` parameters — nothing ever passed either, and a
+control nobody passes is a safety story a deployment can tell and not have.
+`EVAL.md` is the guide. What is *not* in this release is any number: the
+harness exists, and the measurements it was built for are still owed.
 
 ### 2.3 Retired: February's Phase 9 (TRT-LLM / vLLM tuning)
 
@@ -980,7 +1009,7 @@ Local models are effective builders and vulnerable to "confident wrong". The spl
 * **Verdict policy — the critic never kneecaps the pipeline.** `approve` logs and continues; `caution` logs, surfaces and does not halt; `block` requires plan revision *or* an explicit user override recorded as an artifact; `refused` is logged and **ignored**; `unavailable` is a silent no-op. The `refused` rule is the load-bearing one: a frontier model that refuses a legitimate pentesting task must be a non-event. The deterministic judge remains the only hard gate.
 * **Capability-gated and cost-capped** through `TaskContract`: `enabled`, `provider`, `max_calls_per_session`, `max_tokens_per_call`, `redaction_level`, `allowed_artifact_fields`; reports cached by `sha256(redacted_payload)`.
 
-*As built at 0.9.0 the critic has no production caller — it is reached only when an `Orchestrator` is constructed with `critic=`, and nothing in `core/` does that. Phase 10 (§2.5) gives it one.*
+*The **coding-tier** critic described above still has no production caller — it is reached only when an `Orchestrator` is constructed with `critic=`, and nothing in `core/` does that. The **mission-tier** critic got one at 0.13.0: `core/critic/mission.py`, switched on by `grounding: critic: true`, local first via `LOCAL_API_BASE`, its verdict an `advisory: true` row in `grounding.checks`.*
 
 ##### 7.4 Campaign Orchestrator (Tier 0 — workflow of workflows) ✅
 

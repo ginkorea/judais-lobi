@@ -135,9 +135,12 @@ know when we wrote this" for any clause. The report prints the newest three.
 
 ```
 python -m core.eval check  [--suite stub|PATH]
-python -m core.eval score  --runs DIR [--suite …] [--split train|test|all] [--json] [--report DIR]
-python -m core.eval run    --out DIR  [--suite …] [--split …] [--timeout 600] -- <spawn line>
+python -m core.eval score  (--runs DIR | --map KEY=PATH …) [--suite …] [--split train|test|all] [--json] [--allow-failures] [--report DIR]
+python -m core.eval run    --out DIR [--suite …] [--split …] [--json] [--allow-failures] [--timeout 600] -- <spawn line>
 ```
+
+`--suite` defaults to `stub`, `--split` to `all` (both halves, reported apart),
+`--timeout` to 600 seconds — the bound on **one** mission, not on the suite.
 
 `check` refuses a suite that cannot be graded, before anybody spends a GPU on
 it: exit 1 with every problem in one message. **All three subcommands run that
@@ -148,9 +151,10 @@ compared to anything, and a `run` against one spends a model first.
 directory is a `RunStore` directory: one directory per run with an
 `events.jsonl` in it, envelopes (`{seq, at, record}`) or bare records, both
 read the same. `--runs DIR` maps each mission key to `DIR/<key>`; `--map
-key=path` points at one explicitly. This is what a recorded-run replay and a
-platform's archive feed, and it is how a grounding change is scored on
-yesterday's runs.
+key=path` points at one explicitly, is repeatable, and beats `--runs`. One of
+the two is required — `score` with neither exits 2 saying so. This is what a
+recorded-run replay and a platform's archive feed, and it is how a grounding
+change is scored on yesterday's runs.
 
 `run` spawns the mission command once per mission and then scores it. The spawn
 line after `--` is **the caller's** — provider, model, tool plane, skill,
@@ -418,8 +422,8 @@ Same model output, different verdict, in a second and with no GPU.
 **Drift.** Before serving call *n* the replay compares the messages it was
 handed against the messages recorded for call *n*. A difference is drift:
 reported on the console, written into the replayed run's `meta.json` as
-`drift: {first: {call, message, detail}, calls, served, recorded}`, and **not
-refused** — a changed repair sentence or caveat is a prompt change worth
+`drift: {first: {call, kind, message, detail}|null, calls, served, recorded}`,
+and **not refused** — a changed repair sentence or caveat is a prompt change worth
 measuring, and refusing it would make the feature useless for the experiment it
 exists for. What is not allowed is for the change to be invisible. There is no
 `--replay-loose`: a comparison you turned off measures nothing.

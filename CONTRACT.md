@@ -335,6 +335,21 @@ it beside `usage.total_tokens`; read both with a default.
   the verdict. `grounded` says nothing unsupported was found; `verified` says
   something was found to check at all, and a consumer reading only the first
   cannot tell a well-cited answer from one that cited nothing.
+  **Each row of `checks` is
+  `{check, configured, grounded, verdict, considered, minimum, unsupported,
+  detail, advisory}`.** `advisory: true` marks a **second opinion** — today
+  only the `critic` row — and such a row is **excluded** from the record's own
+  `grounded`, `verified`, `unsupported`, `silent` and `uncited`, all of which
+  are computed from the mechanical rows alone. Every mechanical row states
+  `advisory: false` rather than omitting it, so a consumer never has to infer
+  it from a check's name. **Recomputing a verdict from the rows is not
+  promised** — `all(row["grounded"] for row in checks)` would fold a model's
+  opinion into a mechanical fact — so read the record's own `grounded`.
+  `grounding.unsupported` means *things a check could not support*, which is
+  not the same as *absent from every tool output*: for a `reading` or `planes`
+  row the value is right there in the evidence, and the row's `detail` says
+  what was wrong with it — the figure was read for a field it is not, or the
+  answer claimed a tool plane nothing on it was dispatched from this run.
 - **`step_started` carries the plan on a staged mission**, on the first step of
   each plan drawn. It is the first thing a watcher hears after the planner has
   finished, because the record that opens the stream is written before the
@@ -480,7 +495,6 @@ person's surface and may move.
 - `--gate-tool` — offer a tool and refuse to call it. Repeatable. Names resolve through the same `same_tool` rule a manifest's `allowed_tools` uses, so a bare name matches the namespaced one the bus dispatches; a name matching nothing, or matching two offered tools, is a refusal at the door listing what was offered.
 - `--approval` — an approval id somebody has already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched. A pending, refused, spent or abandoned record is refused at the door, naming the state.
 - `--resume` — carry on a recorded mission by its `run_id`. The objective comes off that run, so the positional message may be omitted; a different one is refused. A finished run is refused, except one that ended `awaiting_approval`.
-- `--replay` — run a recorded mission **again**, by its `run_id`: the model's replies are served out of that run's `model.jsonl` in order and its tool results out of `tools.jsonl`, so nothing is dialled and nothing is asked. The objective comes off the record, so the positional message may be omitted; a different one is refused. The replayed run is a **new** run directory whose `meta.json` carries `replay_of` and the `drift` between what this run asked and what was recorded — grounding runs fresh over the recorded answer, which is how a grounding change is scored on yesterday's runs. Not `--resume`: that continues an unfinished run against a live model.
 - `--temperature` — sampling, when it must be stated rather than the server's.
 - `--top-p` — likewise.
 - `--seed` — likewise, for a run somebody intends to reproduce.
@@ -488,6 +502,7 @@ person's surface and may move.
 - `--no-stream` — ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`, and the only difference it makes to this stream is the `answer_delta` records: the same `answer` arrives at the same moment either way.
 - `--control` — where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-` for stdin. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and a bad line is dropped, never fatal. See the exit contract.
 - `--gate-wait` — seconds a run standing at a gate waits in-turn for a `gate_decision` on `--control` before ending the turn at `awaiting_approval` (the decision then arrives on a later turn via `--approval`). Also capped by `--mission-seconds`. `0` = never wait; default 300. An unattended caller — an eval driver, a batch, a pane nobody is watching — sets it low.
+- `--replay` — run a recorded mission **again**, by its `run_id`: the model's replies are served out of that run's `model.jsonl` in order and its tool results out of `tools.jsonl`, so nothing is dialled and nothing is asked. The objective comes off the record, so the positional message may be omitted; a different one is refused. The replayed run is a **new** run directory whose `meta.json` carries `replay_of` and the `drift` between what this run asked and what was recorded — grounding runs fresh over the recorded answer, which is how a grounding change is scored on yesterday's runs. Not `--resume`: that continues an unfinished run against a live model.
 
 ## Environment
 
