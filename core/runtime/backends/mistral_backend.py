@@ -20,19 +20,20 @@ and it cost three things that had nothing to do with Mistral:
 ``httpx`` is already a hard dependency (``setup.py`` ``install_requires``),
 speaks SSE, and takes the body from memory. Not the ``mistralai`` SDK:
 this is one POST against a documented shape, and the SDK would be a second
-opinion about retries and errors alongside the one
-:mod:`core.runtime.backends.local_backend` already owns.
+opinion about retries and errors alongside the one this repo already owns.
 
-The timeout and connect-retry policy are **imported** from that module
-rather than restated here. One owner per fact: two backends that both
-POST a chat completion should not drift apart on how long they wait.
+The timeout, the connect-retry loop and the body-as-diagnosis rule are
+**imported from** :mod:`core.runtime.backends.policy`. They used to be
+imported from :mod:`core.runtime.backends.local_backend`, which was the
+right instinct — one owner per fact — pointed at the wrong owner: a
+hosted provider should not have to import a loopback one to learn how
+long to wait. Nothing in this module reaches into another backend now.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import time
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -45,22 +46,19 @@ from core.runtime.backends.base import (
     Usage,
     tool_calls_from,
 )
-from core.runtime.backends.local_backend import CHAT_TIMEOUT, LocalBackend
+from core.runtime.backends import policy
+from core.runtime.backends.policy import CHAT_TIMEOUT
 
 CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
 DEFAULT_MISTRAL_MODEL = "codestral-latest"
 
-#: Backoff (seconds) before each retry of a refused connect. The same tuple
-#: the local backend retries on, imported and not copied — the reasoning
-#: there ("a whole turn is too much to pay for one blip") is about the cost
-#: of losing a turn, not about vLLM, and it is identical here.
-CONNECT_RETRIES = LocalBackend.CONNECT_RETRIES
-
-#: How much of the provider's error body to put in front of a caller.
-#: Same bound, and the same reason, as ``LocalBackend.ERROR_DETAIL_CHARS``:
-#: enough for a real sentence, short enough that a stack trace does not
-#: become the error message.
-ERROR_DETAIL_CHARS = LocalBackend.ERROR_DETAIL_CHARS
+#: Backoff (seconds) before each retry of a refused connect, and how much
+#: of the provider's error body to put in front of a caller. Both are
+#: :mod:`core.runtime.backends.policy`'s, re-exported under the names this
+#: module has always published — the reasoning behind each lives there,
+#: with the error-class table it belongs to.
+CONNECT_RETRIES = policy.CONNECT_RETRIES
+ERROR_DETAIL_CHARS = policy.ERROR_DETAIL_CHARS
 
 
 class MistralBackend(Backend):
@@ -123,36 +121,34 @@ class MistralBackend(Backend):
         return self._complete(body)
 
     def _post(self, body: Dict[str, Any]) -> Any:
-        last: Optional[Exception] = None
-        for wait in (0.0, *CONNECT_RETRIES):
-            if wait:
-                time.sleep(wait)
-            try:
-                return self._client.post(
-                    CHAT_URL,
-                    headers=self._headers(),
-                    json=body,
-                    timeout=CHAT_TIMEOUT,
-                )
-            except httpx.ConnectError as exc:
-                # Refused/unresolved connect only. A status code or a
-                # mid-body timeout is the provider ANSWERING, and resending
-                # those would bill and possibly duplicate a completion.
-                last = exc
-        raise last  # type: ignore[misc]
+        """POST once, and again only if the connect never happened.
+
+        Refused or unresolved connects are retried; a status code or a
+        mid-body timeout is the provider ANSWERING, and re-sending those
+        would bill and possibly duplicate a completion. That rule is
+        :data:`core.runtime.backends.policy.ERROR_POLICY`, not this
+        method's opinion.
+        """
+        return policy.retry_on_connect(
+            lambda: self._client.post(
+                CHAT_URL,
+                headers=self._headers(),
+                json=body,
+                timeout=CHAT_TIMEOUT,
+            ),
+            retries=CONNECT_RETRIES,
+        )
 
     def _open_stream(self, body: Dict[str, Any]):
         """Enter ``client.stream`` under the same connect-retry policy.
 
         Returns the entered context manager alongside its response: the
         request happens in ``__enter__``, so retrying means building and
-        entering a fresh one. The caller owns the exit — see
+        entering a fresh one — which is why the retry takes a callable
+        rather than a response. The caller owns the exit — see
         :meth:`_stream`, where it is a ``finally``.
         """
-        last: Optional[Exception] = None
-        for wait in (0.0, *CONNECT_RETRIES):
-            if wait:
-                time.sleep(wait)
+        def enter():
             ctx = self._client.stream(
                 "POST",
                 CHAT_URL,
@@ -160,13 +156,23 @@ class MistralBackend(Backend):
                 json=body,
                 timeout=CHAT_TIMEOUT,
             )
-            try:
-                return ctx, ctx.__enter__()
-            except httpx.ConnectError as exc:
-                last = exc
-        raise last  # type: ignore[misc]
+            return ctx, ctx.__enter__()
+
+        return policy.retry_on_connect(enter, retries=CONNECT_RETRIES)
 
     # ── responses ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _error(message: str, res: Any) -> Exception:
+        """The exception this backend's callers already catch.
+
+        The shared rule builds the sentence; the type stays httpx's,
+        because a caller catching ``httpx.HTTPStatusError`` around a
+        Mistral call must keep catching it.
+        """
+        return httpx.HTTPStatusError(
+            message, request=getattr(res, "request", None), response=res,
+        )
 
     def _raise_for_status(self, res: Any) -> None:
         """Fail with what the provider SAID, not just the number it returned.
@@ -174,26 +180,22 @@ class MistralBackend(Backend):
         The curl version could not do this: a non-2xx body arrived on
         stdout, ``parsed["choices"]`` raised ``KeyError``, and the ``except``
         handed the error JSON back to the caller *as the assistant's reply*.
-        An authentication failure read as an answer. Same treatment as
-        ``LocalBackend._raise_for_status`` now: the body is the diagnosis.
+        An authentication failure read as an answer.
+
+        The rule now has one owner —
+        :func:`core.runtime.backends.policy.raise_for_status` — and what
+        is left here is the one thing that is true of httpx and not of
+        ``requests``: a streamed response has not read its body yet, so
+        ``.text`` is empty until someone asks for it.
         """
         if res.status_code < 400:
             return
         # A streamed response has not read its body yet; a read one is a
-        # no-op. Either way `.text` needs this first.
+        # no-op. Either way the diagnosis needs this first.
         res.read()
-        try:
-            detail = (res.json() or {}).get("message") or res.text
-        except ValueError:
-            detail = res.text
-        if not isinstance(detail, str):
-            detail = json.dumps(detail)
-        detail = (detail or "").strip()[:ERROR_DETAIL_CHARS]
-        message = (f"{res.status_code} from {CHAT_URL}"
-                   + (f": {detail}" if detail
-                      else " (and the provider said nothing)"))
-        raise httpx.HTTPStatusError(
-            message, request=getattr(res, "request", None), response=res,
+        policy.raise_for_status(
+            res, CHAT_URL, detail_chars=ERROR_DETAIL_CHARS,
+            subject="the provider", error=self._error,
         )
 
     def _complete(self, body: Dict[str, Any]) -> str:

@@ -3,7 +3,12 @@
 import os
 import pytest
 
-from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
+from core.runtime.provider_config import (
+    API_KEY_ENV,
+    DEFAULT_MODELS,
+    PROVIDERS,
+    resolve_provider,
+)
 
 
 class TestDefaultModels:
@@ -17,8 +22,20 @@ class TestDefaultModels:
         """Only the last resort: LOCAL_MODEL and GET /models come first."""
         assert DEFAULT_MODELS["local"] == "local-model"
 
+    def test_anthropic_default(self):
+        """Sonnet tier and undated, for the same reason the OpenAI default
+        is `gpt-4o-mini`: a default nobody chose should not be the
+        expensive one, and a dated snapshot pinned here goes stale."""
+        assert DEFAULT_MODELS["anthropic"] == "claude-sonnet-5"
+
     def test_keys(self):
-        assert set(DEFAULT_MODELS.keys()) == {"openai", "mistral", "local"}
+        assert set(DEFAULT_MODELS.keys()) == {
+            "openai", "anthropic", "mistral", "local"}
+
+    def test_every_provider_is_reachable_from_the_cli(self):
+        """The --provider choices are generated from this dict, so a
+        backend cannot be reachable from one and not the other."""
+        assert set(PROVIDERS) == set(DEFAULT_MODELS)
 
 
 class TestResolveProvider:
@@ -59,3 +76,31 @@ class TestResolveProvider:
 
     def test_strips_whitespace(self):
         assert resolve_provider(requested="  mistral  ", has_injected_client=True) == "mistral"
+
+
+class TestAnthropicIsNeverFallenBackFrom:
+    """Naming a provider on purpose is an instruction, not a preference.
+
+    `openai` and `mistral` swap when a key is missing because `openai` is
+    the default nobody chose. Asking for Anthropic and being answered by
+    OpenAI would be a different model, a different bill and a different
+    set of capability flags — so the run stops by name instead, in
+    `AnthropicBackend.__init__`.
+    """
+
+    def test_it_has_a_key_env(self):
+        assert API_KEY_ENV["anthropic"] == "ANTHROPIC_API_KEY"
+
+    def test_no_key_does_not_silently_become_openai(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        assert resolve_provider(requested="anthropic",
+                                has_injected_client=False) == "anthropic"
+
+    def test_a_missing_openai_key_does_not_become_anthropic_either(self, monkeypatch):
+        """The swap is still the pair it has always been."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("MISTRAL_API_KEY", "key")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+        assert resolve_provider(requested="openai",
+                                has_injected_client=False) == "mistral"

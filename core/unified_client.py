@@ -2,6 +2,7 @@ import os
 from typing import List, Dict, Any, Optional
 
 from core.runtime.backends.openai_backend import OpenAIBackend
+from core.runtime.backends.anthropic_backend import AnthropicBackend
 from core.runtime.backends.mistral_backend import MistralBackend
 from core.runtime.backends.local_backend import LocalBackend
 
@@ -19,6 +20,12 @@ class UnifiedClient:
             self._backend = backend
         elif self.provider == "openai":
             self._backend = OpenAIBackend(openai_client=openai_client)
+        elif self.provider == "anthropic":
+            # Key and SDK are the backend's to check, and it refuses by
+            # name: a deployment that asked for Anthropic and got a
+            # different provider's answer would be the opposite of what
+            # it asked for.
+            self._backend = AnthropicBackend()
         elif self.provider == "mistral":
             self._backend = MistralBackend()
         elif self.provider == "local":

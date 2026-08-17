@@ -228,3 +228,25 @@ class TestTheWheelDoesNotShipTheTests:
                  and (child / "__init__.py").exists()}
         assert found - excluded == {"core", "judais", "lobi"}, sorted(found)
 
+
+
+class TestTheAnthropicExtraIsTheOneTheRefusalNames:
+    """`AnthropicBackend` soft-imports the SDK and refuses by naming an
+    extra. An extra that does not exist, or that installs a different
+    floor than the critic asks for, makes that sentence a lie."""
+
+    def test_the_refusal_points_at_an_extra_that_carries_the_sdk(self):
+        source = (REPO / "core" / "runtime" / "backends"
+                  / "anthropic_backend.py").read_text(encoding="utf-8")
+        assert "judais-lobi[anthropic]" in source
+        extras = ast.literal_eval(_setup_kwargs()["extras_require"])
+        assert [item for item in extras["anthropic"]
+                if item.startswith("anthropic")]
+
+    def test_the_critic_and_the_backend_ask_for_the_same_floor(self):
+        """`extras_require` is read here with `ast.literal_eval`, so the
+        pin cannot be a shared name and has to be repeated. This is what
+        keeps the two copies from drifting."""
+        extras = ast.literal_eval(_setup_kwargs()["extras_require"])
+        assert [item for item in extras["critic"]
+                if item.startswith("anthropic")] == extras["anthropic"]
