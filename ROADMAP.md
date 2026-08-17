@@ -230,13 +230,28 @@ it is written once, here — with the addition February could not have known it
 needed: the score must come from the *recorded stream*, not from the agent's
 self-report.
 
-- **An eval harness in-repo.** Missions × behavioural flags (orientation,
-  chaining, absence, state, boundary, disambiguation, submission, synthesis), a
-  mechanically-held train/test split, a dated `RUBRIC_CHANGES` ledger, and
-  scoring from the recorded stream. Run it against the MCP stub server so it
-  needs no GPU; run it against a live endpoint when one is offered. Keep
-  February's KPI list — success rate, iterations, wall time, tokens, and above
-  all **human interventions required** — as the report's columns.
+- ~~**An eval harness in-repo.**~~ **Shipped** — `core/eval/`: `suite.py`
+  (`Mission`, `FLAGS`, `Split`/`SPLITS`/`TEST_SHARE`/`MIN_TEST_MISSIONS`,
+  `RUBRIC_CHANGES`, `Suite`/`load_suite`, `check_the_suite_is_gradeable`),
+  `stub_suite.py` (eleven missions over `tests/mcp_stub_server.py`, one per
+  flag, four held out at 36%), `score.py` (`score_run`/`score_suite` →
+  `Verdict`/`Report`, computed **only** from the recorded stream — tools
+  called, forbidden tools reached for, outcome, the grounding verdict read off
+  the last non-interim `grounding` record, `reply_rejected`, staged?, and the
+  answer's prose only where a mission names a regex), and `run.py` /
+  `python -m core.eval run|score|check`. February's KPI columns —  success
+  rate, iterations, wall time, tokens, **human interventions**
+  (`gate_requested` + `step_started.injected`) and rejected replies — per flag
+  and overall, **train and test never blended**. The eight February flags plus
+  three this repository needed: `routing` and `partial_synthesis` (the two
+  regression cases at the end of this section) and `protocol_shape`, which is
+  the column §2.7's json-versus-native default is waiting on. `EVAL.md` is the
+  guide; a platform keeps its own suite in its own repository as YAML/JSON
+  (`load_suite`). No GPU: `score` reads recorded run directories (RunStore
+  layout, envelopes or bare NDJSON alike), and `tests/fixtures/eval/` holds a
+  real stream per mission — a good agent for each and a bad one for every
+  regression case — produced in-process against the stub by
+  `tests/test_eval_stub_suite.py`.
 - **Recorded-run replay.** A recorder that captures model I/O and tool I/O so a
   mission can be replayed deterministically and a grounding change scored on
   yesterday's runs. Grow `tests/fixtures/` from one fabrication file into a
