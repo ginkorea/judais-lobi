@@ -432,13 +432,23 @@ Keep passing the full `--gate-tool` list on the resumed spawn; `--approval` does
 the subtraction, and doing it yourself as well would make the flag's narrowness
 your bug to maintain.
 
-> **Name a gated tool the way the resolved catalogue names it.** Unlike
-> `allowed_tools`, which matches by `same_tool`, gate names are matched by exact
-> membership in the resolved set (`core/cli.py`: `name in tool_names`,
-> `MissionRunner._gated`). The resolved set is namespaced, so the name to pass is
-> `mcp.compute_cancel_job`, not `compute_cancel_job`. A gate name that matches
-> nothing is dropped silently — the `🔒 gated:` line simply does not print, which
-> is the only signal you get.
+> **A gate name resolves the way a manifest's does, and an unresolvable one is
+> a refusal.** `--gate-tool` goes through `_resolve_gates` (`core/cli.py`), which
+> asks the same `same_tool` question `SkillManifest.resolve` asks — so a platform
+> may pass the wire spelling off its own tool table (`compute_cancel_job`) and
+> the bridge's namespaced name (`mcp.compute_cancel_job`) matches it. Either
+> spelling works, and the resolved name is what the `🔒 gated:` line prints and
+> what the loop enforces.
+>
+> A name that matches **nothing** is a `SystemExit` naming it and listing every
+> tool that *was* offered; a name that matches **two** is a refusal asking you to
+> name the namespace rather than a coin flip. Neither is dropped quietly, and
+> that is the fix for a real bug. Exact membership (`name in tool_names`) was
+> the rule until `_resolve_gates` replaced it: every gate TAIPAN passed in its
+> own spelling matched nothing, the `🔒 gated:` line never printed, and the call
+> somebody was meant to approve was dispatched like any other. This paragraph
+> described the old behaviour for several releases after it stopped being true,
+> which is its own lesson about a doc that states a matching rule twice.
 
 ### The rest of the CLI
 
@@ -458,15 +468,21 @@ judais --mission                        \
        --mcp-url  https://host/mcp      \
        "<the objective>"                \
        --mission-steps 24               \
+       --mission-seconds 900            \
        --provider local                 \
        --model    org/model-name        \
        --skill    /path/to/skills/thing \
        --events   fd:7                  \
+       --control  fd:8                  \
        --history  /tmp/turn-history.json \
        [--gate-tool mcp.some_tool]…     \
        [--approval ap_<id>]             \
+       [--protocol native]              \
        [--swarm]
 ```
+
+A resumed turn is the same line with `--resume <run-id>` and **no objective**:
+the recorded run holds it, and passing a different one is refused.
 
 with `MCP_TOKEN`, `MCP_CLIENT_NAME`, `ELF_PERSONALITY`, `LOCAL_API_BASE` and
 `LOCAL_MODEL` in the environment. The objective is a positional argument.
@@ -508,6 +524,170 @@ The record vocabulary — ten event types, their required fields, the optional
 ones, the five outcome words, and the exit contract — is **`CONTRACT.md`**, and
 its authority is `core/runtime/contract.py`. Read those rather than this section;
 a summary of a contract is a second copy of it.
+
+### The opening frame is the run's posture
+
+`mission_started` is the one record a driver should read in full before it
+renders anything, because five optional fields on it say what kind of run this
+is. All five are read with a default.
+
+| field | what a driver does with it |
+| --- | --- |
+| `sandbox` | `"bwrap"` or `"none"` — the isolation the tool **subprocesses** ran under. Show it. A pane that cannot say whether a shell ran isolated cannot answer the only question an operator will ask about it |
+| `profile` | `safe` \| `dev` \| `ops` \| `god` — the capability profile. A `safe` mission and a `god` one are otherwise indistinguishable on the wire |
+| `audit_ref` | the path of this process's append-only audit file, or **`null`** when `JUDAIS_LOBI_AUDIT` was set to `none` or `off`. The null is the point: no file and no field are different facts |
+| `run_id` | the durable transcript — see below. **Absent**, not null, when nothing is being recorded |
+| `protocol` | `"native"`, and **absent** on a `json` run. Absence is what keeps every stream recorded before the field existed byte-identical |
+
+**`sandbox` describes the subprocess plane only.** A bridged MCP tool is
+dispatched **in this process** — an HTTP or stdio call out of the harness — and
+touches no sandbox whatever this field says. So `sandbox: "none"` is not a
+finding for an MCP-only agent, and a platform whose whole tool plane is MCP can
+run without bubblewrap and lose nothing. The moment the closed tool set contains
+a **code-plane** tool — a shell, an interpreter, a `pip install` — the manifest
+must declare `sandbox: bwrap` *and* the run must actually get it, or the resolve
+refuses at the door. Those are the two different situations, and only the second
+needs bwrap on the host.
+
+### The run store, and picking a killed run back up
+
+`mission_started.run_id` names a directory under `.judais-lobi/runs/<run-id>/`
+in the harness's working directory — moved by `JUDAIS_LOBI_RUNS=<path>`, kept
+nowhere by `JUDAIS_LOBI_RUNS=none|off`, in which case the field is absent. It
+holds an fsync'd, append-only `events.jsonl` of `{seq, at, record}` envelopes and
+a `meta.json` replaced atomically. **Every record is appended there before it
+reaches the `--events` sink**, so the sink is a client of the log and not a
+second copy: a pane that lost the pipe can read the same bytes off disk.
+
+For a driver that means three things it could not do before:
+
+* **Answer "did that run ever finish?"** A log whose records include
+  `mission_finished` is a run that closed; one without is an orphan. Every
+  mission reconciles orphans on the way in — a run untouched for 60 seconds with
+  no `mission_finished` gets one appended — so a follower's stream ends rather
+  than stopping mid-sentence.
+* **Join late.** `RunStore.since(cursor)` and `follow(cursor, stop=…)` replay
+  from a `seq`. `seq` is the store's numbering and never travels on the wire.
+* **Resume.** `judais --mission --resume <run-id>` with **no objective** —
+  it comes off the record, and a different one is refused naming both. The
+  records go on being appended to the *same* directory and there is **no second
+  `mission_started`**; the first new `step_started` carries
+  `resumed: {from_seq, steps_replayed}` instead, which is the frame a follower
+  holding a cursor will actually receive.
+
+  A run that ended `answered`, `answered_with_caveat` or `budget_exhausted` is
+  refused: those are conclusions. `incomplete`, `awaiting_approval` and a log
+  with no ending at all are resumable. A **staged** (`--swarm`) run is refused
+  today, and the refusal names the steps that are done. `max_steps` counts the
+  whole run, so killing and resuming cannot buy extra steps; passing
+  `--mission-steps` on the resumed spawn asks for that many *further* ones. The
+  credential is deliberately not persisted — `MCP_TOKEN` is read from the
+  resuming process's own environment.
+
+### Bounding a run, and stopping one
+
+`--mission-seconds` (env `MISSION_SECONDS`) is the wall clock, and **unset means
+unbounded** — steps bound the work, seconds bound the waiting. It is checked
+between steps and before each model call, and one clock covers the whole of a
+`--swarm` turn; a call already in flight is not interrupted, so the real bound is
+this plus one round trip.
+
+Running out is `outcome: "budget_exhausted"` with `budget: {which, limit, spent}`
+on `mission_finished` — present **exactly when** that outcome is, so a driver may
+branch on the outcome and index the field. `which` is `steps`, `seconds`,
+`bytes` or `tokens`; the last two are declared and not yet emitted. `spent` is
+not always `limit`, because a wall clock is noticed a little after it runs out.
+
+Stopping is not an outcome word. A cancelled run — `SIGTERM`, or
+`{"control": "cancel"}` — ends `incomplete` with `reason: "cancelled"`, and a
+driver that ignores `reason` renders it exactly as it rendered one before the
+field existed. `elapsed_s` rides every `mission_finished` this harness emits and
+is deliberately **not** inside `usage`, which is absent when the provider
+reported nothing while elapsed time is known regardless.
+
+### `--control` — the channel into a running mission
+
+`--events` is what a mission says; `--control` is what it can be told, and until
+it existed the only lever on a running turn was `SIGTERM`. It takes the same
+forms as `--events` in reverse: `fd:N` (what a platform uses — keep the *write*
+end of a pipe and the mission never has a path on disk to race anybody for), a
+FIFO, a path, or `-` for stdin. One JSON object per line; the vocabulary is
+closed (`core/runtime/control.py`, `COMMANDS`).
+
+Map a platform's controls onto it like this:
+
+| the UI affordance | the command | what happens |
+| --- | --- | --- |
+| "steer it" / a message typed at a running turn | `{"control": "inject", "text": "…"}` | appended as a `user` turn immediately before the next model call, and reported back as `step_started.injected: ["…"]` — the only trace on the stream that anybody spoke |
+| "skip this" / an interrupt that is not a stop | `{"control": "cancel_step"}` | the calls of the current step that have not been dispatched are skipped, the model is told in as many words and asked again. **A tool already running is never killed.** An ask that arrives too late is a no-op and says so |
+| "stop" | `{"control": "cancel"}`, then `SIGTERM` if the process must go | the mission winds up at its next check, keeps its transcript, and writes its own `mission_finished` (`incomplete` + `reason: "cancelled"`). The process exits *normally* — a platform asked the mission to stop, not the process to die of a signal nobody sent. `SIGTERM` is the same thing by another road, with the signal's exit status; a **second** `SIGTERM` does not wait |
+| an approvals UI, while the run is standing at the gate | `{"control": "gate_decision", "approval_id": "ap_…", "approve": true, "decided_by": "dana", "note": ""}` | the gated call is dispatched **in that same step** and the mission carries on; the record is written through the same `ApprovalStore` the `--approval` path reads, `decided` then `spent`, by the name you sent. A no is recorded as a refusal and the model is told |
+
+With a channel open a gate **waits** rather than ending the run: bounded by
+`min(what is left of --mission-seconds, GATE_WAIT_S)`, which is 300 s
+(`core/runtime/control.py`). So a driver may now see a `gate_requested` followed,
+under the same `index`, by the `tool_call`/`tool_result` for the call it asked
+about. **Nothing times out into a yes**: the wait running out ends the mission at
+`awaiting_approval` exactly as it always did, with the record left `pending` for
+`--approval` on a later turn. `decided_by` must name somebody — this framework
+has no identity layer and will not invent one, and a command signed by nobody is
+dropped.
+
+A malformed line, an unknown word, an `inject` with no text or a decision signed
+by nobody is dropped with **one** sentence on stderr and the run carries on; a
+channel nobody writes to, or whose writer goes away, is not an error. **Commands
+are not events**: the run answers them by doing the thing.
+
+On `--swarm` there is one channel for the turn, shared the way the wall clock is,
+and it reaches the sub-mission that is running.
+
+### Streamed answers — render them, then replace them
+
+Streaming is **on** by default wherever the backend declares
+`supports_streaming`. The answer's own fragments arrive as `answer_delta`
+records — `index`, `part` (0-based, restarting at 0 for every model call) and
+`text` — decoded out of the half-arrived reply at the source.
+
+The rule for a pane is one sentence: **render the fragments as they land and
+replace the lot with `answer.text` when the `answer` record arrives.** That
+record is always emitted, never suppressed because the deltas added up to the
+same string, and only it has been through the grounding path that may append a
+caveat. Key provisional text by `index` and clear it on the next `step_started`:
+a turn whose reply was rejected leaves fragments behind that no `answer` will
+replace. Fragments are scrubbed per fragment, so a credential split across two of
+them is not recognisable in either half — display them, keep the `answer`.
+
+**Zero of them is normal** and needs no special case: `--no-stream`,
+`MISSION_STREAM=off`, a backend that does not stream, or a turn that called a
+tool instead of answering all produce an `answer` with no deltas before it, which
+is exactly the stream every consumer read before this event existed.
+
+### `--protocol native`, and what the pane sees
+
+Default is `json` and stays there until the eval harness scores the two
+(`ROADMAP.md` §2.5). Under `--protocol native` (env `MISSION_PROTOCOL`) the
+request declares the mission's tools as functions plus a synthetic
+`mission_answer(text)` and asks for `tool_choice=required` with
+`parallel_tool_calls=true`, so an unparseable reply and a tool name nobody offers
+become unrepresentable rather than caught a turn later. It is refused at the door
+on a backend that does not declare both `supports_tool_calls` and
+`supports_tool_choice_required`.
+
+Exactly one thing changes on the wire, and a driver that does not handle it will
+render a turn wrong: **one model turn may produce several
+`tool_call`/`tool_result` pairs under one `index`**, told apart by the `call`
+ordinal — absent on the first call and absent for every call of a `json` run.
+`index` still numbers the *model turn* and is still what `--mission-steps`
+counts. A call the harness refused before dispatching it still uses up its
+ordinal, so a gap in `call` is a refusal and not a lost record, and `usage` rides
+the **first** record of a turn only. A gated tool ends the turn on that call: the
+calls before it have run, the ones after it are not dispatched, and
+`gate_requested.reason` says how many.
+
+Arguments are checked against each tool's own JSON Schema before dispatch in
+**both** protocols (`core/runtime/schema_check.py`; `jsonschema` when `[mission]`
+is installed, a `required`/`type`/`enum` floor when it is not). A violation is a
+`reply_rejected` naming the tool, the field and the rule.
 
 ### Metering a run
 
@@ -573,7 +753,8 @@ and a live pane are one code path. The mapping:
 | `tool_call` | `TOOL_CALL_START` + `TOOL_CALL_ARGS` |
 | `tool_result` | `TOOL_CALL_END` + `TOOL_CALL_RESULT` (output verbatim) |
 | `gate_requested` | `CUSTOM mission.gate_requested` (arguments verbatim) |
-| `answer` | `TEXT_MESSAGE_START` / `CONTENT`×N / `END` + `CUSTOM mission.answer` |
+| `answer_delta` | `TEXT_MESSAGE_START` (on the first one of a step) + one `TEXT_MESSAGE_CONTENT` per fragment, relayed as they arrive |
+| `answer` | `TEXT_MESSAGE_END` + `CUSTOM mission.answer` when deltas were relayed; `TEXT_MESSAGE_START` / `CONTENT`×N / `END` + `CUSTOM mission.answer` when they were not |
 | `grounding` | `CUSTOM mission.grounding`, carrying the `messageId` it judges |
 | `mission_finished` | `RUN_FINISHED`, or `RUN_ERROR` — see below |
 | anything else | dropped, per the compatibility rule |
@@ -590,11 +771,13 @@ a platform writing its own translator should copy them:
   message it judges, so a renderer badges the answer rather than drawing a
   sibling a reconnect can separate from it. An interim `repairing: true` report
   is emitted and does **not** close the message.
-* **One answer, several bounded frames.** `answer_deltas` splits at line
-  boundaries and never inside a fence. When the harness emits `answer_delta`
+* **One answer, several bounded frames.** When the harness emits `answer_delta`
   records the deltas are relayed as they arrive and the `answer` record is the
-  authoritative replacement; when it does not, the module fans the text out
-  itself, so the incremental path is exercised on every run.
+  authoritative replacement — `CUSTOM mission.answer` carries the whole text and
+  a reader replaces what it accumulated. When it does not, the module fans the
+  text out itself with `answer_deltas`, which splits at line boundaries and never
+  inside a fence, so the incremental path is exercised on every run and the
+  frames a pane sees are the same shape either way.
 
 **`RUN_ERROR` versus `RUN_FINISHED`.** `incomplete` with **no** `reason` is a
 crash — the record comes out of a `finally` holding the outcome nothing got
@@ -645,7 +828,7 @@ the objective. A chat-tuned model attends to those and skims past the same text
 pasted into the message: measured 12 August 2026, "tell me more about #2"
 web-searched `#2` literally while the list sat two lines up in the prompt.
 
-### The exit contract, in five lines
+### The exit contract, in six lines
 
 * **Zero events is a failure.** `mission_started` is emitted before the model is
   asked and before the tool plane is touched — before the *first* call, which
@@ -656,10 +839,20 @@ web-searched `#2` literally while the list sat two lines up in the prompt.
 * **`mission_finished` always arrives.** It comes out of a `finally`, so a
   mission killed by an exception still closes its own stream; it closes it
   holding `incomplete`, which reads as "stopped, and the reason is on stderr".
-* **SIGTERM closes the sink.** Flushed and closed, then the default disposition
-  is restored and the signal re-raised — so what was already written survives,
-  and the exit status is still the signal's rather than a spurious clean exit. A
-  consumer that asked a turn to wind up sees it wound up.
+* **SIGTERM asks a run to wind up, and it gets to.** The first signal throws the
+  mission's cancellation: the loop stops at its next step, keeps its transcript,
+  and writes its own `mission_finished` — `incomplete` with
+  `reason: "cancelled"` — and only then is the sink flushed and closed. So a
+  stopped turn closes its stream with the record that says it is over rather than
+  with the record before it. The default disposition is then restored and the
+  signal re-raised, so the exit status is still the signal's rather than a
+  spurious clean exit. A **second** SIGTERM does not wait: it flushes, closes and
+  dies, so a run stuck in a model call can still be stopped.
+* **`--control` is the only channel in**, and nothing on it is an event. One
+  JSON object per line: `inject`, `cancel`, `cancel_step`, `gate_decision`. A
+  malformed line, an unknown word or a decision signed by nobody is dropped with
+  one sentence on stderr and the run carries on; a channel nobody writes to is
+  not an error. `step_started.injected` is the only trace on the stream.
 * **A run leaves a directory.** `mission_started.run_id` names it, and under
   the harness's `.judais-lobi/runs/<run-id>/` there is an fsync'd append-only
   `events.jsonl` holding every record that went on the stream — appended
@@ -698,8 +891,8 @@ web-searched `#2` literally while the list sat two lines up in the prompt.
 ### How a platform pins one
 
 One file, one line, one git tag, and nothing else in the platform states the
-version. TAIPAN's is `deploy/JUDAIS_LOBI_VERSION` (`v0.8.0` at the time of
-writing); `scripts/deploy_judais_lobi.sh` checks that tag out on the pool as a
+version. TAIPAN's is `deploy/JUDAIS_LOBI_VERSION`, holding one tag of this
+repo; `scripts/deploy_judais_lobi.sh` checks that tag out on the pool as a
 **detached git checkout** — not an rsync — and runs `pip install -e '.[mission]'`
 into a named venv, then restarts the pane and reports what is there.
 
@@ -749,8 +942,10 @@ subcommand exists to answer that question in one command.
 
 * `tomllib` is 3.11+. On 3.10 a TOML personality needs `pip install tomli`; the
   loader tries `tomllib`, then `tomli`, then refuses with that sentence.
-* Every optional stack is an **extra**, not a requirement: `[mission]` (the MCP
-  client and `pyyaml` — what a mission actually needs), `[mcp]`, `[critic]`,
+* Every optional stack is an **extra**, not a requirement: `[mission]` (`mcp` +
+  `pyyaml` + `jsonschema` — what a mission actually needs; without `jsonschema`
+  the pre-dispatch argument check falls back to a top-level
+  `required`/`type`/`enum` floor), `[mcp]`, `[critic]`, `[faiss]`,
   `[treesitter]`, `[voice]`, `[dev]`. A plain install must stay small enough that
   `judais --help` works without any of them.
 

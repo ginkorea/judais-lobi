@@ -59,7 +59,15 @@ Frontier models are expensive, rate-limited, and increasingly censored. If you w
    `dev` profile —
    `lobi --profile dev --shell "ls -la"` (`--profile safe|dev|ops|god`, or
    `JUDAIS_LOBI_PROFILE`; without it, `lobi --shell` refuses and names
-   `shell.exec` and the profile that grants it).
+   `shell.exec` and the profile that grants it). Tool subprocesses run under
+   `bwrap` wherever bubblewrap is installed; `--unsandboxed` opts out.
+5. Expect a `.judais-lobi/` directory in the working directory. `audit/` holds
+   the append-only record of every tool dispatch and appears from the first
+   turn; a mission adds `runs/` (the durable transcript, one directory per run)
+   and `approvals/` (a gate's durable record). `JUDAIS_LOBI_AUDIT`,
+   `JUDAIS_LOBI_RUNS` and `JUDAIS_LOBI_APPROVALS` each move their directory (a
+   path) or silence it (`none`/`off`), and a mission says on its opening frame
+   which happened.
 
 Three commands are installed, one per agent. They take the same flags; only the
 personality differs.
@@ -120,34 +128,34 @@ and enums are what decide whether a first call to a faceted search works.
 
 These flags are a **contract**, not a convenience: `core/runtime/contract.py`
 publishes them as `CLI_FLAGS`, a test asserts the parser takes every one, and a
-program that spawns this harness may rely on them. The rest of `--help` is a
-person's surface and may move.
+program that spawns this harness may rely on them. The table below is in
+`CLI_FLAGS` order. The rest of `--help` is a person's surface and may move.
 
 | flag | env | what it does |
 | --- | --- | --- |
 | `--mission` | — | run as a mission rather than a chat turn |
 | `--mcp-url` | `MCP_URL` | the tool plane, over streamable HTTP |
-| `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. One of the two, never both |
-| `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps` |
-| `--mission-steps` | — | hard cap on tool turns. Default **8**, and it counts parse-error turns too |
+| `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. One of the two, never both. (The flag is not in `CLI_FLAGS`; `MCP_STDIO` is in `ENV_VARS`) |
+| `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps`. (Same standing: the env name is published, the flag is not) |
+| `--mission-steps` | — | hard cap on **model turns**, and it counts parse-error turns too. Default `DEFAULT_MISSION_STEPS` = **8** (`core/cli.py`). Under `--resume` it is read as that many *further* steps; unset, a resumed run is held to the total it started with |
 | `--mission-seconds` | `MISSION_SECONDS` | wall-clock cap on the whole run, in seconds. **Unset means unbounded** — steps bound the work, seconds bound the waiting, and a default nobody chose would kill a slow local model mid-answer. Checked between steps and before each model call; one clock for the whole of a `--swarm` turn. A call already in flight is not interrupted, so the real bound is this plus one round trip |
 | `--provider` | — | `openai`, `mistral` or `local` |
 | `--model` | — | which model on it |
-| `--profile` | `JUDAIS_LOBI_PROFILE` | the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. A refusal names the scope and the profile that grants it |
-| `--unsandboxed` | `JUDAIS_LOBI_SANDBOX=none` | run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists; `JUDAIS_LOBI_SANDBOX=bwrap` forces it and refuses on a host without it |
+| `--profile` | `JUDAIS_LOBI_PROFILE` | the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. A refusal names the scope and the profile that grants it. Arrives back as `mission_started.profile` |
+| `--unsandboxed` | `JUDAIS_LOBI_SANDBOX=none` | run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists; `JUDAIS_LOBI_SANDBOX=bwrap` forces it and refuses on a host without it. Arrives back as `mission_started.sandbox` |
 | `--skill` | `MISSION_SKILL` | a `SKILL.md` manifest, or a directory holding one |
 | `--swarm` | `MISSION_SWARM` | stage the mission when it needs staging |
-| `--events` | `MISSION_EVENTS` | where the NDJSON account goes: `-`, `fd:N`, or a path |
-| `--control` | `MISSION_CONTROL` | where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-`. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and the only lever into a running turn besides `SIGTERM`. A bad line is dropped with a sentence on stderr, never fatal |
+| `--events` | `MISSION_EVENTS` | where the NDJSON account goes **out**: `-`, `fd:N`, or a path |
 | `--history` | `MISSION_HISTORY` | a JSON file of prior conversation turns |
-| `--gate-tool` | — | a tool to offer and refuse to call. Repeatable |
-| `--approval` | `MISSION_APPROVAL` | an approval id somebody already decided. Lifts that one tool out of the gated set, for this run only |
+| `--gate-tool` | — | a tool to offer and refuse to call. Repeatable. Resolved by `same_tool`, so a bare name matches the namespaced one; a name that matches nothing, or two things, is a refusal at the door |
+| `--approval` | `MISSION_APPROVAL` | an approval id somebody already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched |
+| `--resume` | `MISSION_RESUME` | carry on a recorded mission by its run id. The objective comes off the record, so the message may be omitted |
 | `--temperature` | — | sampling. Unset sends **nothing** and the server's own default applies |
 | `--top-p` | — | nucleus sampling. Unset sends nothing |
 | `--seed` | — | a seed where the server honours one. Not a determinism guarantee |
-| `--resume` | `MISSION_RESUME` | carry on a recorded mission by its run id. The objective comes off the record, so the message may be omitted |
-| `--no-stream` | `MISSION_STREAM=off` | ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`: the answer's own fragments go out as `answer_delta` records while the model is still writing them, and the console prints them as they land. The `answer` record that follows is still the whole of it, and turning this off changes nothing else |
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native`. `native` declares the mission's tools as **functions**, declares a `mission_answer(text)` beside them and asks the server for `tool_choice=required` — so an unparseable reply and a tool name nobody offers stop being possible instead of being caught a turn later, and one turn may call several tools. Refused at the door on a backend that does not declare `supports_tool_calls` and `supports_tool_choice_required`. **Off by default on purpose**: it is measured before it is anybody's default |
+| `--no-stream` | `MISSION_STREAM=off` | ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`: the answer's own fragments go out as `answer_delta` records while the model is still writing them, and the console prints them as they land. The `answer` record that follows is still the whole of it, and turning this off changes nothing else |
+| `--control` | `MISSION_CONTROL` | where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-`. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and the only lever into a running turn besides `SIGTERM`. A bad line is dropped with a sentence on stderr, never fatal |
 
 The rest of the published environment: `MCP_CLIENT_NAME` is what this client
 calls itself in the MCP `initialize` handshake — set it to the agent's name, or a
@@ -524,13 +532,18 @@ the stream sees the widening as that tool's **absence from
 `mission_started.gated`**; there is no separate field announcing it.
 
 `ApprovalStore.reconcile(live_run_ids)` marks pending requests whose run is gone
-as `abandoned`, which is a *refusal*. It is provided and not yet wired to
-startup: nothing in this repo can say which runs are alive until run durability
-lands, and a liveness check that guessed would abandon live requests.
+as `abandoned`, which is a *refusal*. It is **provided and still not called from
+anywhere in `core/`**: the run store landed in 0.10.0 and can say which runs were
+recorded, but "recorded" is not "alive" — only whoever spawned the processes
+knows that, so the caller is the platform and the list of live ids is its
+answer. A liveness check that guessed would abandon live requests.
 
-Name a gated tool the way the resolved catalogue names it: unlike
-`allowed_tools`, gate names are matched by exact membership in the resolved set,
-and bridged tools are namespaced (`mcp.cancel_job`, not `cancel_job`).
+Gate names resolve the way `allowed_tools` does — through `same_tool`, so a
+manifest-style bare name matches the namespaced one the bus dispatches. A
+`--gate-tool` that matches nothing, or that matches two offered tools, is a
+**refusal at the door** listing what was offered; it is never dropped quietly,
+because an operator who asked for a gate and got a mission without one has been
+told the opposite of what happened.
 
 ### `--swarm` — staged decomposition, when it is needed
 
@@ -574,18 +587,41 @@ only machine channel, which is why a consumer uses `fd:` or a path and never `-`
 the console rendering and the record stream never share bytes.
 
 The last turn of a mission is the one with nothing to show: the tools have all
-run and the model is writing prose. So the model call **streams** wherever the
-backend can, and the answer's own fragments go out as `answer_delta`
-(`index`, `part`, `text`) while it is still being written — decoded out of the
-half-arrived reply at the source, not fanned out of a finished string by
-whoever is rendering it. They are provisional: the `answer` record still
-follows, still carries the whole text, and is **always** emitted, so a consumer
-shows the fragments and then replaces them. `--no-stream` (or
-`MISSION_STREAM=off`) turns it off and changes nothing else.
+run and the model is writing prose. So that model call **streams** wherever the
+backend can, and the answer goes out in pieces as it is written. That is the
+tenth record type, and the rules for it are below the table.
 
-The vocabulary — ten event types, their required and optional fields, the five
-outcome words, the exit contract, and the rule for what is a breaking change —
-is **[`CONTRACT.md`](CONTRACT.md)**, and its authority is
+The vocabulary is ten record types, in the order a run tends to produce them
+(`contract.EVENTS`):
+
+| event | when |
+| --- | --- |
+| `mission_started` | before the first model call and before the tool plane is touched. Carries the objective, the catalogue, the gated names, `max_steps`, and the run's posture — `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol` |
+| `step_started` | a model turn is about to be asked for. Carries the staged `plan`, a `compacted` record, `resumed`, or `injected` when there is one |
+| `reply_rejected` | the model's reply was not a decision this loop could act on. A recorded step, never a crash |
+| `tool_call` | **before** the call is dispatched, so a watcher shows what is about to happen |
+| `tool_result` | the bus answered. `output` is the whole result; the bound is what the *model* was shown |
+| `gate_requested` | a gated tool was named and not called, arguments verbatim |
+| `answer_delta` | a fragment of the answer while the model is still writing it |
+| `answer` | the finished answer and its outcome |
+| `grounding` | the validator's report, twice when a repair happened |
+| `mission_finished` | terminal, out of a `finally`, with the outcome, the counts, the run's `usage` and `elapsed_s` |
+
+`answer_delta` is the one to read the rules for before rendering it. It carries
+`index` (the step whose model call is producing it), `part` (a 0-based ordinal
+that restarts at 0 for **every** model call) and `text`; concatenating `text`
+over `part` gives the answer as streamed. It is **provisional and replaced, not
+completed** — the `answer` record always follows, carries the whole text, and is
+the authority, because the fragments are decoded out of a half-written reply
+while the answer has been through the grounding path that may append a caveat.
+**Zero of them is normal**: a backend that does not stream, `--no-stream`, a
+turn that called a tool, a library caller whose `chat_fn` returns a string. Each
+fragment is scrubbed on its own, so a credential split across two of them is not
+recognisable in either half — display the fragments, keep the `answer`.
+
+Those ten, their required and optional fields, the five outcome words, the exit
+contract and the rule for what counts as a breaking change are
+**[`CONTRACT.md`](CONTRACT.md)**, whose authority is
 `core/runtime/contract.py`. A consumer pins it:
 
 ```python
@@ -664,44 +700,63 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.12.0 — 3341 tests collected.** Mission mode, skill manifests, the grounding
-validator, `--swarm`, the NDJSON mission stream and the published contract are
-all in this release. 0.12.0 **streams the answer and takes commands**: a tenth
-event, `answer_delta`, carries the answer while the model writes it (the
-`answer` record always follows and is authoritative); `--control fd:N` is an
-NDJSON channel into a running mission — inject an instruction, cancel a step
-or the run, or answer a gate while the run still stands at it; and
-`core/runtime/agui.py` translates the stream into AG-UI events for the next
-browser. 0.11.0 added **native tool calling behind a flag**:
-`--protocol native` constrains the decoder to the declared functions plus a
-synthetic `mission_answer` (unknown names and unparseable arguments become
-unrepresentable), allows several calls per step, validates arguments against
-the tool's schema before dispatch, and announces itself as `protocol` on
-`mission_started` — default stays `json` until the eval harness scores it;
-the prompt prefix is byte-stable for prefix caching and the context window
-evicts tool round trips before user turns. 0.10.0 was **durable and bounded**: every mission leaves a
-numbered, fsync'd log behind (`core/durable.py`, `run_id` on `mission_started`)
-and `--resume <run-id>` picks a killed one back up from it; `--mission-seconds`
-bounds the wall clock and `budget_exhausted` names which budget ran out;
-SIGTERM lets the run write its own `mission_finished` (`reason: cancelled`);
-every model call's `usage` and the run's totals plus `elapsed_s` ride the
-stream; a gate writes a durable approval (`approval_id`) that a later run
-carries with `--approval <id>` — one tool, one run, nothing defaults to yes;
-and every store `core/` writes is atomic. 0.9.0 was **safe by default**: tool subprocesses run under
-`bwrap` wherever bubblewrap exists (opt out with `--unsandboxed`, announced as
-`sandbox` on `mission_started`), the capability profile is deny-by-default
-`safe` (`--profile dev|ops|god` opts up and every refusal names the scope and
-the profile that grants it), every default bus writes an append-only audit
-file (`audit_ref`), a manifest that names a code-plane tool must declare
-`sandbox: bwrap` and get it, and one redactor scrubs every error string that
-reaches the stream. The kernel's role prompts are bounded by the same context
-window the mission uses, and Phase 8 is closed. `CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is
-how a platform deploys this framework as its own agent.
+**v0.12.0 — 3341 tests collected.** Mission mode, skill manifests, the
+grounding validator, `--swarm`, the NDJSON mission stream and the published
+contract are all in this release. What 0.12.0 **is**, rather than what each
+release added:
 
-`ROADMAP.md` is the one roadmap: §1 is where the framework stands at 0.12.0
-and what is still missing, §2 is Phases 9–13, and §5 is the history — the
-Feb 2026 blueprint, the Phase 8 disposition, and what two weeks in production
-taught. `NEXT_STEPS.md` and `PHASE_8.md` were folded into it on 15 Aug 2026.
+* **Safe by default.** Tool subprocesses run under `bwrap` wherever bubblewrap
+  exists, announced as `mission_started.sandbox` and opted out of only with
+  `--unsandboxed`. The capability profile is deny-by-default `safe`, and every
+  refusal names the scope and the profile that grants it. Every default
+  `Tools()` bus writes an append-only, secret-redacted audit file, named on the
+  stream as `audit_ref`. A manifest naming a code-plane tool must declare
+  `sandbox: bwrap` and actually get it. One redactor scrubs every free-text
+  field that reaches the stream or stderr.
+* **Durable and bounded.** Every mission leaves a numbered, fsync'd log behind
+  (`core/durable.py`, `run_id` on `mission_started`) and `--resume <run-id>`
+  picks a killed one back up from it. `--mission-seconds` bounds the wall clock
+  and `budget_exhausted` names which budget ran out. `SIGTERM` lets the run
+  write its own `mission_finished` (`reason: cancelled`). A gate writes a
+  durable approval record (`approval_id`) that a later run carries with
+  `--approval <id>` — one tool, one run, nothing defaults to yes. Every store
+  `core/` writes is atomic.
+* **Metered.** Every model call's `usage` rides the record that call produced;
+  the run's totals and `elapsed_s` ride `mission_finished`. Reported, never
+  estimated, and absent rather than zero. Cost comes from a `pricing:` block a
+  deployment writes, never from a price list in this repo.
+* **Native tool calling, behind a flag.** `--protocol native` constrains the
+  decoder to the declared functions plus a synthetic `mission_answer`, allows
+  several calls per step (`call`), and validates arguments against each tool's
+  own schema before dispatch — in both protocols. The default stays `json`
+  until the eval harness scores the two.
+* **Streamed answers, and a channel back in.** `answer_delta` carries the
+  answer while the model is still writing it (`--no-stream` turns it off; the
+  `answer` record always follows and is the authority). `--control` reads
+  NDJSON commands *into* a running mission — `inject`, `cancel`, `cancel_step`,
+  `gate_decision`. `core/runtime/agui.py` translates the stream into AG-UI
+  frames for a browser that speaks them.
+* **One roadmap.** `ROADMAP.md`: §1 is where 0.12.0 stands and what is still
+  missing, §2 is Phases 9–13, §3 the principles, §5 the history — the Feb 2026
+  blueprint, the Phase 8 disposition, and what two weeks in production taught.
+  `NEXT_STEPS.md` and `PHASE_8.md` were folded into it on 15 Aug 2026.
+
+`CONTRACT.md` is the seam a consumer pins; `PLATFORMS.md` is how a platform
+deploys this framework as its own agent.
+
+### Release history
+
+One line each. The commit for every one of these is `release: <version> — …`.
+
+| version | date | what it was |
+| --- | --- | --- |
+| 0.12.0 | 16 Aug 2026 | `answer_delta` at the source, a `--control` channel into a running mission, an AG-UI translator |
+| 0.11.0 | 16 Aug 2026 | native tool calling behind `--protocol native`; arguments schema-checked before dispatch; a byte-stable prompt prefix, and a window that evicts tool round trips first |
+| 0.10.0 | 16 Aug 2026 | durable and bounded: the fsync'd run log and `--resume`, a wall clock and a cancel that finish cleanly, the usage ledger and `elapsed_s`, approvals as durable records |
+| 0.9.0 | 15 Aug 2026 | safe by default: sandbox on, the `safe` profile, audit on every bus, one redactor. Phase 8 closed |
+| 0.8.2 | 15 Aug 2026 | the honest stream: it opens before triage, the conversation is windowed, one owner for the result cut, Mistral over httpx, a bwrap that runs |
+| 0.8.1 | 15 Aug 2026 | the wheel stops shipping `tests/` |
+| 0.8.0 | 15 Aug 2026 | the separation: the contract as data, the `tai` entry point, the `mission` extra, `PLATFORMS.md` |
 
 ### Completed
 
@@ -726,9 +781,13 @@ Phase 8 closed at 0.9.0, and the numbering continues in `ROADMAP.md` §2:
 
 * ✅ Phase 9 — durable and bounded (0.10.0): a fsync'd append-only transcript,
   `--resume`, a wall-clock budget, a usage ledger, approvals as durable records
-* ⏳ Phase 10 — measurable: an in-repo eval harness scored from recorded runs
+* ⏳ Phase 10 — measurable: an in-repo eval harness scored from recorded runs.
+  **Next**, and the reason `--protocol native` is not yet a default
 * ⏳ Phase 11 — one runtime: the mission loop and the kernel become one `Run`
-* ⏳ Phase 12 — providers and streaming: `answer_delta` at the source
+* ⏳ Phase 12 — providers and streaming. Partly shipped early, on evidence:
+  constrained decoding in 0.11.0, `answer_delta` + the AG-UI translator + the
+  control channel in 0.12.0. What remains is the provider work — one HTTP
+  client, a retry policy owned somewhere neutral, Anthropic as a backend
 * ⏳ Phase 13 — embeddable: a library API first, the CLI second (1.0)
 
 ### Phase 7 Highlights (7.0–7.4)
@@ -810,17 +869,29 @@ If you want to understand the **current implementation**, inspect:
 * `core/runtime/contract.py` — the seam a consumer pins, as data
 * `core/runtime/mission.py`, `mission_stream.py`, `swarm.py` — the mission loop, its NDJSON account, and staged decomposition
 * `core/runtime/skills.py` — the `SKILL.md` loader: closed tool set, prompt, grounding grammar, `sdk_import`
+* `core/runtime/grounding.py`, `results.py` — the identifier/claim validator, and the per-mission result store it reads paths out of
+* `core/runtime/schema_check.py` — a tool call's arguments against that tool's own JSON Schema, before dispatch, in both protocols
+* `core/runtime/answer_stream.py` — the answer decoded out of a half-written reply, bounded into `answer_delta` fragments
+* `core/runtime/control.py` — the closed command vocabulary `--control` reads: `inject`, `cancel`, `cancel_step`, `gate_decision`
+* `core/runtime/approvals.py`, `resume.py` — the durable approval record and its states; the door, the replay and the orphan reconciler behind `--resume`
+* `core/runtime/usage.py` — one ledger: what each call reported, what the run spent, and a cost only if somebody priced it
+* `core/runtime/context_window.py`, `messages.py` — keeping a conversation inside the model's window, and the byte-stable prompt prefix every turn is assembled by
+* `core/runtime/backends/`, `provider_config.py`, `core/unified_client.py` — `openai`, `mistral`, `local`, and what each declares it can do
 * `core/runtime/agui.py` — optional, import-free translator from the mission stream to AG-UI event frames (`translate` for a replay, `Translator` for a live follower); dicts only, no SDK. See `PLATFORMS.md` §"AG-UI"
+* `core/durable.py` — the durability primitive, importing nothing else in this tree: atomic writes, `fsync_append`, and `RunStore`
+* `core/budgets.py` — one owner for steps, seconds, and the cancellation a `SIGTERM` or a `--control` `cancel` throws
+* `core/bounding.py` — one owner for the tool-result cap and the cut it makes
+* `core/redact.py` — one redactor, at the emitter, for every free-text field and every traceback
 * `core/contracts/` — Pydantic v2 contract models for all session data
 * `core/sessions/` — SessionManager for disk artifact persistence
 * `core/kernel/` — state machine, budgets, orchestrator, workflow templates (`workflows.py`)
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory (numpy fallback if FAISS unavailable)
-* `core/tools/` — ToolBus, capability engine, sandbox, consolidated tools (fs, git, verify, repo_map, patch)
-* `core/policy/` — profiles, god mode, audit logging
+* `core/tools/` — ToolBus, capability engine, sandbox, the MCP bridge, consolidated tools (fs, git, verify, repo_map, patch)
+* `core/policy/` — `profiles.py` (the four cumulative profiles and `select_profile`), `audit.py` (the append-only log on every default bus), `god_mode.py`
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
 * `core/patch/` — patch engine: parser, matcher, applicator, worktree manager, engine orchestrator
-* `core/judge/` — composite judge: tier scoring, candidate sampling
+* `core/judge/`, `core/critic/`, `core/campaign/` — composite judge and candidate sampling; the optional external critic; the campaign orchestrator
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:
@@ -832,22 +903,24 @@ If you want to understand the **entry point**, see:
 
 # 🏗 Architectural Direction
 
-The target architecture (from the roadmap) is:
+The architecture, as built. Every bullet below is in the tree today; what is
+still ahead has one home — `ROADMAP.md` §2 — and is not restated here:
 
 * Artifact-driven state (no conversational drift)
 * Three-tier orchestration: Campaign graph (Tier 0) → Workflow graph (Tier 1) → Phase-internal planning (Tier 2)
 * Pluggable workflows — static templates for coding, red teaming, data analysis, and arbitrary tasks
 * Campaign orchestration — multi-step missions with DAG decomposition, HITL approval gates, and artifact handoff (pre-authored plans)
 * Capability-gated tool execution with least-privilege by intersection (Global ∩ Workflow ∩ Step ∩ Phase)
-* Sandbox isolation (bwrap / nsjail)
+* Sandbox isolation — `bwrap` is the backend that ships, and the default wherever bubblewrap exists. February's Tier-2 `nsjail` would go behind the same `SandboxRunner` interface, not beside it (`ROADMAP.md` §3)
 * Tests > Lint > LLM scoring hierarchy
 * Endpoint-probed orchestration (vLLM / TRT-LLM serve the model; the client asks the endpoint how big its window is)
 * Optional external critic (frontier logic auditor)
 
-The system is moving toward:
+The kernel path, end to end. (The mission path is `--mission`, above, and the
+two are still two runtimes — `ROADMAP.md` §2.6 is where they become one.)
 
 ```
-CLI (--task / --campaign / --campaign-plan / --workflow)
+CLI (--campaign / --campaign-plan)
   ↓
 Campaign Orchestrator (Tier 0 — optional, multi-step missions)
   ↓  plan → HITL approve → dispatch → synthesis
@@ -865,7 +938,7 @@ Deterministic Judge (Tests > Lint > LLM)
 As of Phase 7.4:
 
 * The kernel state machine is parameterized by `WorkflowTemplate` objects — no hardcoded phase names, transitions, or branching rules. The coding pipeline is one template; custom domains define their own.
-* `CODING_WORKFLOW` and `GENERIC_WORKFLOW` are built-in templates. `select_workflow()` resolves by CLI flag, policy, or default.
+* `CODING_WORKFLOW` and `GENERIC_WORKFLOW` are built-in templates. `select_workflow()` resolves by an explicit argument, then a `PolicyPack` field, then the default `CODING_WORKFLOW` — no CLI flag is wired to it today.
 * Per-phase capability profiles (`phase_capabilities`) create temporal sandboxes — PLAN can read but not write, PATCH can write but only through the patch engine.
 * Tools are dumb executors behind a sandboxed, capability-gated bus.
 * Every **subprocess-based** tool call flows through `ToolBus → CapabilityEngine → SandboxRunner → Subprocess`. Pure-Python tools are still gated by ToolBus but execute in-process. `HUMAN_REVIEW` uses `$EDITOR` directly (user-initiated TTY) and is an explicit exception.
@@ -881,7 +954,12 @@ As of Phase 7.4:
 * **EffectiveScope intersection** (`Global ∩ Workflow ∩ Step ∩ Phase`) is enforced per tool call.
 * **Context window manager** keeps prompts within model limits, auto-compacts history, and stores oversized tool output to disk with a retrieval hint.
 
-Local inference has landed (`--provider local`), and Phase 8 closed at 0.9.0 — `ROADMAP.md` §5.10 records where each of its milestones ended up.
+Local inference has landed (`--provider local`), and Phase 8 closed at 0.9.0 —
+`ROADMAP.md` §5.10 records where each of its milestones ended up. Phase 9 closed
+at 0.10.0. The mission path has since gained the run store, the wall clock, the
+usage ledger, the native protocol and the control channel; the *kernel* path has
+gained none of them, which is the gap `ROADMAP.md` §1.2 calls "two agent
+runtimes".
 
 The kernel is the only intelligence. Tools report. The kernel decides.
 
@@ -899,7 +977,10 @@ See: `core/memory/memory.py`
 
 This will be abstracted for local embeddings in later phases.
 
-Short-term history remains for direct chat mode. Direct CLI tool calls still route through ToolBus (with a permissive default policy unless a policy pack is supplied).
+Short-term history remains for direct chat mode. Direct CLI tool calls route
+through the same `ToolBus`, under the same **deny-by-default `safe` profile** as
+a mission — a `PolicyPack` or `--profile` opts up, and nothing is permissive by
+omission.
 Agentic mode uses session artifacts as the sole source of truth (Phase 3).
 
 ---
@@ -963,30 +1044,38 @@ no cost, and `local` has no cost until somebody prices it.
 
 # 🛠 Current Capabilities
 
-Direct mode still works.
+Direct mode still works, and it is governed by the same deny-by-default profile
+a mission is: `safe` reads the filesystem and git, runs the verifiers and calls
+a connected MCP server. Anything that writes, executes or reaches the open
+network needs `--profile` (or `JUDAIS_LOBI_PROFILE`), and a refusal names the
+scope and the profile that grants it.
 
 ```bash
-lobi "explain this function"
-lobi --shell "list files"
-lobi --python "plot sine wave"
-lobi --search "latest linux kernel"
-lobi --research "linux kernel LTS release timeline"
-lobi --research --academic "transformer sparsity survey 2023"
-lobi --install-project
+lobi "explain this function"                      # safe
+lobi --profile dev  --shell  "list files"         # shell.exec  → dev
+lobi --profile dev  --python "plot sine wave"     # python.exec → dev
+lobi --profile ops  --search "latest linux kernel"            # http.read → ops
+lobi --profile ops  --research "linux kernel LTS release timeline"
+lobi --profile ops  --research --academic "transformer sparsity survey 2023"
+lobi --profile ops  --install-project             # pip.install → ops
 ```
 
 JudAIs:
 
 ```bash
-judais "analyze this target" --shell
+judais --profile dev "analyze this target" --shell
 ```
 
-Voice (optional extra):
+Voice (optional extra; `audio.output` is an `ops` scope):
 
 ```bash
 pip install judais-lobi[voice]
-lobi "sing" --voice
+lobi --profile ops "sing" --voice
 ```
+
+The scope each tool asks for is on its `ToolDescriptor`
+(`core/tools/descriptors.py`), and which profile grants it is one table
+(`core/policy/profiles.py`, `PROFILE_SCOPES`). Neither is typed out twice.
 
 ---
 
@@ -1073,14 +1162,19 @@ Judais-Lobi is not trying to be:
 * Another SaaS IDE
 * Another prompt toy
 
-It is attempting to become:
+What is already true at 0.12.0:
 
-* A local-first agentic execution kernel (not just developer — any structured task domain)
-* Deterministic and replayable
-* Hardware-aware
-* Capability-constrained (least-privilege by intersection)
-* Mission-capable (campaign orchestration with HITL approval gates)
-* Air-gap ready
+* Capability-constrained — deny-by-default scopes, least-privilege by intersection, refusals that name the fix
+* Mission-capable — a governed tool plane, human gates that are durable records, campaign orchestration with HITL approval
+* Replayable in one direction — a run leaves an fsync'd log and `--resume` picks it back up. *Deterministic* replay (the same model I/O twice) is Phase 10's recorder, not something this release claims
+* Local-first — `--provider local` against any OpenAI-compatible endpoint, never silently fallen back away from
+* Air-gap capable — every external dependency is an extra and capability-gated; nothing in a mission reaches the network unless a tool declared it
+
+What it is still becoming, and where the plan lives — `ROADMAP.md` §2:
+
+* One runtime instead of two (§2.6)
+* Measurable: an in-repo eval harness scored from recorded runs (§2.5)
+* Embeddable: a library API first and the CLI second, at 1.0 (§2.8)
 
 The design philosophy is explicit in `ROADMAP.md` §3:
 
