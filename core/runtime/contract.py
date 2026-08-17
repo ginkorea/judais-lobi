@@ -401,7 +401,20 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: as what it is — somebody talked to the run — and it is the only
     #: record that a control command was acted on, because commands
     #: coming *in* are not events going *out*.
-    STEP_STARTED: ("plan", "compacted", "resumed", "injected"),
+    #: ``catalogue`` — ``["mcp.echo", …]``, the whole set of tool names the
+    #: model may name **from this step on**, and present only on a step where
+    #: that set CHANGED.  A server may register a tool mid-run and notify
+    #: (``notifications/tools/list_changed``); where the mission's closed set
+    #: allows the new name, it joins, the catalogue in the system turn is
+    #: re-rendered, and this field says so.  Absent on every other step —
+    #: which is every step of every run whose plane held still — so the set
+    #: named by ``mission_started.catalogue`` remains correct until a
+    #: ``step_started`` replaces it.
+    #:
+    #: The whole list and not a delta: a consumer holding a set should be
+    #: able to replace it rather than do arithmetic on it, and a consumer
+    #: that joined late has no earlier list to apply a delta to.
+    STEP_STARTED: ("plan", "compacted", "resumed", "injected", "catalogue"),
     #: ``tool`` — the name the model wrote, when it wrote one.  Absent when
     #: the reply was rejected before a name could be read out of it.
     #:

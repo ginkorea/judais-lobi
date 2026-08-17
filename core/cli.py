@@ -555,6 +555,39 @@ def _run_mission(elf, args, name, style):
         raise SystemExit(1)
 
 
+def _reconcile_approvals(approvals, orphaned):
+    """Abandon the pending approvals of the runs just judged orphaned.
+
+    :meth:`~core.runtime.approvals.ApprovalStore.reconcile` shipped in 0.9.0
+    with no caller and a docstring saying why: nothing in this repository
+    could yet say which runs were alive, and a liveness check that guessed
+    would abandon live requests — a refusal nobody made.  This is the
+    caller, and *orphaned* is the answer to the question it was waiting for:
+    the ids :func:`~core.runtime.resume.reconcile_orphans` has just closed
+    by the one rule this harness states out loud (``ORPHAN_STALE_S``, no
+    ``mission_finished``, and not this process's own run).
+
+    **Only those.**  Every other run stays in the live set, and that is not
+    caution, it is the feature working: a run that stopped at
+    ``awaiting_approval`` a minute ago is *finished* and not orphaned, and
+    its pending record is precisely what ``--approve`` and then
+    ``--approval`` on the next turn are for.  Abandoning approvals for
+    "every run that is not this one" would make the gate unanswerable — the
+    next mission to start would refuse the decision the last one asked for.
+
+    Nothing happens when nothing was orphaned, so an ordinary run does not
+    read the approvals directory at all.  A pending record naming no run is
+    left alone by ``reconcile`` itself: it was not asked by a run this can
+    answer for.
+    """
+    if approvals is None or not orphaned:
+        return []
+    dead = {str(run) for run in orphaned}
+    live = [approval.run_id for approval in approvals.pending()
+            if approval.run_id and approval.run_id not in dead]
+    return approvals.reconcile(live)
+
+
 def _mission(elf, args, name, style):
     """Discover tools over MCP, bridge them, and let the model choose.
 
@@ -816,6 +849,22 @@ def _mission(elf, args, name, style):
             f"{', '.join(reconciled)}",
             style="yellow",
         )
+        # And the other half of an orphan: a gate it stopped at. The record
+        # is a question addressed to a person about a run that is gone, and
+        # left pending it can still be answered yes — `--approval` would
+        # then widen the closed set of some LATER mission on the strength of
+        # a decision made about a dead one. Abandoning is a refusal, not a
+        # pass; see `_reconcile_approvals` for why it reaches only the runs
+        # the staleness rule just closed.
+        abandoned = _reconcile_approvals(approvals, reconciled)
+        if abandoned:
+            console.print(
+                f"🧾 reconciled: {len(abandoned)} approval(s) abandoned — "
+                f"the run that asked is one of the orphans above, so the "
+                f"request is refused rather than left answerable: "
+                f"{', '.join(a.approval_id for a in abandoned)}",
+                style="yellow",
+            )
 
     # Parsed BEFORE the connection, so an unusable regex or an unknown key is
     # a refusal at the door rather than at the end of an 11,000-second
@@ -895,6 +944,28 @@ def _mission(elf, args, name, style):
         return schemas
 
     declared: list = []
+
+    def _redeclare(offered) -> None:
+        """Re-render the declared function namespace from *offered*.
+
+        THE SEAM for a plane that changes under a running mission, and it
+        is one function with two callers: once below, when the closed set
+        is first resolved, and again from
+        :class:`~core.runtime.mission.MissionRunner`'s ``plane_changed``
+        hook every time the runner's offered set moves.  ``chat_fn`` reads
+        ``declared`` on every call, so the next native request declares
+        exactly what the catalogue in the system turn now lists — a
+        decoder constrained to a namespace that is one tool behind is a
+        model that cannot call the tool the prompt just told it about.
+
+        The runner owns *what is offered now* and this owns *how a tool is
+        declared to a server*; the hook carries names across that line and
+        nothing else.  ``RESULT_TOOL`` is dropped because ``chat_fn``
+        declares the mission's own store itself, and a function name
+        declared twice in one request is a request nobody should send.
+        """
+        declared[:] = _function_schemas(
+            [name for name in offered if name != RESULT_TOOL])
 
     # SAMPLING, AND THE DECISION NOT TO CHOOSE ONE FOR YOU.
     #
@@ -1198,7 +1269,7 @@ def _mission(elf, args, name, style):
             # tool plane is what it offered as well as what it did.
             if recorder is not None:
                 recorder.catalogue(bus, tool_names)
-            declared[:] = _function_schemas(tool_names)
+            _redeclare(tool_names)
             # The identifier check must not flag the name of a tool this
             # mission offered — the harness wrote that name into the prompt
             # itself. Derived from the resolved set rather than typed into a
@@ -1397,6 +1468,16 @@ def _mission(elf, args, name, style):
                     system_message=system_message,
                     max_steps=max_steps,
                     validator=validator,
+                    # The staged path's second opinion, asked of the
+                    # SYNTHESIZED answer — which is the only text a staged
+                    # turn answers with — through the same function the
+                    # direct path's runner asks with.
+                    critic=critic,
+                    # Handed on to every sub-mission this builds, so a
+                    # staged turn is governed exactly as the direct one is
+                    # when the plane changes under it.
+                    admits=manifest.admits if manifest else None,
+                    plane_changed=_redeclare,
                     gated=gated,
                     approvals=approvals,
                     approval=ticket,
@@ -1434,6 +1515,16 @@ def _mission(elf, args, name, style):
                     max_steps=max_steps,
                     validator=validator,
                     critic=critic,
+                    # The plane may grow under this run — a server
+                    # registers a tool and notifies, the bridge picks it
+                    # up. The manifest decides whether the new name is
+                    # inside the closed set (with no manifest, the run was
+                    # already offered the whole bridge, so whatever it
+                    # grew is offered too), and `_redeclare` keeps the
+                    # native protocol's function namespace in step with
+                    # the catalogue.
+                    admits=manifest.admits if manifest else None,
+                    plane_changed=_redeclare,
                     gated=gated,
                     approvals=approvals,
                     approval=ticket,

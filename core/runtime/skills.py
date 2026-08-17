@@ -34,15 +34,24 @@ Three things come out of a manifest, and nothing else does:
 
 One thing a manifest is *refused* for, and it is the reason
 :attr:`SkillManifest.sandbox` exists: a closed set that names a tool
-which **runs code the model composed** — a shell, an interpreter, a
-``pip install`` — and does not say ``sandbox: bwrap`` next to it.  A
-governed mission that can run arbitrary code on the host without
-isolation is the hazard TAIPAN's ``HOSTED_SDK_CODE_PLANE_DESIGN.md``
-names, and it is not one a hosted platform should have to find in a
-transcript.  The check runs in both directions — the declaration is
-required of the manifest, and the isolation is required of the bus the
-mission is about to run on, because a manifest that asked for bwrap and
-got ``none`` asked for nothing.
+which **runs code the model composed on this host** — a shell, an
+interpreter, a ``pip install`` — and does not say ``sandbox: bwrap``
+next to it.  A governed mission that can run arbitrary code on the host
+without isolation is the hazard TAIPAN's
+``HOSTED_SDK_CODE_PLANE_DESIGN.md`` names, and it is not one a hosted
+platform should have to find in a transcript.  The check runs in both
+directions — the declaration is required of the manifest, and the
+isolation is required of the bus the mission is about to run on, because
+a manifest that asked for bwrap and got ``none`` asked for nothing.
+
+*On this host* is load-bearing and is the correction 0.14 made to it.
+A **bridged** tool — ``mcp.run_shell_command``, a name this bus resolves
+to a ``tools/call`` on a discovered server — executes on the server, and
+bwrap here would isolate nothing about it.  Gating it on that rule
+demanded a declaration nobody could honestly make; it is not gated, and
+what governs it instead is the server, the closed set, the ``mcp.call``
+capability and ``--gate-tool``.  See
+:meth:`SkillManifest.code_plane_entries`.
 
 **The format is generic.**  Frontmatter between ``---`` fences, an
 optional ``skill:`` block for the operational fields, a Markdown body.
@@ -58,7 +67,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from core.tools.descriptors import ALL_DESCRIPTORS, same_tool
+from core.tools.descriptors import ALL_DESCRIPTORS, same_tool, tool_key
 
 #: Frontmatter fence.  A line that is exactly three dashes.
 _FENCE = re.compile(r"^---[ \t]*$", re.MULTILINE)
@@ -273,7 +282,9 @@ class SkillManifest:
     #: The isolation the manifest asks for: ``"bwrap"``, ``"none"``, or
     #: ``""`` for a manifest that never mentioned it.  Required to be
     #: ``"bwrap"`` the moment :attr:`allowed_tools` names a code-plane
-    #: tool, and checked against the bus by :meth:`resolve`.  Unlike the
+    #: tool **this host would run** — see :meth:`code_plane_entries` for
+    #: why a bridged one is the server's — and checked against the bus by
+    #: :meth:`resolve`.  Unlike the
     #: fields above it is not content the platform owns — it is a
     #: statement about the host, which is why the harness is allowed to
     #: have an opinion about it.
@@ -503,28 +514,68 @@ class SkillManifest:
     # ── the closed set, against what was discovered ─────────────────────
 
     def code_plane_entries(self) -> List[Tuple[str, str, Tuple[str, ...]]]:
-        """``(entry as written, tool it is, scopes)`` for the code plane.
+        """``(entry as written, tool it is, scopes)`` for the code plane
+        **this host would run**.
 
-        Matched with :func:`~core.tools.descriptors.same_tool`, so a
-        manifest that writes ``mcp.run_shell_command`` is caught by the
-        same rule as one that writes ``run_shell_command``: a code plane
-        reached through a bridge is still a code plane.
+        Matched on :func:`~core.tools.descriptors.tool_key` EQUALITY and not
+        on :func:`~core.tools.descriptors.same_tool`, and the difference is
+        the whole rule: ``run_shell_command`` is this process's own
+        descriptor and is gated; ``mcp.run_shell_command`` is a tool on a
+        server, reached through the bridge, and is not.
 
-        **Optional entries count.**  A ``run_shell_command?`` that this
-        host does not offer today is still a manifest that permits
-        running shell commands, and whether the gate applies must not
-        depend on what a server happened to advertise this morning — the
-        same manifest would be governed on one host and ungoverned on
-        the next, which is the property the closed set exists to deny.
-        Declaring ``sandbox: bwrap`` costs one line; discovering from a
-        transcript that it was never needed costs more.
+        **This reverses what 0.9.0's lane L decided**, which was that "a
+        code plane reached through a bridge is still a code plane".  It
+        sounds right and it is not, because of what the gate actually asks
+        for.  The gate demands ``sandbox: bwrap``, and bwrap is a wrapper
+        this bus puts around a subprocess *it* spawns.  A bridged tool
+        spawns nothing here: the mission sends ``tools/call`` and a shell
+        runs on the far end, inside whatever that server does or does not
+        isolate it with.  Demanding bwrap on this host for that call
+        isolates nothing about it — it makes a manifest declare an untruth
+        about where the code runs, and it made the in-repo eval suite
+        refuse to load on a host without bubblewrap for a mission whose
+        shell was a stub server's Python function.  A rule that cannot be
+        satisfied honestly is a rule people satisfy dishonestly.
+
+        What replaces it is a boundary rather than a hole.  A bridged shell
+        is governed where it executes: by the server, by the capability the
+        bridge asks for (``mcp.call``), by the mission's closed set, and by
+        ``--gate-tool`` if a deployment wants a person in front of it.  A
+        platform that bridges a shell owns the isolation on the server side
+        — ``PLATFORMS.md`` says so in as many words — and this harness must
+        not claim to have provided it.
+
+        **Optional entries count**, unchanged.  A ``run_shell_command?``
+        this host does not offer today is still a manifest that permits
+        running shell commands here, and whether the gate applies must not
+        depend on what a server happened to advertise this morning.
         """
         catalogue = code_plane_tools()
         found: List[Tuple[str, str, Tuple[str, ...]]] = []
         for entry in self.allowed_tools:
             for tool, scopes in catalogue.items():
-                if same_tool(entry, tool):
+                if tool_key(entry) == tool_key(tool):
                     found.append((entry, tool, scopes))
+                    break
+        return found
+
+    def bridged_code_plane_entries(self) -> List[Tuple[str, str]]:
+        """``(entry, local tool it shares a name with)`` for the ones the
+        gate deliberately lets past.
+
+        Not used to refuse anything — it exists so a caller can SAY that a
+        manifest bridges a shell rather than leave it to be discovered in a
+        transcript, and so the fact has one owner rather than a ``.``-count
+        written wherever somebody needed it.  See
+        :meth:`code_plane_entries` for why these are not gated here.
+        """
+        catalogue = code_plane_tools()
+        found: List[Tuple[str, str]] = []
+        for entry in self.allowed_tools:
+            for tool in catalogue:
+                if (tool_key(entry) != tool_key(tool)
+                        and same_tool(entry, tool)):
+                    found.append((entry, tool))
                     break
         return found
 
@@ -545,12 +596,16 @@ class SkillManifest:
                         else "declares no `sandbox:`")
             for entry, tool, scopes in code_plane:
                 problems.append(
-                    f"{entry!r} runs code the model composed ({tool}, "
-                    f"{'/'.join(scopes)}) and this manifest {declared}; add "
-                    f"`sandbox: bwrap` to the frontmatter, or take the tool "
-                    f"out of `allowed_tools`. A governed mission that can run "
-                    f"arbitrary code on the host without isolation is not a "
-                    f"governed mission"
+                    f"{entry!r} runs code the model composed ON THIS HOST "
+                    f"({tool}, {'/'.join(scopes)}) and this manifest "
+                    f"{declared}; add `sandbox: bwrap` to the frontmatter, "
+                    f"or take the tool out of `allowed_tools`. A governed "
+                    f"mission that can run arbitrary code on the host "
+                    f"without isolation is not a governed mission. If you "
+                    f"meant a SERVER's tool of that name, write it with its "
+                    f"namespace (`mcp.{tool}`): that one executes on the "
+                    f"server, is governed there, and this host's sandbox "
+                    f"would isolate nothing about it"
                 )
         if self.sandbox == BWRAP and sandbox and sandbox != BWRAP:
             problems.append(
@@ -644,6 +699,41 @@ class SkillManifest:
                 f"Discovered: " + (", ".join(offered) or "(nothing)")
             )
         return resolved
+
+    def admits(self, names: Sequence[str],
+               offered: Sequence[str] = ()) -> List[str]:
+        """Which of *names* this closed set lets a RUNNING mission add.
+
+        The other half of :meth:`resolve`, and the half a mid-run change
+        needs.  ``resolve`` answers "what may this mission start with",
+        once, against what the server advertised at the door; this answers
+        "the bus just grew these — may any of them join", every time the
+        plane moves under a run.  :class:`~core.runtime.mission
+        .MissionRunner` asks; it never decides, because the closed set is
+        the manifest's and a loop that widened its own set would not be
+        operating under one.
+
+        *offered* is what the mission already has, and it is not merely a
+        de-duplication.  An entry that has already bound a tool is SPENT:
+        a manifest naming ``echo`` asked for the plane's ``echo``, and a
+        server that later registers ``other.echo`` must not slide a second
+        tool in through the same entry.  So an entry matched by something
+        already offered admits nothing further.
+
+        Optional (``?``) entries are the ordinary case here and need no
+        special handling: the marker is stripped at load, and an entry the
+        server had not advertised at the door is exactly the entry a late
+        arrival fills.
+
+        Matching is :func:`~core.tools.descriptors.same_tool`, as in
+        ``resolve``: a manifest writes one spelling and every surface
+        derives the rest.
+        """
+        spent = {entry for entry in self.allowed_tools
+                 if any(same_tool(name, entry) for name in offered)}
+        free = [entry for entry in self.allowed_tools if entry not in spent]
+        return [str(name) for name in names
+                if any(same_tool(name, entry) for entry in free)]
 
 
 def _skill_file_in(directory: Path) -> Path:

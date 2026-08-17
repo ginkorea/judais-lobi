@@ -88,7 +88,7 @@ from core.runtime.mission import (
     AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL, MissionRunner,
     MissionTranscript, _finished_record, _grounding_record, _profile_field,
     _protocol_field, _run_field, audit_ref_of, persist_record, sandbox_of,
-    stacked, validate_history,
+    second_opinion, stacked, validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -488,6 +488,10 @@ class SwarmRunner:
         system_message: str = "",
         max_steps: int = 24,
         validator: Optional[GroundingValidator] = None,
+        critic: Any = None,
+        admits: Optional[Callable[[Sequence[str], Sequence[str]],
+                                  Sequence[str]]] = None,
+        plane_changed: Optional[Callable[[List[str]], None]] = None,
         gated: Sequence[str] = (),
         approvals: Optional[ApprovalStore] = None,
         approval: Optional[ApprovalTicket] = None,
@@ -523,6 +527,34 @@ class SwarmRunner:
         self._system_message = system_message
         self._max_steps = max(1, int(max_steps))
         self._validator = validator
+        #: A :class:`~core.critic.mission.MissionCritic`, or ``None``, and
+        #: it belongs to the SYNTHESIZER.
+        #:
+        #: A staged turn's answer is written once, at the end, over every
+        #: step's evidence — so the second opinion is asked there, exactly
+        #: where the direct path asks it of its own answer, and not once per
+        #: sub-mission. The sub-runners have no validator either, for the
+        #: same reason: a step's summary is not an answer to the objective.
+        #:
+        #: `_direct` DOES hand it on, because that path's MissionRunner is
+        #: writing the turn's answer itself. Duck-typed rather than
+        #: imported, as in `MissionRunner`: `core.critic` pulls in pydantic
+        #: and a transport, and a turn that is not using a critic must not
+        #: pay for either.
+        self._critic = critic
+        #: Handed to every MissionRunner this builds and used by nothing
+        #: here — the two halves of "the plane may change under a run"
+        #: (see `MissionRunner`'s own parameter documentation).
+        #:
+        #: Threaded rather than dropped because a sub-mission with no
+        #: `admits` takes whatever the bus grows, and a staged turn that
+        #: widened itself where the direct one would not would make
+        #: `--swarm` the looser of the two governance paths. This runner's
+        #: OWN view of the plane — `_offered`, the opening frame, the
+        #: planner's short catalogue — is the set the turn started with;
+        #: Phase 11's one runtime is where that stops being two views.
+        self._admits = admits
+        self._plane_changed = plane_changed
         self._gated = list(gated)
         self._approvals = approvals
         self._approval = approval
@@ -853,6 +885,8 @@ class SwarmRunner:
             system_message=system_message,
             max_steps=max_steps,
             validator=None,
+            admits=self._admits,
+            plane_changed=self._plane_changed,
             gated=self._gated,
             approvals=self._approvals,
             approval=self._approval,
@@ -881,6 +915,9 @@ class SwarmRunner:
             system_message=self._system_message,
             max_steps=self._max_steps,
             validator=self._validator,
+            critic=self._critic,
+            admits=self._admits,
+            plane_changed=self._plane_changed,
             gated=self._gated,
             approvals=self._approvals,
             approval=self._approval,
@@ -1413,8 +1450,28 @@ class SwarmRunner:
             # fields here is how this record came to be six of the ten the
             # contract requires: a consumer switching on `event` gets one shape
             # per event or it is not a vocabulary.
+            #
+            # And the second opinion through the SAME function, for the
+            # same reason one level down: `advisory: true` is what stops a
+            # model's verdict being read as a mechanical one, and a
+            # hand-built row here is a row that will one day be missing it.
+            # Asked on the clean path too — no rule in `core.critic
+            # .triggers` fires on a grounded answer — so the decision has
+            # one owner rather than a copy of the trigger policy in `if`s.
+            caveat = report.caveat or ""
+            drafted = (transcript.answer[:-len(caveat)]
+                       if caveat and transcript.answer.endswith(caveat)
+                       else transcript.answer)
             self._emit(GROUNDING, **_grounding_record(
-                report, repairs=report.repairs, caveat=report.caveat or ""))
+                report, repairs=report.repairs, caveat=caveat,
+                # The DRAFT, not the caveated text: the critic is asked
+                # about what the model wrote, and the caveat is this
+                # harness's own sentence about it — a critic shown its own
+                # harness's caveat is being asked to review the grader.
+                opinions=second_opinion(
+                    self._critic, objective, drafted, evidence,
+                    unsupported=report.unsupported,
+                    answered_with_caveat=bool(caveat))))
         # `_last_spent` and not the synthesizer's own call, because
         # `_ground` above may have spent a repair turn — and then the text
         # on this record is the repair's, not the draft's. The per-call

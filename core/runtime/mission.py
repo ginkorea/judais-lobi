@@ -504,6 +504,68 @@ def _grounding_record(report: "GroundingReport", *, repairs: int = 0,
     }
 
 
+def second_opinion(critic: Any, objective: str, answer: str,
+                   evidence: Sequence[str], *,
+                   unsupported: Sequence[str] = (),
+                   answered_with_caveat: bool) -> List[Dict[str, Any]]:
+    """The critic's row for a grounding record, or no rows at all.
+
+    **One owner, and there are two callers**: the direct loop's
+    :meth:`MissionRunner._second_opinion` and the staged path's
+    :meth:`~core.runtime.swarm.SwarmRunner._synthesize`.  A second copy of
+    these six keys is precisely the arrangement that had the swarm emitting
+    six of ``grounding``'s ten fields — and this row is worse than a field
+    to get wrong, because ``advisory`` is what stops a model's opinion being
+    read as a mechanical verdict.
+
+    Beside the mechanical verdict and never inside it — see
+    :func:`_grounding_record` and :mod:`core.critic.mission`.  The report the
+    caller holds is already final; nothing this returns is allowed to change
+    it, which is why it comes back as rows for the record rather than as a
+    report the caller merges.
+
+    ``None`` for *critic* is every run that never asked for one, and the
+    answer is no rows: a mission with no critic emits exactly the stream it
+    emitted before one existed.
+
+    Every failure is swallowed into a row rather than raised.  A second
+    opinion that took the mission down with it would be a control strictly
+    worse than not having one: the draft exists, the mechanical verdict is
+    computed, and the only thing missing is an opinion nobody is entitled to.
+    """
+    if critic is None:
+        return []
+    try:
+        opinion = critic.review(
+            answer, list(evidence),
+            objective=objective,
+            unsupported=list(unsupported),
+            answered_with_caveat=answered_with_caveat,
+        )
+    except Exception as exc:                    # pragma: no cover - defensive
+        return [{"check": "critic", "advisory": True, "configured": False,
+                 "grounded": True, "verdict": "skipped", "considered": 0,
+                 "minimum": 0, "unsupported": [],
+                 "detail": f"the critic could not be reached: "
+                           f"{type(exc).__name__}: {exc}"}]
+    return [opinion.as_check()] if opinion is not None else []
+
+
+#: What the model is told when the tool plane changed under it mid-run.
+#:
+#: Said to the model and not only announced on the wire, because the model is
+#: about to be asked again with a **different catalogue** in its system turn,
+#: and a prompt that quietly grew a tool between two steps is the same defect
+#: as a conversation that quietly lost one: from inside the transcript it
+#: reads as the harness having lied earlier.  One sentence, naming what
+#: joined and what went, in the order the bus reports them.
+PLANE_CHANGED = (
+    "The tool plane changed: {changes}. The catalogue above has been "
+    "re-rendered and this is the set you may name from the next reply on; "
+    "nothing you were told earlier about the other tools has changed."
+)
+
+
 #: The word ``mission_finished.reason`` carries when a run was asked to stop.
 #:
 #: Cancellation is deliberately **not** a new ``outcome``.  A cancelled run
@@ -987,6 +1049,28 @@ class MissionRunner:
         That is what lets a staged mission hand one clock to triage, the
         planner and every sub-mission without five sub-missions of a
         minute each fitting inside a one-minute budget.
+    admits, plane_changed:
+        **How a mission learns that its tool plane changed underneath it.**
+        A discovered server may register a tool and notify mid-run; the
+        bridge picks it up and the bus registers it, and until 0.14 the
+        mission's offered set was fixed at ``__init__`` — so the model that
+        named the new tool was told there is no such tool, which is the
+        finding the eval harness's ``the_plane_grew_mid_run`` mission was
+        written to measure.
+
+        ``admits(grew, offered)`` answers *may these join*, and it is the
+        caller's because the closed set is the manifest's: ``None`` admits
+        whatever the bus grew, which is the honest default for a run that
+        had no manifest and was therefore offered the whole bridge already.
+        ``plane_changed(offered)`` is told the new whole list, which is how
+        a native run's declared function schemas stay in step with the
+        catalogue.  Neither is consulted about a tool that was on the bus
+        when the run started: a closed set that left ``run_shell_command``
+        out did not leave it out provisionally.
+
+        See :meth:`_relearn_the_plane` for when it is asked, and
+        :meth:`system_turn` for why the changed catalogue is a legitimately
+        different prefix.
     cancel:
         A :class:`~core.budgets.Cancellation` — or any object with
         ``is_set()``, so a bare :class:`threading.Event` works — that a
@@ -1049,6 +1133,9 @@ class MissionRunner:
         max_steps: int = 8,
         validator: Optional[GroundingValidator] = None,
         critic: Any = None,
+        admits: Optional[Callable[[Sequence[str], Sequence[str]],
+                                  Sequence[str]]] = None,
+        plane_changed: Optional[Callable[[List[str]], None]] = None,
         max_result_bytes: int = MAX_RESULT_BYTES,
         store_tool: str = RESULT_TOOL,
         gated: Sequence[str] = (),
@@ -1087,6 +1174,39 @@ class MissionRunner:
         #: pydantic and a transport, and a mission that is not using a
         #: critic must not pay for either.
         self._critic = critic
+        #: Which names the bus grew **mid-run** this mission may add to its
+        #: offered set: ``admits(grew, offered) -> names to join``.
+        #:
+        #: The runner asks; it never decides. A mission's closed set is the
+        #: manifest's business (:meth:`core.runtime.skills.SkillManifest
+        #: .admits`, which is what the CLI passes here) and this module has
+        #: never known what a skill is. ``None`` is "whatever the bus grew is
+        #: offered", which is the honest reading of a run with no manifest —
+        #: it was already offered every tool the bridge discovered.
+        #:
+        #: What it can NEVER do is widen the run to something that was on the
+        #: bus all along: only names absent at `run` and present now are ever
+        #: put to it. See :meth:`_relearn_the_plane`.
+        self._admits = admits
+        #: Told when :attr:`offered` changes, with the new whole list.
+        #:
+        #: The seam for the native protocol, and the reason it is a callback
+        #: rather than a list this object writes into: the runner owns "what
+        #: is offered now" and the caller owns how a tool is *declared* to a
+        #: server. The CLI re-renders its function schemas here, so a run
+        #: whose plane grew declares the tool it is about to let the model
+        #: name. Nothing else is entitled to fire on this.
+        self._plane_changed = plane_changed
+        #: What the bus had registered when this run started, or ``None``
+        #: before one has. The baseline for "the plane GREW", so a tool that
+        #: was on the bus and deliberately left out of the closed set can
+        #: never wander into it later.
+        self._plane: Optional[set] = None
+        #: What changed since the last step boundary, rendered (``+mcp.x``,
+        #: ``-mcp.y``) and waiting to be told to the model. Drained by
+        #: :meth:`_plane_news`, which is the one place a step decides whether
+        #: its system turn is the same bytes as the last one's.
+        self._plane_pending: List[str] = []
         self._max_result_bytes = max(0, int(max_result_bytes))
         self._store_tool = (store_tool or "").strip()
         self._store = MissionResultStore()
@@ -1188,10 +1308,131 @@ class MissionRunner:
 
     @property
     def offered(self) -> List[str]:
-        """Every tool name the model may name: the set, plus the store."""
+        """Every tool name the model may name **now**: the set, plus the store.
+
+        ``now`` is the whole of what this property grew into.  A mission's
+        set used to be fixed at construction, and a plane that changed under
+        a running mission — an MCP server registering a tool and notifying,
+        which the bridge picks up and the bus registers — was invisible to
+        it: the model named the new tool and was told there is no such tool.
+        See :meth:`_relearn_the_plane`.
+
+        Everything that has to agree about what is offered reads THIS: the
+        catalogue in the system turn, the membership check that refuses a
+        name, the opening frame's ``catalogue``, and — through
+        ``plane_changed`` — the function schemas a native request declares.
+        """
         if self._store_tool:
             return [*self._tool_names, self._store_tool]
         return list(self._tool_names)
+
+    # ── the plane, when it changes underneath a running mission ─────────
+
+    def _bus_names(self) -> Optional[List[str]]:
+        """What the bus has registered, or ``None`` when it cannot say.
+
+        ``getattr`` for the reason :func:`audit_ref_of` uses one: a caller
+        may hand this runner any object with ``dispatch`` and
+        ``describe_tool``, and a fake bus in somebody's test suite is not
+        obliged to know how to list itself.  A bus that cannot answer is a
+        run whose offered set never changes, which is what every run did
+        before this existed.
+        """
+        lister = getattr(self._bus, "list_tools", None)
+        if lister is None:
+            return None
+        try:
+            return [str(name) for name in lister()]
+        except Exception:                       # pragma: no cover - defensive
+            return None
+
+    def _relearn_the_plane(self) -> List[str]:
+        """Reconcile :attr:`offered` against the bus.  Returns what changed.
+
+        Called at the three moments it can matter, and the second two are
+        there because of a thread this loop does not own.  **After a
+        dispatch** is when a tool like ``add_a_tool`` has just told a server
+        to register something.  **At the step boundary** is where the model
+        can still be TOLD, and it is a second look because the bridge
+        re-lists on its own thread and the registration can land after the
+        call that caused it returned.  **Before refusing a name the model
+        wrote** is where the same race would otherwise cost a turn: a
+        mission that looked once and never again would say "no such tool"
+        about a tool that arrived while the reply was being written.
+
+        Two directions, and they are not symmetrical:
+
+        * a name the bus GREW joins only if ``admits`` says so, and only if
+          it was not registered when this run started.  Both halves matter.
+          The manifest's closed set is the whole governance story of a
+          mission, and a run that widened itself by whatever a server
+          decided to advertise would have no closed set at all; and the
+          baseline is what stops a *local* tool the closed set deliberately
+          left out — ``run_shell_command``, sitting on the bus for every
+          other caller — from being read as an arrival.
+        * a name the bus LOST goes, and needs nobody's permission.  There is
+          no governance question in withdrawing a tool: the call would fail
+          at the far end anyway, and leaving it in the catalogue spends a
+          step teaching the model that.  Only names that were registered at
+          the start are dropped, so a caller offering a name its bus never
+          held keeps whatever it was doing.
+
+        The ``plane_changed`` callback fires here and only here, with the
+        new whole list, so the one owner of *what is offered now* is the one
+        that tells everybody else.
+        """
+        if self._plane is None:
+            return []
+        registered = self._bus_names()
+        if registered is None:
+            return []
+        now = set(registered)
+        offered = set(self._tool_names)
+        grew = [name for name in registered
+                if name not in self._plane and name not in offered
+                and name != self._store_tool]
+        joined = list(grew)
+        if self._admits is not None and grew:
+            allowed = set(str(name) for name in
+                          self._admits(grew, self.offered))
+            joined = [name for name in grew if name in allowed]
+        gone = [name for name in self._tool_names
+                if name in self._plane and name not in now]
+        self._plane = now
+        if not joined and not gone:
+            return []
+        self._tool_names = [name for name in self._tool_names
+                            if name not in gone] + joined
+        changes = [f"+{name}" for name in joined] + [f"-{name}" for name in gone]
+        self._plane_pending.extend(changes)
+        if self._plane_changed is not None:
+            try:
+                self._plane_changed(self.offered)
+            except Exception:                   # pragma: no cover - defensive
+                # A caller's hook is not allowed to end a mission, for the
+                # reason an observer is not: the run has a catalogue that is
+                # right and, at worst, a declared namespace that is one tool
+                # behind — a tool the model cannot call, not a wrong answer.
+                pass
+        return changes
+
+    def _offers(self, name: str) -> bool:
+        """Whether the model may call *name* — asked of the plane, not a list.
+
+        The last look before a refusal.  ONE owner for the question, so the
+        JSON branch and the native one cannot disagree about which names are
+        real, and so that "no such tool" stays a statement about the bus
+        rather than about a snapshot of it taken some steps ago.
+        """
+        if name in self.offered:
+            return True
+        self._relearn_the_plane()
+        return name in self.offered
+
+    def _plane_news(self) -> List[str]:
+        """What changed since the last step boundary, and clear it."""
+        news, self._plane_pending = list(self._plane_pending), []
+        return news
 
     @property
     def gated(self) -> List[str]:
@@ -1386,14 +1627,35 @@ class MissionRunner:
         up to and including the objective, and there is a test that says so.
         """
         return [
-            {"role": "system", "content": stacked(
-                self._system_message,
-                self._protocol_text(),
-                "Tool catalogue:\n" + self.catalogue(),
-            )},
+            self.system_turn(),
             *(dict(turn) for turn in self._history),
             {"role": "user", "content": objective},
         ]
+
+    def system_turn(self) -> Dict[str, str]:
+        """The system message, rendered from what is offered NOW.
+
+        One owner, and it has two callers for a reason that is the whole of
+        the byte-stability argument above: :meth:`seed` builds it once at the
+        start of a run, and :meth:`_loop` builds it AGAIN — replacing
+        ``messages[0]`` in place — on the one kind of step whose prefix is
+        legitimately different from the last one's, the step after the tool
+        plane changed.
+
+        **A changed catalogue is a different prefix, and that is correct.**
+        The rule was never "the bytes never move"; it is "the bytes never
+        move for a reason nobody can point at".  A prefix that shifted
+        because a server registered a tool costs one cache miss and buys a
+        model that can name the tool; a prefix that shifted because a
+        timestamp was rendered into it costs a cache miss per step and buys
+        nothing.  Every other step re-renders to the same bytes, because
+        every input to this method is the same as it was.
+        """
+        return {"role": "system", "content": stacked(
+            self._system_message,
+            self._protocol_text(),
+            "Tool catalogue:\n" + self.catalogue(),
+        )}
 
     def _protocol_text(self) -> str:
         """The instruction half of whichever protocol is running.
@@ -1563,6 +1825,13 @@ class MissionRunner:
             self._store = resumption.store
             transcript.steps.extend(resumption.steps)
         registered = self._register_store()
+        # The baseline for "the plane grew", taken AFTER the store tool is on
+        # the bus so the mission's own descriptor is never read as an
+        # arrival. Everything registered at this instant — every local tool
+        # the closed set left out included — is what this run was offered a
+        # subset of, and only what appears later is ever put to `admits`.
+        self._plane = set(self._bus_names() or ())
+        self._plane_pending = []
         # `history` is a count, not the turns: a watcher needs to tell a
         # seeded conversation from a cold start, and the turns themselves
         # already travelled once — TAIPAN holds the thread it sent.
@@ -1590,7 +1859,7 @@ class MissionRunner:
                        **_protocol_field(self._protocol),
                        **_profile_field(self._bus))
         try:
-            return self._loop(objective, offered, transcript, resumption)
+            return self._loop(objective, transcript, resumption)
         finally:
             if registered:
                 self._bus.unregister(registered)
@@ -1633,7 +1902,7 @@ class MissionRunner:
         return self._store.register_on(self._bus, self._store_tool)
 
     def _loop(
-        self, objective: str, offered: Sequence[str], transcript: MissionTranscript,
+        self, objective: str, transcript: MissionTranscript,
         resumption: Optional[Any] = None,
     ) -> MissionTranscript:
         messages = self.seed(objective)
@@ -1670,6 +1939,29 @@ class MissionRunner:
             stop = self._stop()
             if stop is not None:
                 return self._stopped(transcript, stop)
+            # Looked at again here, and not only after the dispatch that
+            # caused it: the bridge re-lists on ITS OWN THREAD when a server
+            # notifies, so the registration can land a few milliseconds
+            # after the call that triggered it returned. Asking once more at
+            # the boundary is what makes the model TOLD about a new tool
+            # rather than left to name it and find out — measured on the
+            # stub plane, where `add_a_tool` can and does return before the
+            # re-list has completed. Which boundary catches it is the
+            # bridge's timing; that one of them does is this loop's job.
+            self._relearn_the_plane()
+            # The step boundary is where a changed plane is ANNOUNCED — the
+            # change itself was noticed at the dispatch that caused it. Here
+            # rather than there because both halves of the announcement are
+            # about the next model call: the system turn is re-rendered from
+            # the new catalogue, and the note goes at the END of the
+            # conversation, after every tool message the last turn produced.
+            # Under the native protocol a `user` turn dropped between two
+            # `tool` messages is a 400, and one after all of them is not.
+            changed = self._plane_news()
+            if changed:
+                messages[0] = self.system_turn()
+                self._say(messages,
+                          PLANE_CHANGED.format(changes=", ".join(changed)))
             # Immediately before the ask and after the stop check, which is
             # the one moment an operator's instruction can reach the model
             # without arriving in the middle of a decision it had already
@@ -1680,7 +1972,14 @@ class MissionRunner:
             # what this step is about to send, and a watcher told about it
             # afterwards has already rendered the turn it applied to.
             messages, compacted = self._fit(messages)
+            # `catalogue` on the steps where it CHANGED and no other, so a
+            # watcher that has never heard of the field reads the stream it
+            # always read, and one that has can tell the plane it is looking
+            # at from the one the opening frame named. The whole new list,
+            # not a delta: a consumer holding a set should be able to
+            # replace it rather than apply arithmetic to it.
             self._emit(STEP_STARTED, index=index, **opening,
+                       **({"catalogue": self.offered} if changed else {}),
                        **({"injected": injected} if injected else {}),
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
@@ -1700,7 +1999,7 @@ class MissionRunner:
                 # there is one owner for what a dispatch emits and one for
                 # what an answer is worth.
                 done, repairs = self._native_turn(
-                    objective, offered, index, reply, spent, step,
+                    objective, index, reply, spent, step,
                     messages, transcript, repairs)
                 if done is not None:
                     return done
@@ -1741,8 +2040,10 @@ class MissionRunner:
 
             step.tool, step.arguments = name, dict(arguments)
 
-            if name not in offered:
-                problem = self._no_such_tool(name, offered)
+            # `_offers` and not `name in offered`: the bus is the authority
+            # on what exists, and it is asked again before a refusal.
+            if not self._offers(name):
+                problem = self._no_such_tool(name, self.offered)
                 step.error = problem
                 transcript.steps.append(step)
                 self._emit(REPLY_REJECTED, index=index, tool=name,
@@ -1929,6 +2230,11 @@ class MissionRunner:
                    output=result.stdout or "", error=result.stderr or "",
                    handle=stored.handle, truncated=slot.truncated, **ordinal)
         self._say(messages, rendered, getattr(slot, "call_id", ""))
+        # The moment a plane can have changed: a dispatch is the only thing
+        # this loop does that a server can watch, and `add_a_tool`-shaped
+        # tools exist. Noticed here, announced at the next step boundary —
+        # see `_relearn_the_plane` and the `_plane_news` block in `_loop`.
+        self._relearn_the_plane()
 
     def _answered(self, answer: str, index: int, step: MissionStep,
                   spent: Dict[str, Any], messages: List[Dict[str, Any]],
@@ -2012,13 +2318,12 @@ class MissionRunner:
                         report: GroundingReport, *,
                         answered_with_caveat: bool,
                         ) -> List[Dict[str, Any]]:
-        """The critic's row for the grounding record, or no rows at all.
+        """This run's evidence, put to :func:`second_opinion`.
 
-        Beside the mechanical verdict and never inside it — see
-        :func:`_grounding_record` and :mod:`core.critic.mission`.  The
-        report handed in here is already final; nothing this returns is
-        allowed to change it, which is why it comes back as rows for the
-        record rather than as a report the caller merges.
+        A thin call and deliberately thin: what a critic row looks like is
+        the module function's, shared with the staged path, and what THIS
+        object contributes is the only thing the staged path cannot — the
+        evidence its own result store holds.
 
         It runs **before** the ``answer`` record, like the grounding verdict
         it sits beside, so a consumer framing the prose has the whole
@@ -2026,29 +2331,11 @@ class MissionRunner:
         already gone out as ``answer_delta`` fragments, so what this delays
         is the authoritative record and not the reader's first sight of the
         answer.
-
-        Every failure here is swallowed into a row rather than raised.  A
-        second opinion that took the mission down with it would be a
-        control strictly worse than not having one: the draft exists, the
-        mechanical verdict is computed, and the only thing missing is an
-        opinion nobody is entitled to.
         """
-        if self._critic is None:
-            return []
-        try:
-            opinion = self._critic.review(
-                answer, self._store.evidence_texts(),
-                objective=objective,
-                unsupported=report.unsupported,
-                answered_with_caveat=answered_with_caveat,
-            )
-        except Exception as exc:                # pragma: no cover - defensive
-            return [{"check": "critic", "advisory": True, "configured": False,
-                     "grounded": True, "verdict": "skipped", "considered": 0,
-                     "minimum": 0, "unsupported": [],
-                     "detail": f"the critic could not be reached: "
-                               f"{type(exc).__name__}: {exc}"}]
-        return [opinion.as_check()] if opinion is not None else []
+        return second_opinion(
+            self._critic, objective, answer, self._store.evidence_texts(),
+            unsupported=report.unsupported,
+            answered_with_caveat=answered_with_caveat)
 
     def _gate(self, objective: str, index: int, name: str,
               arguments: Dict[str, Any], step: MissionStep,
@@ -2340,7 +2627,7 @@ class MissionRunner:
         return message
 
     def _native_turn(
-        self, objective: str, offered: Sequence[str], index: int, reply: str,
+        self, objective: str, index: int, reply: str,
         spent: Dict[str, Any], step: MissionStep,
         messages: List[Dict[str, Any]], transcript: MissionTranscript,
         repairs: int,
@@ -2456,12 +2743,16 @@ class MissionRunner:
                     call_id=entry["id"], ordinal=ordinal, error=problem))
                 reject(problem, entry["id"], name)
                 continue
-            if name not in offered:
+            if not self._offers(name):
                 # Unreachable through a decoder constrained to the declared
                 # namespace, which is the point of the protocol — and kept
                 # anyway, because the constraint is the SERVER's promise and
-                # a mission must not crash on a server that broke it.
-                problem = self._no_such_tool(name, offered)
+                # a mission must not crash on a server that broke it. It is
+                # also where a plane that grew a moment ago is picked up:
+                # `_offers` asks the bus before it refuses, so a tool the
+                # bridge registered while the model was writing is dispatched
+                # rather than denied.
+                problem = self._no_such_tool(name, self.offered)
                 step.calls.append(MissionCall(
                     tool=name, arguments=dict(arguments),
                     call_id=entry["id"], ordinal=ordinal, error=problem))
