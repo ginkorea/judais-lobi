@@ -1412,9 +1412,9 @@ Judais-Lobi is designed to grow by adding workflows, tools, and policies without
 
 # 🚧 Current Status
 
-**v0.17.0 — 5646 tests collected.** Mission mode, skill manifests, the
+**v1.0.0 — 5883 tests collected.** Mission mode, skill manifests, the
 grounding validator, `--swarm`, the NDJSON mission stream and the published
-contract are all in this release. What 0.17.0 **is**, rather than what each
+contract are all in this release. What 1.0.0 **is**, rather than what each
 release added:
 
 * **Safe by default.** Tool subprocesses run under `bwrap` wherever bubblewrap
@@ -1482,6 +1482,7 @@ One line each. The commit for every one of these is `release: <version> — …`
 | 0.12.0 | 16 Aug 2026 | `answer_delta` at the source, a `--control` channel into a running mission, an AG-UI translator |
 | 0.12.1 | 16 Aug 2026 | `--gate-wait` / `MISSION_GATE_WAIT`: an unattended caller can turn the in-turn gate wait down to `0` (the 0.11 behaviour); default unchanged |
 | 0.12.2 | 17 Aug 2026 | the credential redactor is linear on long unbroken payloads (a 200 KB tool result took minutes; now ~50 ms) |
+| 1.0.0 | 18 Aug 2026 | **the freeze**: `SCHEMA_VERSION` 1 frozen for the 1.x major (CONTRACT.md §1.0). The framework's conduct text (`core/runtime/prompts.py`) rendered once; `mission_result` pages text results; figures ground where they were measured (`figures_from:`); a mission has a root (`core/tools/root.py`); the sandbox runner is carried per call (no shared state to race); model side channels captured per call; liveness is a lock (`RunStore.hold`), not a clock — a live run is never closed as an orphan and never gets a second `mission_finished`; the supervisor treats a new call OR a new result as progress and refunds a `progressing` verdict on `no_new_evidence`; a bare `Bounds()` gets the default supervisor (`NO_SUPERVISOR` to opt out); `--mission-steps 0` is no ceiling; an unreachable server exits non-zero; `grant` validates; the Fable-5 adversarial review's blocker, three majors and every minor closed |
 | 0.17.0 | 18 Aug 2026 | the `coding` pack (multi-file, verified by running the repository's tests; tool schemas; `verify` failures are results); **campaigns on `Run`** (`--campaign`/`--campaign-plan`, approval as a durable record, artifact handoff, OPTIONAL `artifacts`) and **`--grant`** (session-scoped scopes, OPTIONAL `granted`); the native round trip keeps opaque provider fields (native went 0/11 → 9/11 live); the catalogue is re-listed at every step boundary; one model-resolution rule; grounding — the echo rule, the clock mask, failed results as typed evidence; suite-level `flags:` |
 | 0.16.0 | 18 Aug 2026 | **one runtime** (Phase 11): `core/runtime/run.py` — `Run(personality, plane, bounds, store, observer, model)`; `MissionRunner`/`SwarmRunner` are adapters; async core, sync façade; parallel children with the OPTIONAL `branch` field; the library API `from judais_lobi import Run …` and the CLI as its client; `--mission` on the built-in tools with no server; `[server]` SSE extra; `model_state` (the eleventh event); `core.eval measure` with the first live numbers; CI on every push + PyPI on tag; PLATFORMS.md as the integrate-alone doc + `tests/conformance/`; three first-party skills — `research` (+ the `research` profile), `analyst`, `coding` (lane in flight); mission packs by name; memory (core/recall/working); the built-in tools served over MCP (`python -m core.tools.serve`) and multi-server bridging |
 | 0.15.0 | 17 Aug 2026 | the step budget is gone: `--mission-steps` unset means no ceiling (`max_steps: 0`), and `core/runtime/supervisor.py` watches for repetition instead — the same call returning the same result, rejected replies running, no new evidence, an A-B-A-B oscillation — each putting one question to the model (`progressing` / `nudge` / `stuck`, the swarm's gate also `replan`), three reviews a run and the last cannot say `progressing`; `step_started.review` (OPTIONAL) and `reason: "stuck"`; the swarm's `step_budget`/`retries_per_step`/one-redraw counter deleted |
@@ -1599,7 +1600,7 @@ If you are **running this from another program**, read:
 
 If you want to understand **where this is going**, read:
 
-* 🗺️ `ROADMAP.md` — the only roadmap: where 0.17.0 stands (§1), Phases 9–13
+* 🗺️ `ROADMAP.md` — the only roadmap: where 1.0.0 stands (§1), Phases 9–13
   (§2), the principles (§3), and the Feb 2026 blueprint kept as history (§5)
 * 🧪 `EVAL.md` — the eval harness: missions × behavioural flags, a held-out
   split, scoring from the recorded stream, `--replay`, and how a platform

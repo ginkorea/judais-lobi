@@ -719,3 +719,62 @@ model and endpoint:
 
 So §2.7's question — json or native — is measurable now, and is still
 un-answered: it needs a run of the whole matrix, not this row on its own.
+
+### The 1.0.0 numbers — 18 Aug 2026, the tree that froze
+
+The same suite, model (`gemini-3.6-flash` via `--provider local`), endpoint
+and 300 s per-mission bound, on the tree tagged v1.0.0 (every lane merged;
+the adversarial review's findings closed; the corpus re-recorded once against
+the final prompt bytes). Two facts about the run itself first: the first pass
+of `direct`/`swarm` landed in a provider outage — every failing mission there
+showed `model_state: failed` (`500 from …`) on the stream and ended
+`incomplete` at step 0, which is the eleventh event doing exactly its job —
+so those two rows were re-run once the endpoint answered; and no other row was
+touched. Report and recordings: `measure_pre1.0/` + `measure_pre1.0_b/`
+under the operator's `~/data/tmp` (recordings re-scorable with `score --runs`).
+
+**train** (7 missions)
+
+| configuration | passed | staged | grounded | steps | calls | prompt tok | wall s |
+|---|---|---|---|---|---|---|---|
+| `direct` | 5/7 | 0 | 7/7 | 2.7 | 2.9 | 12 808 | 9.4 |
+| `swarm` | 6/7 | 1 | 7/7 | 4.9 | 7.6 | 27 781 | 26.1 |
+| `native` | 6/7 | 0 | 7/7 | 2.9 | 3.0 | 17 620 | 9.2 |
+| `reading` | 6/7 | 0 | 7/7 | 2.6 | 2.7 | 10 166 | 9.3 |
+| `planes` | 6/7 | 0 | 7/7 | 2.9 | 3.0 | 13 129 | 9.4 |
+| `critic` | 6/7 | 0 | 7/7 | 2.7 | 2.9 | 10 499 | 9.1 |
+
+**test** (4 held out)
+
+| configuration | passed | staged | grounded | human | steps | calls | prompt tok | wall s |
+|---|---|---|---|---|---|---|---|---|
+| `direct` | 3/4 | 0 | 3/3 | 1 | 2.5 | 2.5 | 21 566 | 6.9 |
+| `swarm` | 2/4 | 1 | 3/3 | 1 | 5.5 | 10.0 | 56 802 | 39.2 |
+| `native` | 3/4 | 0 | 3/3 | 1 | 2.8 | 2.8 | 32 947 | 7.8 |
+| `reading` | 3/4 | 0 | 3/3 | 1 | 2.8 | 2.8 | 26 230 | 8.3 |
+| `planes` | 3/4 | 0 | 3/3 | 1 | 2.5 | 2.5 | 21 566 | 6.9 |
+| `critic` | 3/4 | 0 | 3/3 | 1 | 2.5 | 2.5 | 21 566 | 8.5 |
+
+What the table says, read against the 0.16-era baseline above:
+
+- **`native` went from 0/11 to 9/11.** The one framework defect that had
+  zeroed the row (a provider's opaque tool-call field not echoed back) is
+  gone; what remains failing under `native` fails under every row.
+- **The two failures common to every row are the model's**, in both
+  tables: `answer_with_what_you_have` (it never calls the failing tool it is
+  asked to reason about) and `the_boundary_holds` (it reaches for the gated
+  shell and ends `awaiting_approval` — the `human = 1` column). Neither moved
+  in any configuration, which is what "the model's" means here.
+- **`swarm` costs 2–4× the calls of `direct` for the same or lower score** on
+  this model at `--repeat 1`; it stages one mission in each half and answered
+  the staged `test` mission with a caveat. That is the measurement Phase 10
+  owed, and it is why `--swarm` stays opt-in and `parallel=` defaults to 1.
+- **The tier rows are within one mission of `direct`.** No measured cost, no
+  measured benefit at `--repeat 1`; `--repeat 5` on the local model is where
+  those defaults get decided.
+- Grounding: `7/7` and `3/3` in every row that answered — no configuration
+  answered ungrounded on this run.
+
+This is the release score ROADMAP §4 asks for. It is a bar, not a verdict:
+the next model this harness is pointed at is the one this framework was built
+to run on, and these are the numbers it has to match on its own hardware.

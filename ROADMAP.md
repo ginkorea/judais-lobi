@@ -16,8 +16,8 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v0.17.0**, 18 Aug 2026. 5,646 tests collected (`pytest --collect-only -q`);
-39,224 lines in `core/`+`judais/`+`lobi/` and 45,067 lines of tests (`wc -l`
+**v1.0.0**, 18 Aug 2026. 5,883 tests collected (`pytest --collect-only -q`);
+55,322 lines in `core/`+`judais/`+`lobi/` and 67,748 lines of tests (`wc -l`
 over `*.py`, so blanks and docstrings are in both numbers — this repository
 writes a lot of both on purpose).
 
@@ -119,7 +119,7 @@ merges. Version bump every phase.
 | 10 | Measurable (0.11) | ✅ 0.13.0 — the harness, recording + `--replay`, the tiers wired off-by-default; the *measurements* (swarm, native, tiers on/off) are what remains, and they gate every default |
 | 11 | One runtime (0.16) | ✅ 0.16.0 — `Run` and the six owners; `MissionRunner`/`SwarmRunner` adapters; `arun` the loop, `run` the façade; parallel children, OPTIONAL `branch`, `ToolPlane.lease`; chat and the kernel roles through `Run`; corpus diff empty throughout |
 | 12 | Providers and streaming (0.13) | ✅ properties 4 and 6 — constrained decoding (0.11.0), `answer_delta` + the AG-UI translator + the control channel (0.12.0), and the provider work — one HTTP policy owner and `--provider anthropic` (0.14.0) |
-| 13 | Embeddable (1.0) | ◑ 0.16.0 — `from judais_lobi import Run …` (the CLI a client of it); `model_state`; the `[server]` extra; CI on push + PyPI on tag; PLATFORMS.md + the conformance kit; the freeze text written. Left for 1.0: the freeze itself, the fresh-venv smoke, the adversarial review |
+| 13 | Embeddable (1.0) | ✅ 1.0.0 — the library API, `model_state`, the `[server]` extra, CI on push + PyPI on tag, PLATFORMS.md + the conformance kit, the framework conduct text, and the freeze: `SCHEMA_VERSION` 1 for the 1.x major. Fresh-venv smoke ran all three packs live from the wheel; the Fable-5 adversarial review's findings closed |
 | 15 | First-party skills | ✅ 0.17.0 — packs by name; `analyst`, `research` (+ the `research` profile), `coding` (multi-file, verified) with eval suites and live proofs; memory (core/recall/working); tools over MCP + multi-server; campaigns on `Run` + `--grant`. Left: the mission-pack `templates/` roles composed as `Run`s (post-1.0) |
 | 14 | The step budget is gone (0.15) | ✅ 0.15.0 — no framework step budget; operator ceilings only; `core/runtime/supervisor.py` catches repetition (§2.6a) |
 
