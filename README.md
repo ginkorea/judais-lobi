@@ -782,6 +782,81 @@ problems = contract.conforms(record)    # [] when the record is fine
 so a consumer that cannot import an agent framework can vendor that one file and
 have the whole seam.
 
+### Following a run over HTTP — the `[server]` extra
+
+`--events` is a stream a *parent process* reads. That is the right seam when
+the platform owns the process and the wrong one when it does not: a browser
+cannot spawn anything, a second pane cannot read a descriptor the first pane
+owns, and a run that finished an hour ago has no process left to read from at
+all. All three are already answered on disk — the run store is a numbered,
+append-only log per run — so the extra is a read-only HTTP face on it:
+
+```bash
+pip install 'judais-lobi[server]'
+python -m core.server --runs .judais-lobi/runs --port 8787
+```
+
+`--runs` goes through the same resolver the mission CLI writes through, so
+with `JUDAIS_LOBI_RUNS` already set you can leave it out. Five endpoints, all
+of them reads:
+
+```
+GET /healthz                      liveness, and how full the stream cap is
+GET /runs?limit=&offset=          run metadata, newest first, a bounded page
+GET /runs/{run_id}                one run's metadata
+GET /runs/{run_id}/events?since=  the records, as server-sent events
+GET /runs/{run_id}/agui?since=    the same records, through the AG-UI translator
+```
+
+Each frame is `event: <the record's own event>` / `id: <the store's seq>` /
+`data: <the record>`. **The records are the records** — the same ten event
+names, the same fields, already scrubbed at the emitter and neither scrubbed
+nor widened again — so a consumer that reads the NDJSON stream reads this
+without changing anything but where the bytes come from. `since=` replays from
+a sequence number and then follows until `mission_finished`; a browser's
+`EventSource` sends `Last-Event-ID` by itself after a reconnect and that works
+too. A cursor *past* the end of the log is read as the end of it rather than
+obeyed — the store hands back what is `seq >` the cursor, so an impossible one
+would otherwise leave the follower deaf for the next hundred records — and a
+reconnect at the end of a run that has already finished closes at once instead
+of waiting for a second ending. The `/agui` variant is `core/runtime/agui.py` applied to those same
+records — one translator, not a second — with the `id:` on the **last** frame a
+record produced, because `Last-Event-ID` has to mean "I have all of that seq"
+and not "I have some of it".
+
+Three rules are the reason this is a module and not fifteen lines, and each is
+a constant in `core/server/sse.py` with the failure it prevents written on it:
+
+* **the stream cap sits below the connection ceiling.** `MAX_STREAMS` (64,
+  `--max-streams`) is the number of streams held open at once. An event stream
+  is a connection held for the length of a mission, so **set it below your
+  reverse proxy's connection limit and uvicorn's own** — otherwise the request
+  that exhausts the ceiling is refused *by the proxy*, every client sees a
+  generic 502, and this process's logs say nothing. Refused here, the 65th
+  follower gets a 503 and a `Retry-After`;
+* **the heartbeat fits inside the socket write timeout.** A mission that is
+  thinking emits nothing for minutes and an idle socket is what a proxy cuts.
+  So an idle stream gets a `: heartbeat` comment line every `HEARTBEAT_S`
+  (15 s, `--heartbeat`) — **set it below your proxy's read timeout**, commonly
+  60 s;
+* **nothing is refused after the first byte.** Unknown run, cap reached,
+  unreadable `since` — every check that can say no happens before the response
+  starts. Once bytes are moving the status is 200 forever, so a store failure
+  mid-follow becomes a final `event: error` frame and a clean close rather than
+  a 500 a client which has already parsed a 200 cannot see.
+
+It is **read-only**: there is no HTTP door into a running mission. A run does
+not record its `--control` spec, the commonest spec (`fd:N`) has no path a
+second process could open, and a second writer to a regular-file spec writes to
+a reader thread that has already reached end-of-file — the command would be
+dropped in silence. Steer a run from whatever started it. There is no
+authentication either, which is why the default host is loopback; put it behind
+something that terminates TLS and knows who is asking.
+
+Both seams are supported and neither replaces the other: a platform that owns
+the process keeps the subprocess and the NDJSON, and this is the one for a
+platform that would rather subscribe than spawn.
+
 ### Evaluating it — `core/eval` and `--replay`
 
 A behavioural change that nobody scored is a change nobody can defend, which is
@@ -1317,6 +1392,7 @@ pulls in is imported lazily.
 | `treesitter` | multi-language symbol extraction for the repo map |
 | `faiss` | the FAISS vector index for long-term memory. Without it memory still works, on the numpy index in `core/memory/memory.py` |
 | `voice` | TTS |
+| `server` | starlette + uvicorn, for `python -m core.server` — the run store as an SSE endpoint. Read-only, and imported only by `core/server/` |
 | `dev` | pytest and coverage |
 
 Set an API key:

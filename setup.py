@@ -71,6 +71,16 @@ setup(
         # why it is an extra and not a hard dependency, and why it is IN the
         # extra a platform installs rather than left to be discovered.
         "mission": ["mcp>=1.25,<2", "pyyaml>=6.0", "jsonschema>=4"],
+        # The SSE server over the run store (`python -m core.server`). An
+        # ASGI framework and something to listen with, and nothing else:
+        # the framing is stdlib in core/server/sse.py rather than a
+        # framework-specific SSE add-on, so this extra is two wheels and
+        # the endpoint does not move when either of them changes its mind
+        # about event streams. core/server imports cleanly without them —
+        # `require_server` refuses by naming this extra, and
+        # tests/test_server.py reads this dict back to pin that the extra
+        # the refusal names is the extra that carries the stack.
+        "server": ["starlette>=0.37", "uvicorn>=0.30"],
         "critic": [
             "anthropic>=0.40",
             "google-generativeai>=0.7.0",
