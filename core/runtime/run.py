@@ -864,6 +864,11 @@ class _Branch(Observer):
     #: ``answer`` is a step's summary rather than the turn's answer.
     _STAGE = frozenset({
         STEP_STARTED, REPLY_REJECTED, TOOL_CALL, TOOL_RESULT, GATE_REQUESTED,
+        # A stalled endpoint is a fact about the TURN, not the stage: a
+        # child's `model_state` reaches the watcher like the child's tool
+        # calls do (with its `branch`), or a pane shows nothing and cannot
+        # say why for exactly the sub-mission that is waiting.
+        MODEL_STATE,
     })
 
     def __init__(self, parent: Observer, name: str = "", *,

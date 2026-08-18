@@ -918,8 +918,11 @@ class TestTheEleventhEventIsSafeToNotKnowAbout:
         assert "index" not in c.FIELDS[c.MODEL_STATE]
 
     def test_what_it_may_add_is_declared(self):
+        # Its OWN four, plus the one field every event may carry (lane D's
+        # `branch`, merged into every tuple by `COMMON_OPTIONAL`).
         assert set(c.OPTIONAL[c.MODEL_STATE]) == {
-            "index", "detail", "since_s", "retry_after_s"}
+            "index", "detail", "since_s", "retry_after_s",
+            *c.COMMON_OPTIONAL}
 
     def test_the_seven_words_are_data_like_the_outcomes(self):
         """A consumer vendoring `contract.py` gets the whole seam and must

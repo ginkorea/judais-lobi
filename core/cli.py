@@ -10,7 +10,7 @@ from core.contracts.schemas import ProfileMode
 # The event name only, off the module that owns the vocabulary and imports
 # nothing at all — the console echo below switches on it, and a second
 # spelling of a record type is how a consumer comes to render nothing.
-from core.runtime.contract import ANSWER_DELTA
+from core.runtime.contract import ANSWER_DELTA, MODEL_STATE
 from core.runtime.provider_config import PROVIDERS
 
 GREEN = "\033[92m"
@@ -516,6 +516,20 @@ class _ProgressiveAnswer:
             # continue somebody's half-streamed sentence.
             self._console.print("")
             self._open = False
+        if record.get("event") == MODEL_STATE:
+            # The pane's "why is nothing happening" line. A healthy call
+            # emits no `model_state` at all, so this prints only when there
+            # is a reason to wait — and `loaded` when the wait ends.
+            word = record.get("state")
+            after = record.get("retry_after_s")
+            since = record.get("since_s")
+            detail = record.get("detail")
+            self._console.print(
+                ("✅ model: loaded" if word == "loaded" else f"⏳ model: {word}")
+                + (f" after {since:g}s" if since else "")
+                + (f" — {detail}" if detail else "")
+                + (f" (the server asks for {after:g}s)" if after else ""),
+                style=self._style if word == "loaded" else "yellow")
 
 
 def _watchers(*observers):

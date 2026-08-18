@@ -793,3 +793,37 @@ class TestRetryAfterIsReadTheWayServersWriteIt:
         assert state.retry_after_seconds({}) is None
         assert state.retry_after_seconds(None) is None
         assert state.retry_after_seconds({"Retry-After": "soon"}) is None
+
+
+class TestTheConsoleSaysWhyItIsWaiting:
+    """`_ProgressiveAnswer` prints the one line a person at a terminal
+    needs when the stream carries `model_state` — and nothing when a call
+    is healthy, because then there is no record to print."""
+
+    def _printer(self):
+        from rich.console import Console
+        from io import StringIO
+        from core.cli import _ProgressiveAnswer
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=False, width=200)
+        return _ProgressiveAnswer(console, "cyan", "Tai"), buf
+
+    def test_a_queued_state_is_one_yellow_line(self):
+        printer, buf = self._printer()
+        printer({"event": "model_state", "state": "queued", "provider": "local",
+                 "model": "m", "since_s": 21.5, "retry_after_s": 5.0,
+                 "detail": "429"})
+        out = buf.getvalue()
+        assert "⏳ model: queued" in out
+        assert "after 21.5s" in out and "429" in out and "asks for 5s" in out
+
+    def test_loaded_closes_the_wait(self):
+        printer, buf = self._printer()
+        printer({"event": "model_state", "state": "loaded", "provider": "local",
+                 "model": "m", "since_s": 3.0})
+        assert "✅ model: loaded after 3s" in buf.getvalue()
+
+    def test_a_healthy_stream_prints_nothing_of_the_kind(self):
+        printer, buf = self._printer()
+        printer({"event": "step_started", "index": 0})
+        assert "model:" not in buf.getvalue()
