@@ -52,13 +52,14 @@ first — see :class:`_Bounded`.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Optional
+import asyncio
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional
 
 from core.runtime.backends.base import attr_or_key
 
 __all__ = [
     "BOUND_CHARS", "JSON_ANSWER_KEY", "NATIVE_ANSWER_KEY", "AnswerStream",
-    "drain",
+    "adrain", "drain",
 ]
 
 #: How much decoded answer text is allowed to pile up before a fragment is
@@ -435,11 +436,18 @@ def drain(chunks: Iterable[Any], on_delta: Callable[[str], None], *,
           bound: int = BOUND_CHARS) -> str:
     """Consume a streamed model call and return the reply it amounts to.
 
-    The one function the loop calls.  Iteration errors are the caller's —
-    a server that died mid-answer is a fact about the mission and not
-    something to swallow — but whatever had been decoded by then is
-    flushed on the way out, in a ``finally``, so a consumer keeps the
+    The function a **synchronous** caller calls; :func:`adrain` is the
+    same drain for one inside an event loop.  Iteration errors are the
+    caller's — a server that died mid-answer is a fact about the mission
+    and not something to swallow — but whatever had been decoded by then
+    is flushed on the way out, in a ``finally``, so a consumer keeps the
     fragments it was already shown.
+
+    **There is one implementation of the cut**, and it is
+    :class:`AnswerStream`: this function and :func:`adrain` differ in how
+    they get the next frame and in nothing else, so a fragment boundary
+    cannot depend on which of them a caller reached for.  A test asserts
+    the two produce the same fragments from the same frames.
     """
     stream = AnswerStream(on_delta, native=native, answer_tool=answer_tool,
                           bound=bound)
@@ -449,3 +457,66 @@ def drain(chunks: Iterable[Any], on_delta: Callable[[str], None], *,
     finally:
         reply = stream.close()
     return reply
+
+
+async def adrain(chunks: Any, on_delta: Callable[[str], None], *,
+                 native: bool = False, answer_tool: str = "",
+                 bound: int = BOUND_CHARS) -> str:
+    """:func:`drain`, awaited: the same fragments, off the loop's thread.
+
+    What :meth:`~core.runtime.run.Run.arun` calls.  The difference from
+    :func:`drain` is where the *waiting* happens: a backend's iterator
+    blocks on a socket for most of a mission's wall clock, and a loop
+    that spent that time inside ``next()`` could not run a sibling child,
+    answer a control command or tick a clock while an answer was being
+    written.  Here every frame is a suspension point, so the fragments
+    are emitted as they decode **and** the loop is free between them.
+
+    *on_delta* is called on the loop's own thread, in order, exactly as
+    it is under :func:`drain` — the emitting is the caller's and this
+    does not move it to a worker.
+
+    An error the source raises is the caller's, and the flush in the
+    ``finally`` is :func:`drain`'s, for the reasons stated there.
+    """
+    stream = AnswerStream(on_delta, native=native, answer_tool=answer_tool,
+                          bound=bound)
+    try:
+        async for chunk in _aframes(chunks):
+            stream.feed(chunk)
+    finally:
+        reply = stream.close()
+    return reply
+
+
+#: Handed back by ``next`` when the iterator is exhausted.  A sentinel
+#: object and not ``None``, because ``None`` is a frame a backend may
+#: legitimately yield and :meth:`AnswerStream.feed` reads it as one.
+_END = object()
+
+
+async def _aframes(chunks: Any) -> AsyncIterator[Any]:
+    """The frames of *chunks*, however that object hands them over.
+
+    Two sources, and the harness has both.  A backend that is already
+    asynchronous is iterated directly.  A **synchronous** iterator — which
+    is every backend in this tree, and every scripted model in its test
+    suite — is stepped one frame at a time on a worker thread through
+    :func:`asyncio.to_thread`, because ``next()`` on it is a blocking read
+    of a socket and the whole point of :func:`adrain` is not to do that on
+    the loop.
+
+    One frame per hop and not the whole iterator in one: draining it in a
+    worker would hand the fragments back in a lump at the end, which is
+    the ``answer`` record this module exists to arrive before.
+    """
+    if hasattr(chunks, "__aiter__"):
+        async for chunk in chunks:
+            yield chunk
+        return
+    frames = iter(chunks)
+    while True:
+        chunk = await asyncio.to_thread(next, frames, _END)
+        if chunk is _END:
+            return
+        yield chunk

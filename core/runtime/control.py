@@ -40,12 +40,28 @@ points the loop chooses.  Everything about it is deliberately narrow:
   about the writer.  The mission finishes the way it would have finished
   with no channel at all.
 
+**One reader, one queue, and two ways to wait on it.**  The loop that
+drains this channel is a coroutine now (:meth:`core.runtime.run.Run.arun`),
+and an async loop that sat in :func:`time.sleep` waiting for a person to
+answer a gate would be an async loop with nothing async about it — so
+:meth:`ControlChannel.await_for` is :meth:`ControlChannel.wait_for` with
+its sleep awaited, sharing every decision either of them makes.  What did
+**not** move is the reader: it is still one daemon thread feeding one
+:class:`queue.Queue`, because the two properties this channel is built on
+are properties of that thread.  ``cancel`` is applied *in* it, so a stop
+does not wait for a loop to reach a drain point — an asyncio reader would
+apply it on the loop, which is the thread a model call is blocking; and
+``-`` is ``sys.stdin``, a text handle with no descriptor an event loop can
+be told to watch.  ``poll`` is already a non-blocking drain of that queue
+and is what both loops call, unchanged.
+
 Nothing here is required.  With no ``--control`` the loop runs exactly as it
 ran before this module existed.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import queue
@@ -517,24 +533,90 @@ class ControlChannel:
         Commands that do not match are **kept**, not dropped: a decision
         for another gate, or an injection sent while a gate was standing,
         is still owed to the step that comes next.
+
+        This is the wait a **synchronous** caller makes; :meth:`await_for`
+        is the same wait for one inside an event loop.  The two share
+        every decision — see :meth:`_seek` and :meth:`_nap` — and differ
+        in one word, which is how the sleep is spent.
         """
-        deadline = time.monotonic() + max(0.0, float(timeout_s or 0.0))
+        deadline = self._until(timeout_s)
         while True:
-            self._drain()
-            for position, command in enumerate(self._held):
-                if predicate(command):
-                    return self._held.pop(position)
-            if cancelled(self._cancel):
+            command = self._seek(predicate)
+            if command is not None:
+                return command
+            nap = self._nap(deadline)
+            if nap is None:
                 return None
-            left = deadline - time.monotonic()
-            if left <= 0:
+            time.sleep(nap)
+
+    async def await_for(self, predicate: Callable[[Dict[str, Any]], bool],
+                        timeout_s: float) -> Optional[Dict[str, Any]]:
+        """:meth:`wait_for`, awaited, so the loop is free while it waits.
+
+        What :meth:`core.runtime.run.Run.arun` stands at a gate with.  The
+        reader is still the one daemon thread — see :meth:`_read`, and see
+        the class docstring for why ``cancel`` is applied *there* and not
+        here — and this is still that thread's queue being drained; what
+        changes is that five minutes of waiting for a person is five
+        minutes an event loop can spend on something else, instead of five
+        minutes of :func:`time.sleep` on the thread that owns it.
+
+        Identical in every decision it makes to :meth:`wait_for`, which is
+        not a comment but a construction: both call :meth:`_seek` for the
+        command and :meth:`_nap` for whether to keep waiting, and neither
+        holds an opinion of its own about a decision that has arrived, a
+        run that was cancelled, a window that ran out or a writer that
+        went away.
+        """
+        deadline = self._until(timeout_s)
+        while True:
+            command = self._seek(predicate)
+            if command is not None:
+                return command
+            nap = self._nap(deadline)
+            if nap is None:
                 return None
-            if self.finished:
-                # Nothing is coming. Waiting out the full window for a
-                # writer that has closed would hold a person at a gate
-                # nobody can answer.
-                return None
-            time.sleep(min(_TICK, left))
+            await asyncio.sleep(nap)
+
+    # ── the two decisions a wait is made of, shared by both waiters ─────
+
+    @staticmethod
+    def _until(timeout_s: float) -> float:
+        """The instant a wait of *timeout_s* is over."""
+        return time.monotonic() + max(0.0, float(timeout_s or 0.0))
+
+    def _seek(self, predicate: Callable[[Dict[str, Any]], bool],
+              ) -> Optional[Dict[str, Any]]:
+        """The first waiting command *predicate* accepts, or ``None``.
+
+        Everything it does not accept is **kept**, in order, for the same
+        reason :meth:`poll`'s *only* keeps what it was not asked for.
+        """
+        self._drain()
+        for position, command in enumerate(self._held):
+            if predicate(command):
+                return self._held.pop(position)
+        return None
+
+    def _nap(self, deadline: float) -> Optional[float]:
+        """How long to wait before looking again, or ``None`` — stop.
+
+        ``None`` is the three facts :meth:`wait_for` names as one: the run
+        was cancelled underneath the wait, the window ran out, or the
+        writer has gone and nothing is coming.  The order is the one this
+        channel has always asked them in.
+        """
+        if cancelled(self._cancel):
+            return None
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        if self.finished:
+            # Nothing is coming. Waiting out the full window for a
+            # writer that has closed would hold a person at a gate
+            # nobody can answer.
+            return None
+        return min(_TICK, left)
 
     @property
     def waiting(self) -> int:
