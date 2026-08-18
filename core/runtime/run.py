@@ -42,8 +42,29 @@ served endpoint's prefix cache is keyed on.  ``MissionRunner`` is now the
 **adapter** — its thirty parameters build these six objects and every
 behaviour is delegated here — so a caller that has one keeps it, its
 conformance suite (``tests/test_mission.py``) keeps testing the loop
-through it, and ``tests/test_run_corpus.py`` replays three recorded runs
+through it, and ``tests/test_run_corpus.py`` replays four recorded runs
 through this code and compares them to the recording record for record.
+
+**The loop is a coroutine, and the method a caller already had is a
+wrapper round it.**  :meth:`Run.arun` *is* the loop; :meth:`Run.run` runs
+that coroutine to completion and does nothing else, which is what
+``judais``, ``MissionRunner`` and the staged path call and why none of
+them had to change.  Every ``await`` in it is at a point the loop already
+chose to stop at — before and after a model call, around a dispatch, at a
+gate's wait, between the frames of a streamed answer — so the *order* of
+what a mission does is the order it always did, and the records are the
+same records: the guard for that claim is ``tests/test_run_corpus.py``,
+which replays four recorded runs through this code and compares them
+field for field, and reports no drift in the prompts either.
+
+What being a coroutine buys is that the waiting stops being a blocked
+thread.  A model call goes out through :func:`asyncio.to_thread`, so a
+59 tok/s endpoint no longer holds the loop while it writes; a dispatch
+does too; a gate awaits the control channel instead of sleeping on it.
+None of that is visible on the wire, and all of it is what makes
+``asyncio.gather`` over :meth:`Run.child` possible — which is the
+capability this was done for, and which is the parallel-children lane's
+to spend (``ROADMAP.md`` §2.6.2).
 
 The import runs one way at module level: this module reads the vocabulary —
 the transcript shapes, the protocol text, the record builders, the bus
@@ -58,9 +79,11 @@ store.  The two do not meet: nothing here imports that one, and
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import (
     Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple,
@@ -70,7 +93,7 @@ from core.bounding import MAX_RESULT_BYTES, bound_result
 from core.budgets import BudgetExhausted, Deadline, cancelled
 from core.durable import RunStore
 from core.redact import scrub_record
-from core.runtime.answer_stream import drain as drain_answer
+from core.runtime.answer_stream import adrain as adrain_answer
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
@@ -423,12 +446,30 @@ class Bounds:
         "it ran out of seconds" — which would also be true, and useless.
         """
         if cancelled(self.cancel):
-            return "incomplete", None, CANCELLED
+            return self.cancelled_stop()
         exhausted = (self.deadline.exhausted()
                      if self.deadline is not None else None)
         if exhausted is not None:
             return "budget_exhausted", exhausted, ""
         return None
+
+    @staticmethod
+    def cancelled_stop() -> Tuple[str, Optional[BudgetExhausted], str]:
+        """The verdict a run stopped by a person ends on.
+
+        Its own method because there are two ways to be stopped by one and
+        they must not describe it differently.  :meth:`stop` reaches it
+        when the switch is found thrown at a drain point, which is how a
+        ``SIGTERM``, a ``--control`` ``cancel`` and a library caller's
+        :class:`~core.budgets.Cancellation` have always arrived; and
+        :meth:`Run.arun` reaches it when the *task* running the loop is
+        cancelled and an ``await`` raises
+        :class:`asyncio.CancelledError`, which is how somebody holding the
+        coroutine stops it.  Both are "a person stopped this", one word
+        and one outcome — and a second spelling of it here is exactly the
+        second emitter this package spent Phase 11 removing.
+        """
+        return "incomplete", None, CANCELLED
 
 
 # ── what survives the process ───────────────────────────────────────────────
@@ -796,6 +837,53 @@ class Model:
         return {"usage": recorded.as_record()} if recorded is not None else {}
 
 
+# ── running a coroutine from code that is not one ───────────────────────────
+
+
+def _to_completion(coro: Any) -> Any:
+    """Run *coro* to completion and hand back what it returned.
+
+    The whole of :meth:`Run.run`, and the one place this package decides
+    what "a synchronous caller of an asynchronous loop" means.  Two cases,
+    and the second is the one worth the words.
+
+    **No loop is running on this thread** — every caller in this
+    repository, and every library caller with a script.
+    :func:`asyncio.run` gives the coroutine a fresh loop, runs it, cancels
+    whatever it left behind and closes the loop.  A fresh loop per run and
+    not one kept warm on the side: a loop that outlived the run would
+    outlive the run's cancellation scope too, and a second run of the same
+    :class:`Run` would inherit a callback queue nobody could point at.
+
+    **A loop IS running on this thread** — a caller inside ``async def``
+    who reached for ``run`` instead of ``arun``.  The coroutine goes to a
+    worker thread with a loop of its own and this thread blocks on the
+    result.  It is not what that caller should write — ``await
+    run.arun(…)`` is, and it is one word shorter — but the alternative to
+    answering them is :func:`asyncio.run` raising ``cannot be called from
+    a running event loop`` on a method that has been synchronous since the
+    first version of this harness, and a refactor that turns a working
+    call into an exception is a refactor that changed something.  It
+    blocks the loop it was called from, exactly as any synchronous call in
+    a coroutine does; it does not deadlock, which is the property that
+    matters and the one there is a test for.
+
+    A child run never takes the second path.  A parent inside
+    :meth:`Run.arun` awaits ``child.arun(...)`` — one loop, one thread,
+    and the numbering, the ledger and the store shared by identity the way
+    :meth:`Run.child` promises.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # One thread, joined before this returns, and shut down with it: this
+    # is a blocking call the caller asked for, not a background one.
+    with ThreadPoolExecutor(max_workers=1,
+                            thread_name_prefix="judais-run") as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 # ── the loop ────────────────────────────────────────────────────────────────
 
 
@@ -912,6 +1000,14 @@ class Run:
         ``mission_started`` still reaches a watcher.  Every caller in this
         package names its children, because every one of them is a child
         of a run that has already announced itself.
+
+        **A child is awaited, not run.**  ``await child.arun(...)`` from
+        inside a parent's :meth:`arun` is one loop, one thread and one
+        numbering; ``child.run(...)`` from the same place would answer
+        correctly and answer on a loop of its own, which is a child whose
+        records were emitted from somewhere else and a sibling that could
+        not be gathered beside it.  The synchronous façade is for a
+        synchronous caller — see :func:`_to_completion`.
 
         The **plane is shared, and its offered set with it**.  That is the
         one thing a sub-mission did not get before: each built its own
@@ -1070,7 +1166,8 @@ class Run:
 
     # ── asking the model ────────────────────────────────────────────────
 
-    def _model_reply(self, messages: List[Dict[str, Any]], index: int) -> str:
+    async def _model_reply(self, messages: List[Dict[str, Any]],
+                           index: int) -> str:
         """The model's reply, whether it arrives whole or in pieces.
 
         ``chat_fn`` may return a ``str`` — every test in this repo, every
@@ -1096,11 +1193,33 @@ class Run:
         ``index`` — streams again from part 0, and the consumer's rule of
         replacing provisional text when an ``answer`` arrives makes that
         right without anything here having to remember the last one.
+
+        **The call itself goes to a worker thread.**  ``ask`` is a
+        synchronous callable — every backend in this tree is, and
+        rewriting them is not this lane's — and it is where a mission
+        spends most of its wall clock: on a 59 tok/s endpoint one answer
+        is tens of seconds inside one function call.  Awaited through
+        :func:`asyncio.to_thread`, those seconds are seconds the loop can
+        spend elsewhere, which is what lets two children of one run have
+        two calls in flight at once.  Nothing about the request or the
+        reply changes: the same list of messages goes to the same
+        callable and the same string comes back, and the thread it
+        happened on is not a fact any record carries.
+
+        The frames of a streamed reply are then awaited one at a time —
+        see :func:`~core.runtime.answer_stream.adrain`, which shares the
+        one fragment cut with the synchronous drain — so ``answer_delta``
+        goes out *as* the answer decodes rather than after it, which is
+        the whole reason that record exists.  A source that is already
+        asynchronous is iterated as one; no backend here is yet, and
+        refusing one would be this loop having an opinion about a shape
+        it does not need to hold.
         """
-        got = self.model.ask(messages)
+        got = await asyncio.to_thread(self.model.ask, messages)
         if isinstance(got, str):
             return got
-        if got is None or not hasattr(got, "__iter__"):
+        if got is None or not (hasattr(got, "__iter__")
+                               or hasattr(got, "__aiter__")):
             return str(got or "")
 
         part = 0
@@ -1110,8 +1229,8 @@ class Run:
             self.observer.emit(ANSWER_DELTA, index=index, part=part, text=text)
             part += 1
 
-        return drain_answer(got, on_delta, native=self.model.native,
-                            answer_tool=ANSWER_TOOL)
+        return await adrain_answer(got, on_delta, native=self.model.native,
+                                   answer_tool=ANSWER_TOOL)
 
     # ── the catalogue ───────────────────────────────────────────────────
 
@@ -1482,7 +1601,56 @@ class Run:
 
     def run(self, objective: str,
             resumption: Optional[Any] = None) -> MissionTranscript:
+        """:meth:`arun`, run to completion.  **This method is the wrapper.**
+
+        Every caller this package has is synchronous — ``judais --mission``,
+        :class:`~core.runtime.mission.MissionRunner`, the staged path, a
+        library caller with a script — and none of them had to learn a new
+        word when the loop became a coroutine.  What they call is this,
+        and this is a policy about event loops and nothing else: it makes
+        no decision about the mission, emits no record, and holds no state.
+        The loop is :meth:`arun`.
+
+        **The policy, in two cases.**  Called from a thread with no event
+        loop running — which is every caller in this repository — the
+        coroutine gets a fresh loop of its own through :func:`asyncio.run`,
+        and that loop is closed when the run ends.  Called from *inside* a
+        running loop, it goes to a worker thread with a fresh loop of its
+        own and this thread blocks on the result: a caller that asked a
+        blocking question is answered, rather than deadlocked on a loop it
+        is itself standing in the way of.  See :func:`_to_completion`,
+        which is where that costs a paragraph.
+
+        A child run is the case that must not take the second path, and it
+        does not: a parent inside :meth:`arun` awaits ``child.arun(...)``
+        directly — that is what the parallel-children lane will hand to
+        :func:`asyncio.gather` — so no child of a running loop opens a
+        second one.
+        """
+        return _to_completion(self.arun(objective, resumption))
+
+    async def arun(self, objective: str,
+                   resumption: Optional[Any] = None) -> MissionTranscript:
         """Run the mission, or carry a recorded one on from where it stopped.
+
+        **This is the loop.**  :meth:`run` is this method run to
+        completion and is what everything in this package calls; the
+        awaits are here, and there are five of them:
+
+        * **the model call** — :meth:`_model_reply`, on a worker thread;
+        * **each frame of a streamed reply** — inside that call, so
+          ``answer_delta`` is emitted as the answer decodes;
+        * **each dispatch** — :meth:`_dispatch`, on a worker thread,
+          because a tool is a subprocess or a server and neither is quick;
+        * **a gate's wait for a decision** — :meth:`_gate`, which awaits
+          the control channel rather than sleeping on it;
+        * **the verdict on an answer** — :meth:`_verdict`, which may ask a
+          critic, which is another endpoint.
+
+        Every one of them is a point this loop already stopped at.  A
+        control command is still taken at the step boundary and at a call
+        boundary and nowhere else; a stop is still asked about at the same
+        two places; the records are the same records in the same order.
 
         *resumption* is a :class:`core.runtime.resume.Resumption` — the
         recorded stream read back into this loop's own state — and ``None``
@@ -1560,7 +1728,23 @@ class Run:
         if resumption is None:
             self.observer.emit(MISSION_STARTED, **self.opening(objective))
         try:
-            return self._loop(objective, transcript, resumption)
+            return await self._loop(objective, transcript, resumption)
+        except asyncio.CancelledError:
+            # Somebody holding this task cancelled it, and the await it was
+            # sitting on raised. Caught, and the run ends the way a run
+            # stopped by a person has always ended: the same outcome, the
+            # same `reason`, and the `finally` below writing the same
+            # `mission_finished`. Not re-raised, and that is the decision:
+            # a caller of `run` would otherwise get an exception where the
+            # exit contract promises a transcript, and a watcher would get
+            # a stream that stops mid-mission — which is the state
+            # `mission_finished` exists so that nobody is ever left in.
+            #
+            # A cancellation caught here does NOT stop a model call that is
+            # already on a worker thread; nothing can, short of the
+            # backend's own timeout. What it stops is this loop waiting for
+            # it, which is what the person asked for.
+            return self._stopped(transcript, self.bounds.cancelled_stop())
         finally:
             if registered:
                 self.plane.bus.unregister(registered)
@@ -1602,7 +1786,7 @@ class Run:
             return ""
         return self.results.register_on(self.plane.bus, self.plane.store_tool)
 
-    def _loop(
+    async def _loop(
         self, objective: str, transcript: MissionTranscript,
         resumption: Optional[Any] = None,
     ) -> MissionTranscript:
@@ -1714,7 +1898,7 @@ class Run:
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
             opening = {}
-            reply = self._model_reply(messages, index)
+            reply = await self._model_reply(messages, index)
             # Read here and used below: whichever record this step emits
             # carries the cost of the call that produced it. One read per
             # call, because `last_usage` is a side channel that the NEXT
@@ -1728,7 +1912,7 @@ class Run:
                 # — is decided by the same helpers the lines below use, so
                 # there is one owner for what a dispatch emits and one for
                 # what an answer is worth.
-                done, repairs = self._native_turn(
+                done, repairs = await self._native_turn(
                     objective, index, reply, spent, step,
                     messages, transcript, repairs)
                 if done is not None:
@@ -1746,7 +1930,7 @@ class Run:
                 continue
 
             if "answer" in decision:
-                done, repairs = self._answered(
+                done, repairs = await self._answered(
                     str(decision["answer"]), index, step, spent, messages,
                     transcript, repairs)
                 if done is not None:
@@ -1783,9 +1967,9 @@ class Run:
                 # channel while the run stood at it — the call was
                 # dispatched, or it was refused and said so — and this turn
                 # carries on with the step that already happened.
-                stopped = self._gate(objective, index, name, arguments, step,
-                                     transcript, messages=messages,
-                                     spent=spent)
+                stopped = await self._gate(
+                    objective, index, name, arguments, step, transcript,
+                    messages=messages, spent=spent)
                 if stopped is not None:
                     return stopped
                 transcript.steps.append(step)
@@ -1826,7 +2010,7 @@ class Run:
                 transcript.steps.append(step)
                 continue
 
-            self._dispatch(step, index, spent, messages)
+            await self._dispatch(step, index, spent, messages)
             transcript.steps.append(step)
 
         transcript.outcome = "budget_exhausted"
@@ -1884,8 +2068,8 @@ class Run:
             return ""
         return check_arguments(name, info.get("input_schema"), arguments)
 
-    def _dispatch(self, slot: Any, index: int, spent: Dict[str, Any],
-                  messages: List[Dict[str, Any]]) -> None:
+    async def _dispatch(self, slot: Any, index: int, spent: Dict[str, Any],
+                        messages: List[Dict[str, Any]]) -> None:
         """Call one tool and tell everyone what happened.
 
         *slot* is whatever carries this call: the :class:`MissionStep`
@@ -1930,7 +2114,23 @@ class Run:
         # deadline by more than its own bounded slack.
         call = dict(arguments)
         call.update(self._deadline_ceiling())
-        result = self.plane.bus.dispatch(name, **call)
+        # On a worker thread, for the reason the model call is: a dispatch
+        # is a subprocess or a server, it is the other place a mission
+        # spends real time, and a loop blocked inside it is a loop that
+        # cannot run a sibling child or drain a control channel. The bus
+        # is unchanged and is still called exactly once with exactly these
+        # arguments — `deadline_s` included, which is the only ceiling a
+        # tool has ever been given and is not a timeout on this await.
+        #
+        # The MCP bus reaches its server through a second hop: a client
+        # with its own loop on its own thread, entered by
+        # `run_coroutine_threadsafe`. Awaiting that session directly from
+        # here would delete the hop, and it is NOT done in this lane —
+        # `ToolBus.dispatch` is where capability gating, the audit entry
+        # and the sandbox live, and an async path to the session that
+        # skipped them would be a second dispatcher with a different
+        # governance story. See ROADMAP.md §2.6.3.
+        result = await asyncio.to_thread(self.plane.bus.dispatch, name, **call)
         if self.bounds.supervisor is not None:
             # The WHOLE result and the exit code with it, not the bounded
             # rendering the model is shown: what makes a repetition a
@@ -1972,10 +2172,12 @@ class Run:
         # see `_relearn_the_plane` and the `_plane_news` block in `_loop`.
         self._relearn_the_plane()
 
-    def _answered(self, answer: str, index: int, step: MissionStep,
-                  spent: Dict[str, Any], messages: List[Dict[str, Any]],
-                  transcript: MissionTranscript, repairs: int,
-                  call_id: str = "") -> Tuple[Optional[MissionTranscript], int]:
+    async def _answered(self, answer: str, index: int, step: MissionStep,
+                        spent: Dict[str, Any],
+                        messages: List[Dict[str, Any]],
+                        transcript: MissionTranscript, repairs: int,
+                        call_id: str = "",
+                        ) -> Tuple[Optional[MissionTranscript], int]:
         """The answer path, for whichever protocol produced the text.
 
         ``(transcript to return, repairs)`` — the first is ``None`` when
@@ -1988,6 +2190,15 @@ class Run:
         property of the mission and not of how the text arrived, and a
         native run whose caveat path drifted from the JSON one would be
         two agents wearing one name.
+
+        :meth:`_verdict` is awaited **through
+        :func:`asyncio.to_thread`** and is still an ordinary method,
+        which is deliberate on both counts: it may ask a critic, which is
+        a second endpoint and therefore a second thing not to block the
+        loop on; and the staged path calls the same method from
+        synchronous code, so it stays callable there.  One
+        implementation, two callers, and the awaited one does not hold
+        the loop while a critic thinks.
         """
         report = self._ground(answer, repairs)
         transcript.grounding = report
@@ -2014,8 +2225,9 @@ class Run:
             transcript.answer = answer + marked.caveat
             transcript.outcome = "answered_with_caveat"
             transcript.steps.append(step)
-            self._verdict(transcript.objective, answer, marked,
-                          repairs=repairs, caveat=marked.caveat)
+            await asyncio.to_thread(
+                self._verdict, transcript.objective, answer, marked,
+                repairs=repairs, caveat=marked.caveat)
             self.observer.emit(ANSWER, text=transcript.answer,
                        outcome=transcript.outcome, **spent)
             return transcript, repairs
@@ -2024,8 +2236,9 @@ class Run:
             # `report` and not a copy of it: `_ground` already put this
             # run's repair count on what it returned, which is the one
             # place that arithmetic happens.
-            self._verdict(transcript.objective, answer, report,
-                          repairs=repairs)
+            await asyncio.to_thread(
+                self._verdict, transcript.objective, answer, report,
+                repairs=repairs)
         transcript.answer = answer
         transcript.outcome = "answered"
         transcript.steps.append(step)
@@ -2095,6 +2308,14 @@ class Run:
         grounded answer, and the call is made anyway so that the decision
         has ONE owner.  A branch that skipped asking would be a second
         copy of the trigger policy, written in ``if``s.
+
+        Synchronous, with two callers that reach it differently: the loop
+        awaits it on a worker thread (see :meth:`_answered`) because the
+        critic is an endpoint, and the staged path's synthesizer calls it
+        straight, from code that is not in an event loop.  The record it
+        writes is the same record either way — the emitting is
+        :class:`Observer`'s, which is one choke point whichever thread
+        reaches it, and the two callers are serialised by the ``await``.
         """
         self.observer.emit(GROUNDING, **_grounding_record(
             report, repairs=repairs, caveat=caveat,
@@ -2128,13 +2349,13 @@ class Run:
             unsupported=report.unsupported,
             answered_with_caveat=answered_with_caveat)
 
-    def _gate(self, objective: str, index: int, name: str,
-              arguments: Dict[str, Any], step: MissionStep,
-              transcript: MissionTranscript, *, skipped: int = 0,
-              call: Optional[MissionCall] = None,
-              messages: Optional[List[Dict[str, Any]]] = None,
-              spent: Optional[Dict[str, Any]] = None,
-              ) -> Optional[MissionTranscript]:
+    async def _gate(self, objective: str, index: int, name: str,
+                    arguments: Dict[str, Any], step: MissionStep,
+                    transcript: MissionTranscript, *, skipped: int = 0,
+                    call: Optional[MissionCall] = None,
+                    messages: Optional[List[Dict[str, Any]]] = None,
+                    spent: Optional[Dict[str, Any]] = None,
+                    ) -> Optional[MissionTranscript]:
         """STOP, write the proposal down — and, if anybody is listening, wait.
 
         ``None`` back means the gate was **answered in this turn** and the
@@ -2206,7 +2427,15 @@ class Run:
                    arguments=dict(arguments), reason=reason, **carried)
 
         if waiting and approval_id:
-            decision = self.bounds.control.wait_for(
+            # Awaited, not slept on: the window is five minutes by default
+            # because the thing on the other end is a person being paged,
+            # and five minutes of `time.sleep` on the loop's own thread
+            # would be five minutes in which this run's siblings could not
+            # take a step. The wait itself is unchanged — same predicate,
+            # same window, same three ways to come back with nothing — see
+            # `ControlChannel.await_for`, which shares every decision it
+            # makes with the synchronous `wait_for` beside it.
+            decision = await self.bounds.control.await_for(
                 lambda command: (
                     command.get("control") == GATE_DECISION
                     and command.get("approval_id") == approval_id),
@@ -2215,7 +2444,7 @@ class Run:
                 approved, trouble = _record_decision(
                     self.store.approvals, approval_id, decision)
                 if not trouble:
-                    return self._answered_gate(
+                    return await self._answered_gate(
                         approved, decision, index, name, step, call,
                         messages if messages is not None else [],
                         dict(spent or {}))
@@ -2273,11 +2502,11 @@ class Run:
             window = min(window, max(0.0, remaining))
         return window
 
-    def _answered_gate(self, approved: bool, decision: Dict[str, Any],
-                       index: int, name: str, step: MissionStep,
-                       call: Optional[MissionCall],
-                       messages: List[Dict[str, Any]],
-                       spent: Dict[str, Any]) -> None:
+    async def _answered_gate(self, approved: bool, decision: Dict[str, Any],
+                             index: int, name: str, step: MissionStep,
+                             call: Optional[MissionCall],
+                             messages: List[Dict[str, Any]],
+                             spent: Dict[str, Any]) -> None:
         """Carry out a decision that arrived in time.  Always ``None``.
 
         ``None`` is the caller's signal to carry on, and both outcomes are
@@ -2296,7 +2525,7 @@ class Run:
         who = str(decision.get("decided_by") or "")
         slot = call if call is not None else step
         if approved:
-            self._dispatch(slot, index, spent, messages)
+            await self._dispatch(slot, index, spent, messages)
             return None
         note = str(decision.get("note") or "").strip()
         refusal = (
@@ -2378,7 +2607,7 @@ class Run:
             ]
         return message
 
-    def _native_turn(
+    async def _native_turn(
         self, objective: str, index: int, reply: str,
         spent: Dict[str, Any], step: MissionStep,
         messages: List[Dict[str, Any]], transcript: MissionTranscript,
@@ -2422,8 +2651,9 @@ class Run:
             # says nothing is the one case with nothing to salvage.
             text = reply.strip()
             if text:
-                return self._answered(text, index, step, cost(), messages,
-                                      transcript, repairs)
+                return await self._answered(
+                    text, index, step, cost(), messages, transcript,
+                    repairs)
             problem = (
                 f"That reply carried no function call and no text. Every "
                 f"reply must call one of the declared functions; call "
@@ -2457,7 +2687,7 @@ class Run:
                 transcript.steps.append(step)
                 reject(problem, call["id"], ANSWER_TOOL)
                 return None, repairs
-            return self._answered(
+            return await self._answered(
                 str(call["arguments"]["text"]), index, step, cost(), messages,
                 transcript, repairs, call_id=call["id"])
 
@@ -2521,7 +2751,7 @@ class Run:
                 # their turn. The ones before it have already run and are
                 # on the record; the ones after it are not dispatched if
                 # the mission stops, and the reason says how many.
-                stopped = self._gate(
+                stopped = await self._gate(
                     objective, index, name, arguments, step, transcript,
                     skipped=len(wanted) - ordinal - 1, call=call,
                     messages=messages, spent=cost())
@@ -2538,7 +2768,7 @@ class Run:
                 call.error = self._no_time_to_call(name, stop)
                 transcript.steps.append(step)
                 return self._stopped(transcript, stop), repairs
-            self._dispatch(call, index, cost(), messages)
+            await self._dispatch(call, index, cost(), messages)
 
         # Last, so the model reads its results before it reads the note,
         # and only ever as a note: the tools ran, so the reply was not
