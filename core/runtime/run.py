@@ -122,6 +122,7 @@ from core.runtime.mission_stream import (
 )
 from core.runtime.mission_stream import Observer as Sink
 from core.runtime.messages import assistant_turn
+from core.runtime.prompts import GOVERNED_PLANE
 from core.runtime.results import (
     BRANCH_ARGUMENT, RESULT_TOOL, BranchedStores, MissionResultStore,
 )
@@ -158,6 +159,26 @@ class Personality:
 
     #: Persona and skill prompt, already joined by the caller.
     system_message: str = ""
+    #: The conduct section — how to work a governed tool plane — stacked
+    #: between the protocol and the catalogue by :meth:`Run.system_turn`.
+    #:
+    #: Three states, and the third is the only reason this is a field at
+    #: all.  ``None``, the default, is the framework's own
+    #: :data:`~core.runtime.prompts.GOVERNED_PLANE`: it is what a
+    #: deployment would otherwise write for itself, so it is not a thing a
+    #: caller should have to ask for.  ``""`` **suppresses** the section —
+    #: *a platform that has its own conduct text sets this empty and writes
+    #: it in the persona*, which is the one case a knob was owed, because
+    #: two paragraphs saying the same thing in different words is the
+    #: second emitter this repository keeps paying for.  Any other string
+    #: replaces it, for the platform that wants the position without the
+    #: prose.
+    #:
+    #: It is NOT the persona's: the persona is what this deployment is, and
+    #: this is what every deployment of this framework is.  A platform that
+    #: pasted it into ``system_message`` would get the same bytes in a
+    #: different order the day the framework's text changed.
+    conduct: Optional[str] = None
     #: Prior turns, oldest first, seeded between the system turn and the
     #: objective.  ``()`` is a mission that starts cold.
     history: Sequence[Mapping[str, str]] = ()
@@ -1907,7 +1928,8 @@ class Run:
         }
 
     def seed(self, objective: str) -> List[Dict[str, str]]:
-        """The PLAN-phase messages: persona, protocol, catalogue, history, objective.
+        """The PLAN-phase messages: persona, protocol, conduct, catalogue,
+        history, objective.
 
         The prior turns sit between the system prompt and the current
         question, so what the model receives is a genuine multi-turn
@@ -1934,11 +1956,16 @@ class Run:
            :meth:`~core.runtime.swarm.SwarmRunner._execute_step`);
         2. the **protocol** — a module constant, the same for every run of
            every version of this package;
-        3. the **catalogue** — the same for every step of one mission, and
+        3. the **conduct** — :data:`~core.runtime.prompts.GOVERNED_PLANE`,
+           another module constant, and beside the protocol because the
+           two move together: the protocol is the syntax of a reply and
+           the conduct is how to work the plane;
+        4. the **catalogue** — the same for every step of one mission, and
            different the moment a mission is offered a different tool set,
-           which is why it is last of the three.  It also has to follow the
-           protocol, whose text says "the catalogue below";
-        4. the seeded ``--history`` turns, then the objective, which is
+           which is why it is last of the four.  It also has to follow the
+           protocol, whose text says "the catalogue below", and the
+           conduct, which talks about the plane the catalogue lists;
+        5. the seeded ``--history`` turns, then the objective, which is
            where this turn stops being like the last one.
 
         Everything the step produces goes strictly **after** the objective:
@@ -2005,6 +2032,18 @@ class Run:
         nothing.  Every other step re-renders to the same bytes, because
         every input to this method is the same as it was.
 
+        **The conduct is the third section, between the protocol and the
+        catalogue, and the position is an argument.**  The protocol is the
+        *syntax* — how a reply is shaped — and the conduct is how to
+        *work*: they belong adjacent, most-constant-first, because both are
+        module constants that change only with a release.  It goes above
+        the catalogue for the same reason the protocol does: it talks about
+        the plane in general ("the catalogue is all there is", "results
+        arrive bounded") and the catalogue is the particular list it is
+        talking about, which reads in that order and not the other.  See
+        :mod:`core.runtime.prompts` for what it says and which production
+        lesson each sentence is.
+
         **Core memory is the fourth section and it is last of the four.**
         It follows the catalogue for the same most-constant-first reason
         the catalogue follows the protocol: the persona is one string for
@@ -2021,9 +2060,29 @@ class Run:
         return {"role": "system", "content": stacked(
             self.personality.system_message,
             self._protocol_text(),
+            self._conduct_text(),
             "Tool catalogue:\n" + self.catalogue(),
             self._core_memory(),
         )}
+
+    def _conduct_text(self) -> str:
+        """The framework's conduct, this run's override, or nothing.
+
+        One line of logic and it is here rather than in
+        :attr:`Personality.conduct` for a reason that is not style: the
+        default has to be *the framework's current text*, and a dataclass
+        default of :data:`~core.runtime.prompts.GOVERNED_PLANE` would
+        freeze whichever string was imported when the personality was
+        built.  ``None`` therefore means "ask the framework", which is
+        answered here, at the moment the turn is rendered.
+
+        Stripped through :func:`~core.runtime.mission.stacked`'s own rule
+        rather than beside it — ``stacked`` strips every section — so an
+        override with a stray trailing newline cannot produce a second
+        prefix for what is the same text.
+        """
+        conduct = self.personality.conduct
+        return GOVERNED_PLANE if conduct is None else conduct
 
     def _core_memory(self) -> str:
         """The bank's pinned section, or ``""`` when there is no bank.

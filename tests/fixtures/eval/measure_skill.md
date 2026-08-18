@@ -15,10 +15,12 @@ skill:
     - add_a_tool
     - late_arrival?
     - mcp.run_shell_command
-  policy:
-    - Never invent an asset id, an actor or a figure.
-    - If a number is not in a view, it is not in the answer.
-    - A refusal names the reason and what would unblock it.
+  # No `policy:` block, for the reason `stub_skill.md` has none: the three
+  # lines that were here are the framework's own conduct
+  # (`core/runtime/prompts.py`), which every mission now carries. The two
+  # manifests have to stay identical field for field —
+  # `tests/test_eval_live.py` says so — so this one lost them together
+  # with the other.
   output_format: >
     Short prose. Every identifier and every figure exactly as the plane
     spelled it.
@@ -46,8 +48,8 @@ skill:
 
 # The stub plane, with a plane declared
 
-This is `stub_skill.md` — the same closed set, the same policy, the same
-grounding grammar — plus one block: `planes:`. It exists because
+This is `stub_skill.md` — the same closed set, the same (absent) policy,
+the same grounding grammar — plus one block: `planes:`. It exists because
 `python -m core.eval measure` switches grounding tiers on and off, and one
 of the three tiers cannot be switched on by a switch.
 

@@ -452,11 +452,11 @@ class MissionWindow:
         when nothing had to be.
 
         *pinned* is how many messages at the FRONT are not compactable —
-        for a mission, the system turn (persona, protocol, catalogue), the
-        seeded ``--history`` turns, and the objective.  Dropping any of
-        those produces an agent that has forgotten which tools exist or
-        what it was asked, which is a worse failure than the one being
-        fixed.
+        for a mission, the system turn (persona, protocol, conduct,
+        catalogue), the seeded ``--history`` turns, and the objective.
+        Dropping any of those produces an agent that has forgotten which
+        tools exist or what it was asked, which is a worse failure than
+        the one being fixed.
 
         Everything after them is grouped into whole round trips — see
         :func:`round_trips` — and evicted in :data:`EVICTION_ORDER`:

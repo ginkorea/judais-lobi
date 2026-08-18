@@ -200,6 +200,7 @@ class TestEveryPromisedNameIsItsOwners:
         "Cancellation": "core.budgets",
         "Supervisor": "core.runtime.supervisor",
         "MissionWindow": "core.runtime.context_window",
+        "GOVERNED_PLANE": "core.runtime.prompts",
         "RunStore": "core.durable",
         "SCHEMA_VERSION": "core.runtime.contract",
     }

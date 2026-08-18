@@ -46,9 +46,11 @@ skill:
     sorting" are different claims and a reader is entitled to know which
     one they are being handed.
   policy:
-    - Never state a figure the code did not print. Not a total, not a
-      count, not a percentage, not a rounding of one. If you want to say
-      it, print it first and then say it.
+    # The framework's own conduct — "if a number is not in the view, it
+    # is not in the draft", a failed call is an answer, a caveat beats a
+    # refusal, what the catalogue does not list you cannot do — is in
+    # every mission's system turn (core/runtime/prompts.py). What is left
+    # here is what is true of THIS plane and no other.
     - A figure is printed BY THE COMPUTATION THAT PRODUCED IT. Printing a
       number you had already decided on, so that it appears in an output,
       is a fabrication with an extra step — and a rounded restatement of
@@ -58,25 +60,21 @@ skill:
     - Say which file the numbers came from, how many rows it had and what
       its columns were called. An answer that does not identify its own
       table cannot be checked by the person reading it.
-    - If a file is missing or unreadable, PROVE IT rather than asserting
-      it — run code that prints the path you looked for and what the
-      directory actually holds — then say so and name the path exactly as
-      you were given it. Do not quietly analyse a different file.
+    - A missing file is PROVED and not asserted — run code that prints
+      the path you looked for and what the directory actually holds —
+      then name the path exactly as you were given it. Do not quietly
+      analyse a different file.
     - If some rows will not parse, answer for the rows that did, say how
-      many did not, and say why. An answer with a caveat is worth more
-      than a refusal, and far more than a total that silently dropped
-      three rows.
+      many did not, and say why. A total that silently dropped three rows
+      is the failure this prevents.
     - You have no network in here and nothing outside the working
-      directory is yours to change. Do not describe data you did not
-      open, and do not describe a capability you do not have.
+      directory is yours to change.
     - Do not delete anything, and do not overwrite an input file. A
       report goes in a NEW file.
   evidence_requirements: >
     Every figure in the answer appears in the standard output of a
     program this mission ran, with the same label. Every file the answer
-    names is one a listing or a program printed. A number that only
-    exists in the answer is a fabrication even when it happens to be
-    right.
+    names is one a listing or a program printed.
   output_format: >
     Two parts and no more. FINDINGS — three or four sentences of prose:
     the file, its rows and columns, and what the question asked for,

@@ -715,6 +715,56 @@ state anything the platform does not actually enforce.
   shape of a result. Those come from `tools/list` and the manifest, once; a
   second copy in the prompt disagrees with the first the day a server changes a
   description.
+* **How to work a governed plane.** Since 0.17 that is the framework's, not
+  yours — see below.
+
+### The conduct: what you no longer have to write
+
+Every deployment of this framework wrote the same paragraph for itself, and it
+is now a module constant that every run carries:
+`core/runtime/prompts.py`, `GOVERNED_PLANE`, stacked into the system turn
+between the protocol and the catalogue. In ~180 words it says the plane is
+closed and governed and a refusal names its scope; that a refused call is not
+re-sent unchanged; that results are bounded and the whole is in the run's store,
+to be read on by handle, field or section; that a failed call — a 404, a
+missing file, an empty listing — is an answer and not a thing to invent around;
+that **if a number is not in the view, it is not in the draft**, and every
+identifier and figure is one a tool returned in this run, spelled as the tool
+spelled it; that a multi-step change opens with a plan; that no check is
+reported as passed without the tool result that shows it; and that when the
+objective cannot be met the answer is what you have plus what is missing.
+
+So **delete those sentences from your personality and from your `SKILL.md`.**
+Two copies of one rule is the second emitter this framework keeps paying for,
+and the day they disagree the model follows the nearer one. What belongs in
+your personality is what is true of *your* deployment, and what belongs in your
+manifest's `policy:` is what is true of *your* plane and no other — the three
+shipped packs are the worked example (`core/skills/library/*/SKILL.md`): the
+analyst keeps *a figure is printed by the computation that produced it*, the
+research pack keeps its citation format and its unit rule, the coding pack
+keeps *your plan is the files you read*.
+
+If your platform genuinely has its own conduct text and wants it in the
+persona, set it empty and write it there:
+
+```python
+Personality(system_message=my_prompt, conduct="")   # suppress the default
+Personality(system_message=my_prompt, conduct=text) # or replace it in place
+```
+
+`conduct=None` is the default and means *the framework's current text*, read at
+the moment the turn is rendered — so a run built today gets whatever the
+version you pinned says, and never a copy frozen when the object was
+constructed. `GOVERNED_PLANE` is exported from `judais_lobi` so you can read
+what you are turning off.
+
+**There is no CLI flag and no `PersonalityConfig` key for it**, and that is the
+measure-before-default rule rather than an oversight: the escape exists because
+one arrangement was foreseeable, not because anybody has needed it. A platform
+spawning `judais --mission` gets the framework's conduct, which is the text it
+would have written. If you find you need to suppress it from a spawned
+subprocess, say so — that is evidence for a flag, and the flag would then be in
+`contract.CLI_FLAGS` where a consumer can see it.
 
 ---
 
