@@ -15,6 +15,7 @@ from core.tools.descriptors import (
     summarize_input_schema,
 )
 from core.tools.capability import CapabilityEngine, CapabilityVerdict
+from core.tools.executor import use_subprocess_runner
 from core.tools.sandbox import (
     SandboxRunner,
     BwrapSandbox,
@@ -319,18 +320,25 @@ class ToolBus:
                 return result
 
         # Execute
-        saved_runners = []
         started = time.perf_counter()
         try:
+            runner = None
             if self._should_use_sandbox(tool_name, action, descriptor):
                 runner = self._build_sandbox_runner(
                     descriptor.sandbox_profile, deadline_s)
-                saved_runners = self._apply_subprocess_runner(executor, runner)
 
-            if action:
-                result = executor(action, *args, **kwargs)
-            else:
-                result = executor(*args, **kwargs)
+            # Installed for the length of THIS call and nowhere else. See
+            # `core.tools.executor._ambient_runner`: this used to be a
+            # `setattr` onto the executor object with the old value put
+            # back in a `finally`, and two dispatches on one bus — two
+            # children of a run, two clients of `core.tools.serve` — could
+            # interleave so that the second's restore handed the first's
+            # tool the unsandboxed runner back mid-dispatch.
+            with use_subprocess_runner(runner):
+                if action:
+                    result = executor(action, *args, **kwargs)
+                else:
+                    result = executor(*args, **kwargs)
 
             # Handle tuple returns (rc, out, err) and (rc, out, err, evidence).
             # The fourth element is for a tool whose answer is *typed* and
@@ -382,8 +390,6 @@ class ToolBus:
                 stderr=f"Tool execution error: {type(ex).__name__}: {ex}",
                 tool_name=tool_name,
             )
-        finally:
-            self._restore_subprocess_runner(saved_runners)
 
     def _should_use_sandbox(
         self,
@@ -453,30 +459,30 @@ class ToolBus:
             )
         return _runner
 
-    def _apply_subprocess_runner(self, executor: Callable, runner: Callable):
-        saved = []
-
-        def _set_attr(obj, attr):
-            if hasattr(obj, attr):
-                saved.append((obj, attr, getattr(obj, attr)))
-                setattr(obj, attr, runner)
-
-        _set_attr(executor, "subprocess_runner")
-        _set_attr(executor, "_subprocess_runner")
-
-        engine = getattr(executor, "_engine", None)
-        if engine is not None:
-            _set_attr(engine, "_subprocess_runner")
-            worktree = getattr(engine, "_worktree", None)
-            if worktree is not None:
-                _set_attr(worktree, "_subprocess_runner")
-
-        return saved
-
-    @staticmethod
-    def _restore_subprocess_runner(saved):
-        for obj, attr, old in saved:
-            setattr(obj, attr, old)
+    #: There were two more methods here once, and what they did is
+    #: worth keeping written down because the shape is tempting.
+    #:
+    #: ``_apply_subprocess_runner`` walked the executor for the attributes a
+    #: tool reads its runner off — ``subprocess_runner``,
+    #: ``_subprocess_runner``, and the same on ``_engine`` and its
+    #: ``_worktree``, which is how the patch tool's two objects were
+    #: reached — assigned the sandbox runner onto each and returned the old
+    #: values; ``_restore_subprocess_runner`` put them back in
+    #: :meth:`dispatch`'s ``finally``.  It read as save-and-restore, which
+    #: is a discipline; it *was* a write to state shared by every caller of
+    #: this bus, which is a race.  Two dispatches interleaving —
+    #: A-apply, B-apply, A-restore, B-executes — left B running with the
+    #: original, **unsandboxed** runner, and a tool that spawns more than
+    #: one child could cross that line halfway through its own work.  It
+    #: also only ever reached the four attributes named above, so a tool
+    #: that called :func:`~core.tools.executor.run_subprocess` from
+    #: anywhere else was never sandboxed at all.
+    #:
+    #: Both problems have the same cause — the runner was a property of the
+    #: *tool* rather than of the *call* — and one fix:
+    #: :func:`core.tools.executor.use_subprocess_runner`.  Nothing shared is
+    #: written, so nothing has to be restored, and no attribute has to be
+    #: found.
 
     def follow(self, source: Callable[[], Any]) -> None:
         """Register something that can bring this registry up to date.

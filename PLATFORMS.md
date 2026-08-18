@@ -837,6 +837,17 @@ tools are not, so a sandbox that denies the network by default cannot cut a
 bridged tool off from the server it *is*. **A platform registering its own
 `ToolDescriptor` owes the same declaration** — a tool that reaches the network
 says so in its profile, or the sandbox takes it away without saying anything.
+
+**And it owes one seam.** A tool of your own reaches a subprocess through
+`core.tools.executor.run_subprocess`, and that is the *only* way the sandbox
+applies to it: the bus installs the isolated runner for the length of one
+dispatch, in a `contextvars.ContextVar`, and `run_subprocess` is what consults
+it. A tool that calls `subprocess.run` itself runs on the host whatever
+`mission_started.sandbox` says. The context follows `asyncio.to_thread` and
+anyio's `to_thread.run_sync` — the two hops a dispatch actually takes — but
+**not** a `threading.Thread` or a `ThreadPoolExecutor` your tool starts
+itself; carry it across with `core.tools.executor.current_subprocess_runner()`
+and `use_subprocess_runner(...)` if you need one.
 The tool's JSON Schema is carried whole on the descriptor, so the catalogue the
 model reads says `type (string: dataset|model|service)` and not just `type`;
 types, `required` and enums are what decide whether a *first* call to a faceted
