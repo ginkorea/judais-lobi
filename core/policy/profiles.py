@@ -40,12 +40,25 @@ PROFILE_SCOPES: Dict[ProfileMode, List[str]] = {
         # Without it here, `mcp.call` would sit in no profile at all and be
         # unreachable even under `ops`, which is the bug this line fixes.
         "mcp.call",
+        # Reading memory is SAFE for the same reason reading the filesystem
+        # is: it reaches nothing this deployment was not already told. A
+        # recall returns notes this harness itself distilled from runs it
+        # already made, out of a directory an operator named — no network,
+        # no new data, and a hard token budget on what comes back. Writing
+        # is the other half and it is in DEV, below.
+        "memory.read",
     ],
     ProfileMode.DEV: [
         "fs.write",
         "git.write",
         "python.exec",
         "shell.exec",
+        # A memory write is a DURABLE effect on later runs — a block pinned
+        # into every future system turn of this principal — so it sits with
+        # `fs.write` and not with the read. The asymmetry is the point: a
+        # run under the default profile may consult what it knows and may
+        # not change what it will be told next time.
+        "memory.write",
     ],
     ProfileMode.OPS: [
         "git.push",

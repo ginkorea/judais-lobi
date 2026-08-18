@@ -411,6 +411,129 @@ PATCH_DESCRIPTOR = ToolDescriptor(
     description="Patch engine: validate, apply, diff, rollback, merge, status.",
 )
 
+# ---------------------------------------------------------------------------
+# Phase 15: memory is a plane, and it is governed like one
+# ---------------------------------------------------------------------------
+#
+# Two descriptors and two scopes, declared HERE with everything else a bus
+# dispatches, so that memory is not a side door: a recall is capability-
+# checked, audited and redacted exactly as a filesystem read is, and the
+# profile table in `core.policy.profiles` is the one place that says who may
+# do which.  The executors are the bank's — `MemoryBank.register_on` binds
+# them, because they close over one principal's partition of one directory
+# — and they are registered for the length of a run, like the mission result
+# store and for the same reason.
+#
+# Reading is SAFE and writing is DEV, and the split is the honest one.  A
+# recall reaches nothing this deployment was not already told; a write pins
+# a sentence into every future system turn of this principal, which is a
+# durable effect on later runs and belongs beside `fs.write`.
+
+#: The tool a mission calls to search memory.  Flat, like the other
+#: compiled-in tools and unlike a bridged name, because it is local.
+MEMORY_RECALL_TOOL = "memory_recall"
+
+#: The tool a mission calls to edit its own core memory.
+MEMORY_WRITE_TOOL = "memory_write"
+
+MEMORY_RECALL_DESCRIPTOR = ToolDescriptor(
+    tool_name=MEMORY_RECALL_TOOL,
+    required_scopes=["memory.read"],
+    description=(
+        "Search remembered notes and past runs. Nothing is retrieved "
+        "automatically — call this when the objective touches something "
+        "this deployment may already know. Returns a few ranked, dated "
+        "results within a token budget; a recalled fact is DATED and may "
+        "need re-verifying. Reaches no network and no new data."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What you are trying to remember, in the "
+                               "words you would search for. Required unless "
+                               "handle is given.",
+            },
+            "k": {
+                "type": "integer",
+                "description": "How many results to return, at most 5.",
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["note", "run"],
+                "description": "Restrict to distilled notes or to past runs. "
+                               "Omit for both.",
+            },
+            "since": {
+                "type": "string",
+                "description": "Only results at or after this date "
+                               "(YYYY-MM-DD).",
+            },
+            "handle": {
+                "type": "string",
+                "description": "Read one result whole by its handle — a note "
+                               "(n7) or a past run (run_...) — instead of "
+                               "searching.",
+            },
+        },
+        "required": [],
+    },
+)
+
+MEMORY_WRITE_DESCRIPTOR = ToolDescriptor(
+    tool_name=MEMORY_WRITE_TOOL,
+    required_scopes=["memory.write"],
+    action_scopes={
+        "add":     ["memory.write"],
+        "replace": ["memory.write"],
+        "delete":  ["memory.write"],
+    },
+    description=(
+        "Edit core memory: add, replace or delete one pinned block "
+        "(preference, fact, lesson, persona). Core memory is small, capped "
+        "and read at the top of EVERY future run of this principal, so "
+        "write only what will still matter next month, and say why "
+        "(reason) and what it came from (source)."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["add", "replace", "delete"],
+                "description": "What to do to the block.",
+            },
+            "label": {
+                "type": "string",
+                "description": "The block's key, e.g. prefers-short-answers. "
+                               "One block per label.",
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["preference", "fact", "lesson", "persona"],
+                "description": "What sort of thing this is.",
+            },
+            "body": {
+                "type": "string",
+                "description": "The sentence to remember. One or two lines.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this belongs in memory every future run "
+                               "will read. Required.",
+            },
+            "source": {
+                "type": "string",
+                "description": "The evidence it came from: a result handle "
+                               "(r3), a run id, or 'operator'. Required for "
+                               "add and replace.",
+            },
+        },
+        "required": ["action", "label", "reason"],
+    },
+)
+
 # All pre-built descriptors for iteration
 ALL_DESCRIPTORS = [
     SHELL_DESCRIPTOR,
@@ -426,4 +549,6 @@ ALL_DESCRIPTORS = [
     VERIFY_DESCRIPTOR,
     REPO_MAP_DESCRIPTOR,
     PATCH_DESCRIPTOR,
+    MEMORY_RECALL_DESCRIPTOR,
+    MEMORY_WRITE_DESCRIPTOR,
 ]

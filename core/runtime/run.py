@@ -166,6 +166,30 @@ class Personality:
     #: staged path is its only reader; it is here because it is a fact
     #: about what the model is told, which is what this object owns.
     sdk_import: str = ""
+    #: A :class:`~core.memory.bank.MemoryBank`, or ``None`` for a run with
+    #: no memory at all — which is every run until a deployment sets
+    #: ``JUDAIS_LOBI_MEMORY`` or a library caller passes one.
+    #:
+    #: It is a field of THIS object and not of :class:`ToolPlane`, though
+    #: it puts two tools on the plane, because what a bank is *for* is what
+    #: the model is told: a pinned core block at the top of every system
+    #: turn, a titles-only hint beside the objective, and a policy sentence
+    #: saying that a recalled fact is dated.  The tools are how the model
+    #: acts on that, and they are registered for the length of the run the
+    #: way the result store is — see :meth:`Run._register_memory`.
+    #:
+    #: Duck-typed rather than imported, exactly as :attr:`critic` is: a
+    #: mission with no bank must not pay for SQLite, numpy and an embedding
+    #: client at import time.  What this loop asks of it is four methods —
+    #: ``core()``, ``hint()``, ``reflect()``, ``tool_names()`` — plus
+    #: ``register_on()``.
+    #:
+    #: ``None`` is byte-for-byte the harness that existed before memory
+    #: did: :meth:`Run.system_turn` stacks ``""`` and
+    #: :func:`~core.runtime.mission.stacked` drops it, and
+    #: :meth:`Run.seed`'s objective turn is the objective and nothing else.
+    #: ``tests/test_run_corpus.py`` is what says so.
+    memory: Any = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "history", validate_history(self.history))
@@ -1064,10 +1088,20 @@ class Run:
         catalogue in the system turn, the membership check that refuses a
         name, the opening frame's ``catalogue``, and — through
         ``plane_changed`` — the function schemas a native request declares.
+
+        The memory tools are here for the same reason the store tool is:
+        they are registered by this run, for this run, and a model told in
+        its system turn to call ``memory_recall`` must find it in the
+        catalogue and must not be refused when it names it.  With no bank
+        this returns exactly what it always returned.
         """
+        names = list(self.plane.offered)
         if self.plane.store_tool:
-            return [*self.plane.offered, self.plane.store_tool]
-        return list(self.plane.offered)
+            names.append(self.plane.store_tool)
+        if self.personality.memory is not None:
+            names.extend(name for name in self.personality.memory.tool_names()
+                         if name not in names)
+        return names
 
     # ── the plane, when it changes underneath a running mission ─────────
 
@@ -1365,12 +1399,39 @@ class Run:
         id, no ``audit_ref``, no sandbox name, no date.  Two runs of the
         same mission against the same bus produce byte-identical messages
         up to and including the objective, and there is a test that says so.
+
+        **The memory hint is the one thing that rides with the objective**,
+        and it rides *here* rather than in the system turn precisely
+        because of the paragraph above.  It is a list of note TITLES —
+        "2 remembered notes may bear on this: …" — and it depends on the
+        objective, so putting it above the objective would move the cached
+        prefix on every single run for the sake of ~150 tokens.  Beside the
+        objective it costs one turn's tokens and nothing else, and the
+        model decides whether to spend a call on ``memory_recall``.  A bank
+        with nothing that scores renders nothing, and no bank at all
+        renders the objective by itself — the same dict, the same bytes.
         """
         return [
             self.system_turn(),
             *(dict(turn) for turn in self.personality.history),
-            {"role": "user", "content": objective},
+            {"role": "user", "content": self._objective_turn(objective)},
         ]
+
+    def _objective_turn(self, objective: str) -> str:
+        """The objective, and the memory hint when there is one.
+
+        Never raises: a bank that cannot be read is a bank that offers no
+        hint, and a run must not fail at its first message because a SQLite
+        file was locked.
+        """
+        bank = self.personality.memory
+        if bank is None:
+            return objective
+        try:
+            hint = bank.hint(objective)
+        except Exception:                       # pragma: no cover - defensive
+            hint = ""
+        return f"{objective}\n\n{hint}" if hint else objective
 
     def system_turn(self) -> Dict[str, str]:
         """The system message, rendered from what is offered NOW.
@@ -1390,12 +1451,43 @@ class Run:
         timestamp was rendered into it costs a cache miss per step and buys
         nothing.  Every other step re-renders to the same bytes, because
         every input to this method is the same as it was.
+
+        **Core memory is the fourth section and it is last of the four.**
+        It follows the catalogue for the same most-constant-first reason
+        the catalogue follows the protocol: the persona is one string for
+        the deployment, the protocol is one string for the package, the
+        catalogue changes when the plane does, and core memory changes when
+        the model or an operator edits it — which is rarer than a step and
+        commoner than a release.  It is also the section that has to be
+        able to *mention* the tools, so it must come after the list of
+        them.  With no bank the section is ``""`` and
+        :func:`~core.runtime.mission.stacked` drops it, which is why a run
+        without memory produces the same bytes it produced before this
+        existed.
         """
         return {"role": "system", "content": stacked(
             self.personality.system_message,
             self._protocol_text(),
             "Tool catalogue:\n" + self.catalogue(),
+            self._core_memory(),
         )}
+
+    def _core_memory(self) -> str:
+        """The bank's pinned section, or ``""`` when there is no bank.
+
+        Read off the bank and never composed here: the policy sentence, the
+        blocks and the cap they are measured against are one owner's, and a
+        second rendering in this file would be a second thing to keep in
+        step with the cap that refuses a write.  Never raises, for the
+        reason :meth:`_objective_turn` does not.
+        """
+        bank = self.personality.memory
+        if bank is None:
+            return ""
+        try:
+            return bank.core() or ""
+        except Exception:                       # pragma: no cover - defensive
+            return ""
 
     def _protocol_text(self) -> str:
         """The instruction half of whichever protocol is running.
@@ -1702,6 +1794,9 @@ class Run:
             self.results = resumption.store
             transcript.steps.extend(resumption.steps)
         registered = self._register_store()
+        # Beside the store tool and before the baseline below, so the two
+        # memory tools are never read as a plane that grew under the run.
+        remembered = self._register_memory()
         # The baseline for "the plane grew", taken AFTER the store tool is on
         # the bus so the mission's own descriptor is never read as an
         # arrival. Everything registered at this instant — every local tool
@@ -1728,7 +1823,13 @@ class Run:
         if resumption is None:
             self.observer.emit(MISSION_STARTED, **self.opening(objective))
         try:
-            return await self._loop(objective, transcript, resumption)
+            finished = await self._loop(objective, transcript, resumption)
+            # After the answer is settled and before `mission_finished`
+            # goes out, which is the only moment a reflection can read a
+            # finished run and still be part of it. It emits no record and
+            # cannot fail the run — see `_reflect`.
+            await self._reflect(finished)
+            return finished
         except asyncio.CancelledError:
             # Somebody holding this task cancelled it, and the await it was
             # sitting on raised. Caught, and the run ends the way a run
@@ -1748,6 +1849,12 @@ class Run:
         finally:
             if registered:
                 self.plane.bus.unregister(registered)
+            # Only what THIS run put there — a sub-mission that found its
+            # parent's registration already in place registered nothing and
+            # withdraws nothing, so the turn it is a step of keeps its
+            # memory tools.
+            for name in remembered:
+                self.plane.bus.unregister(name)
             # Withdrawn for the same reason the store descriptor is: the bus
             # outlives this run, and a `step` left behind would stamp the
             # next chat turn's audit entry with the last mission's index —
@@ -1785,6 +1892,77 @@ class Run:
         if not self.plane.store_tool:
             return ""
         return self.results.register_on(self.plane.bus, self.plane.store_tool)
+
+    def _register_memory(self) -> List[str]:
+        """Put the bank's two tools on the bus for this run.  What was added.
+
+        Through the bus like everything else, which is the whole governance
+        claim of this tier: a recall is capability-checked against
+        ``memory.read`` (SAFE), a write against ``memory.write`` (DEV),
+        both are written to the audit log, and the result of a recall is an
+        ordinary ``tool_result`` — so a note the model quotes is evidence
+        the grounding validator can find, and nothing on the wire is new.
+
+        The run id goes down with the registration because a block the
+        model writes has to carry the run it was learned in; the bank
+        stamps it so the model cannot get it wrong.
+
+        Returns the names **this call** registered, which is what the
+        ``finally`` withdraws.  A child run whose parent already registered
+        them gets an empty list and takes nothing away.
+        """
+        bank = self.personality.memory
+        if bank is None:
+            return []
+        return list(bank.register_on(self.plane.bus,
+                                     run_id=self.store.run_id))
+
+    async def _reflect(self, transcript: MissionTranscript) -> None:
+        """Distil what this run learned, if anything, into the bank.
+
+        One model call, on a worker thread, after the answer is settled and
+        before ``mission_finished`` — and **only on a run that answered**.
+        A mission that ran out of steps or was cancelled has an opinion
+        about nothing: the lesson of an unfinished run is usually "the
+        endpoint was slow", and a bank that recorded it would rank that
+        above the work.
+
+        It emits **no record**.  A reflection is not something the mission
+        did — it is the harness reading the mission afterwards — and a
+        consumer that had to learn a new event to keep rendering a stream
+        correctly would be paying for a feature it did not ask for.  What
+        the call cost is not invisible, though: it is folded into the run's
+        ledger through :meth:`Model.spend`, so ``mission_finished.usage``
+        is the truth about what the run spent.
+
+        **It cannot fail the run.**  Everything inside is caught: a
+        reflection that raises after a mission has answered would turn a
+        good run into a traceback, which is a memory system making the
+        harness worse than not having one.
+        """
+        bank = self.personality.memory
+        if bank is None or self.model.plain is None:
+            return
+        if transcript.outcome not in ("answered", "answered_with_caveat"):
+            return
+        try:
+            await asyncio.to_thread(
+                bank.reflect,
+                objective=transcript.objective,
+                answer=transcript.answer or "",
+                evidence="\n".join(self.results.evidence_texts()),
+                ask=self.model.plain,
+                run_id=self.store.run_id,
+                sources=[f"{self.store.run_id}/{step.index}"
+                         for step in transcript.steps if step.tool][:3],
+            )
+        except Exception:                       # pragma: no cover - defensive
+            return
+        # The reflection's own tokens, on the run's ledger. Read here for
+        # the reason every other call's are read immediately after it: the
+        # side channel holds the LAST call's usage and the next call clears
+        # it, so an unread call is a call the invoice never sees.
+        self.model.spend(transcript.usage)
 
     async def _loop(
         self, objective: str, transcript: MissionTranscript,

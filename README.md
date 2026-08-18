@@ -1098,7 +1098,8 @@ If you want to understand the **current implementation**, inspect:
 * `core/sessions/` — SessionManager for disk artifact persistence
 * `core/kernel/` — state machine, budgets, orchestrator, workflow templates (`workflows.py`)
 * `core/cli.py`  — CLI interface layer
-* `core/memory/memory.py`  — FAISS-backed long-term memory (numpy fallback if FAISS unavailable)
+* `core/memory/bank.py` — the memory bank: pinned core blocks, distilled notes, a read over the run store, the `relevance × recency × importance` ranking and the caps. `python -m core.memory` is the operator's half. See "Memory — core, recall, working"
+* `core/memory/memory.py`  — FAISS-backed long-term memory for direct chat (numpy fallback if FAISS unavailable)
 * `core/tools/` — ToolBus, capability engine, sandbox, the MCP bridge, consolidated tools (fs, git, verify, repo_map, patch)
 * `core/policy/` — `profiles.py` (the four cumulative profiles and `select_profile`), `audit.py` (the append-only log on every default bus). Two files, since `god_mode.py` was deleted in 0.13.0
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
@@ -1177,22 +1178,101 @@ The kernel is the only intelligence. Tools report. The kernel decides.
 
 ---
 
-# 🧠 Memory System (Current)
+# 🧠 Memory — core, recall, working
 
-Long-term memory uses:
+Simple retrieval is normally implemented wrong: it pulls too much and the wrong
+thing into a context that then has less room for the objective. Ignoring
+retrieval is the other error. So memory here is **three tiers with three
+different insertion rules**, not one mechanism with a knob.
 
-* SQLite-backed JSON persistence
-* FAISS vector index (numpy fallback when FAISS is unavailable)
-* OpenAI embeddings (currently)
+**Core memory — pinned, tiny, self-edited.** A handful of blocks per principal
+and skill (`preference`, `fact`, `lesson`, `persona`), hard-capped at ~1,000
+tokens, rendered into the **system turn after the tool catalogue** of every run.
+A write that would breach the cap is **refused naming the cap** — nothing is
+evicted to make room, because everything in there was pinned on purpose. It
+changes only through the `memory_write` tool or through an operator.
 
-See: `core/memory/memory.py` 
+**Recall memory — retrieved on demand, never auto-stuffed.** One tool,
+`memory_recall`, over two stores: the **episodic** one (the durable run store —
+what actually happened, by objective and answer, addressable by `run_id`) and
+the **semantic** one (distilled *notes* written by a bounded reflection step at
+the end of a run that answered — at most three per run, each with a title, a
+≤80-token body, a date, source `run_id/seq` handles and an importance the model
+rated). Ranking is `relevance × recency × importance` — a **product**, so a
+five-star note from this morning that has nothing to do with the question scores
+zero and is not recalled at all. Relevance is embeddings when an embedding
+client is configured and idf-weighted term overlap otherwise, so the base path
+needs no network. What comes back is capped at 5 results and ~600 tokens, and
+says what it cut.
 
-This will be abstracted for local embeddings in later phases.
+The one concession to "ignoring retrieval is naive": at the start of a run the
+objective turn may carry a **titles-only hint** — *"2 remembered notes may bear
+on this: …; …"*, ~150 tokens, at most 3 titles, and only when something scores.
+It goes beside the objective and never in the system turn, because the system
+turn is a served endpoint's cached prefix. The model then decides whether to
+spend a call on `memory_recall`. **A recalled fact is dated** — the policy
+sentence in the system turn says so — and re-verifying it is the model's job
+when the objective needs current.
 
-Short-term history remains for direct chat mode. Direct CLI tool calls route
-through the same `ToolBus`, under the same **deny-by-default `safe` profile** as
-a mission — a `PolicyPack` or `--profile` opts up, and nothing is permissive by
-omission.
+**Working memory — already built.** The per-mission result store
+(`mission_result` handles), context-window compaction, the swarm's step
+summaries and the supervisor's history. Nothing new; named here so nobody
+builds it twice.
+
+Memory is a **plane** and is governed like one. Both tools are dispatched
+through the same `ToolBus` as everything else, so they are capability-checked,
+audited and redacted, and a recall's result is an ordinary `tool_result` — which
+means a note the model quotes is evidence the grounding validator can cite.
+`memory_recall` needs `memory.read` (granted by the default `safe` profile);
+`memory_write` needs `memory.write` (granted by `dev`), because pinning a
+sentence into every future system turn is a durable effect on later runs. Text
+is scrubbed by `core.redact` on the way in, since a block outlives the run that
+wrote it.
+
+Turn it on with an environment variable — there is no flag, and no default
+directory:
+
+```bash
+export JUDAIS_LOBI_MEMORY=~/.judais-lobi/memory     # unset/none/off = no memory
+export JUDAIS_LOBI_MEMORY_PRINCIPAL=alice           # default: "default"
+```
+
+`JUDAIS_LOBI_MEMORY_PRINCIPAL` partitions the bank so two deployments sharing a
+directory do not read each other's memory. It is **attributed, not
+authenticated**: this framework has no principal system and will not invent one.
+
+A library caller passes a bank instead:
+
+```python
+from core.memory.bank import MemoryBank
+from core.runtime.run import Personality
+
+Personality(system_message=..., memory=MemoryBank(path, principal="alice"))
+```
+
+The operator's half:
+
+```bash
+python -m core.memory stats
+python -m core.memory blocks
+python -m core.memory add --label house-style --kind preference \
+    --body "Answers are short; no preamble." --reason "asked twice" \
+    --source operator
+python -m core.memory delete --label house-style --reason "no longer true"
+python -m core.memory notes --limit 20
+python -m core.memory recall "cold start"
+python -m core.memory purge --notes
+```
+
+Same implementation as the tool, so a cap refused on the command line is refused
+in the same words the model is refused in. See `core/memory/bank.py`.
+
+**Chat mode is unchanged.** `UnifiedMemory` (`core/memory/memory.py`) still
+backs `--recall`/`--rag` and short-term history for direct chat: SQLite,
+a FAISS index with a numpy fallback, OpenAI embeddings. The mission path uses
+only the bank. Direct CLI tool calls route through the same `ToolBus`, under the
+same **deny-by-default `safe` profile** as a mission — a `PolicyPack` or
+`--profile` opts up, and nothing is permissive by omission.
 Agentic mode uses session artifacts as the sole source of truth (Phase 3).
 
 ---

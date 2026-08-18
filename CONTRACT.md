@@ -604,6 +604,8 @@ passes the other gets the one it passed.
 - `JUDAIS_LOBI_AUDIT` — a path moves the audit file; `none`/`off` silences it. Either way `audit_ref` on `mission_started` says which.
 - `JUDAIS_LOBI_RUNS` — a path moves the durable run directories; `none`/`off` keeps none at all. Either way `run_id` on `mission_started` is present exactly when there is a transcript to name.
 - `JUDAIS_LOBI_APPROVALS` — a path moves the durable approval records; `none`/`off` keeps none, and then a gate carries no `approval_id`.
+- `JUDAIS_LOBI_MEMORY` — a directory turns the memory bank **on**; unset, blank, `none`/`off` mean no memory at all, which is the default and is byte-for-byte the harness that had none. With a bank the run's system turn gains a small pinned "core memory" section after the tool catalogue, the objective turn may gain a one-line titles-only hint, and two tools join the catalogue — `memory_recall` (scope `memory.read`, granted by `safe`) and `memory_write` (scope `memory.write`, granted by `dev`). **Nothing new appears on the stream:** a recall and a write are ordinary `tool_call`/`tool_result` records, and no event or field is added.
+- `JUDAIS_LOBI_MEMORY_PRINCIPAL` — which partition of that bank a run reads and writes; default `default`. It is **attributed, not authenticated** — this harness has no principal system and will not invent one (the same sentence `core/runtime/approvals.py` says about who decided a gate). It is a filing decision, so that two deployments sharing a directory do not read each other's memory; it is not a security boundary.
 
 The flags that *answer* a gate — `--approve`, `--refuse`, `--decided-by`,
 `--note` — are deliberately **not** in the list above. They are an operator's

@@ -664,6 +664,7 @@ class SwarmRunner:
         cancel: Any = None,
         control: Any = None,
         gate_wait_s: float = GATE_WAIT_S,
+        memory: Any = None,
     ):
         # THE ADAPTER, and it is `MissionRunner.__init__`'s adapter with
         # the staging knobs beside it: the same thirty parameters find the
@@ -684,9 +685,15 @@ class SwarmRunner:
         plane = ToolPlane(bus=bus, offered=tool_names, store_tool=RESULT_TOOL,
                           gated=gated, admits=admits,
                           plane_changed=plane_changed)
+        # `memory` is the TURN's, exactly as `grounding` and `critic` are:
+        # the direct route inherits it whole because that route is a whole
+        # agent answering the whole question, and `_execute_step` strikes
+        # it out of a plan step's personality for the same reason it
+        # strikes out the validator — see the comment there.
         personality = Personality(system_message=system_message,
                                   history=history, grounding=validator,
-                                  critic=critic, sdk_import=sdk_import)
+                                  critic=critic, sdk_import=sdk_import,
+                                  memory=memory)
         # ONE model, therefore ONE ledger: `run` puts a fresh one on it and
         # every child shares the object, so the router's call, the
         # planner's, every sub-mission's step and the synthesizer's repair
@@ -1506,7 +1513,16 @@ class SwarmRunner:
                     # is not an answer to the objective, so holding it to
                     # the objective's grammar would fail it for not being
                     # one.
-                    history=(), grounding=None, critic=None),
+                    #
+                    # `memory` goes with them, and for the same sentence: a
+                    # step's summary is not an answer, so a reflection over
+                    # it would distil "what a stage concluded" into a bank
+                    # that is supposed to hold what a MISSION learned —
+                    # three notes per plan step, none of them about the
+                    # question. The direct route (`_direct`) overrides
+                    # nothing and keeps the bank, because that route is a
+                    # whole agent answering the whole question.
+                    history=(), grounding=None, critic=None, memory=None),
                 bounds=self._child_bounds(allowance),
                 branch=step.id, stage=True, start_index=self._start_index)
             sub = child.run(
