@@ -2,13 +2,15 @@
 
 """What every backend is, and what every backend reports.
 
-Three things live here.  :class:`BackendCapabilities` is what a backend
+Four things live here.  :class:`BackendCapabilities` is what a backend
 can do, asked before a call.  :class:`Usage` is what one call **cost**,
 read after it — the provider's own count of the tokens it billed, and
 never this repo's guess at them.  :func:`tool_calls_from` and
 :class:`ToolCallAccumulator` are what one call **decided**, read after it
 off :attr:`Backend.last_tool_calls`: the native tool calls a provider
-returned, as plain dicts.
+returned, as plain dicts.  :class:`SideChannels` and :func:`capturing`
+are **whose** those two are — the slot one call files them in, so two
+calls in flight at once cannot be read for each other.
 
 Both post-call facts are side channels for the same reason.  ``chat``
 returns a ``str`` or an iterator of deltas and every caller in this tree
@@ -29,8 +31,10 @@ zero is never manufactured to stand in for silence.  A zero is a claim.
 
 import json
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 
 from core.runtime.backends import policy, state as model_state
 from core.runtime.messages import (
@@ -348,6 +352,68 @@ class BackendCapabilities:
     max_output_tokens: int | None = None
 
 
+@dataclass
+class SideChannels:
+    """One model call's ``last_usage`` and ``last_tool_calls``, captured
+    where they were produced.
+
+    A slot the *caller* makes before the call and reads after it — see
+    :func:`capturing` — rather than a second place a backend keeps state.
+    Written into by :class:`Backend`'s two setters below, so no backend in
+    this tree grew a line for it and neither will a platform's own.
+
+    ``filled`` is not decoration: a slot nobody wrote to means "the object
+    that answered was not a :class:`Backend`" — a replayed run, a library
+    caller's client, a test's lambda — and the caller must then fall back
+    to reading the attribute, which is what it always did.  Distinguishing
+    that from a backend that ran and reported nothing is the difference
+    between "no report" and "no reporter".
+    """
+
+    usage: Optional[Usage] = None
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    filled: bool = False
+
+
+#: The slot the call running *on this context* writes into, if any.
+#:
+#: The fix for a misattribution that had the same cause as the sandbox
+#: race in :mod:`core.tools.executor`: a fact about ONE call kept in ONE
+#: slot on an object several calls share.  ``last_usage`` is written by
+#: the backend when a call finishes and read by ``Model.spend`` when the
+#: caller is next scheduled, and between those two moments a sibling
+#: call — two children of one ``Run``, gathered, sharing a client by
+#: identity — can finish and overwrite it.  Measured, before the fix: a
+#: child whose call the provider priced at 100 prompt tokens billed 1,
+#: because its sibling's cheaper call landed in the slot first.
+#:
+#: A :class:`~contextvars.ContextVar` holding a **mutable slot the caller
+#: made** rather than holding the value: a context is *copied* onto the
+#: worker thread :func:`asyncio.to_thread` runs ``ask`` on, so a value
+#: written there would never come back — but a slot written *into* is the
+#: caller's own object.  The same shape :meth:`Model.watching` already
+#: uses for ``model_state``, and for the same reason.
+_capture: "ContextVar[Optional[SideChannels]]" = ContextVar(
+    "judais_lobi_model_side_channels", default=None)
+
+
+@contextmanager
+def capturing() -> "Iterator[SideChannels]":
+    """A slot for the next model call's side channels, scoped to this block.
+
+    Opened by the ONE place a run touches a backend
+    (:meth:`core.runtime.run.Run._model_reply`) and closed when the reply
+    and its deltas are complete, so what comes out belongs to the call
+    that produced it and to no other.
+    """
+    slot = SideChannels()
+    token = _capture.set(slot)
+    try:
+        yield slot
+    finally:
+        _capture.reset(token)
+
+
 class Backend(ABC):
     #: The word this backend is asked for by, and the word that reaches
     #: ``model_state.provider`` on the wire.  The same vocabulary
@@ -372,7 +438,28 @@ class Backend(ABC):
     #: anything accumulating them.  On a streamed call it is filled when
     #: the iterator is exhausted or closed: usage arrives in the last
     #: frame, and there is nothing honest to say before it does.
-    last_usage: Optional[Usage] = None
+    #:
+    #: A **property** now, and every backend below still writes it
+    #: with a plain ``self.last_usage = …``.  Reading it still answers "the
+    #: last completion through this backend", which is what a library
+    #: caller and ``core.cli``'s ``usage_fn`` have always asked it; writing
+    #: it now *also* files the value with the call that produced it, when
+    #: something opened a slot for it (:func:`capturing`).  One assignment,
+    #: two readers, and the per-call reader cannot be clobbered by a
+    #: sibling call because it is not a slot a sibling can reach.
+    _last_usage: Optional[Usage] = None
+
+    @property
+    def last_usage(self) -> Optional[Usage]:
+        return self._last_usage
+
+    @last_usage.setter
+    def last_usage(self, usage: Optional[Usage]) -> None:
+        self._last_usage = usage
+        slot = _capture.get()
+        if slot is not None:
+            slot.usage = usage
+            slot.filled = True
 
     #: The native tool calls the **last** completion carried, as plain
     #: dicts — ``{"id": str, "name": str, "arguments": dict}``, with
@@ -392,7 +479,23 @@ class Backend(ABC):
     #: Always **rebound**, never mutated in place — the class default is a
     #: shared list and an ``append`` on it would leak one backend's calls
     #: into every other.
-    last_tool_calls: List[Dict[str, Any]] = []
+    #:
+    #: A property for the same reason :attr:`last_usage` is, and it matters
+    #: more here: a misread cost is a wrong invoice, a misread *decision*
+    #: is a sibling's tool call dispatched under this turn's name.
+    _last_tool_calls: List[Dict[str, Any]] = []
+
+    @property
+    def last_tool_calls(self) -> List[Dict[str, Any]]:
+        return self._last_tool_calls
+
+    @last_tool_calls.setter
+    def last_tool_calls(self, calls: List[Dict[str, Any]]) -> None:
+        self._last_tool_calls = calls
+        slot = _capture.get()
+        if slot is not None:
+            slot.tool_calls = list(calls or [])
+            slot.filled = True
 
     @property
     @abstractmethod

@@ -98,6 +98,7 @@ from core.redact import scrub_record
 from core.runtime.answer_stream import adrain as adrain_answer
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.backends import state as model_state
+from core.runtime.backends.base import SideChannels, capturing
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
 )
@@ -1307,7 +1308,8 @@ class Model:
         """Whether this model is being spoken to in function calls."""
         return self.protocol == NATIVE_PROTOCOL
 
-    def spend(self, ledger: Ledger) -> Dict[str, Any]:
+    def spend(self, ledger: Ledger,
+              capture: Optional[SideChannels] = None) -> Dict[str, Any]:
         """Fold the last call into *ledger*; render its own field.
 
         Called once per step, immediately after :attr:`ask` returns, and
@@ -1324,11 +1326,28 @@ class Model:
         which is the caller's-or-none — see that field.  One owner of the
         fold either way: this is the only place :meth:`Ledger.add
         <core.runtime.usage.Ledger.add>` is called on a mission's turn.
+
+        *capture* is **which call's** cost this is, and it is why the
+        numbers are right when two children run at once.
+        :attr:`usage_fn` reads a single ``last_usage`` slot on a client
+        the children share by identity, and the write happens on a worker
+        thread while the read happens whenever this coroutine is next
+        scheduled — so a sibling finishing in between billed one child
+        for the other's call.  Measured: a child whose call cost 100
+        prompt tokens reported 1.  Handed the slot
+        :meth:`Run._model_reply` opened around the call, there is nothing
+        to race for; ``None``, or a slot nothing wrote to, falls back to
+        :attr:`usage_fn` exactly as before — which is what a library
+        caller's client, a replayed run and every ``ask`` that is a plain
+        function get, and they are all serial.
         """
-        try:
-            usage = self.usage_fn() if self.usage_fn is not None else None
-        except Exception:                       # pragma: no cover - defensive
-            usage = None
+        if capture is not None and capture.filled:
+            usage = capture.usage
+        else:
+            try:
+                usage = self.usage_fn() if self.usage_fn is not None else None
+            except Exception:                   # pragma: no cover - defensive
+                usage = None
         recorded = ledger.add(usage)
         return {"usage": recorded.as_record()} if recorded is not None else {}
 
@@ -1757,9 +1776,28 @@ class Run:
 
     # ── asking the model ────────────────────────────────────────────────
 
-    async def _model_reply(self, messages: List[Dict[str, Any]],
-                           index: int) -> str:
-        """The model's reply, whether it arrives whole or in pieces.
+    async def _model_reply(
+            self, messages: List[Dict[str, Any]],
+            index: int) -> Tuple[str, SideChannels]:
+        """The model's reply and this call's side channels, together.
+
+        **Together** is the second half of the signature and the reason it
+        has one.  What a call cost (``last_usage``) and what it decided
+        (``last_tool_calls``) are two slots on the client, written by the
+        backend when the call finishes and read by the caller whenever it
+        is next scheduled.  With one mission in flight the gap between
+        those two moments holds nothing.  With two children of one ``Run``
+        gathered — sharing a client by identity, each call on its own
+        worker thread — a sibling can finish inside the gap and overwrite
+        both, and then the cost of one child's call is billed to the other
+        and a native turn dispatches the other child's decision.  Measured
+        before the fix: a child whose call the provider priced at 100
+        prompt tokens reported 1.
+
+        So the slot is opened *here*, around the call and its drain, by
+        :func:`~core.runtime.backends.base.capturing`, and handed back with
+        the reply it belongs to.  Nothing downstream has to know when the
+        next call will clear the client.
 
         ``chat_fn`` may return a ``str`` — every test in this repo, every
         library caller, and any deployment that turned streaming off —
@@ -1773,11 +1811,12 @@ class Run:
         would have returned.
 
         Everything after this line is therefore unchanged.  ``_parse``
-        reads the same object, the native branch reads the same side
-        channel — ``tool_calls_fn`` is filled by the backend when the
-        iterator is exhausted, which is before this returns — and the
-        ``answer`` record still carries the WHOLE text and is still
-        emitted, always, even when the deltas already added up to it.
+        reads the same object, the native branch reads the same
+        decisions — the backend files them when the iterator is
+        exhausted, which is why the slot stays open across the drain and
+        not only across ``ask`` — and the ``answer`` record still carries
+        the WHOLE text and is still emitted, always, even when the deltas
+        already added up to it.
 
         ``part`` restarts at 0 for every model call.  A step is one call,
         so a grounding repair turn — a further step, with its own
@@ -1815,13 +1854,14 @@ class Run:
         nobody's backend says anything about costs a
         :class:`~contextvars.ContextVar` set and nothing else.
         """
-        with self.model.watching(self.observer, index=index):
+        with capturing() as capture, self.model.watching(self.observer,
+                                                         index=index):
             got = await asyncio.to_thread(self.model.ask, messages)
             if isinstance(got, str):
-                return got
+                return got, capture
             if got is None or not (hasattr(got, "__iter__")
                                    or hasattr(got, "__aiter__")):
-                return str(got or "")
+                return str(got or ""), capture
 
             part = 0
 
@@ -1833,7 +1873,7 @@ class Run:
 
             return await adrain_answer(got, on_delta,
                                        native=self.model.native,
-                                       answer_tool=ANSWER_TOOL)
+                                       answer_tool=ANSWER_TOOL), capture
 
     # ── the catalogue ───────────────────────────────────────────────────
 
@@ -2704,12 +2744,14 @@ class Run:
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
             opening = {}
-            reply = await self._model_reply(messages, index)
+            reply, capture = await self._model_reply(messages, index)
             # Read here and used below: whichever record this step emits
-            # carries the cost of the call that produced it. One read per
-            # call, because `last_usage` is a side channel that the NEXT
-            # call clears.
-            spent = self.model.spend(transcript.usage)
+            # carries the cost of the call that produced it. Off the
+            # capture the call itself filled, and not off the client's
+            # `last_usage` — that slot is shared by every child of this
+            # run, and a sibling finishing between the reply and this line
+            # used to bill one child for the other's call.
+            spent = self.model.spend(transcript.usage, capture)
             step = MissionStep(index=index, raw_reply=reply)
 
             if self.model.native:
@@ -2720,7 +2762,7 @@ class Run:
                 # what an answer is worth.
                 done, repairs = await self._native_turn(
                     objective, index, reply, spent, step,
-                    messages, transcript, repairs)
+                    messages, transcript, repairs, capture)
                 if done is not None:
                     return done
                 continue
@@ -3363,7 +3405,9 @@ class Run:
 
     # ── the native protocol ─────────────────────────────────────────────
 
-    def _read_tool_calls(self, index: int) -> List[Dict[str, Any]]:
+    def _read_tool_calls(self, index: int,
+                         capture: Optional[SideChannels] = None,
+                         ) -> List[Dict[str, Any]]:
         """This turn's calls off the side channel, normalized.
 
         Never raises, for the reason :meth:`Model.spend` does not: a side
@@ -3376,12 +3420,22 @@ class Run:
         the result messages that quote it cannot disagree: a provider that
         gave no id gets one made of the step and the position, which is
         unique inside a conversation and stable across a re-render.
+
+        *capture* is **whose** calls these are, and it matters more here
+        than it does for the cost: a misread invoice is wrong, a misread
+        decision is another child's tool call dispatched under this
+        turn's name and quoted back to the model as its own.  ``None``,
+        or a slot nothing filled, falls back to :attr:`Model.tool_calls_fn`
+        exactly as before.
         """
-        try:
-            raw = (self.model.tool_calls_fn()
-                   if self.model.tool_calls_fn is not None else None)
-        except Exception:                       # pragma: no cover - defensive
-            raw = None
+        if capture is not None and capture.filled:
+            raw = capture.tool_calls
+        else:
+            try:
+                raw = (self.model.tool_calls_fn()
+                       if self.model.tool_calls_fn is not None else None)
+            except Exception:                   # pragma: no cover - defensive
+                raw = None
         calls: List[Dict[str, Any]] = []
         for position, entry in enumerate(list(raw or ())):
             if not isinstance(entry, dict):
@@ -3428,7 +3482,7 @@ class Run:
         self, objective: str, index: int, reply: str,
         spent: Dict[str, Any], step: MissionStep,
         messages: List[Dict[str, Any]], transcript: MissionTranscript,
-        repairs: int,
+        repairs: int, capture: Optional[SideChannels] = None,
     ) -> Tuple[Optional[MissionTranscript], int]:
         """One native turn: read the calls, run them, or answer.
 
@@ -3438,8 +3492,12 @@ class Run:
 
         The rules are the class docstring's ``protocol`` paragraph, and
         this is the only place they are implemented.
+
+        *capture* travels beside *spent* and for the same reason: both are
+        facts about the one call this turn is reading, taken where it
+        produced them rather than off a slot its siblings share.
         """
-        calls = self._read_tool_calls(index)
+        calls = self._read_tool_calls(index, capture)
         messages.append(self._assistant_turn(reply, calls))
         answers = [call for call in calls if call["name"] == ANSWER_TOOL]
         wanted = [call for call in calls if call["name"] != ANSWER_TOOL]

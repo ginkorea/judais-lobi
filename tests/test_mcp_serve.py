@@ -258,6 +258,77 @@ class TestParity:
             "safe", sandbox_request="none", audit="off").bus.sandbox_name == "none"
 
 
+class TestTwoClientsAtOnce:
+    """A server answers more than one client, and every one of them is
+    dispatched through the same bus on a worker thread —
+    ``anyio.to_thread.run_sync``, so the loop keeps answering.  That makes
+    the served bus the most reachable form of the sandbox race
+    ``tests/test_sandbox_concurrency.py`` is about: nobody has to write a
+    parallel mission to get two dispatches in flight, two clients is
+    enough.
+
+    Driven through the server's **own** ``tools/call`` handler rather than
+    a bus call in its shape, because what is being asserted is that the
+    isolation survives the hop the server actually makes.
+    """
+
+    @staticmethod
+    def _handler(bus, names):
+        import mcp.types as types
+        from core.tools.serve import build_server
+
+        return types, build_server(bus, names).request_handlers[
+            types.CallToolRequest]
+
+    def test_neither_concurrent_call_escapes_the_sandbox(self):
+        import anyio
+        import anyio.to_thread
+        from core.tools.descriptors import ToolDescriptor
+        from tests.test_sandbox_concurrency import (
+            GATE, SANDBOXED, GatedTool, PROFILE_A, PROFILE_B, RecordingSandbox,
+        )
+
+        tool = GatedTool()
+        sandbox = RecordingSandbox()
+        bus = ToolBus(
+            capability_engine=CapabilityEngine(PolicyPack(allowed_scopes=["*"])),
+            sandbox=sandbox, audit=None)
+        bus.register(ToolDescriptor(tool_name="alpha", description="one",
+                                    sandbox_profile=PROFILE_A), tool)
+        bus.register(ToolDescriptor(tool_name="beta", description="two",
+                                    sandbox_profile=PROFILE_B), tool)
+        types, handler = self._handler(bus, ["alpha", "beta"])
+
+        def request(name, who):
+            return types.CallToolRequest(
+                method="tools/call",
+                params=types.CallToolRequestParams(
+                    name=name, arguments={"who": who}))
+
+        async def first():
+            await handler(request("alpha", "A"))
+            # Only once the whole of the first call has come back — which
+            # is where the old bus put its runner back.
+            tool.a_returned.set()
+
+        async def second():
+            await anyio.to_thread.run_sync(tool.a_applied.wait, GATE)
+            await handler(request("beta", "B"))
+
+        async def main():
+            with anyio.fail_after(GATE):
+                async with anyio.create_task_group() as group:
+                    group.start_soon(first)
+                    group.start_soon(second)
+
+        anyio.run(main)
+        assert tool.seen == {"A-1": SANDBOXED, "A-2": SANDBOXED,
+                             "B-1": SANDBOXED}, tool.seen
+        under = {cmd: profile for cmd, profile in sandbox.calls}
+        assert under["echo A-1"] is under["echo A-2"] is PROFILE_A
+        assert under["echo B-1"] is PROFILE_B
+
+
 # ---------------------------------------------------------------------------
 # The other transport, over a real socket
 # ---------------------------------------------------------------------------
