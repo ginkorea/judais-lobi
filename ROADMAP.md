@@ -866,6 +866,35 @@ exposes: the bus bridges ONE MCP server today (`--mcp-stdio` XOR
 `--mcp-url` to be repeatable, each server namespaced. That is a Phase 15 lane
 of its own.
 
+**Memory — core, recall, working (in 1.0; owner, 17 Aug: "we need to
+implement a smart memory system, that does exactly what is needed when it is
+needed"; simple RAG "pulls too much and the wrong information into context").**
+Three tiers, three insertion rules. *Core memory* — a handful of blocks per
+principal and skill (preferences, facts, lessons, persona addenda), hard-capped
+(~1k tokens), rendered into the system turn after persona/protocol/catalogue
+and before history/objective so the cache prefix survives, changed only through
+a `memory_write` tool with a reason and provenance, or by the operator
+(`python -m core.memory`). *Recall memory* — one `memory_recall(query, k≤5)`
+tool over two stores: episodic (the run store, by handle) and semantic
+(distilled notes a bounded reflection step writes at the end of a run — 0–3
+per run, each dated with source handles and an importance), ranked
+recency×importance×relevance under a hard token budget; never auto-stuffed —
+the one concession is a titles-only hint (~150 tokens) in the user turn when
+notes score. *Working memory* — the result store, handle reads, compaction,
+step summaries: already built. Memory is a plane like tools (`memory.read`
+in SAFE, `memory.write` in DEV), per-principal by an operator-supplied string
+(the harness attributes, it does not authenticate — the approvals rule),
+redacted at write, embeddings pluggable with a lexical fallback; a recalled
+fact is dated evidence. Nothing on the wire: recall/write are tool records;
+`JUDAIS_LOBI_MEMORY`/`_PRINCIPAL` join `ENV_VARS`. It hangs on
+`Personality.memory` — the six owners stay six. Lane R.
+
+**`--grant`** (Feb's second capability-grant mode — session-scoped
+pre-authorisation of scopes; the interactive prompt behind `--gate-wait`'s
+seam is the first; a policy file the third) and **campaigns on `Run`** (a plan
+of workflow-runs with artifact handoff riding `branch`, resumable, approved) —
+lane Q, in 1.0.
+
 ### 2.7 Phase 12 — providers and streaming (0.13)
 
 Properties 4 and 6.
