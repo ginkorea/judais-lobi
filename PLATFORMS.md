@@ -258,26 +258,45 @@ because each is a production incident somebody already paid for:
 
 ## 3. The contract, in one table
 
-The record vocabulary is **ten event types**, and its authority is
+The record vocabulary is **eleven event types**, and its authority is
 `core/runtime/contract.py` — `SCHEMA_VERSION`, `EVENTS`, `FIELDS`, `OPTIONAL`,
 `OUTCOMES`, `CLI_FLAGS`, `ENV_VARS`, `EXIT_CONTRACT` and `conforms`, all of it
 data rather than prose. `CONTRACT.md` is the long human rendering. This table
 is the short one, and a test holds it against the module in both directions.
 
-Every record carries `event`. Nothing else is universal.
+Every record carries `event`. One optional field is universal — **`branch`**
+(0.16): present on a record a *child* run emitted (a `--swarm` plan step, a
+campaign step) and absent on every record the turn itself emitted; its value is
+`"direct"` or the step's id. A consumer that never heard of it reads one
+correctly-ordered sequence — the stream it always read; a consumer that wants
+to demultiplex children groups by it. It is not listed per row below because
+what it says is not about the record's kind.
 
 | event | required fields | optional fields |
 | --- | --- | --- |
-| `mission_started` | `schema_version`, `objective`, `catalogue`, `gated`, `max_steps`, `history` | `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol` |
-| `step_started` | `index` | `plan`, `compacted`, `resumed`, `injected`, `catalogue`, `review` |
-| `reply_rejected` | `index`, `problem` | `tool`, `usage` |
-| `tool_call` | `index`, `tool`, `arguments` | `usage`, `call` |
-| `tool_result` | `index`, `tool`, `arguments`, `ok`, `exit_code`, `output`, `error`, `handle`, `truncated` | `call` |
-| `gate_requested` | `index`, `tool`, `arguments`, `reason` | `approval_id` |
-| `answer_delta` | `index`, `part`, `text` | — |
-| `answer` | `text`, `outcome` | `usage` |
-| `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` | — |
-| `mission_finished` | `outcome`, `steps`, `max_steps` | `usage`, `budget`, `reason`, `elapsed_s` |
+| `mission_started` | `schema_version`, `objective`, `catalogue`, `gated`, `max_steps`, `history` | `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol`, `branch` |
+| `step_started` | `index` | `plan`, `compacted`, `resumed`, `injected`, `catalogue`, `review`, `branch` |
+| `reply_rejected` | `index`, `problem` | `tool`, `usage`, `branch` |
+| `tool_call` | `index`, `tool`, `arguments` | `usage`, `call`, `branch` |
+| `tool_result` | `index`, `tool`, `arguments`, `ok`, `exit_code`, `output`, `error`, `handle`, `truncated` | `call`, `branch` |
+| `gate_requested` | `index`, `tool`, `arguments`, `reason` | `approval_id`, `branch` |
+| `answer_delta` | `index`, `part`, `text` | `branch` |
+| `answer` | `text`, `outcome` | `usage`, `branch` |
+| `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` | `branch` |
+| `mission_finished` | `outcome`, `steps`, `max_steps` | `usage`, `budget`, `reason`, `elapsed_s`, `branch` |
+| `model_state` | `state`, `provider`, `model` | `index`, `detail`, `since_s`, `retry_after_s`, `branch` |
+
+**`model_state`** (0.16, the eleventh) says why a pane is waiting: `state` is
+one of `cold`, `asking`, `queued`, `loading`, `loaded`, `failed`, `absent`
+(`contract.MODEL_STATES`), with `detail` (the server's sentence), `since_s`
+(how long the run has been in it) and `retry_after_s` (a `Retry-After` the
+server sent). **A healthy call emits none of them** — the record's presence is
+the signal — and `loaded` closes a wait. `queued` and `loading` are separated
+by construction: `loading` is only ever the server's own 503; `queued` is a
+429 or an accepted request with no first byte while `/models` lists the model.
+Branch on `state`, render `detail` as prose, hold the last state until
+`loaded`; never treat it as an error — a model that is loading is a run that
+has not failed.
 
 **Read every optional field with a default, and never read an absent one as a
 zero.** Absence and a stated null are different facts throughout: an absent
@@ -329,7 +348,7 @@ releases.
 | `--mcp-url` | `MCP_URL` | an HTTP MCP endpoint. Repeatable and namespaced |
 | `--mcp-stdio` | `MCP_STDIO` | an MCP server to spawn over stdio. Repeatable and namespaced |
 | `--mcp-token` | `MCP_TOKEN` | the bearer token, paired with the `--mcp-url` in the same position. **Use the variable**: argv is world-readable |
-| `--skill` | `MISSION_SKILL` | the manifest directory or file (§5) |
+| `--skill` | `MISSION_SKILL` | the manifest directory or file, or the NAME of a shipped pack — `research`, `coding`, `analyst` (§5) |
 | `--swarm` | `MISSION_SWARM` | plan the mission as steps rather than one loop |
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native` tool calling |
 | `--no-stream` | `MISSION_STREAM` | suppress `answer_delta` |
@@ -357,6 +376,8 @@ The rest of `contract.ENV_VARS`, which have no flag:
 | `JUDAIS_LOBI_AUDIT` | move the audit file (a path) or silence it (`none`/`off`) |
 | `JUDAIS_LOBI_RUNS` | move the run store (a path) or keep nothing (`none`/`off`) |
 | `JUDAIS_LOBI_APPROVALS` | move the approvals directory |
+| `JUDAIS_LOBI_MEMORY` | a directory you own: switches memory ON (0.16). Core blocks in the system turn, `memory_recall`/`memory_write` on the plane, notes written by reflection. Unset = no memory, not a byte differs |
+| `JUDAIS_LOBI_MEMORY_PRINCIPAL` | the person or tenant the mission runs for. **Attributed, not authenticated** — core has no principal system and will not invent one; it partitions the bank and nothing more; a platform that needs isolation gives each tenant its own directory |
 
 ### The exit contract
 
@@ -704,7 +725,7 @@ model reads says `type (string: dataset|model|service)` and not just `type`;
 types, `required` and enums are what decide whether a *first* call to a faceted
 search works.
 
-### Profiles: SAFE, DEV, OPS, GOD
+### Profiles: SAFE, DEV, RESEARCH, OPS, GOD
 
 Capability gating is **deny by default**, and the profile is what grants. It
 rides `mission_started.profile`, so a `safe` mission and a `god` one are
@@ -714,10 +735,17 @@ distinguishable on the wire — which they otherwise would not be.
 | --- | --- |
 | `safe` | `fs.read`, `git.read`, `verify.run`, `mcp.call`. **No** shell, no interpreter, no install, no write. **The default** |
 | `dev` | the above plus the code plane and writing: `fs.write`, `git.write`, `python.exec`, `shell.exec` |
-| `ops` | the above plus `git.push`, `git.fetch`, `pip.install`, `http.read`, `fs.delete`, `audio.output` |
+| `research` | the above plus `http.read` — the web-reading tools (`fetch_page_content`, `perform_web_research`, `perform_web_search`) and nothing else. Read the web, write nothing, run nothing beyond `dev` |
+| `ops` | the above plus `git.push`, `git.fetch`, `pip.install`, `fs.delete`, `audio.output` |
 | `god` | `*` — everything registered |
 
-Each level **accumulates** the ones below it. `verify.run` in `safe` is the one
+Each level **accumulates** the ones below it. **`research` is a level and not a
+flag**, carved out of `ops` in Phase 15: `http.read` used to sit beside
+`git.push` and `pip.install`, so a platform whose agent had to read three
+public pages had to hand it a deploy right, and `mission_started.profile:
+"ops"` said something about that run that was not true. `--profile research`
+reads honestly on a pane; nothing reachable under `ops` stopped being reachable.
+`verify.run` in `safe` is the one
 that surprises people: it ends in a subprocess too, but the command is the one
 the *repository* configured rather than one the model composed, and that is the
 line the code plane is drawn on throughout (§5, `sandbox:`).
@@ -737,7 +765,14 @@ tool plane would have widened the *local* code plane to buy nothing.
 ### The skill manifest
 
 `--skill DIR` (or `--skill DIR/SKILL.md`, or `MISSION_SKILL`) loads one
-manifest: YAML frontmatter between `---` fences, then a Markdown body. Point it
+manifest — and since 0.16 `--skill <name>` loads one of the **packs that ship
+in the wheel** (`core/skills/library/<name>/`: `research`, `coding`,
+`analyst`; `python -c "import core.skills as s; print(s.packs())"` lists them;
+each carries its SKILL.md, README, fixtures and its own `missions.yaml` eval
+suite, and runs on the built-in tools with no server). A pack's fixtures are
+read-only package data: stage them out with `core.skills.load(name)
+.stage_fixtures(dest)` before a mission writes beside them. A manifest is
+YAML frontmatter: YAML frontmatter between `---` fences, then a Markdown body. Point it
 at a directory holding several skills and it refuses, listing them by name.
 
 Four things come out of a manifest and nothing else does — and one thing it is
