@@ -129,7 +129,15 @@ def _build_agent(AgentClass, args):
 
 
 def _build_mcp_transport(args):
-    """Pick a transport from the flags, or say precisely what is missing."""
+    """Pick a transport from the flags, or ``None`` when none was named.
+
+    ``None`` is the **local tool plane**: a mission over this package's own
+    built-in tools and no server at all.  Whether that is a mission or a
+    mistake is not a question this function can answer — it depends on the
+    closed set, which is :func:`_local_plane_or_refuse`'s to read — so the
+    "needs a server" refusal lives there and this one only reports what
+    the flags say.
+    """
     from core.tools.mcp_client import StdioTransport, StreamableHttpTransport
 
     if args.mcp_stdio and args.mcp_url:
@@ -145,10 +153,79 @@ def _build_mcp_transport(args):
         return StdioTransport(command=parts[0], args=parts[1:])
     if args.mcp_url:
         return StreamableHttpTransport(url=args.mcp_url, token=args.mcp_token)
+    return None
+
+
+def _local_plane_or_refuse(manifest, bus):
+    """A mission with no server: the built-in tools, or a refusal naming
+    the ones that are not here.
+
+    **A mission does not need a server.**  It needed one until 1.0's first
+    three skills, because the whole tool plane arrived over ``tools/list``
+    and a run with no transport had nothing to offer at all.  It is not
+    true of a skill whose closed set is ``read_file`` and ``repo_map``:
+    those are registered on this package's own bus by
+    :class:`core.tools.Tools`, governed by the same profile and the same
+    sandbox as everything else, and the server was never in the picture.
+    Refusing such a run for want of a transport it does not use is the
+    harness refusing itself.
+
+    So the question is not "is there a server" but **"is every tool this
+    skill named here"**, and it is asked two ways because a closed set has
+    two ways of naming something that is not:
+
+    * an entry written in the **bridge's own namespace** (``mcp.foo``) is a
+      server's tool by construction — that prefix is what
+      :class:`~core.tools.mcp_client.McpToolBridge` registers under, read
+      off the bridge rather than typed here so there is one owner of the
+      word.  It is not satisfied by a local tool of the same short name,
+      and :meth:`~core.runtime.skills.SkillManifest._sandbox_problems`
+      already tells authors so in as many words: the namespaced spelling
+      means *that one executes on the server*;
+    * any other entry is matched against the bus's registrations with
+      :func:`~core.tools.descriptors.same_tool`, the one matcher
+      :meth:`~core.runtime.skills.SkillManifest.resolve` uses — so a
+      manifest that gets past this door is a manifest that will resolve
+      behind it.
+
+    An entry that satisfies neither has to come from somewhere, and the
+    somewhere is a server: the refusal says which entries, and what IS
+    here, which is the sentence the old blanket refusal was trying to be.
+
+    Optional (``?``) entries are not required to be here, for the reason
+    they are not required to be anywhere: the marker means *use it if the
+    plane has it*, and a mission whose optional tool is only ever offered
+    by a server still runs locally without it.
+
+    With no manifest there is no closed set to check and nothing to
+    refuse.  That run is offered every registered tool, which is what a
+    ``--mission`` without ``--skill`` has always been — see
+    :func:`_mission_tools`, which says so out loud.
+    """
+    if manifest is None:
+        return
+    from core.tools.descriptors import same_tool
+    from core.tools.mcp_client import McpToolBridge
+
+    bridged = f"{McpToolBridge.DEFAULT_NAMESPACE}."
+    lister = getattr(bus, "list_tools", None)
+    local = [str(name) for name in lister()] if lister is not None else []
+    missing = [entry for entry in manifest.allowed_tools
+               if entry not in manifest.optional_tools
+               and (entry.startswith(bridged)
+                    or not any(same_tool(name, entry) for name in local))]
+    if not missing:
+        return
     raise SystemExit(
-        "--mission needs a server: --mcp-stdio '<command>' (or MCP_STDIO) "
-        "for one on this host, or --mcp-url <url> (or MCP_URL) for one over "
-        "HTTP. There is nothing to discover otherwise."
+        f"--mission needs a server: skill {manifest.name!r} names "
+        f"{', '.join(repr(entry) for entry in missing)}, which "
+        f"{'is' if len(missing) == 1 else 'are'} not among this host's own "
+        f"tools ({', '.join(local) or 'none'}). Point --mcp-stdio "
+        f"'<command>' (or MCP_STDIO) at a server on this host, or --mcp-url "
+        f"<url> (or MCP_URL) at one over HTTP. A skill whose closed set is "
+        f"entirely built-in needs neither. (An entry written {bridged}… is a "
+        f"server's tool by name and a local tool of the same short name does "
+        f"not stand in for it.)"
     )
 
 
@@ -159,6 +236,15 @@ def _load_skill(args):
     named a skill and got a mission run without one would get a
     plausible answer produced by an agent holding the whole bus and none
     of the operational knowledge they meant to supply.
+
+    **THE ONE CALL SITE.**  ``--skill`` takes a path today, and the line
+    below is the single place this package turns what was typed into a
+    :class:`~core.runtime.skills.SkillManifest`.  When ``--skill
+    <name>`` is to mean a first-party skill out of the shipped library
+    rather than a file on disk, this call is the only one that changes:
+    a resolver that answers "a path, or a name in the library" replaces
+    :func:`~core.runtime.skills.load_skill` here and nothing else in the
+    CLI knows the difference.
     """
     if not getattr(args, "skill", None):
         return None
@@ -536,6 +622,148 @@ def _run_meta_flags(args) -> dict:
     return given
 
 
+# ── the six objects a mission IS, one builder each ──────────────────────────
+#
+# `Run(personality, plane, bounds, store, observer, model)` is the library
+# API — `judais_lobi` re-exports exactly those seven names — and everything
+# below this line is the CLI being a **client** of it: argparse resolves the
+# flags, six functions turn what it resolved into the six objects, and
+# `_mission` hands them to the same `Run` a platform builds by hand in six
+# lines (`PLATFORMS.md`, README §"Library API").  There is no CLI loop and
+# no library loop; there is one loop and two callers.
+#
+# One function per object, so a reader looking for "where does --gate-wait
+# land" finds `_bounds_of` and nothing else.  Each takes the facts it owns
+# and NOTHING else — no `args`, no `elf`, no console: a builder handed the
+# whole command line would be a seventh place a flag can be read, which is
+# the arrangement `ROADMAP.md` §3 calls one owner per fact and which the
+# thirty-parameter constructor these replace was an argument against.
+#
+# The imports are inside the functions, like every other import in this
+# module: `judais --help` must not pay for the mission runtime.
+
+
+def _personality_of(system_message, history, validator, critic, manifest):
+    """What the model is told, and what it is held to."""
+    from core.runtime.run import Personality
+
+    return Personality(
+        system_message=system_message,
+        history=history,
+        grounding=validator,
+        critic=critic,
+        # The manifest is the only thing here that knows what the platform
+        # is called to `import`, and it is a fact about what the model is
+        # TOLD, which is what this object owns. Without a manifest the
+        # planner is not offered the code+sdk rung at all — withheld rather
+        # than guessed.
+        sdk_import=manifest.sdk_import if manifest else "",
+    )
+
+
+def _plane_of(bus, tool_names, gated, manifest, plane_changed):
+    """The only way out, and who may say yes to it.
+
+    ``admits`` and ``plane_changed`` are the two hooks a plane that changes
+    under a running mission needs: the manifest decides whether a name the
+    bus grew is inside the closed set (with no manifest the run was already
+    offered the whole bridge, so whatever it grew is offered too), and
+    ``_redeclare`` keeps the native protocol's function namespace in step
+    with the catalogue.
+    """
+    from core.runtime.results import RESULT_TOOL
+    from core.runtime.run import ToolPlane
+
+    return ToolPlane(
+        bus=bus,
+        offered=tool_names,
+        store_tool=RESULT_TOOL,
+        gated=gated,
+        admits=manifest.admits if manifest else None,
+        plane_changed=plane_changed,
+    )
+
+
+def _bounds_of(max_steps, deadline, cancel, control, gate_wait_s, supervisor):
+    """Everything that can stop this run, in one object.
+
+    All six are an operator's or a person's: a ceiling they asked for, a
+    clock they asked for, a signal they sent, a channel they opened, how
+    long a gate may wait for them — and the supervisor, which is what
+    replaced the step budget and is therefore in the list of things that
+    end a run.  Nothing here is set by this harness on its own behalf.
+    """
+    from core.runtime.run import Bounds
+
+    return Bounds(
+        max_steps=max_steps,
+        deadline=deadline,
+        cancel=cancel,
+        control=control,
+        gate_wait_s=gate_wait_s,
+        supervisor=supervisor,
+    )
+
+
+def _store_of(run_store, run_id, recorder, approvals, ticket):
+    """What survives the process: the log, the recording, the decisions.
+
+    The recorder is named here even though nothing in the loop reads it
+    off this object — it wraps the model and the bus at this function's
+    caller's seam, before either reaches the six.  Stating it is what
+    makes :class:`~core.runtime.run.Store` an honest answer to "what is
+    durable about this run", which is the question it exists to be the
+    one owner of.
+    """
+    from core.runtime.run import Store
+
+    return Store(runs=run_store, run_id=run_id, recorder=recorder,
+                 approvals=approvals, ticket=ticket)
+
+
+def _observer_of(store, *sinks):
+    """Every record out, and the one place redaction happens.
+
+    Store-first: the durable log is written before a watcher is told, so a
+    record a consumer saw is a record the transcript has.  ``None`` sinks
+    are dropped at the door, so a run with no ``--events`` and no
+    streaming emits into a store and nothing else.
+    """
+    from core.runtime.run import Observer
+
+    return Observer(*sinks, store=store)
+
+
+def _model_of(chat_fn, plain_chat_fn, protocol, window, streaming, json_mode,
+              usage_fn, tool_calls_fn, rate):
+    """The client, the protocol, and the side channels.
+
+    Two functions and not one: ``plain`` is the same model with **no tools
+    declared**, and it is what the supervisor, the router, the planner, the
+    gates and the reading tier ask their questions through — a question
+    answered with a tool call is the failure it exists to prevent.  Both go
+    through the same recorder and the same replay, so a run with a review
+    in it replays with the review in it.
+    """
+    from core.runtime.run import Model
+
+    return Model(
+        ask=chat_fn,
+        plain=plain_chat_fn,
+        protocol=protocol,
+        window=window,
+        streaming=streaming,
+        # Whether the caller may ask for a JSON-shaped reply. Asked of the
+        # CLIENT, by the caller: the client is the object that knows which
+        # backend it is, and a backend that cannot constrain its decoder is
+        # the default.
+        json_mode=json_mode,
+        usage_fn=usage_fn,
+        tool_calls_fn=tool_calls_fn,
+        rate=rate,
+    )
+
+
 def _run_mission(elf, args, name, style):
     """:func:`_mission`, with its last traceback scrubbed on the way out.
 
@@ -624,7 +852,7 @@ def _mission(elf, args, name, style):
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import (
         ANSWER_FUNCTION, AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL,
-        NATIVE_PROTOCOL, MissionRunner,
+        NATIVE_PROTOCOL,
     )
     from core.runtime.mission_stream import (
         close_on_sigterm, exit_as_signalled, open_sink,
@@ -638,6 +866,11 @@ def _mission(elf, args, name, style):
         reconcile_orphans,
     )
     from core.runtime.results import RESULT_TOOL
+    # THE LIBRARY. Everything this function does after argparse is build the
+    # six objects this class takes and hand them over — see the six builders
+    # above `_run_mission`, and `judais_lobi`, which re-exports exactly these
+    # names for a platform doing the same thing by hand.
+    from core.runtime.run import Run
     from core.runtime.supervisor import (
         REJECTIONS as SUP_REJECTIONS, REPEATS as SUP_REPEATS,
         REVIEWS as SUP_REVIEWS, STALE_STEPS as SUP_STALE, STUCK, Supervisor,
@@ -666,16 +899,24 @@ def _mission(elf, args, name, style):
         raise SystemExit(f"--approval: {exc}")
     # A replay serving recorded tool results dials NOTHING, and that is the
     # whole of what makes it runnable on a laptop with no server and no GPU.
-    # So the transport is not built — `_build_mcp_transport` would refuse a
-    # command line with no --mcp-url and no --mcp-stdio, and refusing a
-    # replay for want of a server it is never going to use would be the
-    # feature refusing itself. `--replay-tools live` takes the ordinary path
-    # and is refused for a missing server like any other mission.
+    # So the transport is not asked for at all — `_build_mcp_transport` reads
+    # the flags, and a replay's plane is the recording's. `--replay-tools
+    # live` takes the ordinary path and needs a server like any other
+    # mission whose closed set names one.
     replay_id = (getattr(args, "replay", "") or "").strip()
     replay_tools = (getattr(args, "replay_tools", "") or TOOLS_RECORDED).strip()
     offline = bool(replay_id) and replay_tools == TOOLS_RECORDED
-    transport = None if offline else _build_mcp_transport(args)
     bus = elf.tools.bus
+    transport = None if offline else _build_mcp_transport(args)
+    #: Whether this run's tool plane is THIS PACKAGE'S OWN — no server, no
+    #: recording, just the descriptors `core.tools.Tools` registers. The
+    #: three first-party skills that ship at 1.0 run here, and so does a
+    #: `--mission` with no `--skill` and no server. The refusal for a closed
+    #: set that names something this host has not got is inside, at the
+    #: door, where every other refusal a mission can meet is answered.
+    local_plane = transport is None and not offline
+    if local_plane:
+        _local_plane_or_refuse(manifest, bus)
 
     # Said out loud, both ways round. A path tells an operator where to look
     # when somebody asks what this mission called; the absence of one is the
@@ -1265,7 +1506,22 @@ def _mission(elf, args, name, style):
         # Everything inside is unchanged for every other run.
         with (nullcontext(None) if transport is None
               else McpClient(transport)) as client:
-            if transport is None:
+            if local_plane:
+                # This package's own tools, and no discovery: they were
+                # registered when the agent's `Tools` was built, under the
+                # same profile and the same sandbox every other run is
+                # governed by. Read off the bus rather than listed here —
+                # a second catalogue of what is built in would disagree
+                # with the registry the day somebody adds a tool.
+                discovered = [str(tool) for tool in bus.list_tools()]
+                console.print(
+                    f"🧰 {name} is on its BUILT-IN tools — no server was "
+                    f"named and this skill's closed set does not need one: "
+                    f"{len(discovered)} tool(s) registered: "
+                    f"{', '.join(discovered) or '(none)'}",
+                    style=style,
+                )
+            elif transport is None:
                 discovered = replay.names
                 console.print(
                     f"🎞  {name} is offline — the tool plane is "
@@ -1500,6 +1756,37 @@ def _mission(elf, args, name, style):
                 sink,
                 _ProgressiveAnswer(console, style, name) if streaming
                 else None)
+
+            # ── argparse is over; the six objects begin ─────────────────
+            #
+            # Everything above this line resolved flags, dialled a server
+            # and said what it found. Everything below is the library:
+            # six builders, one per owner (see `_personality_of` and the
+            # five beside it), and then `Run` — the same construction
+            # `from judais_lobi import Run` gives a platform, which is
+            # what makes this function a CLIENT of the library rather
+            # than a second implementation of it.
+            personality = _personality_of(system_message, history, validator,
+                                          critic, manifest)
+            plane = _plane_of(bus, tool_names, gated, manifest, _redeclare)
+            bounds = _bounds_of(max_steps, deadline, cancel, control,
+                                gate_wait_s, supervisor)
+            store = _store_of(run_store, run_id, recorder, approvals, ticket)
+            # ONE observer for the turn, so the two runners below cannot be
+            # given different watchers, and the durable log beside it:
+            # emitting is store-first, so the observer holds both.
+            observer = _observer_of(store, watcher)
+            model = _model_of(
+                chat_fn, plain_chat_fn, protocol, window, streaming,
+                # Asked of the CLIENT, because the client is the object
+                # that knows which backend it is. `getattr` twice: a
+                # library caller's client need never have heard of
+                # capabilities, and a backend that cannot constrain its
+                # decoder is the default.
+                bool(getattr(getattr(elf.client, "capabilities", None),
+                             "supports_json_mode", False)),
+                usage_fn, tool_calls_fn, rate)
+
             # Which runner continues a recorded run is the RUN's fact and
             # not this command line's — the same rule `--protocol` and the
             # objective are read under. A run that was staged is continued
@@ -1531,93 +1818,28 @@ def _mission(elf, args, name, style):
                         "gated and synthesized — same model throughout",
                         style=style,
                     )
-                runner = SwarmRunner(
-                    chat_fn, bus, tool_names,
-                    system_message=system_message,
-                    max_steps=max_steps,
-                    validator=validator,
-                    # ONE watcher for the turn, handed down to every
-                    # sub-mission this builds and asked about every failed
-                    # gate. See `SwarmRunner`'s `supervisor` parameter.
-                    supervisor=supervisor,
-                    # The staged path's second opinion, asked of the
-                    # SYNTHESIZED answer — which is the only text a staged
-                    # turn answers with — through the same function the
-                    # direct path's runner asks with.
-                    critic=critic,
-                    # Handed on to every sub-mission this builds, so a
-                    # staged turn is governed exactly as the direct one is
-                    # when the plane changes under it.
-                    admits=manifest.admits if manifest else None,
-                    plane_changed=_redeclare,
-                    gated=gated,
-                    approvals=approvals,
-                    approval=ticket,
-                    history=history,
-                    observer=watcher,
-                    plain_chat_fn=plain_chat_fn,
-                    # Asked of the CLIENT, because the client is what knows
-                    # which backend it is and the swarm holds only a
-                    # function. `getattr` twice: a library caller's client
-                    # need never have heard of capabilities, and a backend
-                    # that cannot constrain its decoder is the default.
-                    json_mode=bool(getattr(
-                        getattr(elf.client, "capabilities", None),
-                        "supports_json_mode", False)),
-                    # The manifest is the only thing here that knows what
-                    # the platform is called to `import`. Without it the
-                    # planner is not offered the code+sdk rung at all.
-                    sdk_import=manifest.sdk_import if manifest else "",
-                    window=window,
-                    run_store=run_store,
-                    run_id=run_id,
-                    usage_fn=usage_fn,
-                    tool_calls_fn=tool_calls_fn,
-                    protocol=protocol,
-                    rate=rate,
-                    deadline=deadline,
-                    cancel=cancel,
-                    control=control,
-                    gate_wait_s=gate_wait_s,
-                )
+                # The six, staged. `from_run` is the door for a caller
+                # that already has a `Run` — which this function now is —
+                # and it adopts that run whole: one plane, one clock, one
+                # supervisor, one observer and one ledger for the turn,
+                # branched per stage rather than rebuilt per stage.
+                #
+                # `plain_chat_fn`, `json_mode` and the manifest's
+                # `sdk_import` are not parameters here any more: they are
+                # fields of `Model` and `Personality`, which is where the
+                # staged path already reads them from.
+                runner = SwarmRunner.from_run(
+                    Run(personality, plane, bounds, store, observer, model))
             else:
-                runner = MissionRunner(
-                    chat_fn, bus, tool_names,
-                    system_message=system_message,
-                    max_steps=max_steps,
-                    validator=validator,
-                    critic=critic,
-                    # What catches a run that is going nowhere, now that
-                    # nothing counts its turns. See `MissionRunner`'s
-                    # `supervisor` and `max_steps` parameters.
-                    supervisor=supervisor,
-                    # The plane may grow under this run — a server
-                    # registers a tool and notifies, the bridge picks it
-                    # up. The manifest decides whether the new name is
-                    # inside the closed set (with no manifest, the run was
-                    # already offered the whole bridge, so whatever it
-                    # grew is offered too), and `_redeclare` keeps the
-                    # native protocol's function namespace in step with
-                    # the catalogue.
-                    admits=manifest.admits if manifest else None,
-                    plane_changed=_redeclare,
-                    gated=gated,
-                    approvals=approvals,
-                    approval=ticket,
-                    history=history,
-                    observer=watcher,
-                    window=window,
-                    run_store=run_store,
-                    run_id=run_id,
-                    usage_fn=usage_fn,
-                    tool_calls_fn=tool_calls_fn,
-                    protocol=protocol,
-                    rate=rate,
-                    deadline=deadline,
-                    cancel=cancel,
-                    control=control,
-                    gate_wait_s=gate_wait_s,
-                )
+                # The library API, called by the CLI, with nothing in
+                # between: `Run(personality, plane, bounds, store,
+                # observer, model)` is the same line `PLATFORMS.md` tells
+                # a platform to write. `MissionRunner` is still the
+                # adapter for a caller holding thirty facts instead of
+                # six — `tests/test_mission.py` is its conformance suite —
+                # and this function is no longer such a caller.
+                runner = Run(personality, plane, bounds, store, observer,
+                             model)
             # AFTER the runner exists, because the replay renders a
             # recorded tool result through the runner's own
             # `_render_result` rather than a second copy of it — one owner

@@ -710,16 +710,62 @@ class SwarmRunner:
         bounds = Bounds(deadline=deadline, cancel=cancel, control=control,
                         gate_wait_s=gate_wait_s, max_steps=max(0, int(max_steps)),
                         supervisor=supervisor)
-        #: ONE observer for the whole turn, and the one place a record is
-        #: scrubbed and the durable log is written. Every stage emits into
-        #: a BRANCH of this — see `Observer.branch` — so a sub-runner
-        #: cannot reach a sink without passing through here.
-        self._observer = RunObserver(observer, store=store)
+        # ONE observer for the whole turn, and the one place a record is
+        # scrubbed and the durable log is written. Every stage emits into
+        # a BRANCH of this — see `Observer.branch` — so a sub-runner
+        # cannot reach a sink without passing through here.
+        #
+        # The turn is ONE loop object, and everything below the six is set
+        # up by `_adopt` — the same body `from_run` calls, so a caller that
+        # already has a `Run` gets the identical object rather than a
+        # second, slightly different, idea of what a staged turn is.
+        self._adopt(Run(personality, plane, bounds, store,
+                        RunObserver(observer, store=store), model),
+                    max_plan_steps, summary_chars)
+
+    @classmethod
+    def from_run(cls, run: Run, *, max_plan_steps: Optional[int] = None,
+                 summary_chars: Optional[int] = None) -> "SwarmRunner":
+        """A staged turn over a :class:`~core.runtime.run.Run` already built.
+
+        The constructor above is an adapter — thirty facts in, six objects
+        out — and it exists for callers who have thirty facts.  ``core/cli
+        .py`` no longer does: it resolves argparse into the six objects
+        itself and hands them to :class:`Run`, which is the whole of what
+        "the CLI is a client of the library" means (``ROADMAP.md``
+        §2.6.6).  This is the door for a caller in that position, and it is
+        the same object either way — ``__init__`` ends by calling
+        :meth:`_adopt` and so does this, so there is one description of
+        what a staged turn is made of rather than one per door.
+
+        The run's own :class:`~core.runtime.run.Observer` is the turn's:
+        every stage branches off it, and a second observer wrapped around
+        the first would write each record to the durable log twice.
+
+        *max_plan_steps* and *summary_chars* are the only two knobs that
+        are the staging's rather than the run's, which is why they are the
+        only two parameters here.
+        """
+        self = cls.__new__(cls)
+        self._adopt(run, max_plan_steps, summary_chars)
+        return self
+
+    def _adopt(self, run: Run, max_plan_steps: Optional[int],
+               summary_chars: Optional[int]) -> None:
+        """Everything a staged turn is, over one :class:`Run`.
+
+        The body both constructors share.  Nothing here reads a parameter
+        of either of them except the two staging knobs: every other fact
+        is read back off *run*, so this class and the loop it stages
+        cannot disagree about the ceiling, the plane or the persona.
+        """
         #: The turn, as one loop object. This class is a composition over
-        #: it: the six objects above are read back off it below, so there
-        #: is one copy of each fact rather than one here and one there.
-        self._run = Run(personality, plane, bounds, store, self._observer,
-                        model)
+        #: it: the six objects are read back off it below, so there is one
+        #: copy of each fact rather than one here and one there.
+        self._run = run
+        #: The one place a record is scrubbed and the durable log is
+        #: written. The run's own, by identity — see :meth:`from_run`.
+        self._observer = run.observer
 
         # Replaced at the top of every `run`, so a runner used twice does
         # not report the first turn's tokens on the second.

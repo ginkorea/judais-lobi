@@ -228,17 +228,23 @@ class TestTheHappyPath:
         watching. Flag beats env; `0` is honoured (never wait), and silence
         on both means the runner's own default."""
         from core.runtime.control import GATE_WAIT_S
-        from core.runtime import mission as mission_module
+        import core.cli as cli_module
 
         MockClass, _agent = elf
         seen = []
-        original = mission_module.MissionRunner.__init__
+        # `Bounds` is where a gate window lives, and `_bounds_of` is the
+        # one place the CLI builds one — see the six builders above
+        # `_run_mission`. Reading the object the CLI handed the loop is
+        # the same assertion the runner keyword used to be, against the
+        # owner it moved to.
+        real_bounds_of = cli_module._bounds_of
 
-        def spy(self_, *a, **kw):
-            seen.append(kw.get("gate_wait_s"))
-            return original(self_, *a, **kw)
+        def spy(*a, **kw):
+            bounds = real_bounds_of(*a, **kw)
+            seen.append(bounds.gate_wait_s)
+            return bounds
 
-        monkeypatch.setattr(mission_module.MissionRunner, "__init__", spy)
+        monkeypatch.setattr(cli_module, "_bounds_of", spy)
         monkeypatch.delenv("MISSION_GATE_WAIT", raising=False)
         run_cli(MockClass, "--skill", str(skill_file))
         assert seen[-1] == GATE_WAIT_S
@@ -269,21 +275,24 @@ class TestTheHappyPath:
         between records — which is why there is a transcript to read at
         all. `Mission ended without an answer: incomplete` would report
         that as the harness giving up."""
-        import core.runtime.mission as mission_module
+        import core.cli as cli_module
 
         MockClass, agent = elf
         agent.replies = [json.dumps(
             {"tool": "mcp.governed_read",
              "arguments": {"asset_id": "asset.5f21"}})] * 4
 
-        real = mission_module.MissionRunner
+        # Thrown on the switch the CLI built, at the moment it builds it —
+        # `Bounds` owns the cancellation now, and `_bounds_of` is where the
+        # CLI puts one there.
+        real = cli_module._bounds_of
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                kwargs["cancel"].cancel()
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            bounds = real(*a, **kw)
+            bounds.cancel.cancel()
+            return bounds
 
-        monkeypatch.setattr(mission_module, "MissionRunner", Spy)
+        monkeypatch.setattr(cli_module, "_bounds_of", spy)
         run_cli(MockClass, "--skill", str(skill_file))
         out = capsys.readouterr().out
         assert "Mission cancelled after 0 step(s)" in out
@@ -775,25 +784,29 @@ class TestTheMissionWiring:
         deployment's client, provider and model meet; the loop is handed
         one so that a library caller can hand it a different one.
         """
-        import core.runtime.mission as mission_module
+        import core.cli as cli_module
         from core.runtime.backends.base import BackendCapabilities
 
         MockClass, agent = elf
         agent.client.capabilities = BackendCapabilities(
             max_context_tokens=8192, max_output_tokens=512)
 
-        captured = {}
-        real = mission_module.MissionRunner
+        # One spy for the object being asserted about, and it reads the
+        # object the CLI BUILT rather than a keyword it passed: the six
+        # builders above `_run_mission` are where a flag becomes a fact
+        # now, and `_model_of` is the one that owns this one.
+        real = cli_module._model_of
+        built = []
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                captured.update(kwargs)
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            made = real(*a, **kw)
+            built.append(made)
+            return made
 
-        monkeypatch.setattr(mission_module, "MissionRunner", Spy)
+        monkeypatch.setattr(cli_module, "_model_of", spy)
         run_cli(MockClass, "--skill", str(skill_file))
 
-        window = captured["window"]
+        window = built[-1].window
         assert window.profile.source == "backend"
         assert window.limit_tokens == 8192 - 512
 
@@ -802,71 +815,83 @@ class TestTheMissionWiring:
         """`--mission-seconds` is inert unless it reaches the loop, and a
         budget that silently does nothing is worse than none: an operator
         who set one believes the run is bounded."""
-        import core.runtime.mission as mission_module
+        import core.cli as cli_module
 
         MockClass, _agent = elf
-        captured = {}
-        real = mission_module.MissionRunner
+        # One spy for the object being asserted about, and it reads the
+        # object the CLI BUILT rather than a keyword it passed: the six
+        # builders above `_run_mission` are where a flag becomes a fact
+        # now, and `_bounds_of` is the one that owns this one.
+        real = cli_module._bounds_of
+        built = []
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                captured.update(kwargs)
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            made = real(*a, **kw)
+            built.append(made)
+            return made
 
-        monkeypatch.setattr(mission_module, "MissionRunner", Spy)
+        monkeypatch.setattr(cli_module, "_bounds_of", spy)
         run_cli(MockClass, "--skill", str(skill_file), "--mission-seconds", "45")
 
-        assert captured["deadline"].seconds == 45.0
-        assert captured["cancel"] is not None
+        assert built[-1].deadline.seconds == 45.0
+        assert built[-1].cancel is not None
 
     def test_without_the_flag_the_clock_is_unbounded(
             self, elf, skill_file, monkeypatch):
         """Unset means unbounded, all the way down. Steps bound the work;
         a default nobody chose would kill a slow local model mid-answer."""
-        import core.runtime.mission as mission_module
+        import core.cli as cli_module
 
         MockClass, _agent = elf
         monkeypatch.delenv("MISSION_SECONDS", raising=False)
-        captured = {}
-        real = mission_module.MissionRunner
+        # One spy for the object being asserted about, and it reads the
+        # object the CLI BUILT rather than a keyword it passed: the six
+        # builders above `_run_mission` are where a flag becomes a fact
+        # now, and `_bounds_of` is the one that owns this one.
+        real = cli_module._bounds_of
+        built = []
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                captured.update(kwargs)
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            made = real(*a, **kw)
+            built.append(made)
+            return made
 
-        monkeypatch.setattr(mission_module, "MissionRunner", Spy)
+        monkeypatch.setattr(cli_module, "_bounds_of", spy)
         run_cli(MockClass, "--skill", str(skill_file))
 
-        assert captured["deadline"].seconds is None
-        assert captured["deadline"].unbounded is True
+        assert built[-1].deadline.seconds is None
+        assert built[-1].deadline.unbounded is True
 
     def test_the_staged_runner_is_given_the_same_clock_and_switch(
             self, elf, monkeypatch):
         """One clock for the whole turn. A swarm handed none while the
         direct path was bounded would make the budget depend on which way
         the router went."""
-        import core.runtime.swarm as swarm_module
+        import core.cli as cli_module
 
         MockClass, agent = elf
         agent.replies = ['{"route": "direct"}', '{"answer": "no tools needed"}']
-        captured = {}
-        real = swarm_module.SwarmRunner
+        # One spy for the object being asserted about, and it reads the
+        # object the CLI BUILT rather than a keyword it passed: the six
+        # builders above `_run_mission` are where a flag becomes a fact
+        # now, and `_bounds_of` is the one that owns this one.
+        real = cli_module._bounds_of
+        built = []
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                captured.update(kwargs)
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            made = real(*a, **kw)
+            built.append(made)
+            return made
 
-        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        monkeypatch.setattr(cli_module, "_bounds_of", spy)
         run_cli(MockClass, "--swarm", "--mission-seconds", "45")
 
-        assert captured["deadline"].seconds == 45.0
-        assert captured["cancel"] is not None
+        assert built[-1].deadline.seconds == 45.0
+        assert built[-1].cancel is not None
 
     def test_the_staged_runner_is_given_it_too(self, elf, monkeypatch):
         """A staged mission runs more steps than a direct one, not fewer."""
-        import core.runtime.swarm as swarm_module
+        import core.cli as cli_module
         from core.runtime.backends.base import BackendCapabilities
 
         MockClass, agent = elf
@@ -874,18 +899,22 @@ class TestTheMissionWiring:
             max_context_tokens=8192, max_output_tokens=512)
         agent.replies = ['{"route": "direct"}', '{"answer": "no tools needed"}']
 
-        captured = {}
-        real = swarm_module.SwarmRunner
+        # One spy for the object being asserted about, and it reads the
+        # object the CLI BUILT rather than a keyword it passed: the six
+        # builders above `_run_mission` are where a flag becomes a fact
+        # now, and `_model_of` is the one that owns this one.
+        real = cli_module._model_of
+        built = []
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                captured.update(kwargs)
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            made = real(*a, **kw)
+            built.append(made)
+            return made
 
-        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        monkeypatch.setattr(cli_module, "_model_of", spy)
         run_cli(MockClass, "--swarm")
 
-        assert captured["window"].limit_tokens == 8192 - 512
+        assert built[-1].window.limit_tokens == 8192 - 512
 
     def test_the_manifests_sdk_name_reaches_the_staged_runner(
             self, elf, tmp_path, monkeypatch):
@@ -893,7 +922,7 @@ class TestTheMissionWiring:
         platform is called to `import`. Passing `""` instead withholds
         the `code+sdk` rung from every planner, silently — the rung is
         not offered, so nothing ever asks for it and nothing complains."""
-        import core.runtime.swarm as swarm_module
+        import core.cli as cli_module
 
         MockClass, agent = elf
         path = tmp_path / "SKILL.md"
@@ -908,38 +937,46 @@ class TestTheMissionWiring:
             json.dumps({"answer": "The asset is asset.5f21."}),
         ]
 
-        captured = {}
-        real = swarm_module.SwarmRunner
+        # One spy for the object being asserted about, and it reads the
+        # object the CLI BUILT rather than a keyword it passed: the six
+        # builders above `_run_mission` are where a flag becomes a fact
+        # now, and `_personality_of` is the one that owns this one.
+        real = cli_module._personality_of
+        built = []
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                captured.update(kwargs)
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            made = real(*a, **kw)
+            built.append(made)
+            return made
 
-        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        monkeypatch.setattr(cli_module, "_personality_of", spy)
         run_cli(MockClass, "--skill", str(path), "--swarm")
 
-        assert captured["sdk_import"] == "acme"
+        assert built[-1].sdk_import == "acme"
 
     def test_no_manifest_declares_no_sdk_rather_than_guessing_one(
             self, elf, monkeypatch):
-        import core.runtime.swarm as swarm_module
+        import core.cli as cli_module
 
         MockClass, agent = elf
         agent.replies = ['{"route": "direct"}', '{"answer": "no tools needed"}']
 
-        captured = {}
-        real = swarm_module.SwarmRunner
+        # One spy for the object being asserted about, and it reads the
+        # object the CLI BUILT rather than a keyword it passed: the six
+        # builders above `_run_mission` are where a flag becomes a fact
+        # now, and `_personality_of` is the one that owns this one.
+        real = cli_module._personality_of
+        built = []
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                captured.update(kwargs)
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            made = real(*a, **kw)
+            built.append(made)
+            return made
 
-        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        monkeypatch.setattr(cli_module, "_personality_of", spy)
         run_cli(MockClass, "--swarm")
 
-        assert captured["sdk_import"] == ""
+        assert built[-1].sdk_import == ""
 
 
 class TestTheSafeDefaultGovernsTheMission:
@@ -2333,21 +2370,26 @@ class TestTheControlChannelFromTheCommandLine:
 
     def test_no_flag_is_no_channel_and_no_runner_keyword_changes(
             self, elf, skill_file, monkeypatch):
-        import core.runtime.mission as mission_module
+        import core.cli as cli_module
 
         MockClass, _agent = elf
         made = self._channels(monkeypatch)
-        captured = {}
-        real = mission_module.MissionRunner
+        # One spy for the object being asserted about, and it reads the
+        # object the CLI BUILT rather than a keyword it passed: the six
+        # builders above `_run_mission` are where a flag becomes a fact
+        # now, and `_bounds_of` is the one that owns this one.
+        real = cli_module._bounds_of
+        built = []
 
-        def watched(*args, **kwargs):
-            captured.update(kwargs)
-            return real(*args, **kwargs)
+        def spy(*a, **kw):
+            made = real(*a, **kw)
+            built.append(made)
+            return made
 
-        monkeypatch.setattr(mission_module, "MissionRunner", watched)
+        monkeypatch.setattr(cli_module, "_bounds_of", spy)
         run_cli(MockClass, "--skill", str(skill_file))
         assert made == []
-        assert captured["control"] is None
+        assert built[-1].control is None
 
     def test_the_environment_form_is_the_flags_default(
             self, elf, skill_file, monkeypatch):
@@ -2560,25 +2602,28 @@ class TestTheSwarmEndToEnd:
         turn, not each stage of it. Five sub-missions of a minute each
         fitting inside a one-minute budget is the bug, and a clock the CLI
         forgot to hand over is how it comes back."""
-        import core.runtime.swarm as swarm_module
+        import core.cli as cli_module
+        from dataclasses import replace
+
         from core.budgets import Deadline
 
         clock = _Clock()
         MockClass, agent = elf
         self.script(agent, *STAGED_SCRIPT, clock=clock, seconds=4.0)
 
-        real = swarm_module.SwarmRunner
+        real = cli_module._bounds_of
 
-        class Spy(real):
-            def __init__(self, *args, **kwargs):
-                # The operator's number, on a clock a test can move. The
-                # seam is the one `tests/test_swarm.py` uses; what is new
-                # here is that the CLI is what built the runner.
-                assert kwargs["deadline"].seconds == 10.0
-                kwargs["deadline"] = Deadline(10.0, monotonic=clock)
-                super().__init__(*args, **kwargs)
+        def spy(*a, **kw):
+            # The operator's number, on a clock a test can move. The seam
+            # is the one `tests/test_swarm.py` uses; what is new here is
+            # that the CLI is what built the `Bounds` — and it builds
+            # exactly ONE for the whole turn, which is why swapping the
+            # clock here swaps it for every stage.
+            bounds = real(*a, **kw)
+            assert bounds.deadline.seconds == 10.0
+            return replace(bounds, deadline=Deadline(10.0, monotonic=clock))
 
-        monkeypatch.setattr(swarm_module, "SwarmRunner", Spy)
+        monkeypatch.setattr(cli_module, "_bounds_of", spy)
         events = tmp_path / "events.ndjson"
         run_swarm(MockClass, "--skill", skill, "--mission-seconds", "10",
                   "--events", str(events))
