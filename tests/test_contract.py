@@ -466,9 +466,12 @@ class TestAMissionConformsToItsOwnContract:
         grounding = [r for r in seen if r["event"] == ms.GROUNDING]
         assert [r["repairing"] for r in grounding] == [True, False]
         for record in grounding:
-            assert set(record) - {"event"} == (
-                set(c.FIELDS[ms.GROUNDING])
-                | set(c.OPTIONAL.get(ms.GROUNDING, ())))
+            # Every field the event declares of its own — `grounding` has
+            # no optional ones. `branch` is optional on every event and is
+            # absent here because a synthesized grounding is the TURN's
+            # record and not any child's; see `COMMON_OPTIONAL`.
+            assert set(record) - {"event"} == set(c.FIELDS[ms.GROUNDING])
+            assert "branch" not in record
 
     def test_a_staged_swarms_plan_travels_as_a_declared_field(self):
         """It rode ``mission_started`` until that record moved ahead of
@@ -552,9 +555,8 @@ class TestAMissionConformsToItsOwnContract:
         assert _faults(seen) == []
         grounding = [r for r in seen if r["event"] == ms.GROUNDING]
         assert len(grounding) == 1, "a validator ran and said nothing"
-        assert set(grounding[0]) - {"event"} == (
-            set(c.FIELDS[ms.GROUNDING])
-            | set(c.OPTIONAL.get(ms.GROUNDING, ())))
+        assert set(grounding[0]) - {"event"} == set(c.FIELDS[ms.GROUNDING])
+        assert "branch" not in grounding[0]
 
 
 class _NativeReplies:
@@ -814,18 +816,84 @@ class TestTheTenthEventIsSafeToNotKnowAbout:
         assert not [r for r in seen if r["event"] == ms.ANSWER_DELTA]
         assert _faults(seen) == []
 
-    def test_it_carries_no_optional_field_at_all(self):
+    def test_it_carries_no_optional_field_of_its_own(self):
         """Deliberately: `usage` is the cost of a CALL and would be
-        restated on every fragment of it."""
-        assert ms.ANSWER_DELTA not in c.OPTIONAL
+        restated on every fragment of it.  What it does carry is
+        `branch`, which every event carries because it says which child
+        run emitted the record rather than anything about the record."""
+        assert c.OPTIONAL[ms.ANSWER_DELTA] == c.COMMON_OPTIONAL
 
     def test_the_event_sits_beside_the_answer_it_precedes(self):
         assert c.EVENTS.index(c.ANSWER_DELTA) == c.EVENTS.index(c.ANSWER) - 1
 
 
+class TestTheFieldEveryEventMayCarry:
+    """``branch`` — the eleventh optional field, and the first common one.
+
+    It is the whole of what lane D added to the wire, and it is OPTIONAL,
+    which is what makes running two children of one mission at the same
+    time a minor release rather than a schema bump: a consumer that never
+    heard of it reads one correctly-ordered sequence, which is the stream
+    it always read.
+
+    Declared once and merged into every event, rather than pasted into ten
+    tuples where the tenth is the one somebody forgets.  What it says about
+    a record is not about the record's own kind — it says which child run
+    emitted it — so an event-by-event listing would have been the same
+    sentence written out ten times.
+    """
+
+    def test_it_is_optional_on_every_event(self):
+        for event in c.EVENTS:
+            assert "branch" in c.OPTIONAL[event], event
+
+    def test_it_is_required_by_none(self):
+        """A record that must say which child emitted it is a record a
+        mission with no children cannot emit."""
+        for event in c.EVENTS:
+            assert "branch" not in c.FIELDS[event], event
+
+    def test_the_common_half_has_one_owner(self):
+        """Not a tuple pasted ten times: every entry ENDS with the common
+        fields, and the day a second one is added there is one line to
+        change."""
+        assert c.COMMON_OPTIONAL == ("branch",)
+        for event in c.EVENTS:
+            tail = c.OPTIONAL[event][-len(c.COMMON_OPTIONAL):]
+            assert tail == c.COMMON_OPTIONAL, event
+
+    def test_the_schema_version_did_not_move(self):
+        """An added optional field is a minor change by the rule at the top
+        of the module, and a consumer pinning ``SCHEMA_VERSION == 1`` keeps
+        working. This is that rule, spent."""
+        assert c.SCHEMA_VERSION == 1
+
+    def test_a_consumer_checking_conformance_never_asks_for_it(self):
+        """``conforms`` is what a consumer runs, and a record with no
+        ``branch`` is a conformant record — which is every record of every
+        run without ``--swarm``."""
+        assert c.conforms({"event": ms.STEP_STARTED, "index": 0}) == []
+        assert c.conforms({"event": ms.STEP_STARTED, "index": 0,
+                           "branch": "s1"}) == []
+
+    def test_the_page_a_consumer_is_sent_to_says_what_it_is(self):
+        """The doc-sync test below asserts the NAME appears; this asserts
+        the sentence a consumer actually needs is there, because a field
+        listed and not explained is a field read with the wrong default."""
+        section = _md_section("Events")
+        assert "`branch`" in section
+        assert "demultiplex" in section
+
+
 class TestTheContractIsWhole:
     def test_every_event_declares_its_fields(self):
         assert set(c.FIELDS) == set(c.EVENTS)
+
+    def test_every_event_declares_its_optional_fields(self):
+        """Equality and not containment: ``COMMON_OPTIONAL`` is true of
+        every event, so every event is a key of ``OPTIONAL`` and an event
+        missing from it would be one whose common fields nobody declared."""
+        assert set(c.OPTIONAL) == set(c.EVENTS)
 
     def test_the_stream_module_re_exports_rather_than_redeclares(self):
         """One owner. A second copy of a vocabulary is its own defect, and an

@@ -692,6 +692,19 @@ one as the executor's own stated result, never as raw output. The closed tool
 set, the gating, the audit and the events vocabulary are all exactly the direct
 path's, so a watcher sees one mission with more steps.
 
+**Steps that need nothing from each other can run at the same time.** A library
+caller sets `SwarmRunner(..., parallel=N)`; the default is `1` — serial, in the
+plan's own order, which is what a staged turn has always been — and there is no
+flag, because the evidence for changing how every turn runs is a suite scored
+both ways rather than a switch. When steps do run together, each record carries
+the OPTIONAL `branch` field naming the plan step that emitted it (`"s1"`,
+`"s2"`, or `"direct"` for the route a turn takes when its router says the
+question needs no plan), and records the turn itself emitted — its opening, its
+`answer`, its `grounding`, its closing — carry none. `index` is still allocated
+by the turn's one observer, in the order records go out, so **a consumer that
+has never heard of `branch` reads exactly the single ordered stream it always
+read**; one that has can group a step's records together. See `CONTRACT.md`.
+
 **One window, and it is the model's.** Every stage of a staged turn — the router,
 the planner, each sub-mission, each gate and the synthesizer — is bounded by the
 same `MissionWindow` the direct path uses, resolved from the backend's real

@@ -82,6 +82,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -109,15 +110,17 @@ from core.runtime.mission import (
     NATIVE_PROTOCOL_TEXT, PLANE_CHANGED, PROTOCOL, PROTOCOLS, MissionCall,
     MissionStep, MissionTranscript, _FENCE, _finished_record,
     _grounding_record, _profile_field, _protocol_field, _record_decision,
-    _run_field, _takes_deadline, audit_ref_of, persist_record, sandbox_of,
-    second_opinion, stacked, validate_history,
+    _run_field, _takes_deadline, _takes_step, audit_ref_of, persist_record,
+    sandbox_of, second_opinion, stacked, validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, ANSWER_DELTA, GATE_REQUESTED, GROUNDING, MISSION_FINISHED,
     MISSION_STARTED, REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
 )
 from core.runtime.mission_stream import Observer as Sink
-from core.runtime.results import RESULT_TOOL, MissionResultStore
+from core.runtime.results import (
+    BRANCH_ARGUMENT, RESULT_TOOL, BranchedStores, MissionResultStore,
+)
 from core.runtime.schema_check import check as check_arguments
 from core.runtime.supervisor import (
     NUDGE, NUDGE_NOTE, STUCK, WIND_UP,
@@ -212,6 +215,21 @@ class ToolPlane:
                               Sequence[str]]] = None
     #: Told when :attr:`offered` changes, with the new whole list.
     plane_changed: Optional[Callable[[List[str]], None]] = None
+    #: Which child of the mission this plane is leased to, or ``""`` for the
+    #: mission itself.  Set by :meth:`lease` and by nothing else; it is the
+    #: key this plane's run publishes its result store under and the word
+    #: that rides the store dispatch.  It is **not** ``Observer.name``: that
+    #: names the records, this names the store, and they are the same string
+    #: because they are the same child — :meth:`Run.child` sets both from
+    #: one argument.
+    store_branch: str = ""
+    #: The stores of every child leasing this plane, behind one registered
+    #: tool.  Shared by identity with every lease, which is the whole of how
+    #: two children avoid colliding on ``mission_result``; created here when
+    #: a caller does not hand one in, so an ordinary plane is an ordinary
+    #: plane and :func:`~dataclasses.replace` — the ticket's widening,
+    #: :meth:`narrow`, :meth:`lease` — carries the same one through.
+    stores: Any = None
 
     def __post_init__(self) -> None:
         # A list of this object's own: a caller's sequence is data it still
@@ -222,6 +240,10 @@ class ToolPlane:
                            (self.store_tool or "").strip())
         object.__setattr__(self, "gated",
                            frozenset(str(name) for name in self.gated if name))
+        object.__setattr__(self, "store_branch",
+                           str(self.store_branch or "").strip())
+        if self.stores is None:
+            object.__setattr__(self, "stores", BranchedStores())
 
     # ── the three facts that are read off the bus and never stored ──────
 
@@ -285,23 +307,90 @@ class ToolPlane:
         """
         return _takes_deadline(self.bus)
 
+    def takes_step(self) -> bool:
+        """Whether this bus's ``dispatch`` accepts the audit's ``step``.
+
+        Through :func:`~core.runtime.mission._takes_step`, the same probe
+        of the same signature, and asked once per run for the same reason.
+        """
+        return _takes_step(self.bus)
+
     def lease(self, branch: str = "") -> "ToolPlane":
         """A plane for one child run, whose result store does not collide.
 
-        Not implemented in this lane, and declared rather than omitted
-        because it is where two named things land:
+        The same plane in every respect a mission can see — the same bus,
+        the same live :attr:`offered` list, the same gated set, the same
+        schemas, the same ``admits`` and the same ``plane_changed``, all by
+        identity — with one thing changed: :attr:`store_branch`, which is
+        the key this child's :class:`~core.runtime.results.MissionResultStore`
+        is published under in the :attr:`stores` registry the lease shares
+        with its parent.
+
+        **The model is told the same tool name on every branch**, and that
+        is the decision this method is.  Two children on one bus used to
+        collide outright:
         :meth:`~core.runtime.results.MissionResultStore.register_on` refuses
-        a name that is taken, so two children on one bus collide on
-        ``mission_result``; and the offered set is fixed at mission start
-        although the bus can grow, so a refresh needs somewhere to be
-        expressible.  Both belong to the lane that runs children in
-        parallel — see ``ROADMAP.md`` §2.6.2 — and inventing a namespacing
-        convention here would make that lane inherit a decision it has the
-        evidence to make and this one does not.
+        a name that is taken, which is what stopped a staged turn from
+        running two steps at once.  The other way out was a namespaced tool
+        per child — ``mission_result@s1`` — and it is wrong twice over.  The
+        name is in the protocol text the child is given, so two children
+        would open with two different prompts for one job, and a served
+        endpoint's prefix cache is keyed on those bytes; and a sibling's
+        descriptor sitting on the bus is a name
+        :meth:`Run._relearn_the_plane` reads as a tool the bus *grew* —
+        with no ``admits`` to say otherwise, one child would be offered the
+        other child's store.
+
+        So there is one descriptor and it routes: see
+        :class:`~core.runtime.results.BranchedStores`.  What a child adds to
+        its own store dispatch is the branch it is, which the loop puts on
+        the call after the schema check and only for the mission's own tool.
+
+        A lease of a plane with no store tool is a plane with no store tool;
+        the branch is still recorded, because it costs nothing and a caller
+        that later gives the plane a store gets the right one.
         """
-        raise NotImplementedError(
-            "ToolPlane.lease is the parallel-children lane's — see "
-            "ROADMAP.md §2.6.2, item 1")
+        leased = replace(self, store_branch=str(branch or ""))
+        # The offered list back by IDENTITY. `__post_init__` gives every
+        # plane a list of its own — right for a caller's sequence, and right
+        # for `narrow`, which is a different plane — and wrong here: what is
+        # offered changes under a running turn, `_relearn_the_plane` edits
+        # the membership in place, and a lease with a copy would be a child
+        # that never hears about a tool the bus grew. One plane, one answer
+        # to "what may be called now", is the whole reason a child shares it.
+        object.__setattr__(leased, "offered", self.offered)
+        return leased
+
+    # ── the result store, opened per branch and registered once ─────────
+
+    def open_store(self, results: Any) -> str:
+        """Publish *results* as this branch's, registering the tool once.
+
+        Returns the registered name, or ``""`` when this plane runs without
+        a store — the flag :meth:`Run.arun` already held, unchanged.
+        """
+        if not self.store_tool:
+            return ""
+        return self.stores.open(self.bus, self.store_tool,
+                                self.store_branch, results)
+
+    def close_store(self) -> None:
+        """Drop this branch's store; withdraw the tool with the last one."""
+        if self.store_tool:
+            self.stores.close(self.bus, self.store_branch)
+
+    def store_routing(self, name: str) -> Dict[str, Any]:
+        """``{"branch": …}`` when *name* is this plane's store tool, else ``{}``.
+
+        The dict and not the word, in the shape the dispatch wants it, for
+        the reason :attr:`profile_field` is a dict: *whether* the keyword
+        rides is the same decision as *what it says*, and one owner holds
+        both.  Empty for an unbranched run, so a mission with no children
+        dispatches exactly the call it always dispatched.
+        """
+        if not (self.store_branch and name and name == self.store_tool):
+            return {}
+        return {BRANCH_ARGUMENT: self.store_branch}
 
     def narrow(self, scopes: Sequence[str]) -> "ToolPlane":
         """This plane restricted to *scopes*, for a role that may do less.
@@ -543,25 +632,39 @@ class Observer:
         #: dropped at the door so a caller may pass an optional one.
         self.sinks: Tuple[Sink, ...] = tuple(
             sink for sink in sinks if sink is not None)
-        #: What a child run's records are called.  **It does not reach the
-        #: wire in this lane** — an OPTIONAL ``branch`` field is the
-        #: parallel-children lane's (``ROADMAP.md`` §2.6.2, item 5) and a
-        #: field added here would be a change to the contract in a lane
-        #: whose whole claim is that it changes nothing.
+        #: What a child run's records are called, and — since children can
+        #: run at the same time — what every one of them carries on the
+        #: wire as the OPTIONAL ``branch`` field.  ``""`` on the mission's
+        #: own observer, and then no record carries the field at all: a
+        #: run without children emits exactly the stream it always did.
+        #: See :data:`core.runtime.contract.COMMON_OPTIONAL`.
         self.name = branch
         #: The durable log these records are written to.  See the class
         #: docstring; an empty :class:`Store` is "nothing is recorded".
         self.store = store if store is not None else Store()
         #: The next ``index`` a child's record may take in this run's ONE
-        #: sequence.  Allocated by :meth:`branch`'s object at emit time and
-        #: kept here, on the parent, because the sequence is the *run's* and
-        #: not any one child's: a staged turn runs five sub-missions that
-        #: each count their own steps from zero, and what a watcher must
-        #: read is one mission with more steps.  Not a lock yet — the
-        #: allocation is a read and a write, and it is safe while the join
-        #: is single-threaded, which it is until the parallel-children lane
-        #: (``ROADMAP.md`` §2.6.2, item 5).
+        #: sequence.  Allocated by :meth:`branch`'s object **at emit time**
+        #: and kept here, on the parent, because the sequence is the *run's*
+        #: and not any one child's: a staged turn runs five sub-missions
+        #: that each count their own steps from zero, and what a watcher
+        #: must read is one mission with more steps.
         self._next_index = 0
+        #: What makes the allocation above one act rather than a read and a
+        #: write.  Held even though children share one event loop, where a
+        #: coroutine cannot be interrupted between two statements: a
+        #: :meth:`Run.run` called from a thread is a supported way in, the
+        #: critic's verdict goes out through :func:`asyncio.to_thread`, and
+        #: a numbering that is correct only because of where the awaits
+        #: happen to be is a numbering the next refactor breaks silently.
+        #: Uncontended it costs nothing, and what it buys is that two
+        #: records can never take one number.
+        #:
+        #: It guards :attr:`_carried` too, and for a second reason: the
+        #: pending ``plan`` must ride exactly one ``step_started``, and
+        #: draining it in the same breath as the allocation makes that the
+        #: step with the LOWEST new index — the first one on the wire —
+        #: whichever child got there first.
+        self._numbering = threading.Lock()
         #: Fields waiting for the next ``step_started`` **any** child emits
         #: — see :meth:`carry`.  Here rather than on a branch because the
         #: thing they are waiting for may not be the next record of the
@@ -624,15 +727,45 @@ class Observer:
         again with the same key replaces it: a plan as redrawn is the plan
         the steps arriving next belong to, not a second plan beside the one
         that was abandoned.
+
+        **Which child takes them, when two are running.**  The one whose
+        ``step_started`` gets the lowest of the new indices — the first of
+        them on the wire — because the drain happens inside the same
+        critical section the index is allocated in.  Exactly one step
+        carries them, whatever the children do, and it is the earliest
+        step of the stretch the fields are about, which is what a plan is
+        a fact about.
         """
-        self._carried.update(fields)
+        with self._numbering:
+            self._carried.update(fields)
 
     def _take(self) -> Dict[str, Any]:
         """What :meth:`carry` left, once.  Draining is the point: a field
         that arrived on every step would be a state restated rather than an
-        event announced."""
+        event announced.
+
+        **Called with :attr:`_numbering` already held** — by
+        :meth:`_Branch.emit`, in the same breath as the allocation, which
+        is what makes "exactly one step_started carries the plan" true of
+        two children as well as of one.
+        """
         carried, self._carried = self._carried, {}
         return carried
+
+    def numbered(self, index: int) -> int:
+        """*index* as it went out on the wire, for a caller that is not a
+        record.
+
+        The mission's own observer renumbers nothing, so this is the
+        identity here; a stage's branch overrides it.  It exists because
+        the **audit** needs the same number the stream carries: a loop
+        counts its own steps from zero and the turn's sequence is the
+        observer's, so an audit column filled in from the loop's counter
+        would say "step 0" of two different children of one turn.  One
+        owner of "what number is this step", asked rather than
+        recalculated.
+        """
+        return index
 
     def branch(self, name: str = "", *, stage: bool = False,
                start_index: int = 0) -> "Observer":
@@ -666,7 +799,15 @@ class Observer:
         *start_index* is where the global numbering begins, and it is ``0``
         everywhere except a resumed staged turn: those records go into the
         log an earlier stretch wrote, and numbering that started again
-        would put two records with the same ``index`` in one run.
+        would put two records with the same ``index`` in one run.  It is a
+        **floor** on the parent's counter, applied when the first record
+        of this branch is numbered rather than when the branch is built —
+        see :class:`_Branch`.
+
+        *name* is what every record of this child carries as ``branch``,
+        and it is why a child of a mission with children should always have
+        one: a consumer demultiplexing a parallel turn has nothing else to
+        group on.
         """
         return _Branch(self, name, stage=stage, start_index=start_index)
 
@@ -703,13 +844,22 @@ class _Branch(Observer):
         super().__init__(*parent.sinks, branch=name, store=parent.store)
         self._parent = parent
         self._stage = bool(stage)
-        # Taken at the door and not at the first record: the numbering of
-        # a stage is the parent's counter as it stood when the stage
-        # opened, which is what `_StageObserver.begin_stage` said by hand
-        # once per sub-mission.
-        parent._next_index = max(parent._next_index, max(0, int(start_index)))
-        self._offset = parent._next_index
-        self._seen_high = -1
+        # A FLOOR on the parent's counter, and nothing is taken from it
+        # here. This used to read the counter at the door and hold the
+        # value as an offset, which was deterministic exactly while the
+        # children were built one after another and each had finished
+        # before the next existed: two children constructed in one breath
+        # both read the same number and numbered their steps on top of it,
+        # so the turn emitted two records called `index: 0`. Nothing about
+        # the read was wrong — a number cannot be allocated before there is
+        # a record to give it to.
+        self._floor = max(0, int(start_index))
+        #: This child's local ``index`` -> the number it took in the turn's
+        #: one sequence.  A step emits several records under one index —
+        #: its ``step_started``, its calls, its results — and they are one
+        #: step and must all say the same number, so the allocation happens
+        #: once per local index rather than once per record.
+        self._numbers: Dict[int, int] = {}
 
     def emit(self, event: str, **fields: Any) -> None:
         """One of this child's records, renamed into the parent's stream."""
@@ -718,24 +868,73 @@ class _Branch(Observer):
                 return
         elif event == MISSION_STARTED:
             return
-        if self._stage and "index" in fields:
-            # Allocated at emit time, under the PARENT's numbering: the
-            # child counts its own steps from zero and cannot know what
-            # number they take in a turn that has already run four.
-            local = int(fields["index"])
-            self._seen_high = max(self._seen_high, local)
-            fields = dict(fields, index=self._offset + local)
-            self._parent._next_index = max(
-                self._parent._next_index, self._offset + self._seen_high + 1)
-        if event == STEP_STARTED:
-            carried = self._parent._take()
-            if carried:
-                # The record's own fields first and the carried ones after,
-                # and a carried key REPLACES: a review the turn is carrying
-                # is the review this step follows, whatever the child's own
-                # supervisor had to say about the step before it.
-                fields = {**fields, **carried}
+        # ONE critical section on the parent, holding both facts that are
+        # the turn's rather than this child's: which number this record
+        # takes, and whether it is the record the pending `plan` rides.
+        # Together, because "the plan goes on the first step of the
+        # stretch" is a statement about the numbering.
+        renumber = self._stage and "index" in fields
+        carried: Dict[str, Any] = {}
+        if renumber or event == STEP_STARTED:
+            with self._parent._numbering:
+                if renumber:
+                    fields = dict(fields, index=self._allocate(
+                        int(fields["index"])))
+                if event == STEP_STARTED:
+                    carried = self._parent._take()
+        if carried:
+            # The record's own fields first and the carried ones after,
+            # and a carried key REPLACES: a review the turn is carrying
+            # is the review this step follows, whatever the child's own
+            # supervisor had to say about the step before it.
+            fields = {**fields, **carried}
+        if self.name and "branch" not in fields:
+            # Which child spoke, on every record this child emits — the
+            # OPTIONAL field of `contract.COMMON_OPTIONAL`. `not in` and
+            # not an overwrite, so that a branch of a branch keeps the
+            # innermost name: the child that actually emitted the record
+            # is the one a consumer can group on.
+            fields["branch"] = self.name
         self._parent.emit(event, **fields)
+
+    def numbered(self, local: int) -> int:
+        """This child's step *local*, as the number the wire carries.
+
+        Asked by :meth:`Run._dispatch` for the audit's ``step`` column, and
+        answered out of the allocation :meth:`emit` already made — the
+        ``step_started`` of a step is emitted before anything it dispatches,
+        so the number exists by the time this is asked.  A step nothing has
+        emitted yet is answered with the local number, which is what a run
+        with no branch would have said anyway.
+
+        Composed up the chain rather than returned flat, so a branch of a
+        branch resolves through both.
+        """
+        if not self._stage:
+            return self._parent.numbered(local)
+        with self._parent._numbering:
+            allocated = self._numbers.get(local)
+        return self._parent.numbered(
+            local if allocated is None else allocated)
+
+    def _allocate(self, local: int) -> int:
+        """This child's step *local*, as a number in the turn's sequence.
+
+        **Called with the parent's numbering lock held.**  The first record
+        of a step takes the next number the turn has; every later record of
+        the same step is given the number that step already took.  So two
+        children interleaving produce one strictly increasing sequence with
+        no number used twice, and each child's own steps stay in the order
+        it ran them — which is all a consumer needs to demultiplex on
+        ``branch`` and all a consumer that ignores ``branch`` needs to read
+        one ordered mission.
+        """
+        if local not in self._numbers:
+            self._parent._next_index = max(self._parent._next_index,
+                                           self._floor)
+            self._numbers[local] = self._parent._next_index
+            self._parent._next_index += 1
+        return self._numbers[local]
 
 
 # ── the client, the protocol, and the side channels ─────────────────────────
@@ -966,10 +1165,15 @@ class Run:
         # not by declaring a flag a caller has to remember to set. See
         # `_deadline_ceiling` for why a mission may not simply pass one.
         self._bus_takes_deadline = plane.takes_deadline()
+        # The same probe of the same signature, for the audit's step
+        # column. A bus that does not name `step` gets no step, exactly as
+        # a bus that does not name `deadline_s` gets no seconds.
+        self._bus_takes_step = plane.takes_step()
 
     def child(self, *, personality: Optional[Personality] = None,
               bounds: Optional[Bounds] = None, branch: str = "",
-              stage: bool = False, start_index: int = 0) -> "Run":
+              stage: bool = False, start_index: int = 0,
+              ledger: Optional[Ledger] = None) -> "Run":
         """A sibling run: same store, same observer, same model, same plane.
 
         Shared **by identity**, which is the whole of what the object is
@@ -987,13 +1191,28 @@ class Run:
         and is not divided among children, and what watches a child going
         nowhere is the supervisor they share.
 
-        *branch* names the child's records for the observer and *stage*
-        says what kind of child this is — the mission continued, or one
-        stage of it; see :meth:`Observer.branch`, which is where that
-        decision is spent and which documents both.  Neither name reaches
-        the wire: an OPTIONAL ``branch`` field is the parallel-children
-        lane's (``ROADMAP.md`` §2.6.2, item 5).  *start_index* is where a
-        resumed turn's numbering picks up.
+        *branch* names the child, and it names it in **two** places at
+        once, which is why it is one argument: every record this child
+        emits carries it as the OPTIONAL ``branch`` field
+        (:meth:`Observer.branch`), and its result store is published under
+        it so that two children on one bus do not collide on
+        ``mission_result`` (:meth:`ToolPlane.lease`).  Those are the same
+        fact — which child this is — and a caller that had to state it
+        twice would eventually state it twice differently.  *stage* says
+        what kind of child this is — the mission continued, or one stage
+        of it; see :meth:`Observer.branch`, which documents both.
+        *start_index* is where a resumed turn's numbering picks up.
+
+        *ledger* is what makes children **gatherable**.  Handed one, the
+        child spends into it rather than into the model's own, and the
+        caller folds it back at the join through
+        :meth:`~core.runtime.usage.Ledger.absorb` — single-threaded, in an
+        order the caller chooses, so a turn's totals are the same numbers
+        whichever child finished first.  ``None`` is a child sharing the
+        parent's ledger by identity, which is what a child that runs alone
+        should do: the direct route of a staged turn ends the turn, and its
+        ``mission_finished`` carries the *turn's* invoice including the
+        router call that chose it.
 
         A child with neither a name nor a stage shares the parent's
         observer outright, which is the only shape in which a child's
@@ -1014,17 +1233,21 @@ class Run:
         plane from the manifest's list, so a tool that arrived mid-turn
         was offered to the step that learned about it and to no later one.
         One plane is one answer to "what may be called now" for the whole
-        turn, which is what a closed set is for.
+        turn, which is what a closed set is for.  A named child gets a
+        *lease* of it — the same bus, the same live offered list, the same
+        gated set, all by identity, with only the result store keyed to
+        this child; see :meth:`ToolPlane.lease`.
         """
         return Run(
             personality if personality is not None else self.personality,
-            self.plane,
+            self.plane.lease(branch) if branch else self.plane,
             bounds if bounds is not None else self.bounds,
             self.store,
             self.observer.branch(branch, stage=stage,
                                  start_index=start_index)
             if (branch or stage) else self.observer,
-            self.model,
+            self.model if ledger is None
+            else replace(self.model, ledger=ledger),
         )
 
     @property
@@ -1747,14 +1970,16 @@ class Run:
             return self._stopped(transcript, self.bounds.cancelled_stop())
         finally:
             if registered:
-                self.plane.bus.unregister(registered)
-            # Withdrawn for the same reason the store descriptor is: the bus
-            # outlives this run, and a `step` left behind would stamp the
-            # next chat turn's audit entry with the last mission's index —
-            # a column that is wrong rather than absent, which is worse.
-            context = getattr(self.plane.bus, "audit_context", None)
-            if isinstance(context, dict):
-                context.pop("step", None)
+                # This branch's store goes; the descriptor goes with the
+                # LAST branch holding it. Nothing is left on the bus for
+                # the same reason nothing ever was — it outlives the run.
+                self.plane.close_store()
+            # Nothing to withdraw from `bus.audit_context` any more, and
+            # that is the point of `step` riding the dispatch: a column
+            # that is a parameter of the call cannot be left behind on a
+            # shared bus to stamp the next chat turn with this mission's
+            # last index. See `_dispatch`.
+            #
             # In `finally` so that a mission killed by an exception still tells
             # the watcher the mission is over. A stream that just stops is
             # indistinguishable from an agent that is thinking, and a pane
@@ -1781,10 +2006,16 @@ class Run:
         would offer the next one a handle into the previous one's
         governed material.  It goes through the bus like everything else
         so the audit log records a read of it.
+
+        Through the plane, which is where "one descriptor, several
+        children's stores" is decided.  A run with no children is the same
+        act it always was — one store, one registration, refused if the
+        name is taken — and a child of a turn publishes its store under
+        the branch it is, so two of them may run at once.  See
+        :meth:`ToolPlane.open_store` and
+        :class:`~core.runtime.results.BranchedStores`.
         """
-        if not self.plane.store_tool:
-            return ""
-        return self.results.register_on(self.plane.bus, self.plane.store_tool)
+        return self.plane.open_store(self.results)
 
     async def _loop(
         self, objective: str, transcript: MissionTranscript,
@@ -2089,15 +2320,6 @@ class Run:
         ordinal = {"call": slot.ordinal} if getattr(slot, "ordinal", 0) else {}
         self.observer.emit(TOOL_CALL, index=index, tool=name,
                    arguments=dict(arguments), **ordinal, **spent)
-        # The bus has no idea what a step is and should not learn: it
-        # serves chat turns, kernel roles and missions alike. So the
-        # mission leaves its index where the audit entry is built,
-        # rather than the bus growing a mission-shaped parameter.
-        # Guarded by `isinstance`, because a caller's fake bus has no
-        # such dict and a missing audit column is not worth a crash.
-        context = getattr(self.plane.bus, "audit_context", None)
-        if isinstance(context, dict):
-            context["step"] = index
         if self.store.ticket is not None and name == self.store.ticket.tool:
             # HERE and not at the door: a resumed run that answers
             # without calling anything, or runs out of steps, has not
@@ -2114,6 +2336,33 @@ class Run:
         # deadline by more than its own bounded slack.
         call = dict(arguments)
         call.update(self._deadline_ceiling())
+        # And the step this call belongs to, for the audit's own column.
+        # It USED to be left in `bus.audit_context` — a mutable dict on a
+        # bus that serves chat turns and kernel roles too — immediately
+        # before the awaited dispatch below. One run at a time that was
+        # merely indirect; two children of one turn dispatching at once
+        # made it wrong, because the second child's write landed before
+        # the first child's entry was built and both were stamped with
+        # the second's index. A column that is wrong is worse than one
+        # that is absent. It rides the call now, exactly as `deadline_s`
+        # does and for the same reason: the keyword is the BUS's own and
+        # is consumed there, so it is not an argument invented for
+        # somebody else's schema. A bus that does not name it gets none.
+        if self._bus_takes_step:
+            # The number the WIRE carries, not this loop's own counter.
+            # A stage counts its steps from zero and the turn's sequence is
+            # the observer's, so an audit filled in from `index` would say
+            # "step 0" of the first step of every child. One owner of
+            # "which step is this" — see `Observer.numbered`.
+            call["step"] = self.observer.numbered(index)
+        # Which child is asking, for the mission's OWN store tool and for
+        # nothing else. One `mission_result` is registered for the whole
+        # turn — the model is told one name whatever branch it is on —
+        # and the descriptor behind it routes on this word to the store
+        # of the child that called. `{}` on every other tool and on every
+        # run without children, so nothing else ever sees it. See
+        # `ToolPlane.store_routing`.
+        call.update(self.plane.store_routing(name))
         # On a worker thread, for the reason the model call is: a dispatch
         # is a subprocess or a server, it is the other place a mission
         # spends real time, and a loop blocked inside it is a loop that

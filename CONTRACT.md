@@ -55,8 +55,9 @@ Everything below is read **with a default**. A field may be absent because
 nothing was configured, because the run had nothing to say, or because the
 consumer is older than the field — and adding one is a minor change by the rule
 at the bottom of this page, so a stream may always carry a name you have never
-heard of. Two events have none: `answer_delta` and `grounding` carry their
-required fields and nothing else.
+heard of. Two events have none of their own: `answer_delta` and `grounding`
+carry their required fields and nothing but `branch`, which every event may
+carry and which is described below the table.
 
 | event | optional fields | what they add |
 | --- | --- | --- |
@@ -69,11 +70,38 @@ required fields and nothing else.
 | **`answer`** | `usage` | what the call that wrote this text cost — the repair turn's, on a repaired answer |
 | **`mission_finished`** | `usage`, `budget`, `reason`, `elapsed_s` | the run's ledger; which budget ran out and by how much; why it ended when the outcome word does not say; and the wall clock |
 
+**`branch` may ride any of them**, and is the one optional field that is not
+listed per event: see the section below.
+
 `plan` rode `mission_started` until 0.8.x: that record is now emitted before
 triage — which is itself a call to the model — so at the time it is written
 there is no plan and there may never be one. Moving an optional field is a minor
 change; a consumer was reading it with a default or was not reading it as
 optional.
+
+### `branch` — which child emitted the record, when a child did
+
+A `--swarm` turn is one mission made of several child runs, and since 0.16 two
+of those children may be working **at the same time**. `branch` says which one
+a record came from: `"direct"` for the route a turn takes when its router says
+the question needs no plan, and the plan step's own id — `"s1"`, `"s2"` — for
+each stage of a staged turn. It is **absent** on every record the turn itself
+emitted (its `mission_started`, its `answer`, its `grounding`, its
+`mission_finished`), and absent on every record of every run without `--swarm`.
+
+**A consumer that ignores it reads one correctly-ordered sequence**, which is
+the whole reason this is an optional field and not a schema bump. `index` is
+allocated by the turn's one observer under a lock, at the moment a record is
+emitted, so two children never take the same number and the numbers arrive in
+the order they were allocated; the durable log appends under a lock of its
+own. Nothing about a parallel turn is out of order — there is simply more than
+one thing happening, and `branch` is how you find out.
+
+A consumer that reads it can demultiplex: collect the records of one plan step,
+show two steps progressing side by side, or attribute a tool call to the stage
+that made it. Group on the value and nothing else — the ids come from the
+planner's own plan, they are meaningful only inside one turn, and a redrawn
+plan may reuse one. Absence is not a branch called `""`: it means the turn.
 
 ### The posture on the opening frame
 

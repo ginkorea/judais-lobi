@@ -1,5 +1,6 @@
 # tests/test_swarm.py — staged decomposition over one mission backend
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -1407,8 +1408,11 @@ class TestAStepHasNoSliceOfAnything:
             return original(**kw)
 
         runner._run.child = spy
-        runner._execute_step("go", PlanStep(id="s1", goal="g", rung="tool"),
-                             {}, None)
+        # `_execute_step` is a coroutine now — a plan's independent steps
+        # are gathered — so it is awaited rather than called. What it does
+        # with the ceiling is unchanged, which is what this asserts.
+        asyncio.run(runner._execute_step(
+            "go", PlanStep(id="s1", goal="g", rung="tool"), {}, None))
         assert built == [0]
 
     def test_the_plan_cap_is_a_cap_on_a_list_and_not_on_work(self, bus):

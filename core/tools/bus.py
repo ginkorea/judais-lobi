@@ -94,10 +94,16 @@ class ToolBus:
         #: How many audit writes have failed on this bus.  Counted rather
         #: than swallowed: see :meth:`_log_audit`.
         self.audit_failures = 0
-        #: Whatever the caller running this bus wants on every audit entry
-        #: — the mission puts its step index here before each dispatch.
-        #: A plain dict because the bus has no business knowing what a
-        #: step is, and because a caller that never sets one costs nothing.
+        #: Whatever the caller running this bus wants on **every** audit
+        #: entry — a deployment's own standing columns, set once and left.
+        #: A plain dict because the bus has no business knowing what any of
+        #: them mean, and because a caller that never sets one costs nothing.
+        #:
+        #: A fact that changes *per dispatch* does not belong here and no
+        #: longer lives here: the mission's step index rides
+        #: :meth:`dispatch` as ``step=``.  Two child runs of one mission can
+        #: dispatch at the same time now, and a per-call fact left in a dict
+        #: on a shared bus is a column that is wrong rather than absent.
         self.audit_context: Dict[str, Any] = {}
 
     @property
@@ -160,6 +166,7 @@ class ToolBus:
     def dispatch(self, tool_name: str, *args: Any,
                  action: Optional[str] = None,
                  deadline_s: Optional[float] = None,
+                 step: Optional[int] = None,
                  **kwargs: Any) -> ToolResult:
         """Dispatch a tool invocation through capability gating.
 
@@ -189,6 +196,26 @@ class ToolBus:
             in-process tool that never touches a subprocess is unaffected,
             which is honest: this bounds the plane it can bound and does
             not pretend to bound the other.
+        step : int, optional
+            Which model turn asked for this call, for the audit entry's
+            ``step`` column.  ``None`` — the ordinary case, and every
+            caller that is not a mission — leaves the column absent.
+
+            Named here for the same reason ``deadline_s`` is, and it
+            replaces a worse arrangement.  The step used to be *left* in
+            :attr:`audit_context`, a mutable dict on a bus that outlives
+            the run, immediately before the dispatch it described.  One
+            run at a time that was merely indirect; the moment two child
+            runs of one mission dispatch at the same time, the second
+            overwrites the first's number and both entries are stamped
+            with whichever won — a column that is **wrong** rather than
+            absent, which is the worse of the two.  Riding the call, it
+            cannot be anything but this call's.
+
+            :attr:`audit_context` stays and is still merged into every
+            entry: it is how a caller puts its own *standing* columns on
+            this bus's log.  What it no longer holds is a fact that
+            changes per dispatch.
         *args, **kwargs
             Forwarded to the executor.  When *action* is given the executor
             receives ``(action, *args, **kwargs)``.
@@ -204,7 +231,7 @@ class ToolBus:
             # capability check cannot show it.
             self._log_audit(tool_name, action, [], "unknown_tool",
                             arguments=arguments, reason=message,
-                            exit_code=-1)
+                            exit_code=-1, step=step)
             return ToolResult(
                 exit_code=-1,
                 stdout="",
@@ -256,7 +283,7 @@ class ToolBus:
             )
             self._log_audit(tool_name, action, scopes_to_check, "denied",
                             arguments=arguments, reason=verdict.reason,
-                            exit_code=-1)
+                            exit_code=-1, step=step)
             return result
 
         # Network check
@@ -282,7 +309,7 @@ class ToolBus:
                     evidence=_json.dumps(denial),
                 )
                 self._log_audit(tool_name, action, scopes_to_check, "denied",
-                                arguments=arguments,
+                                arguments=arguments, step=step,
                                 reason=network_verdict.reason, exit_code=-1)
                 return result
 
@@ -329,7 +356,7 @@ class ToolBus:
 
             self._log_audit(
                 tool_name, action, scopes_to_check, "allowed",
-                arguments=arguments,
+                arguments=arguments, step=step,
                 exit_code=tool_result.exit_code,
                 duration_s=time.perf_counter() - started,
                 bytes_out=(len(tool_result.stdout.encode("utf-8"))
@@ -339,7 +366,7 @@ class ToolBus:
         except Exception as ex:
             self._log_audit(
                 tool_name, action, scopes_to_check, "error",
-                arguments=arguments,
+                arguments=arguments, step=step,
                 reason=f"{type(ex).__name__}: {ex}",
                 exit_code=-1,
                 duration_s=time.perf_counter() - started,
@@ -489,6 +516,7 @@ class ToolBus:
         exit_code: Optional[int] = None,
         duration_s: Optional[float] = None,
         bytes_out: Optional[int] = None,
+        step: Optional[int] = None,
     ) -> None:
         """Log a dispatch event to the audit logger if present.
 
@@ -506,9 +534,10 @@ class ToolBus:
         transcript, and a tool handed a megabyte should not put a megabyte
         on every line of the log.
 
-        :attr:`audit_context` is merged in first, so the caller's keys
-        (the mission's ``step``) are there and the bus's own facts win any
-        collision.
+        :attr:`audit_context` is merged in first, so the caller's standing
+        keys are there and the bus's own facts win any collision — the
+        dispatch's own ``step`` included, which is why it is written after
+        the merge and not before it.
         """
         if self._audit is None:
             return
@@ -517,6 +546,8 @@ class ToolBus:
             rendered, truncated = bound_result(
                 _json.dumps(arguments or {}, default=str, sort_keys=True))
             detail: Dict[str, Any] = dict(self.audit_context)
+            if step is not None:
+                detail["step"] = step
             detail["arguments"] = rendered
             if truncated:
                 detail["arguments_truncated"] = True

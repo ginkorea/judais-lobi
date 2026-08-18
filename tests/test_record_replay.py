@@ -385,8 +385,18 @@ def deidentify(directory):
                          encoding="utf-8")
 
 
-def record_corpus(destination, tmp_path):
-    """Produce both corpus runs into *destination*.  Used to commit them."""
+def record_corpus(destination, tmp_path, only=()):
+    """Produce the corpus runs into *destination*.  Used to commit them.
+
+    *only* is the ids to re-record, and the empty default is all of them.
+    A run is re-recorded when a lane changes what it emits, and then ONLY
+    that run should be: every fixture carries this afternoon's clock, this
+    afternoon's ledger and this afternoon's audit path, so rewriting a
+    fixture whose records did not change still rewrites its bytes — and a
+    diff full of moved timestamps is a diff nobody can read the real change
+    out of. Lane D re-recorded the two staged runs, which gained the
+    OPTIONAL ``branch`` field, and left the two direct ones alone.
+    """
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
     made = []
@@ -394,6 +404,8 @@ def record_corpus(destination, tmp_path):
                            (record_native_run, NATIVE_RUN),
                            (record_swarm_run, SWARM_RUN),
                            (record_swarm_caveat_run, CAVEAT_RUN)):
+        if only and wanted not in only:
+            continue
         root, run_id = record(tmp_path)
         rename_run(root, run_id, wanted)
         if (destination / wanted).exists():

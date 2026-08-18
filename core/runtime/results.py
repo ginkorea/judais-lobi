@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -257,20 +258,29 @@ class MissionResultStore:
         _read.__doc__ = "Reads one field of a stored mission result."
         return _read
 
-    def register_on(self, bus: Any, name: str = RESULT_TOOL) -> str:
+    def register_on(self, bus: Any, name: str = RESULT_TOOL,
+                    executor: Optional[Any] = None) -> str:
         """Register the read tool on *bus*; refuse to shadow anything.
 
         Loud rather than clever: silently replacing a registered tool
         called ``mission_result`` would remove a capability the operator
         configured, and restoring it on withdrawal would be a second
         thing to get wrong.
+
+        *executor* is for :class:`BranchedStores`, which puts **one**
+        descriptor on the bus in front of several stores.  The descriptor
+        is this store's either way — the bytes the model reads are the same
+        bytes whichever store answers — and the refusal above stays the one
+        owner of "will not shadow".  ``None`` is every other caller and
+        registers this store's own reader.
         """
         if bus.get_descriptor(name) is not None:
             raise ResultStoreConflict(
                 f"{name!r} is already registered on this bus. The mission "
                 f"result store will not shadow it — pass a different name."
             )
-        bus.register(self.descriptor(name), self.executor())
+        bus.register(self.descriptor(name),
+                     self.executor() if executor is None else executor)
         return name
 
     # ── reading ─────────────────────────────────────────────────────────
@@ -346,6 +356,99 @@ class MissionResultStore:
             + f"\n… [field truncated at {self._max_chars} characters of "
               f"{len(text)}; ask for a narrower path]"
         )
+
+
+#: The keyword the loop puts on its own store dispatch to say which child is
+#: asking.  The model never writes it — it is not in the descriptor's
+#: ``input_schema`` and the loop adds it after the schema check, to the
+#: mission's **own** tool and to nothing else, which is why it is not the
+#: invented-argument problem :func:`core.runtime.mission._takes_deadline`
+#: exists to avoid.  Named here because two modules have to spell it the same.
+BRANCH_ARGUMENT = "branch"
+
+
+class BranchedStores:
+    """One ``mission_result`` on the bus, several stores behind it.
+
+    A staged turn's children each keep their **own** results — a step's
+    handles are that step's, its grounding evidence is what *it* read, and
+    a store cleared at the top of one run must not be the store a sibling
+    is still reading.  But the tool that reads them has one name, because
+    the name is in the protocol text every child is given: two children
+    told to call two different tools would be two different prompts for
+    the same job, and a served endpoint's prefix cache is keyed on bytes.
+
+    So the *descriptor* is registered once, by whichever child opens first,
+    and withdrawn by whichever closes last; the *executor* is this class,
+    and it routes on the branch the caller named.  The alternative —
+    a namespaced tool per child — collides with the closed set as well:
+    ``Run._relearn_the_plane`` would read a sibling's ``mission_result@s2``
+    as a tool the bus had *grown* and, with no ``admits`` to say otherwise,
+    offer it.
+
+    ``MissionResultStore.register_on`` is still the one owner of "put this
+    on the bus, and refuse to shadow anything already there".
+    """
+
+    def __init__(self) -> None:
+        # A lock and not an assumption about the loop: children share one
+        # asyncio loop today, and `Run.run` on a thread is a supported way
+        # in. Registration is a read of the bus and a write to it.
+        self._lock = threading.Lock()
+        self._stores: Dict[str, "MissionResultStore"] = {}
+        self._name = ""
+        self._open = 0
+
+    def __len__(self) -> int:
+        """How many branches are holding this registration open."""
+        return self._open
+
+    def open(self, bus: Any, name: str, branch: str,
+             results: "MissionResultStore") -> str:
+        """Publish *results* for *branch*; register once.  Returns the name.
+
+        The name comes back so the caller can hold it as the flag it
+        already held — "this run put something on the bus and owes a
+        withdrawal" — whether or not this particular child was the one
+        that did the registering.
+        """
+        with self._lock:
+            self._stores[str(branch or "")] = results
+            if not self._open:
+                self._name = results.register_on(bus, name, self._read)
+            self._open += 1
+            return self._name
+
+    def close(self, bus: Any, branch: str) -> None:
+        """Drop *branch*'s store, and the descriptor with the last one.
+
+        Withdrawn rather than left there for the reason one store's was:
+        the bus outlives the run, and a descriptor that stayed would offer
+        the next mission a handle into this one's governed material.
+        """
+        with self._lock:
+            self._stores.pop(str(branch or ""), None)
+            self._open = max(0, self._open - 1)
+            if self._open or not self._name:
+                return
+            bus.unregister(self._name)
+            self._name = ""
+
+    def _read(self, handle: str = "", path: str = "",
+              branch: str = "", **_ignored: Any) -> Tuple[int, str, str]:
+        """The executor the bus dispatches: one call, routed to one store."""
+        with self._lock:
+            store = self._stores.get(str(branch or ""))
+        if store is None:
+            # A branch nobody published, which is a harness defect rather
+            # than anything the model did — so it is said plainly and the
+            # step is not told it asked for something impossible.
+            return (1, "", (
+                f"no result store is open for branch {branch!r} in this "
+                f"mission. Nothing was lost: this is the harness's own "
+                f"bookkeeping and the result is still in the transcript."
+            ))
+        return store.read(handle, path)
 
 
 def _args(arguments: Dict[str, Any]) -> str:

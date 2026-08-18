@@ -2232,12 +2232,19 @@ class TestTheStreamNamesTheAuditFile:
 
 
 class TestTheAuditKnowsWhichStepCalled:
-    """The bus has no idea what a step is, and must not learn one.
+    """The step rides the dispatch, and the bus writes down what it was told.
 
-    The mission leaves its index in ``bus.audit_context`` before each
-    dispatch and the bus copies it onto the entry — one settable dict
-    against a mission-shaped parameter on a module that serves chat turns
-    and kernel roles too.
+    It used to be *left* in ``bus.audit_context`` — a mutable dict on a bus
+    that outlives the run — immediately before the dispatch it described.
+    One run at a time that was merely indirect; two children of one mission
+    dispatching at the same time made it wrong, because the second child's
+    write landed before the first child's entry was built and both were
+    stamped with the second's index.  A column that is wrong is worse than
+    one that is absent, so the number is a parameter of the call now
+    (``ToolBus.dispatch(step=…)``, named and consumed there exactly as
+    ``deadline_s`` is) and there is nothing on the bus to leave behind.
+    ``tests/test_run_parallel.py`` is where two interleaved children prove
+    it; this is the adapter's own conformance suite and asserts the column.
     """
 
     def _run_two_calls(self, tmp_path):
@@ -2269,10 +2276,12 @@ class TestTheAuditKnowsWhichStepCalled:
         detail = json.loads(logger.tail(10)[0]["detail"])
         assert '"q": "a"' in detail["arguments"]
 
-    def test_the_step_is_withdrawn_when_the_mission_ends(self, tmp_path):
+    def test_a_chat_turn_after_the_mission_carries_no_step(self, tmp_path):
         """The bus outlives the run. A step left behind would stamp the next
         chat turn with the last mission's index — a column that is wrong
-        rather than absent, which is the worse of the two."""
+        rather than absent, which is the worse of the two. There is nothing
+        to leave behind now: the number is an argument of the call and the
+        call is over."""
         from core.policy.audit import AuditLogger
 
         logger = AuditLogger(path=tmp_path / "audit.jsonl")
@@ -2291,7 +2300,15 @@ class TestTheAuditKnowsWhichStepCalled:
         b.dispatch("catalog.search", q="later")
         assert "step" not in json.loads(logger.tail(1)[0]["detail"])
 
-    def test_a_mission_that_raised_still_withdraws_it(self, tmp_path):
+    def test_the_mission_never_writes_the_step_onto_the_bus(self, tmp_path):
+        """Not withdrawn at the end — never left there in the first place.
+
+        A mission that raises used to be the case that mattered, because a
+        number left in a dict by a run that died is a number the next
+        caller inherits. What is asserted now is the stronger thing: the
+        dict a mission never writes to cannot be one it fails to clean up,
+        and a column somebody else put there is still theirs afterwards.
+        """
         from core.policy.audit import AuditLogger
 
         def explode(messages):
@@ -2308,7 +2325,7 @@ class TestTheAuditKnowsWhichStepCalled:
         b.audit_context["step"] = 9
         with pytest.raises(RuntimeError):
             MissionRunner(explode, b, ["catalog.search"], store_tool="").run("go")
-        assert "step" not in b.audit_context
+        assert b.audit_context == {"step": 9}
 
 
 # ── the durable transcript ───────────────────────────────────────────────────
