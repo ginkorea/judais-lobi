@@ -1062,9 +1062,9 @@ def comparable(records):
 def replay_argv(run_id, skill, *extra):
     """A replay command line with NO server on it.
 
-    The absence of ``--mcp-stdio`` is an assertion: ``_build_mcp_transport``
-    refuses a mission that names no server, so a replay that reached it
-    would fail here rather than quietly spawn one.
+    The absence of ``--mcp-stdio`` is an assertion: a replay's tool plane is
+    the recording's, so a replay that reached the connection path would be
+    bridging a server nobody named rather than reading what it recorded.
     """
     return ["--mission", "--replay", run_id, "--skill", skill, *extra]
 

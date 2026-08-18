@@ -144,9 +144,9 @@ program that spawns this harness may rely on them. The table below is in
 | flag | env | what it does |
 | --- | --- | --- |
 | `--mission` | — | run as a mission rather than a chat turn |
-| `--mcp-url` | `MCP_URL` | the tool plane, over streamable HTTP |
-| `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. One of the two, never both |
-| `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`. **Prefer the env var** — an argument is visible in `ps` |
+| `--mcp-url` | `MCP_URL` | a tool plane, over streamable HTTP. **Repeatable**, and combinable with `--mcp-stdio` — see [several servers at once](#several-servers-at-once) |
+| `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. **Repeatable**. The first server's tools are namespaced `mcp.`, the next `mcp2.`, or write `name=<command>` |
+| `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`, paired with the URL in the **same position** — a token is one server's credential and is never reused for another. **Prefer the env var** — an argument is visible in `ps` |
 | `--mission-steps` | — | an operator's hard ceiling on **model turns**, counting parse-error turns too. **Unset means no ceiling** (`DEFAULT_MISSION_STEPS` = `0`, `core/cli.py`) — this harness imposes no step budget of its own; see [the supervisor](#no-step-budget--the-supervisor) for what catches a run that is going in circles. Under `--resume` it is read as that many *further* steps; unset, a resumed run keeps whatever the run was started with, ceiling or none |
 | `--mission-seconds` | `MISSION_SECONDS` | wall-clock cap on the whole run, in seconds. **Unset means unbounded** — steps bound the work, seconds bound the waiting, and a default nobody chose would kill a slow local model mid-answer. Checked between steps and before each model call; one clock for the whole of a `--swarm` turn. A call already in flight is not interrupted, so the real bound is this plus one round trip |
 | `--provider` | — | `openai`, `mistral`, `anthropic` or `local`. `anthropic` needs `pip install 'judais-lobi[anthropic]'` and `ANTHROPIC_API_KEY`; its default model is `claude-opus-5` (`core/runtime/provider_config.py`), overridden with `--model` |
@@ -363,6 +363,109 @@ clock and the cancellation are, and it reaches the sub-mission that is running.
 The swarm's own roles — the router, the planner, each gate, the synthesizer —
 ignore it: they are single questions asked and answered in one round trip, with
 no "between steps" to speak into.
+
+### Serving the built-in tools over MCP
+
+Mission mode above is the client half of the protocol: somebody else's server
+is discovered and bridged onto the bus. `python -m core.tools.serve` is the
+mirror of it. It publishes **this package's own tools** — `fs`, `git`,
+`repo_map`, `patch`, `verify`, `run_shell_command`, `run_python_code`, the
+research tools — as MCP tools, so any MCP client can call them:
+
+```bash
+pip install 'judais-lobi[mission]'        # no new extra: the SDK is the same one
+python -m core.tools.serve                        # stdio, profile safe
+python -m core.tools.serve --profile dev          # stdio, code plane on
+python -m core.tools.serve --http 127.0.0.1:8765 --token "$MCP_SERVE_TOKEN"
+python -m core.tools.serve --list                 # what would be served
+```
+
+**One owner, two transports.** There are no tool definitions in the server: it
+publishes the descriptors that are already on the bus and dispatches every call
+back through `ToolBus.dispatch`. So the profile's capability check, the sandbox
+and the audit log all apply **on the serving side** — a client that reaches
+`run_python_code` gets bwrap because *this* process put it there, a scope the
+profile does not grant comes back as the same sentence the CLI prints
+(`denied under profile 'safe': python.exec needs --profile dev`), and the audit
+rows are written where the tool actually ran. A second registry that
+re-implemented the tools for the protocol would be a second opinion about what
+is allowed, and the day the two disagree is the day the governed path is the one
+nobody took.
+
+| flag | what it does |
+| --- | --- |
+| `--profile` | `safe` (default), `dev`, `ops`, `god` — the one gate on every client of this plane |
+| `--unsandboxed` | no isolation. Without it, `bwrap` wherever bubblewrap exists, chosen by the same `select_sandbox` every other run uses |
+| `--audit PATH` | where the rows go (`off` for none). Default: the `JUDAIS_LOBI_AUDIT` resolution |
+| `--elfenv PATH` | the Python environment `run_python_code` runs in. Default: the one the server itself is running in, so a spawn costs nothing |
+| `--only a,b,c` | serve a subset. A name the bus has not got is refused, listing what is there |
+| `--http HOST:PORT` | streamable HTTP at `/mcp` instead of stdio. The host is not optional |
+| `--token` (`MCP_SERVE_TOKEN`) | bearer token every HTTP request must carry. Ignored for stdio, which is a pipe to a child of the client |
+| `--list` | print what would be served, with each tool's scopes, and exit |
+
+The published schema for a tool is its descriptor's `input_schema` where it has
+one, and otherwise its own callable's signature plus, for a multi-action tool,
+an `action` enum built from `action_scopes` — the mapping the bus checks scopes
+against, so the enum cannot offer an action the bus would refuse. A result
+arrives as the tool's text **plus** `structuredContent` carrying the whole
+`ToolResult` — exit code, stdout, stderr, granted scopes, evidence — which is
+the same object an in-process caller holds. `tests/test_mcp_serve.py` asserts
+that equality call for call, and runs the same mission twice, once on the
+built-in tools and once over `--mcp-stdio 'python -m core.tools.serve'`, to show
+the streams differ only in the tool's namespace.
+
+From any other MCP client, it is an ordinary stdio server:
+
+```json
+{"mcpServers": {"judais-lobi": {
+  "command": "python",
+  "args": ["-m", "core.tools.serve", "--profile", "dev"]}}}
+```
+
+And from our own harness — a mission whose tool plane is a *second* copy of this
+package, governed by its own profile:
+
+```bash
+judais --mission --skill ./skills/repo_recon/SKILL.md \
+       --mcp-stdio 'python -m core.tools.serve --profile dev' 'what changed?'
+```
+
+That is also the honest answer to the code-plane gate: a manifest naming
+`run_python_code` must declare `sandbox: bwrap` because the code runs on *this*
+host, while `mcp.run_python_code` is the server's to isolate — and when the
+server is ours, it isolates with bwrap for exactly the same reason.
+
+#### Several servers at once
+
+`--mcp-stdio` and `--mcp-url` are **repeatable** and may be mixed, which is how
+a platform composes its own governed plane with ours:
+
+```bash
+judais --mission --skill ./skills/composed/SKILL.md \
+       --mcp-url   https://host/mcp \
+       --mcp-token "$MCP_TOKEN" \
+       --mcp-stdio 'python -m core.tools.serve --profile dev' "…"
+```
+
+Each server gets a **namespace**, and its tools are registered as
+`<namespace>.<tool>`:
+
+* the first is `mcp` — unchanged, so a single-server deployment reads exactly
+  the names it always read — then `mcp2`, `mcp3`, …;
+* or name it on the flag: `--mcp-stdio 'ours=python -m core.tools.serve'`.
+  (A command line that *begins* with an environment assignment would read its
+  first word as a namespace; write `env FOO=bar python …`.)
+* stdio servers come first, then HTTP, each in the order given;
+* two servers may not share a namespace, and a `--mcp-token` pairs with the
+  `--mcp-url` in the **same position** — one server's credential is never
+  reused for another, so a count that does not match is refused rather than
+  guessed.
+
+A skill's closed set still names tools the way the server advertises them:
+`same_tool` matches `fs` against `mcp.fs`. A short name that matches **two**
+planes is a refusal telling the author to write the namespace, because which
+server a mission calls is not a coin flip. And the audit row names the bus name,
+so it says which plane ran the call.
 
 ### Resuming a mission — `--resume`
 

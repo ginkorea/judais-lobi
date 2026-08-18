@@ -504,6 +504,25 @@ class ToolBus:
         """Return the ToolDescriptor for a given tool name."""
         return self._descriptors.get(name)
 
+    def get_executor(self, name: str) -> Optional[Callable]:
+        """The callable registered under *name*, or ``None``.
+
+        A read, beside :meth:`get_descriptor`, and it exists for exactly one
+        caller: :mod:`core.tools.serve`, which publishes this bus over MCP
+        and has to advertise each tool's *arguments*.  A compiled-in tool
+        declares those in its own ``__call__`` and nowhere else — the
+        descriptor's ``input_schema`` is empty for all of them — so the
+        server reads the signature rather than carrying a second copy of
+        every tool's parameter list.
+
+        Handing out the executor is not handing out a way round the gate:
+        every caller that *dispatches* still goes through
+        :meth:`dispatch`, and a caller holding this bus could always have
+        reached the same object.  Named as a getter to say that it is for
+        looking at.
+        """
+        return self._executors.get(name)
+
     def _log_audit(
         self,
         tool_name: str,

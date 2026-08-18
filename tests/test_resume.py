@@ -984,11 +984,12 @@ class TestTheCredentialIsRereadAndNotRecovered:
         and not the value the first process was handed."""
         from types import SimpleNamespace
 
-        from core.cli import _build_mcp_transport
+        from core.cli import _transports
 
+        monkeypatch.delenv("MCP_TOKEN", raising=False)
         args = SimpleNamespace(mcp_stdio=None, mcp_url="https://x/mcp",
                                mcp_token=None)
-        assert _build_mcp_transport(args).credential() is None
+        assert _transports(args)[0].transport.credential() is None
 
     def test_nothing_in_the_recorded_metadata_names_the_transport(
             self, bus, store):

@@ -128,32 +128,31 @@ def _build_agent(AgentClass, args):
     return agent, config.name
 
 
-def _build_mcp_transport(args):
-    """Pick a transport from the flags, or ``None`` when none was named.
+def _transports(args):
+    """Every MCP server the flags name, each with its namespace.
 
-    ``None`` is the **local tool plane**: a mission over this package's own
-    built-in tools and no server at all.  Whether that is a mission or a
-    mistake is not a question this function can answer — it depends on the
-    closed set, which is :func:`_local_plane_or_refuse`'s to read — so the
-    "needs a server" refusal lives there and this one only reports what
-    the flags say.
+    A **list**, and an empty one when no server was named: that is the
+    local tool plane — a mission over this package's own built-in tools and
+    no server at all.  Whether that is a mission or a mistake is not a
+    question this function can answer, because it depends on the closed
+    set, which is :func:`_local_plane_or_refuse`'s to read; this one only
+    reports what the flags say.
+
+    The flags are repeatable, and the parsing, the namespacing (``mcp``,
+    ``mcp2``, … or a ``NAME=`` written on the flag) and the pairing of each
+    ``--mcp-token`` with the ``--mcp-url`` in the same position all belong
+    to :func:`core.tools.mcp_client.transports_from_args` — one owner,
+    because a library caller composing planes has to get the same
+    namespaces the CLI gives them or a skill manifest would resolve
+    differently depending on who launched the mission.  This adds exactly
+    what a *command line* adds: that a refusal is a ``SystemExit``.
     """
-    from core.tools.mcp_client import StdioTransport, StreamableHttpTransport
+    from core.tools.mcp_client import McpServersMisdeclared, transports_from_args
 
-    if args.mcp_stdio and args.mcp_url:
-        raise SystemExit(
-            "--mcp-stdio and --mcp-url both name a server; pass one. "
-            "stdio for a server on this host, url for one you reach over HTTP."
-        )
-    if args.mcp_stdio:
-        import shlex
-        parts = shlex.split(args.mcp_stdio)
-        if not parts:
-            raise SystemExit("--mcp-stdio is empty; it is a command line to run.")
-        return StdioTransport(command=parts[0], args=parts[1:])
-    if args.mcp_url:
-        return StreamableHttpTransport(url=args.mcp_url, token=args.mcp_token)
-    return None
+    try:
+        return transports_from_args(args)
+    except McpServersMisdeclared as exc:
+        raise SystemExit(str(exc))
 
 
 def _local_plane_or_refuse(manifest, bus):
@@ -884,7 +883,7 @@ def _mission(elf, args, name, style):
         REVIEWS as SUP_REVIEWS, STALE_STEPS as SUP_STALE, STUCK, Supervisor,
     )
     from core.runtime.usage import PricingTable
-    from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
+    from core.tools.mcp_client import McpFleet, McpUnavailable, McpConnectionError
 
     manifest = _load_skill(args)
     # The word, validated at the door; whether this run may speak it is
@@ -907,22 +906,26 @@ def _mission(elf, args, name, style):
         raise SystemExit(f"--approval: {exc}")
     # A replay serving recorded tool results dials NOTHING, and that is the
     # whole of what makes it runnable on a laptop with no server and no GPU.
-    # So the transport is not asked for at all — `_build_mcp_transport` reads
-    # the flags, and a replay's plane is the recording's. `--replay-tools
+    # So the transports are not asked for at all — `_transports` reads the
+    # flags, and a replay's plane is the recording's. `--replay-tools
     # live` takes the ordinary path and needs a server like any other
     # mission whose closed set names one.
     replay_id = (getattr(args, "replay", "") or "").strip()
     replay_tools = (getattr(args, "replay_tools", "") or TOOLS_RECORDED).strip()
     offline = bool(replay_id) and replay_tools == TOOLS_RECORDED
     bus = elf.tools.bus
-    transport = None if offline else _build_mcp_transport(args)
+    #: Every server the flags named — none, one, or several, each with the
+    #: namespace its tools take on the bus. A list from here down, because
+    #: composing a platform's plane with ours is one command line and not
+    #: one mission each: `--mcp-stdio`/`--mcp-url` are repeatable.
+    servers = [] if offline else _transports(args)
     #: Whether this run's tool plane is THIS PACKAGE'S OWN — no server, no
     #: recording, just the descriptors `core.tools.Tools` registers. The
     #: three first-party skills that ship at 1.0 run here, and so does a
     #: `--mission` with no `--skill` and no server. The refusal for a closed
     #: set that names something this host has not got is inside, at the
     #: door, where every other refusal a mission can meet is answered.
-    local_plane = transport is None and not offline
+    local_plane = not servers and not offline
     if local_plane:
         _local_plane_or_refuse(manifest, bus)
 
@@ -1512,8 +1515,15 @@ def _mission(elf, args, name, style):
         # server, and the honest way to say that is to enter no connection
         # at all rather than to hand the block something shaped like one.
         # Everything inside is unchanged for every other run.
-        with (nullcontext(None) if transport is None
-              else McpClient(transport)) as client:
+        # One fleet and not one client: the flags are repeatable, so this is
+        # N sessions with one lifetime — every server up before the mission
+        # starts, every one closed when it ends, and a fleet that cannot
+        # bring its third server up stops the two it already opened rather
+        # than running a mission on half a plane. With exactly one server
+        # named it opens exactly the session `McpClient(transport)` opened,
+        # under the same namespace, and prints the same line.
+        with (nullcontext(None) if not servers
+              else McpFleet(servers, bus)) as fleet:
             if local_plane:
                 # This package's own tools, and no discovery: they were
                 # registered when the agent's `Tools` was built, under the
@@ -1529,7 +1539,7 @@ def _mission(elf, args, name, style):
                     f"{', '.join(discovered) or '(none)'}",
                     style=style,
                 )
-            elif transport is None:
+            elif not servers:
                 discovered = replay.names
                 console.print(
                     f"🎞  {name} is offline — the tool plane is "
@@ -1540,12 +1550,14 @@ def _mission(elf, args, name, style):
                     style=style,
                 )
             else:
-                from core.tools.mcp_client import McpToolBridge
-                bridge = McpToolBridge(client, bus)
-                discovered = bridge.sync()
-                bridge.follow_changes()
+                # The bridging is the fleet's: one `McpToolBridge` per
+                # server, each syncing and following its own server's
+                # `tools/list`, all onto this bus. Namespaced `mcp.`,
+                # `mcp2.`, … so two planes cannot shadow each other and the
+                # audit row names which server ran a call.
+                discovered = fleet.discovered
                 console.print(
-                    f"🔌 {name} connected to {transport.describe()} — "
+                    f"🔌 {name} connected to {fleet.describe()} — "
                     f"{len(discovered)} tool(s) discovered: "
                     f"{', '.join(discovered) or '(none)'}",
                     style=style,
@@ -2115,14 +2127,26 @@ def _main(AgentClass):
     parser.add_argument("--mission", action="store_true",
                         help="Run a mission: discover tools over MCP and let "
                              "the model choose them")
-    parser.add_argument("--mcp-stdio", type=str, default=os.getenv("MCP_STDIO"),
+    # Repeatable, and the environment forms are read in
+    # `core.tools.mcp_client.transports_from_args` rather than as a `default=`
+    # here: argparse APPENDS to an `append` action's default, so an operator
+    # with MCP_STDIO set who also passed --mcp-stdio would silently bridge two
+    # servers, one of them a plane they had forgotten was in their shell.
+    parser.add_argument("--mcp-stdio", type=str, action="append", default=None,
+                        metavar="[NAME=]COMMAND",
                         help="MCP server to spawn over stdio, as a command line "
-                             "(env: MCP_STDIO)")
-    parser.add_argument("--mcp-url", type=str, default=os.getenv("MCP_URL"),
+                             "(env: MCP_STDIO). Repeatable: the first server's "
+                             "tools are namespaced `mcp.`, the next `mcp2.`, or "
+                             "write NAME= to choose")
+    parser.add_argument("--mcp-url", type=str, action="append", default=None,
+                        metavar="[NAME=]URL",
                         help="MCP server to reach over streamable HTTP "
-                             "(env: MCP_URL)")
-    parser.add_argument("--mcp-token", type=str, default=os.getenv("MCP_TOKEN"),
-                        help="Bearer token for --mcp-url (env: MCP_TOKEN). "
+                             "(env: MCP_URL). Repeatable and namespaced like "
+                             "--mcp-stdio")
+    parser.add_argument("--mcp-token", type=str, action="append", default=None,
+                        help="Bearer token for --mcp-url (env: MCP_TOKEN), "
+                             "paired with the --mcp-url given in the SAME "
+                             "position — a token is one server's credential. "
                              "Prefer the env var; an argument is visible in ps")
     parser.add_argument("--mission-steps", type=int, default=None,
                         help="Hard ceiling on model turns in a mission. "
