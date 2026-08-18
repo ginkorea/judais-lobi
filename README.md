@@ -482,6 +482,83 @@ which is what this check exists to stop being an answer. The value is rendered
 into the prompt like any other operational field, because a model that has not
 been told it is inside bwrap reads the denied network as a broken tool.
 
+### First-party skills — the packs that ship
+
+A manifest is content, and for two weeks the only manifest in this repository
+was the eval stub. Three **mission packs** now ship inside the wheel, so a
+`pip install` can run a governed mission with a real skill and no files of its
+own:
+
+| pack | what it does | closed set | profile |
+|---|---|---|---|
+| `analyst` | answers a question about local data files — CSV, JSON, JSON lines, logs — by computing it in sandboxed Python and reporting the figures the program printed | `run_python_code`, `fs` | `dev` |
+| `research` | *(lane M)* | | |
+| `coding` | *(lane N)* | | |
+
+Run one by name — no path, no file of your own:
+
+```bash
+judais --mission --skill analyst --profile dev \
+       "Something looks wrong in sales.csv — which orders do not belong?"
+```
+
+`--skill` still takes a path, and **a path that exists wins**: every command
+line that named a `SKILL.md` before packs existed does exactly what it did.
+Only when nothing is at that path is the argument read as a pack name, and
+neither is a refusal that lists the packs there are.
+
+A pack is a directory of `core/skills/library/<name>/` and it is more than a
+`SKILL.md` (`ROADMAP.md` §2.6b):
+
+```
+core/skills/library/analyst/
+    SKILL.md        the manifest — the closed set, the policy, the grounding grammar
+    missions.yaml   its OWN eval suite, in core/eval/suite.py's shape
+    README.md       what it does, its closed set, the profile it needs, a command
+    fixtures/       small committed data the missions run against
+    templates/      task templates: a `workflow:` naming the roles (a documented
+                    placeholder until the campaign lane runs one)
+```
+
+`missions.yaml` is the part that makes "tested" mean something. Every pack
+ships its own missions, one per capability, with the machine checks
+`core/eval` scores off the stream — so a skill's claim to do something is a
+number and not a paragraph:
+
+```python
+from core.eval.score import score_suite
+import core.skills
+
+suite = core.skills.load("analyst").suite()      # loaded, and checked
+print(score_suite({"the_outliers_in_the_sales_file": "/tmp/eval/outliers"},
+                  suite, "train").to_markdown())
+```
+
+`python -m core.eval --suite <a pack's missions.yaml>` refuses it for one
+reason today, and it is `core/eval/`'s to fix rather than a pack's: the
+gradeability check requires *every* one of its eleven flags to be captured
+by some mission, which is right for the suite grading the whole harness and
+wrong for a pack grading one capability. `Pack.suite()` runs the same check
+with the coverage scoped to the flags the pack's own missions capture
+(`core.skills.library.check_pack_suite`), and that adapter deletes itself
+the day a suite file can declare which flags it claims.
+
+From Python the packs are data:
+
+```python
+import core.skills
+core.skills.packs()               # ('analyst', 'coding', 'research')
+pack = core.skills.load("analyst")
+pack.manifest.allowed_tools       # ('run_python_code', 'fs')
+pack.suite()                      # its missions, checked
+pack.stage_fixtures("/tmp/data")  # a COPY — a sandboxed run's cwd is writable
+```
+
+Each pack's own `README.md` is the detail: what it refuses, why it needs the
+profile it needs, and what its fixtures hold. `analyst` declares
+`sandbox: bwrap` and will not start without bubblewrap, which is the rule
+above applied to itself rather than an exception to it.
+
 ### Bounded results, and a store to read the rest from
 
 A tool result is capped at 32 KB before it enters the transcript — head and

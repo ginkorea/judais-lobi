@@ -237,22 +237,25 @@ def _load_skill(args):
     plausible answer produced by an agent holding the whole bus and none
     of the operational knowledge they meant to supply.
 
-    **THE ONE CALL SITE.**  ``--skill`` takes a path today, and the line
-    below is the single place this package turns what was typed into a
-    :class:`~core.runtime.skills.SkillManifest`.  When ``--skill
-    <name>`` is to mean a first-party skill out of the shipped library
-    rather than a file on disk, this call is the only one that changes:
-    a resolver that answers "a path, or a name in the library" replaces
-    :func:`~core.runtime.skills.load_skill` here and nothing else in the
-    CLI knows the difference.
+    **THE ONE CALL SITE**, and it now answers two questions rather than
+    one: :func:`~core.runtime.skills.resolve_skill` takes **a path, or
+    the name of a mission pack this install ships** (``--skill
+    analyst``).  A path that exists wins, so every command line that
+    named a ``SKILL.md`` before the packs existed does exactly what it
+    did; only when nothing is at that path is the argument read as a
+    name.  Which packs there are is
+    :mod:`core.skills.library`'s to know — this function's contract is
+    unchanged, one exception type included, because ``PackError``
+    subclasses ``SkillManifestError`` and is refused by the clause that
+    was already here.
     """
     if not getattr(args, "skill", None):
         return None
 
-    from core.runtime.skills import SkillManifestError, load_skill
+    from core.runtime.skills import SkillManifestError, resolve_skill
 
     try:
-        return load_skill(args.skill)
+        return resolve_skill(args.skill)
     except SkillManifestError as exc:
         raise SystemExit(f"--skill: {exc}")
 
@@ -2243,9 +2246,11 @@ def _main(AgentClass):
                              "nothing else — the same answer record arrives "
                              "at the same moment (env: MISSION_STREAM=off)")
     parser.add_argument("--skill", type=Path, default=_env_path("MISSION_SKILL"),
-                        help="A SKILL.md manifest (or a directory holding one) "
-                             "supplying the mission's closed tool set, its "
-                             "prompt and its grounding grammar "
+                        help="A SKILL.md manifest (or a directory holding "
+                             "one), OR the name of a mission pack this "
+                             "install ships (--skill analyst) — supplying "
+                             "the mission's closed tool set, its prompt and "
+                             "its grounding grammar. A path that exists wins "
                              "(env: MISSION_SKILL)")
     parser.add_argument("--events", type=str,
                         default=os.getenv("MISSION_EVENTS", ""),

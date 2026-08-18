@@ -19,6 +19,29 @@ setup(
     # warranted the day the façade needs submodules and not before.
     py_modules=["judais_lobi"],
     include_package_data=True,
+    # The first-party mission packs (`core/skills/library/<name>/`). They
+    # are DATA and not packages — no `__init__.py` anywhere under
+    # `library/`, so `find_packages()` never sees them and the wheel's
+    # top-level set stays {core, judais, lobi}. Which means they ship only
+    # if they are named here: a pack that is not in the wheel is a
+    # `--skill analyst` that works on the developer's checkout and refuses
+    # on every install, which is the packaging failure this repository has
+    # already had once (0.8.0's wheel, in the other direction).
+    #
+    # Written as explicit two- and three-level globs rather than `**`,
+    # because recursive globs in `package_data` are a newer setuptools than
+    # the floor this package supports, and a pattern that silently matches
+    # nothing is the same missing file with no error.
+    # `tests/test_packaging.py` holds every installed pack to this list.
+    package_data={
+        "core.skills": [
+            "library/*/SKILL.md",
+            "library/*/missions.yaml",
+            "library/*/README.md",
+            "library/*/fixtures/*",
+            "library/*/templates/*",
+        ],
+    },
     install_requires=[
         "openai>=1.0.0",
         "rich>=14.0.0",

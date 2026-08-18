@@ -294,6 +294,22 @@ class SkillManifest:
     # ── loading ─────────────────────────────────────────────────────────
 
     @classmethod
+    def load(cls, arg) -> "SkillManifest":
+        """A path, **or the name of a mission pack this install ships**.
+
+        ``Skill.load("analyst")`` — the call ``ROADMAP.md`` §2.6b names,
+        and the one a platform embedding the library writes.  It is
+        :func:`resolve_skill` under the name the façade exports the class
+        as, so there is one resolver and not two; see that function for
+        the order (a path that exists wins) and
+        :func:`core.skills.library.packs` for what there is.
+
+        :meth:`from_file` is the narrower door and stays exactly what it
+        was: *this file, parsed*, with no library consulted.
+        """
+        return resolve_skill(arg)
+
+    @classmethod
     def from_file(cls, path) -> "SkillManifest":
         """Load one manifest, or refuse naming every problem found."""
         p = Path(path).expanduser()
@@ -756,6 +772,31 @@ def _skill_file_in(directory: Path) -> Path:
 def load_skill(path) -> SkillManifest:
     """Load one manifest from a file or a directory holding ``SKILL.md``."""
     return SkillManifest.from_file(path)
+
+
+def resolve_skill(arg) -> SkillManifest:
+    """A ``--skill`` argument as a manifest: **a path, or a pack's name**.
+
+    The one entry point a command line should use, and the only thing in
+    this module that knows first-party packs exist.  ``load_skill`` stays
+    what it always was — *this file, parsed* — and
+    :func:`core.skills.library.resolve` owns the other half: which packs
+    are installed, and what a pack directory is made of.  Two questions,
+    two owners, one door.
+
+    A path that exists wins, so every command line that worked before
+    packs existed works unchanged; only when nothing is at that path is
+    the argument read as the name of a pack this install ships.  Neither
+    is a :class:`SkillManifestError` — the same exception ``load_skill``
+    already raises and every caller already refuses on — naming both roads
+    out and listing the packs there are.
+
+    Imported inside the function on purpose: :mod:`core.skills.library`
+    imports this module, and the dependency has to point one way.
+    """
+    from core.skills.library import resolve as _resolve_pack
+
+    return _resolve_pack(arg)
 
 
 def available_skills(directory) -> List[Path]:

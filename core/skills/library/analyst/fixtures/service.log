@@ -1,0 +1,42 @@
+{"ts": "2026-07-15T09:07:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T09:14:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T09:25:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T09:36:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T10:43:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T10:54:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T10:05:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T11:12:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T11:19:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T11:26:00Z", "level": "ERROR", "service": "ledger-api", "code": "E502", "message": "upstream call failed"}
+{"ts": "2026-07-15T11:37:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T11:48:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T12:55:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T12:02:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T12:13:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T12:24:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T13:31:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:38:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:45:00Z", "level": "ERROR", "service": "ledger-api", "code": "E502", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:52:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:59:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:06:00Z", "level": "ERROR", "service": "ledger-api", "code": "E502", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:13:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:20:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:27:00Z", "level": "ERROR", "service": "ledger-api", "code": "E502", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:34:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:41:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:48:00Z", "level": "ERROR", "service": "ledger-api", "code": "E502", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:55:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:02:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:09:00Z", "level": "ERROR", "service": "ledger-api", "code": "E502", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:16:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:23:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T13:34:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T13:45:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T14:52:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T14:59:00Z", "level": "ERROR", "service": "ledger-api", "code": "E501", "message": "upstream call failed"}
+{"ts": "2026-07-15T14:10:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T14:21:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T15:28:00Z", "level": "ERROR", "service": "ledger-api", "code": "E500", "message": "upstream call failed"}
+{"ts": "2026-07-15T15:39:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}
+{"ts": "2026-07-15T15:50:00Z", "level": "INFO", "service": "ledger-api", "code": "OK", "message": "request served"}

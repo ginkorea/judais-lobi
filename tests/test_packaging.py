@@ -304,3 +304,107 @@ class TestTheAnthropicExtraIsTheOneTheRefusalNames:
         extras = ast.literal_eval(_setup_kwargs()["extras_require"])
         assert [item for item in extras["critic"]
                 if item.startswith("anthropic")] == extras["anthropic"]
+
+
+class TestTheWheelShipsTheMissionPacks:
+    """`core/skills/library/<name>/` is DATA — no `__init__.py` anywhere
+    under it, so `find_packages()` never sees it and the wheel's top-level
+    set stays {core, judais, lobi}. Which means the packs ship only if
+    `package_data` names them, and a pack that is not in the wheel is a
+    `--skill analyst` that works on the developer's checkout and refuses
+    on every install.
+
+    Read out of the same AST as everything else in this file: building a
+    wheel here would need setuptools, which the test environment does not
+    have, and the question the source can answer is the one that gets
+    broken — somebody adds a pack, or a file inside one, and does not add
+    the pattern.
+    """
+
+    #: The three first-party packs `README.md` promises. `analyst` is lane
+    #: O's; `coding` and `research` arrive with lanes N and M, and every
+    #: assertion below except this one is written over the packs that are
+    #: actually on disk, so they are covered the day they land.
+    FIRST_PARTY = ("analyst", "coding", "research")
+
+    LIBRARY = REPO / "core" / "skills" / "library"
+
+    def _patterns(self) -> list:
+        data = ast.literal_eval(_setup_kwargs()["package_data"])
+        assert "core.skills" in data, sorted(data)
+        return list(data["core.skills"])
+
+    def _installed(self) -> list:
+        return sorted(child.name for child in self.LIBRARY.iterdir()
+                      if child.is_dir() and (child / "SKILL.md").is_file())
+
+    def test_the_analyst_pack_is_installed_and_named(self):
+        """One named assertion, so an empty library cannot make every
+        other test in this class vacuously true."""
+        assert "analyst" in self._installed()
+        assert set(self._installed()) <= set(self.FIRST_PARTY), (
+            "a pack not in FIRST_PARTY; add it there and to README.md's "
+            "First-party skills section")
+
+    def test_every_file_of_every_installed_pack_is_matched_by_a_pattern(self):
+        """The rule rather than the instance: whatever a pack ships —
+        another fixture, a second template, a third pack — is in the wheel
+        or this is red."""
+        import fnmatch
+
+        patterns = self._patterns()
+        for name in self._installed():
+            for path in sorted((self.LIBRARY / name).rglob("*")):
+                if not path.is_file():
+                    continue
+                relative = path.relative_to(self.LIBRARY.parent).as_posix()
+                assert any(fnmatch.fnmatch(relative, pattern)
+                           for pattern in patterns), (
+                    f"{relative} matches no package_data pattern "
+                    f"{patterns}")
+
+    def test_no_pack_is_a_python_package(self):
+        """An `__init__.py` under `library/` would put a pack into
+        `find_packages()`, and would also shadow `core/skills/library.py`
+        — the module that loads them — out of existence."""
+        assert not list(self.LIBRARY.rglob("__init__.py"))
+
+    def test_the_sdist_carries_them_too(self):
+        """`package_data` fills the wheel; `MANIFEST.in` fills the sdist,
+        and a release is built from a clean `git archive` of the tag. A
+        file in neither is a file `pip install` never sees."""
+        manifest = (REPO / "MANIFEST.in").read_text(encoding="utf-8")
+        assert "recursive-include core/skills/library" in manifest
+
+    def test_no_pack_file_is_ignored_by_git(self):
+        """A release is built from a clean `git archive` of the tag, so a
+        pack file git does not track is a file no install ever sees —
+        `package_data` and `MANIFEST.in` both name it and neither can put
+        it back. Caught for real: `.gitignore` carried `*.log` for test
+        artefacts, and the analyst pack's `service.log` fixture — the one
+        its `errors_by_hour` mission runs against — was silently untracked
+        at first commit. The negation beside that rule is the fix; this is
+        what stops the next one.
+        """
+        import subprocess
+
+        try:
+            tracked = subprocess.run(
+                ["git", "ls-files", "core/skills/library"],
+                cwd=REPO, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
+            import pytest
+            pytest.skip(f"git is not usable here: {exc}")
+        if tracked.returncode != 0:                           # pragma: no cover
+            import pytest
+            pytest.skip("not a git checkout")
+
+        known = {line.strip() for line in tracked.stdout.splitlines()
+                 if line.strip()}
+        for name in self._installed():
+            for path in sorted((self.LIBRARY / name).rglob("*")):
+                if path.is_file():
+                    relative = path.relative_to(REPO).as_posix()
+                    assert relative in known, (
+                        f"{relative} is not tracked by git — check "
+                        f".gitignore")

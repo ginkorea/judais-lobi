@@ -1,0 +1,21 @@
+return_id,order_id,reason,refund_amount
+rt-3100,so-1001,damaged,15.00
+rt-3101,so-1002,late,19.25
+rt-3102,so-1003,wrong item,23.50
+rt-3103,so-1004,duplicate,27.75
+rt-3104,so-1005,damaged,n/a
+rt-3105,so-1006,late,36.25
+rt-3106,so-1007,wrong item,40.50
+rt-3107,so-1008,duplicate,44.75
+rt-3108,so-1009,damaged,49.00
+rt-3109,so-1010,late,53.25
+rt-3110,so-1011,wrong item,57.50
+rt-3111,so-1012,duplicate,
+rt-3112,so-1013,damaged,66.00
+rt-3113,so-1014,late,70.25
+rt-3114,so-1015,wrong item,74.50
+rt-3115,so-1016,duplicate,78.75
+rt-3116,so-1017,damaged,PENDING
+rt-3117,so-1018,late,87.25
+rt-3118,so-1019,wrong item,91.50
+rt-3119,so-1020,duplicate,95.75
