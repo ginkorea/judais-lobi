@@ -174,7 +174,10 @@ class TestWhatIsServed:
         with pytest.raises(SystemExit) as exc:
             main(["--profile", "dveloper", "--list"])
         assert "dveloper" in str(exc.value)
-        assert "safe, dev, ops, god" in str(exc.value)
+        from core.policy.profiles import ProfileMode
+        # The list is the enumeration's, in ladder order — not a literal
+        # that goes stale the day a level is added (`research`, Phase 15).
+        assert ", ".join(m.value for m in ProfileMode) in str(exc.value)
 
     def test_list_prints_what_would_be_served_with_its_scopes(self, tmp_path):
         rendered = describe_served(local_bus(), ["fs", "run_python_code"])
