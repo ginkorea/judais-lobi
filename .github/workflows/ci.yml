@@ -1,0 +1,202 @@
+# .github/workflows/ci.yml — the suite, the floor, and the harness, on every push
+#
+# The 1.0 gate (`ROADMAP.md` §2.8) asks for three things, and one of them is
+# "the eval harness running in CI on every push". This file is that, plus the
+# two other things nothing else on a developer's machine reliably does:
+#
+#   * the PYTHON FLOOR. `setup.py` says `python_requires=">=3.10"` and the
+#     reference deployment runs 3.10, while the test venv is 3.14. A syntax or
+#     a stdlib call that only exists above the floor passes locally forever and
+#     dies on the deployment, which is where the floor was learned. So the
+#     matrix is exactly those two versions — the floor and the ceiling that is
+#     actually developed on — and not a spread of the ones in between, which
+#     would cost four times the minutes to test nothing new.
+#   * the CONTRACT, which is the seam a platform pins. See the `contract` job.
+#
+# WHAT IS NOT HERE, deliberately:
+#
+#   * No `bwrap`. Every sandbox test patches `core.tools.sandbox.shutil.which`
+#     rather than calling bubblewrap, so the suite is green on a runner that
+#     has none — checked by running it with `which("bwrap")` returning `None`.
+#     A runner without it exercises `select_sandbox`'s `"none"` branch, which
+#     is the posture a hosted MCP-only deployment actually runs in.
+#   * No model, no API key, no MCP server, and no secret of any kind. Every
+#     step below runs offline: the suite scripts its backends, and the eval
+#     harness is driven over the committed corpus (`score`) rather than over a
+#     spawn that would need one (`run`). A CI job that needed a credential
+#     would be a CI job that stops running the day somebody rotates it.
+#
+# `pypi-release.yml` is the other half — it is the only workflow that holds a
+# secret, and it runs on a tag rather than on a push.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["v*"]        # a tag is `pypi-release.yml`'s event, not this one
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per ref. A force-push while the suite is nine minutes in leaves a
+  # job grading a tree nobody has any more.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: suite (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    # The suite takes about nine minutes on a laptop. Thirty is room for a cold
+    # runner and a slow index without letting a hung subprocess hold a job for
+    # the six hours GitHub would otherwise allow.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false          # the floor failing and the ceiling passing is
+      matrix:                   # the interesting result; do not hide either
+        python: ["3.10", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install, with the extras a mission and the suite need
+        # `mission` is what a platform installs (`mcp` + `pyyaml` +
+        # `jsonschema`); without it the CLI-level mission tests skip and the
+        # skill manifest never loads. `critic` carries the external critic's
+        # SDKs, `anthropic` the one `--provider anthropic` refuses without, and
+        # `dev` is pytest itself.
+        #
+        # `critic` is in the REQUIRED install rather than a tolerant step like
+        # `[server]` below, and that is a decision rather than an oversight:
+        # nothing in the suite imports those SDKs (`core/critic/backends.py`
+        # imports them inside the call), so a job that went red here went red
+        # because an extra this package DECLARES stopped being installable —
+        # which is news for whoever declares it, on the day it happens, rather
+        # than at somebody's `pip install 'judais-lobi[critic]'`.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[mission,critic,anthropic,dev]'
+
+      - name: Install the server extra, if this release has one
+        # The `[server]` extra is Phase 13's SSE endpoint over the run store.
+        # `pip` warns and carries on for an extra a release does not declare,
+        # and the server tests skip when the extra is absent, so this step is
+        # green either side of the release that adds it — and it is one line to
+        # fold into the step above once it is no longer optional.
+        run: pip install -e '.[server]' || echo "no [server] extra in this release"
+
+      - name: Compile against the floor
+        # The one check that is about the interpreter rather than the code:
+        # `compileall` parses every module without importing it, so a match
+        # statement or a `X | Y` annotation that 3.10 cannot read is a failure
+        # here rather than an ImportError on the deployment.
+        run: python -m compileall -q core main.py
+
+      - name: The suite
+        run: python -m pytest -q
+
+      - name: The wheel ships three top-level names and not four
+        # Called out as its own step because it is the check that failed in
+        # production: 0.8.0's wheel carried a top-level `tests` package. A
+        # named step means the log says which promise broke.
+        run: python -m pytest -q tests/test_packaging.py
+
+  harness:
+    name: the eval harness, over the committed corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"      # the floor, because this is the job a
+          cache: pip                  # deployment reproduces
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[mission,dev]'
+
+      - name: A suite that cannot be graded is refused before anything is spent
+        run: python -m core.eval check --suite stub
+
+      - name: Score the committed corpus
+        # `run` spawns a mission per case and needs a model; `score` reads
+        # streams that already exist, which is the harness's own no-GPU path
+        # (`core/eval/run.py`). The eleven streams under `tests/fixtures/eval/`
+        # were produced by `tests/test_eval_stub_suite.py` against the real MCP
+        # stub with a scripted backend, so this scores the same records a
+        # mission emits — and it goes red when a rubric, a scorer or a record
+        # shape changes under them.
+        #
+        # The map is built from the suite rather than typed out: a mission
+        # added to `core/eval/stub_suite.py` is scored here on the day it is
+        # added, and a stream nobody committed for it fails loudly.
+        run: |
+          python -m core.eval score --suite stub --split all $(python - <<'PY'
+          from core.eval.stub_suite import SUITE
+          print(" ".join(f"--map {m.key}=tests/fixtures/eval/{m.key}.jsonl"
+                         for m in SUITE.missions))
+          PY
+          )
+
+      - name: The suite runs against the stub end to end
+        # The other half: `score` grades recordings, and this produces them.
+        # Every mission of the in-repo suite driven through `core.cli._main`
+        # with a scripted model and the MCP stub server over stdio — the loop,
+        # the closed set, the grounding validator and the store all real.
+        run: python -m pytest -q tests/test_eval_stub_suite.py
+
+  contract:
+    name: the contract, and the pages that restate it
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[mission,dev]'
+
+      - name: SCHEMA_VERSION, the events, the flags and the env, against the docs
+        # This is the "a bump without a matching line is a failure" gate, and
+        # it is these tests rather than a script of its own because they
+        # already are it, in both directions:
+        #
+        #   tests/test_contract.py  — `CONTRACT.md` must carry the literal
+        #       `SCHEMA_VERSION == <n>`, must list exactly `EVENTS`,
+        #       `OUTCOMES`, `CLI_FLAGS` and `ENV_VARS`, and must name every
+        #       required and optional field. Bump the constant without editing
+        #       the page and `test_the_stated_version` is red.
+        #   tests/test_docs_track_the_code.py  — the README's half.
+        #   tests/test_platforms_doc.py        — `PLATFORMS.md`'s half, and the
+        #       conformance kit run against ourselves.
+        #
+        # A second script asserting the same thing would be a second owner of
+        # the fact, which is the failure mode this repository is built against.
+        run: |
+          python -m pytest -q \
+            tests/test_contract.py \
+            tests/test_docs_track_the_code.py \
+            tests/test_platforms_doc.py
+
+      - name: The conformance kit a platform copies, run against ourselves
+        # `tests/conformance/` is a template. A template nobody runs is a
+        # template that rots, so this repository is its first consumer.
+        run: python -m pytest -q tests/conformance tests/test_conformance_kit.py

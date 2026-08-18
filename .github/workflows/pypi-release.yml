@@ -1,0 +1,143 @@
+# .github/workflows/pypi-release.yml — a tag becomes a release on PyPI
+#
+# THE SECRET THIS NEEDS, and it is the only one either workflow uses:
+#
+#   PYPI_API_TOKEN — a PyPI API token scoped to the `judais-lobi` project,
+#                    created at https://pypi.org/manage/account/token/ and
+#                    stored under Settings → Secrets and variables → Actions.
+#                    Nothing in this repository creates it and nothing prints
+#                    it. A token scoped to the whole account would let a
+#                    compromised workflow publish somebody else's package;
+#                    scope it to this project.
+#
+# Until that secret exists the `publish` job below refuses at its first step
+# and says so, rather than failing eight minutes later inside `twine` with a
+# 403 that reads like a network problem.
+#
+# THE BUILD IS FROM A CLEAN TREE. The release procedure has always been "from a
+# clean `git archive` of the tag", because a build from a working directory
+# picks up whatever is lying in it — a stale `build/`, an `.egg-info` from a
+# different version, a scratch file with an `__init__.py`. `actions/checkout`
+# on a tag gives exactly that: the tag's tree and nothing else. `git archive`
+# is then belt and braces rather than the mechanism, and the check that
+# actually holds the promise is `tests/test_packaging.py`, which pins the
+# wheel's top-level names to `core`, `judais` and `lobi` — 0.8.0 shipped a
+# fourth and it was found by hand at release time.
+#
+# THE TAG AND `VERSION` MUST AGREE. `setup.py` is the one owner of the version;
+# a tag that says something else produces a wheel nobody can trace back to a
+# commit, and a deployment's doctor compares `pip show` against the tag it
+# checked out. The `verify` job below is that comparison, and it runs before
+# anything is built.
+
+name: PyPI release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "the tag to build, e.g. v1.0.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: the tag says what setup.py says
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"      # the floor: the release is built by the
+          cache: pip                  # oldest interpreter it claims to support
+
+      - name: Read the one owner of the version
+        id: version
+        run: |
+          version=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' setup.py)
+          test -n "$version" || { echo "setup.py has no VERSION"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "setup.py says $version"
+
+      - name: The tag is `v` plus that
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          expected="v${{ steps.version.outputs.version }}"
+          test "$tag" = "$expected" || {
+            echo "tag $tag does not match setup.py's $expected — bump VERSION"
+            echo "or retag, but do not publish a wheel whose version nobody"
+            echo "can trace back to a commit."
+            exit 1
+          }
+
+      - name: Install and run the checks a release must not skip
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[mission,dev]'
+          python -m compileall -q core main.py
+          python -m pytest -q tests/test_packaging.py tests/test_contract.py \
+                             tests/test_docs_track_the_code.py \
+                             tests/test_platforms_doc.py
+
+  publish:
+    name: build from the tag and upload
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi          # so the upload can be gated on a reviewer if
+                               # the repository's owner ever wants it to be
+    steps:
+      - name: The token has to exist before anything is built
+        env:
+          TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          test -n "$TOKEN" || {
+            echo "PYPI_API_TOKEN is not set. See this file's header: a"
+            echo "project-scoped PyPI token, under Settings → Secrets and"
+            echo "variables → Actions. Nothing here creates it."
+            exit 1
+          }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Build from a clean export of the tag
+        # `git archive` of HEAD into an empty directory, then build there: the
+        # sdist and the wheel are made from tracked files at the tag and from
+        # nothing else. This is the same subtraction the release procedure has
+        # always described, done by the machine rather than remembered.
+        run: |
+          python -m pip install --upgrade pip build twine
+          rm -rf export dist && mkdir export
+          git archive --format=tar HEAD | tar -x -C export
+          python -m build --sdist --wheel --outdir dist export
+
+      - name: twine check
+        run: python -m twine check dist/*
+
+      - name: The wheel carries the version the tag names
+        run: |
+          ls -l dist
+          test -f "dist/judais_lobi-${{ needs.verify.outputs.version }}-py3-none-any.whl"
+
+      - name: Upload
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: python -m twine upload --non-interactive dist/*

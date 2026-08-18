@@ -678,6 +678,78 @@ it knows who the person is. Core enforces only that somebody is named.
   changing what an existing required field means is a **breaking** change and
   **bumps** it.
 
+## 1.0 — the freeze
+
+*Written 17 August 2026, ahead of v1.0.0. It is a promise, and it takes effect
+with that release.*
+
+The rule above says what a bump means. It does not say how often one may
+happen, and a consumer cannot plan against a rule that permits a breaking
+change every Tuesday. So:
+
+**From v1.0.0, `SCHEMA_VERSION` is frozen for the whole of the 1.x major.**
+
+A 1.x release will not bump it. If a change would require bumping it, the
+release is 2.0.0 and carries a new `SCHEMA_VERSION`, announced as such — and
+1.x goes on existing, so a platform is never made to move on a schedule that is
+not its own.
+
+### What a 1.x consumer may rely on, exactly
+
+For every release `>=1.0.0, <2.0.0`:
+
+- **`SCHEMA_VERSION == 1`.** Assert it at import. It will not move.
+- **`EVENTS` only grows.** No event is removed and none is renamed. A record
+  type you have never heard of may arrive; drop it, which is what the rule has
+  always asked and what your conformance test should record as a decision.
+- **`FIELDS` is fixed, event by event.** No required field is renamed, removed,
+  moved out of the required set, or given a different meaning. Every field
+  named in the tables above will be on every record of that event, for the
+  whole major.
+- **`OPTIONAL` only grows.** A new optional field may appear on any event at
+  any minor release. Read every optional field with a default; never read an
+  absent one as a zero, an empty list or a false.
+- **`OUTCOMES` is fixed.** The five words are the five words. A sixth would be
+  a required field changing meaning for every driver that has an `else` arm,
+  which is why cancellation became `reason` beside `incomplete` rather than a
+  sixth outcome.
+- **`CLI_FLAGS` only grows.** No published flag is removed or renamed, and none
+  changes what it takes. A spawn line that works on 1.0 works on 1.9.
+- **`ENV_VARS` only grows**, on the same terms.
+- **`EXIT_CONTRACT` is fixed.** The seven clauses stay, and each goes on
+  meaning what it says here. Wording may improve; the promise may not weaken.
+  In particular: zero events stays a failure, `mission_finished` still always
+  arrives, the first SIGTERM still gets to wind the run up, stdout is still not
+  a machine channel, and the diagnostic on stderr is still scrubbed before it
+  is written.
+- **`conforms()` stays pure and standard-library only**, importing nothing this
+  repository owns, so a consumer that cannot import an agent framework can go
+  on vendoring that one function.
+
+### What is still allowed to change
+
+Everything that is not on that list, and it is worth being explicit about the
+three that surprise people:
+
+- **The console.** stdout is prose for a person and changes whenever somebody
+  improves it. It is not in the freeze because it was never in the contract.
+- **The prompts.** What the model is shown, how a catalogue is rendered, what a
+  correction says. A recorded run may report *drift* against a newer harness;
+  that is the recorder doing its job, not a contract break.
+- **Everything under `core/` that is not `contract.py`.** Class names, module
+  layout, the runner objects. The library façade has its own compatibility
+  story; this section is about the wire.
+
+### Why freeze at all
+
+Because the alternative is what a platform actually experiences: a pin it is
+afraid to move. A consumer that cannot tell an additive release from a breaking
+one treats every release as breaking, stops upgrading, and then runs a harness
+nobody is fixing bugs in any more. The freeze is the smallest promise that
+makes "take the next 1.x" a decision somebody can make without reading a diff —
+and it costs this repository nothing it should have wanted to do anyway, since
+every change above is one the compatibility rule already called breaking.
+
 ## How to pin
 
 ```python
