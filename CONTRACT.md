@@ -62,8 +62,8 @@ carry and which is described below the table.
 
 | event | optional fields | what they add |
 | --- | --- | --- |
-| **`mission_started`** | `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol` | the run's posture: the isolation its tool subprocesses ran under, the capability profile governing it, the audit file, the durable transcript it is being recorded in, and how the model was asked to decide |
-| **`step_started`** | `plan`, `compacted`, `resumed`, `injected`, `catalogue`, `review` | what happened to this step before it was asked: a staged plan drawn, the conversation shortened to fit the window, an earlier stretch continued, an operator instruction put in front of the model, the supervisor's verdict on a repeating pattern, and — only where it changed — the whole set of tool names the model may name from this step on, because a server may register a tool mid-run and a closed set that allows it lets it join |
+| **`mission_started`** | `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol`, `granted` | the run's posture: the isolation its tool subprocesses ran under, the capability profile governing it, the audit file, the durable transcript it is being recorded in, how the model was asked to decide, and the scopes an operator pre-authorised **beyond** that profile with `--grant` |
+| **`step_started`** | `plan`, `compacted`, `resumed`, `injected`, `catalogue`, `review`, `artifacts` | what happened to this step before it was asked: a staged plan drawn, the conversation shortened to fit the window, an earlier stretch continued, an operator instruction put in front of the model, the supervisor's verdict on a repeating pattern, and — only where it changed — the whole set of tool names the model may name from this step on, because a server may register a tool mid-run and a closed set that allows it lets it join; and, on a campaign step, the files it was handed and the files it owes |
 | **`reply_rejected`** | `tool`, `usage` | the name the model wrote, when it got as far as one; and what the rejected call cost, because a rejected reply is still a billed reply |
 | **`tool_call`** | `usage`, `call` | what the model call that chose this tool cost; and which call of the turn it is when the model asked for several |
 | **`tool_result`** | `call` | the same ordinal as its `tool_call`, so a consumer can pair them under a shared `index` |
@@ -80,6 +80,29 @@ triage — which is itself a call to the model — so at the time it is written
 there is no plan and there may never be one. Moving an optional field is a minor
 change; a consumer was reading it with a default or was not reading it as
 optional.
+
+`granted` is a list of scope names, sorted, and it is **absent** on every run
+nobody widened — which is nearly every run. It exists because `profile` stopped
+being the whole answer to *what may this run do* the moment `--grant` could add
+a scope beside it: a watcher rendering a run's authority reads both, the profile
+being the floor a deployment set and this being what somebody typed on top of
+it. A grant widens scopes and nothing else, so `sandbox` and `gated` still mean
+exactly what they say.
+
+`artifacts` is `{"in": [...], "out": [...]}` — the files a **campaign** step was
+handed and the files it owes — and it is absent on every direct and every
+staged turn, which have no handoff to describe. A campaign is a plan of
+*missions*: each step is a child run under its own skill and its own effective
+scopes, and what travels between two of them is a file rather than a summary,
+declared in the plan, copied into the child's working directory before it starts
+and collected after. `in` is what actually arrived (a declared input whose
+producer never wrote it does not appear, and the step is told so); `out` is what
+the plan says this step exports, stated before it has written any of them, so a
+consumer can render the contract of the step it is watching and not only its
+result. The campaign's own plan rides `plan` on the first step in the same
+`[{id, goal, rung}]` shape a staged turn's does, with `rung` naming the step's
+task template, and `branch` names the step a record belongs to exactly as it
+names a stage.
 
 ### `branch` — which child emitted the record, when a child did
 
@@ -665,6 +688,9 @@ person's surface and may move.
 - `--no-stream` — ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`, and the only difference it makes to this stream is the `answer_delta` records: the same `answer` arrives at the same moment either way.
 - `--control` — where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-` for stdin. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and a bad line is dropped, never fatal. See the exit contract.
 - `--gate-wait` — seconds a run standing at a gate waits in-turn for a `gate_decision` on `--control` before ending the turn at `awaiting_approval` (the decision then arrives on a later turn via `--approval`). Also capped by `--mission-seconds`. `0` = never wait; default 300. An unattended caller — an eval driver, a batch, a pane nobody is watching — sets it low.
+- `--grant` — pre-authorise capability scopes for **this run**, beyond whatever `--profile` grants. Comma-separated inside one value and repeatable across several: `--grant http.read` lets a mission under `safe` fetch a page without opting the whole run up to `ops`, which would also hand it `git.push`, `pip.install` and `fs.delete`. It widens **scopes only** — the sandbox named by `sandbox`, the tools named by `gated` and the skill's closed set are unchanged — and a campaign step narrowed past the grant is still refused, in a sentence naming the grant rather than the profile. A scope no profile names is refused at the door, by name, listing the known set; `*` is refused, because that is `--profile god`. Arrives back as `granted` on `mission_started`.
+- `--campaign` — run a **campaign**: a plan of missions. The message is drafted into a `CampaignPlan`, a person approves it, and each step then runs as its own child mission with its own effective scopes, with declared artifacts handed from one step to the next. Implies `--mission`. Every record carries `branch`; the plan rides the first `step_started` as `plan` and each step's files ride its own `step_started` as `artifacts`; `--resume` continues it as a campaign.
+- `--campaign-plan` — the same, from a `CampaignPlan` JSON or YAML file rather than a drafted one. Implies `--mission`. With no positional message the plan's own `objective` is the mission's. An unapproved plan ends the run at `awaiting_approval` with the whole plan on the `gate_requested` record, to be answered with `--approve <id>` and carried back with `--approval <id>` — the same mechanism a gated tool call uses, because it is the same kind of stop.
 - `--replay` — run a recorded mission **again**, by its `run_id`: the model's replies are served out of that run's `model.jsonl` in order and its tool results out of `tools.jsonl`, so nothing is dialled and nothing is asked. The objective comes off the record, so the positional message may be omitted; a different one is refused. The replayed run is a **new** run directory whose `meta.json` carries `replay_of` and the `drift` between what this run asked and what was recorded — grounding runs fresh over the recorded answer, which is how a grounding change is scored on yesterday's runs. Not `--resume`: that continues an unfinished run against a live model.
 
 ## Environment

@@ -81,38 +81,37 @@ CONFORMANCE: Dict[str, Any] = {
     # one. Required and optional together — "declared" is what is checked, and
     # an optional field a bridge reads with a default is still a field the
     # harness has to go on declaring.
+    #
+    # `branch` is on every one of them, because `contract.COMMON_OPTIONAL`
+    # is: it says which child run emitted a record on a turn that has
+    # children, and a platform that ignores it reads one correctly-ordered
+    # sequence, which is what it always read.
     "reads": {
         "mission_started": ("schema_version", "objective", "catalogue",
                             "gated", "max_steps", "history",
                             "sandbox", "profile", "audit_ref", "run_id",
-                            "protocol",
-                         "branch"),
+                            "protocol", "granted", "branch"),
         "step_started": ("index", "plan", "compacted", "resumed", "injected",
-                         "catalogue", "review",
-                         "branch"),
-        "reply_rejected": ("index", "problem", "tool", "usage",
-                         "branch"),
+                         "catalogue", "review", "artifacts", "branch"),
+        "reply_rejected": ("index", "problem", "tool", "usage", "branch"),
         "tool_call": ("index", "tool", "arguments", "usage", "call",
-                         "branch"),
+                      "branch"),
         "tool_result": ("index", "tool", "arguments", "ok", "exit_code",
                         "output", "error", "handle", "truncated", "call",
-                         "branch"),
+                        "branch"),
         "gate_requested": ("index", "tool", "arguments", "reason",
-                           "approval_id",
-                         "branch"),
-        "answer_delta": ("index", "part", "text",
-                         "branch"),
-        "answer": ("text", "outcome", "usage",
-                         "branch"),
+                           "approval_id", "branch"),
+        "answer_delta": ("index", "part", "text", "branch"),
+        "answer": ("text", "outcome", "usage", "branch"),
         "grounding": ("ran", "grounded", "verified", "repairs", "repairing",
                       "caveat", "unsupported", "silent", "uncited", "checks",
-                         "branch"),
+                      "branch"),
         "mission_finished": ("outcome", "steps", "max_steps",
                              "usage", "budget", "reason", "elapsed_s",
-                         "branch"),
+                             "branch"),
         "model_state": ("state", "provider", "model",
                         "index", "detail", "since_s", "retry_after_s",
-                         "branch"),
+                        "branch"),
     },
 
     # The flags this platform's spawn line passes. Mission mode is a closed
@@ -124,7 +123,8 @@ CONFORMANCE: Dict[str, Any] = {
               "--provider", "--model", "--profile", "--unsandboxed", "--skill",
               "--swarm", "--history", "--gate-tool", "--approval", "--resume",
               "--temperature", "--top-p", "--seed", "--protocol",
-              "--no-stream", "--gate-wait", "--replay"),
+              "--no-stream", "--gate-wait", "--replay", "--grant",
+              "--campaign", "--campaign-plan"),
 
     # The environment this platform exports into the child.
     "env": ("MCP_TOKEN", "MCP_CLIENT_NAME", "MCP_URL", "MCP_STDIO",

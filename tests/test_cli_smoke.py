@@ -119,12 +119,45 @@ class TestCLISmoke:
         mock_elf.enrich_with_research.assert_called_once()
 
     @patch("sys.argv", ["test", "mission", "--campaign"])
-    def test_campaign_flag(self):
+    def test_campaign_flag_is_mission_mode(self):
+        """A campaign is a MISSION, and it used to be a branch of its own.
+
+        This asserted `elf.run_campaign_from_description`, which walked a
+        plan's DAG through the coding kernel's task dispatcher — no run
+        store, no `--approval`, no supervisor, nothing on the wire and no
+        resume. Phase 15 lane Q deleted that method and its orchestrator; a
+        campaign is `core.runtime.campaign.CampaignRunner` now, built where
+        the staged runner is built and out of the same six objects. So what
+        this checks is that the flag reaches mission mode rather than
+        anything of its own — the plan itself is
+        `tests/test_campaign_run.py`.
+        """
         from core.cli import _main
         MockClass, mock_elf = self._make_mock_elf_class()
-        mock_elf.run_campaign_from_description.return_value = MagicMock(status="completed")
-        _main(MockClass)
-        mock_elf.run_campaign_from_description.assert_called_once()
+        with patch("core.cli._run_mission") as ran:
+            _main(MockClass)
+        ran.assert_called_once()
+
+    @patch("sys.argv", ["test", "--campaign-plan", "/nonexistent/plan.json"])
+    def test_campaign_plan_needs_no_message_and_is_mission_mode(self):
+        """The objective is a field of the plan, so the positional may be
+        omitted — and the flag implies `--mission` without it being typed."""
+        from core.cli import _main
+        MockClass, _mock_elf = self._make_mock_elf_class()
+        with patch("core.cli._run_mission") as ran:
+            _main(MockClass)
+        ran.assert_called_once()
+
+    @patch("sys.argv", ["test", "hello", "--grant", "not.a.scope"])
+    def test_a_grant_naming_no_scope_is_refused_before_anything_is_built(
+            self):
+        """At the door, like every other bad flag: an operator who mistypes
+        a scope must not watch a mission be refused for a capability they
+        believe they granted."""
+        from core.cli import _grants_of
+
+        with pytest.raises(SystemExit, match="not.a.scope"):
+            _grants_of(type("A", (), {"grant": ["not.a.scope"]})())
 
     def test_answering_a_gate_builds_no_agent_at_all(self, tmp_path,
                                                      monkeypatch):

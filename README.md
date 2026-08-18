@@ -158,6 +158,9 @@ program that spawns this harness may rely on them. The table below is in
 | `--provider` | — | `openai`, `mistral`, `anthropic` or `local`. `anthropic` needs `pip install 'judais-lobi[anthropic]'` and `ANTHROPIC_API_KEY`; its default model is `claude-opus-5` (`core/runtime/provider_config.py`), overridden with `--model` |
 | `--model` | — | which model on it |
 | `--profile` | `JUDAIS_LOBI_PROFILE` | the capability profile: deny-by-default `safe`, then `dev`, `research`, `ops`, `god`. `research` is `dev` plus `http.read` and nothing else — read the web, write nothing, run nothing beyond `dev` — and it exists because reading three public pages used to cost `ops`, which also grants `git push` and `pip install`. A refusal names the scope and the **lowest** profile that grants it. Arrives back as `mission_started.profile` |
+| `--grant` | — | pre-authorise capability scopes for **this run**, beyond whatever `--profile` grants. Comma-separated and repeatable: `--grant http.read` lets a mission under `safe` fetch a page without opting the whole run up to `ops`, which would also hand it `git.push`, `pip.install` and `fs.delete`. It widens **scopes only** — the sandbox, the gated set and the skill's closed set are unchanged, and a campaign step narrowed past the grant is still refused, in a sentence that names the grant rather than the profile. A scope no profile names is refused at the door by name; `*` is refused, because that is `--profile god`. Arrives back as `mission_started.granted` |
+| `--campaign` | — | run a **campaign**: a plan of missions, drafted from the message, approved by a person, then dispatched a step at a time. Implies `--mission`. See [Campaigns](#campaigns--a-plan-of-missions) |
+| `--campaign-plan` | — | the same, from a `CampaignPlan` JSON or YAML file. Implies `--mission`; with no message the plan's own `objective` is the mission's |
 | `--unsandboxed` | `JUDAIS_LOBI_SANDBOX=none` | run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists; `JUDAIS_LOBI_SANDBOX=bwrap` forces it and refuses on a host without it. Arrives back as `mission_started.sandbox` |
 | `--skill` | `MISSION_SKILL` | a `SKILL.md` manifest, or a directory holding one |
 | `--swarm` | `MISSION_SWARM` | stage the mission when it needs staging |
@@ -990,6 +993,70 @@ last one is offered only when the skill manifest declares `sdk_import`, because
 "import the platform SDK" with no SDK named is an invitation to invent a module
 and a 20B accepts it.
 
+### Campaigns — a plan of missions
+
+`--swarm` is one mission a model decided to break up. A **campaign** is several
+missions a *person* decided to run, in an order they wrote down, with files
+handed from one to the next:
+
+```bash
+lobi --campaign-plan ./migration.json --skill analyst
+lobi --campaign "measure last quarter and write it up" --skill analyst
+```
+
+A `CampaignPlan` is a DAG of steps. Each step names a **task template** (a
+`templates/*.yaml` out of a mission pack — see [the packs that
+ship](#first-party-skills--the-packs-that-ship)), the capability scopes it
+needs, the artifacts it takes from earlier steps and the artifacts it exports.
+`--campaign-plan` runs one off disk; `--campaign` asks the model to draft one
+from the message. Either way the plan is **approved before any of it runs**.
+
+What happens then, and every part of it is something the mission path already
+had:
+
+* **Approval is the durable one.** An unapproved plan ends the run at
+  `awaiting_approval` with the whole plan on a `gate_requested` record — the
+  same mechanism, the same store and the same `--approve <id>` / `--approval
+  <id>` round trip a gated *tool call* uses, because it is the same kind of
+  stop. A platform can answer it; so can somebody tomorrow. Where a person is
+  at a terminal with `$EDITOR` set, the plan is opened for editing instead and
+  what they save is recorded as their decision. `--auto-approve` declines to
+  ask at all.
+* **A step is a child run.** `Run.child` — its own branch, its own result
+  store, its own persona from its pack's `SKILL.md` — sharing the parent's
+  plane, clock, supervisor, ledger and durable log. One mission, several
+  children, exactly as a staged turn is.
+* **Least privilege per step.** Each step is narrowed to
+  `step scopes ∩ template scopes` before it starts, so a step that never asked
+  for `fs.write` cannot write even though the run's profile allows it. The
+  narrow is per step and not per run, which is what `--grant` is the other half
+  of: an operator widens the run, the plan narrows each step.
+* **Artifacts, declared.** A step's inputs are copied into its `handoff_in/`
+  before it starts and its exports are collected from its `handoff_out/` after;
+  the step is told both paths. A step that promised a file and did not write it
+  **failed**, whatever it said about itself — a model saying "I have written the
+  report" is not evidence that a report exists.
+* **Frozen once approved.** A failed step ends the dispatch. There is no
+  redraw: a staged turn's plan is a planner's guess and may be redrawn, and a
+  campaign's plan is what somebody said yes to.
+* **Resumable.** The plan and each step's outcome are checkpointed, so
+  `--resume <run-id>` continues at the step after the last one that finished —
+  as a *campaign*, with its artifacts and its scopes, because the approved plan
+  is on the run's record.
+
+On the wire it is a staged turn plus one field: every record carries `branch`
+(the step's id), the plan rides the first `step_started` as `plan` with `rung`
+naming each step's template, and each step's own `step_started` carries
+`artifacts` — `{"in": [...], "out": [...]}`. Nothing required was added and
+`SCHEMA_VERSION` did not move.
+
+`core/runtime/campaign.py` is a **subclass of `SwarmRunner`**, and that is the
+design rather than an economy: a parent over children, waves, a per-step gate, a
+checkpoint and a synthesis is one loop, and the version of it that used to live
+on the coding-kernel path had drifted into having none of the run store, the
+approvals, the supervisor, the stream or the resume. Five methods differ, one
+per real difference between a plan a person wrote and a plan a model drew.
+
 ### The mission stream — `--events`
 
 `MissionRunner.run` returns a transcript when the mission is over. That is the
@@ -1526,7 +1593,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/policy/` — `profiles.py` (the five cumulative profiles and `select_profile`), `audit.py` (the append-only log on every default bus). Two files, since `god_mode.py` was deleted in 0.13.0
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
 * `core/patch/` — patch engine: parser, matcher, applicator, worktree manager, engine orchestrator
-* `core/judge/`, `core/critic/`, `core/campaign/` — composite judge and candidate sampling; the external critic (`mission.py` for the mission tier, `orchestrator.py` for the coding tier); the campaign orchestrator
+* `core/judge/`, `core/critic/`, `core/campaign/` — composite judge and candidate sampling; the external critic (`mission.py` for the mission tier, `orchestrator.py` for the coding tier); the campaign **plan's** facts — its schema, what makes one legal and in what order its steps go, the artifact handoff, the scope intersection, the `$EDITOR` review and the session layout. What *runs* one is `core/runtime/campaign.py`, which is a `SwarmRunner`: `CampaignOrchestrator`, the second dispatcher that used to live here, was deleted in 0.17
 * `lobi/`  and `judais/`  — personality configs extending Agent
 
 If you want to understand the **entry point**, see:

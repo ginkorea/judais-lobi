@@ -443,8 +443,21 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: unrepresentable rather than caught.  What a consumer sees change:
     #: one turn may produce several ``tool_call``/``tool_result`` pairs
     #: under one ``index``, distinguished by ``call``.
+    #:
+    #: ``granted`` — ``["http.read", …]``, the scopes an operator
+    #: pre-authorised for this run with ``--grant``, sorted, and **absent**
+    #: on every run nobody widened — which is nearly every run, so a
+    #: consumer that has never heard of it reads the stream it always read.
+    #:
+    #: It is here because ``profile`` stopped being the whole answer to
+    #: "what may this run do" the moment a scope could be added beside it.
+    #: A watcher rendering a run's authority reads both: the profile is the
+    #: floor a deployment set, and this is what somebody typed on top of it.
+    #: A grant widens *scopes* only — the sandbox named by ``sandbox`` and
+    #: the tools named by ``gated`` are unaffected, and a scope a campaign
+    #: step is narrowed past is still refused, naming the grant.
     MISSION_STARTED: ("sandbox", "profile", "audit_ref", "run_id",
-                      "protocol"),
+                      "protocol", "granted"),
     #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
     #: first ``step_started`` that plan produces.  Absent on a direct
     #: mission, which has no plan to show, and absent on every later step.
@@ -550,8 +563,31 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: Absent on every step of every run nothing looked wrong in, which is
     #: nearly every step of nearly every run, so a consumer that has never
     #: heard of it reads the stream it always read.
+    #: ``artifacts`` — ``{"in": ["figures.json"], "out": ["report.md"]}``,
+    #: the files a **campaign** step was handed and the files it owes,
+    #: present on the first ``step_started`` of each step of a campaign and
+    #: on no other record.  Absent on every direct and every staged
+    #: (``--swarm``) turn, which have no handoff to describe.
+    #:
+    #: A campaign is a plan of missions rather than a plan of steps: each
+    #: step is a child run under its own skill and its own effective
+    #: scopes, and what travels between two of them is a *file* rather than
+    #: a summary — declared in the plan, copied into the child's
+    #: ``handoff_in/`` before it starts and collected out of its
+    #: ``handoff_out/`` after.  ``in`` is what was actually materialised
+    #: (a declared input whose producer never wrote it does not appear) and
+    #: ``out`` is what the plan says this step exports, before it has
+    #: written any of them — so a consumer can render the contract of the
+    #: step it is watching and not only its result.
+    #:
+    #: The campaign's own plan rides ``plan`` on the first step, exactly as
+    #: a staged turn's does and in the same ``[{id, goal, rung}]`` shape,
+    #: with ``rung`` naming the step's task template.  That is deliberate:
+    #: a consumer already renders one, and a campaign is a parent over
+    #: children like the swarm is.  ``branch`` says which step a record
+    #: belongs to, as it does for a stage.
     STEP_STARTED: ("plan", "compacted", "resumed", "injected", "catalogue",
-                   "review"),
+                   "review", "artifacts"),
     #: ``tool`` — the name the model wrote, when it wrote one.  Absent when
     #: the reply was rejected before a name could be read out of it.
     #:
@@ -785,7 +821,8 @@ CLI_FLAGS: tuple[str, ...] = (
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
     "--history", "--gate-tool", "--approval", "--resume", "--temperature",
     "--top-p", "--seed", "--protocol", "--no-stream", "--control",
-    "--gate-wait", "--replay",
+    "--gate-wait", "--replay", "--grant",
+    "--campaign", "--campaign-plan",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:

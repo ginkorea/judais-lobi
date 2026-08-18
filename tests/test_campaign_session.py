@@ -1,4 +1,26 @@
-# tests/test_campaign_orchestrator.py — Tests for CampaignOrchestrator
+# tests/test_campaign_session.py — a campaign's directories, written whole
+
+"""The store a campaign leaves on disk, and that every write to it is atomic.
+
+Named for ``CampaignOrchestrator`` until Phase 15, lane Q, and renamed with
+it: that class walked a plan's DAG through the coding kernel's task
+dispatcher while :mod:`core.runtime.swarm` walked one through
+:class:`~core.runtime.run.Run`, and the second loop had the run store, the
+approvals, the supervisor, the wire and the resume that the first did not.
+A campaign is :class:`~core.runtime.campaign.CampaignRunner` now, and
+``tests/test_campaign_run.py`` is what tests *running* one.
+
+What is left here is what a campaign still owns and what those tests do not
+reach: :class:`~core.campaign.session.CampaignSession`'s layout,
+:class:`~core.campaign.session.StepSessionManager`'s artifacts and
+checkpoints, :func:`~core.campaign.handoff.materialize_handoff` in
+isolation, and :func:`~core.campaign.hitl.review_plan`.  The two
+orchestrator tests went with the class — one ran it end to end, which
+``tests/test_campaign_run.py`` now does against a real plane and a real
+stream, and one proved every file it wrote arrived by ``os.replace``, which
+is asserted below against the writers themselves rather than through a
+runner that no longer calls them.
+"""
 
 import os
 import shlex
@@ -7,18 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from core.campaign.orchestrator import CampaignOrchestrator
 from core.contracts.campaign import CampaignPlan, MissionStep, ArtifactRef
-from core.kernel.orchestrator import PhaseResult
-
-
-class StubDispatcher:
-    def dispatch(self, phase, state):
-        return PhaseResult(success=True)
-
-
-def dispatcher_factory(step):
-    return StubDispatcher()
 
 
 def test_a_step_records_a_compaction_beside_its_artifacts(tmp_path):
@@ -43,37 +54,46 @@ def test_a_step_records_a_compaction_beside_its_artifacts(tmp_path):
         {"phase": "PATCH", "dropped_turns": 2}]
 
 
-def test_campaign_orchestrator_runs(tmp_path):
-    steps = [
-        MissionStep(
-            step_id="s1",
-            description="step1",
-            target_workflow="coding",
-            capabilities_required=["fs.read"],
-            success_criteria="done",
-            exports=["out.txt"],
-        ),
-        MissionStep(
-            step_id="s2",
-            description="step2",
-            target_workflow="coding",
-            capabilities_required=["fs.read"],
-            success_criteria="done",
-            inputs_from=["s1"],
-            handoff_artifacts=[ArtifactRef(step_id="s1", artifact_name="out.txt")],
-        ),
-    ]
-    plan = CampaignPlan(
-        campaign_id="camp",
-        objective="obj",
-        assumptions=[],
-        steps=steps,
-    )
+def test_a_campaign_session_lays_out_a_directory_per_step(tmp_path):
+    """The layout every other reader of a campaign assumes: one directory
+    per step, and inside it the two the handoff moves files between."""
+    from core.campaign.session import CampaignSession
 
-    orch = CampaignOrchestrator(dispatcher_factory, base_dir=tmp_path)
-    state = orch.run(plan, auto_approve=True)
-    assert state.status == "completed"
-    assert (tmp_path / "sessions" / "camp" / "steps" / "s1").exists()
+    session = CampaignSession(tmp_path, campaign_id="camp")
+    step_dir = session.step_dir("s1")
+    assert step_dir == tmp_path / "sessions" / "camp" / "steps" / "s1"
+    for name in ("artifacts", "handoff_in", "handoff_out"):
+        assert (step_dir / name).is_dir()
+
+
+def test_a_step_id_that_would_escape_the_campaign_is_refused(tmp_path):
+    """A step id names a directory, so it is checked where the directory is
+    made and not only where the plan is validated."""
+    from core.campaign.session import CampaignSession
+
+    session = CampaignSession(tmp_path, campaign_id="camp")
+    with pytest.raises(ValueError, match="unsafe_step_id"):
+        session.step_dir("../elsewhere")
+
+
+def test_a_handoff_moves_one_declared_artifact_between_two_steps(tmp_path):
+    """The copy itself, in isolation from anything that runs a plan:
+    ``handoff_out`` of the producer to ``handoff_in`` of the consumer, by
+    name, and nothing else along for the ride."""
+    from core.campaign.handoff import materialize_handoff
+    from core.campaign.session import CampaignSession
+
+    session = CampaignSession(tmp_path, campaign_id="camp")
+    (session.step_dir("s1") / "handoff_out" / "out.txt").write_text("figures")
+    (session.step_dir("s1") / "handoff_out" / "extra.txt").write_text("no")
+    copied = materialize_handoff(
+        session.campaign_dir, session.step_dir("s2"),
+        [ArtifactRef(step_id="s1", artifact_name="out.txt")])
+
+    assert [path.name for path in copied] == ["out.txt"]
+    assert (session.step_dir("s2") / "handoff_in" / "out.txt").read_text() \
+        == "figures"
+    assert not (session.step_dir("s2") / "handoff_in" / "extra.txt").exists()
 
 
 def one_step_plan() -> CampaignPlan:
@@ -108,11 +128,21 @@ class TestEveryFileACampaignLeavesBehindIsReplaced:
 
         monkeypatch.setattr(os, "replace", boom)
 
-    def test_every_file_a_run_writes_arrives_by_replace(self, tmp_path,
-                                                        monkeypatch):
+    def test_every_file_the_campaign_writers_write_arrives_by_replace(
+            self, tmp_path, monkeypatch):
         """Not "the ones we remembered to convert": the files on the disk at
         the end, compared against the replaces that happened. A site left on
-        `write_text` shows up here as a file nobody replaced."""
+        `write_text` shows up here as a file nobody replaced.
+
+        Against the writers themselves rather than through a runner. It used
+        to drive ``CampaignOrchestrator``, which wrote every one of these;
+        the runner that replaced it writes its own progress through the run
+        store — ``tests/test_durable.py`` holds that one — and leaves these
+        three to the campaign's own directory.
+        """
+        from core.campaign.session import CampaignSession, StepSessionManager
+        from core.contracts.schemas import TaskContract
+
         replaced = []
         real = os.replace
 
@@ -121,11 +151,14 @@ class TestEveryFileACampaignLeavesBehindIsReplaced:
             return real(src, dst)
 
         monkeypatch.setattr(os, "replace", watch)
-        orch = CampaignOrchestrator(dispatcher_factory, base_dir=tmp_path)
-        orch.run(one_step_plan(), auto_approve=True)
+        session = CampaignSession(tmp_path, campaign_id="camp")
+        session.write_campaign_file("campaign.json", one_step_plan())
+        session.write_campaign_json("campaign.state.json", {"status": "ok"})
+        StepSessionManager(session.step_dir("s1")).write_artifact(
+            "INTAKE", 0, TaskContract(task_id="t1", description="first"))
 
         on_disk = sorted(p for p in tmp_path.rglob("*") if p.is_file())
-        assert on_disk, "the run wrote nothing, so this proves nothing"
+        assert on_disk, "nothing was written, so this proves nothing"
         assert sorted(replaced) == on_disk
 
     def test_a_failed_artifact_write_leaves_the_previous_one_whole(
