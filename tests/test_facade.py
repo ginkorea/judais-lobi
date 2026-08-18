@@ -423,7 +423,8 @@ class TestTheLocalToolPlane:
         records = store.records(store.list()[0].run_id)
         assert records[0]["catalogue"] == ["governed_view", "mission_result"]
 
-    def test_a_named_server_still_takes_the_ordinary_path(self, tmp_path):
+    def test_a_named_server_still_takes_the_ordinary_path(self, tmp_path,
+                                                          monkeypatch):
         """The local plane is what happens when no server was NAMED, and
         not a fallback for one that could not be reached: a transport that
         fails still fails. `tests/test_cli_mission_skill.py` is the whole
@@ -432,11 +433,16 @@ class TestTheLocalToolPlane:
         """
         from types import SimpleNamespace
 
-        from core.cli import _build_mcp_transport
+        from core.cli import _transports
 
+        # The environment forms name a server too, and this asserts what a
+        # command line says: a shell that happens to carry MCP_URL must not
+        # decide whether the local plane is what was asked for.
+        for name in ("MCP_STDIO", "MCP_URL", "MCP_TOKEN"):
+            monkeypatch.delenv(name, raising=False)
         args = SimpleNamespace(mcp_stdio=None, mcp_url="https://x/mcp",
                                mcp_token=None)
-        assert _build_mcp_transport(args) is not None
-        assert _build_mcp_transport(
+        assert _transports(args)
+        assert _transports(
             SimpleNamespace(mcp_stdio=None, mcp_url=None,
-                            mcp_token=None)) is None
+                            mcp_token=None)) == []

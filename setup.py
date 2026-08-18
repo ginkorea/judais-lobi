@@ -78,7 +78,17 @@ setup(
         "faiss": ["faiss-cpu>=1.11.0"],
         # An extra, not a hard dependency: the SDK pulls ~20 wheels including
         # compiled ones, and `judais --help` has to keep working without them.
-        # core/tools/mcp_client.py is the only importer, and imports it lazily.
+        # core/tools/mcp_client.py and core/tools/serve.py are the only
+        # importers, and both import it lazily.
+        #
+        # **There is no `mcp-server` extra, on purpose.** Serving this
+        # package's own tools (`python -m core.tools.serve`) is the same SDK
+        # in the other direction, and both of its transports come with it —
+        # the stdio server is `mcp.server.stdio`, and streamable HTTP is
+        # starlette + uvicorn, which are `mcp`'s own dependencies. An extra
+        # that installed nothing new would be a name to keep in step for no
+        # wheel; `[mcp]` (or `[mission]`) is what a host installs, and the
+        # README says so in as many words.
         "mcp": ["mcp>=1.25,<2"],
         # The Anthropic SDK, for `--provider anthropic` and for the
         # external critic's Anthropic tier — one client per provider, and

@@ -762,7 +762,30 @@ class McpToolBridge:
     def _executor(self, spec: McpToolSpec) -> Callable[..., Tuple[int, str, str, str]]:
         client = self._client
 
-        def _call(**arguments: Any) -> Tuple[int, str, str, str]:
+        def _call(*positional: Any, **arguments: Any) -> Tuple[int, str, str, str]:
+            if positional:
+                # ``ToolBus.dispatch`` hands a *multi-action* tool its action
+                # positionally — ``executor(action, *args, **kwargs)`` — and
+                # this executor is a protocol that carries named arguments
+                # only. It used to take ``**arguments`` alone, so a bridged
+                # tool with an ``action`` argument answered every call with
+                # ``TypeError: _call() takes 0 positional arguments``. Nothing
+                # noticed while every bridged server was somebody else's;
+                # `core.tools.serve` publishes OUR bus, where five of the
+                # eleven tools (`fs`, `git`, `verify`, `repo_map`, `patch`)
+                # are multi-action, and a mission calling `mcp.fs` hit it on
+                # the first dispatch.
+                #
+                # Put back under the name the far end knows it by, which is
+                # the same name the local descriptor uses: the bus took it
+                # out of the arguments only because its own signature names
+                # it.
+                arguments = {"action": positional[0], **arguments}
+                if len(positional) > 1:
+                    return (1, "",
+                            f"mcp_bad_call: {spec.name} was given "
+                            f"{len(positional)} positional arguments; MCP "
+                            f"carries named arguments only", "")
             try:
                 return client.call_tool(spec.name, arguments).as_bus_tuple()
             except McpConnectionError as exc:
@@ -771,3 +794,360 @@ class McpToolBridge:
         _call.__name__ = f"mcp_{spec.name}"
         _call.__doc__ = spec.description or f"Dispatches tools/call for {spec.name}."
         return _call
+
+
+# ---------------------------------------------------------------------------
+# Several servers on one bus
+# ---------------------------------------------------------------------------
+
+#: The namespace the FIRST server gets, and the stem every automatic one
+#: after it is numbered from: ``mcp``, ``mcp2``, ``mcp3``.  The first one is
+#: not ``mcp1`` on purpose — a deployment that bridges one server must keep
+#: reading exactly the names it read before this file learned to count, or
+#: every skill manifest, every recorded corpus and every dashboard that ever
+#: wrote ``mcp.something`` breaks for a feature it does not use.
+AUTO_NAMESPACE = McpToolBridge.DEFAULT_NAMESPACE
+
+#: What a namespace may be spelled with.  No dot, because a dot is the
+#: separator between the namespace and the tool
+#: (:meth:`McpToolBridge.local_name`), and a namespace containing one would
+#: make ``a.b.c`` two different names depending on who split it.
+_NAMESPACE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+
+
+class McpServersMisdeclared(ValueError):
+    """The set of servers asked for cannot be bridged, with every reason."""
+
+
+@dataclass(frozen=True)
+class NamedTransport:
+    """One server, and the namespace its tools take on the bus.
+
+    A pair and not two parallel lists: the namespace is what tells one
+    server's ``echo`` from another's, and a list of transports beside a list
+    of names is one ``zip`` away from bridging the wrong plane under the
+    wrong name.
+    """
+
+    namespace: str
+    transport: McpTransport
+
+    def describe(self) -> str:
+        return f"{self.namespace}={self.transport.describe()}"
+
+
+def split_namespace(spec: str) -> Tuple[Optional[str], str]:
+    """``"plane=python -m srv"`` → ``("plane", "python -m srv")``.
+
+    A leading ``name=`` is read as a namespace only when *name* is a plain
+    identifier (:data:`_NAMESPACE_RE`).  That is what keeps a URL out of it:
+    the text before the first ``=`` of ``https://h/mcp?token=x`` is not an
+    identifier, so the whole string stays the URL it is.
+
+    The one ambiguity is a stdio command line that STARTS with an
+    environment assignment — ``FOO=bar python -m srv`` reads as the
+    namespace ``FOO``.  Write ``env FOO=bar python -m srv`` for that, and the
+    prefix (``env FOO``) stops being an identifier.  Documented rather than
+    guessed at, because a rule that sometimes reads a namespace and
+    sometimes does not is worse than one a reader can apply.
+    """
+    head, sep, rest = str(spec or "").partition("=")
+    if sep and _NAMESPACE_RE.match(head.strip()) and rest.strip():
+        return head.strip(), rest.strip()
+    return None, str(spec or "").strip()
+
+
+def auto_namespace(taken: Sequence[str]) -> str:
+    """The next free automatic namespace: ``mcp``, then ``mcp2``, ``mcp3``…
+
+    Skips anything already claimed, so an explicit ``--mcp-url "mcp2=…"``
+    beside two automatic servers does not collide with the number the
+    counter would otherwise have reached.
+    """
+    claimed = set(taken)
+    if AUTO_NAMESPACE not in claimed:
+        return AUTO_NAMESPACE
+    index = 2
+    while f"{AUTO_NAMESPACE}{index}" in claimed:
+        index += 1
+    return f"{AUTO_NAMESPACE}{index}"
+
+
+def _as_list(value: Any) -> List[str]:
+    """One flag's value as a list, whether it was given once or many times.
+
+    ``action="append"`` hands back a list, an older caller (and every
+    ``SimpleNamespace`` a test builds) hands back a string, and an unset flag
+    hands back ``None``.  All three mean something here and none of them
+    should mean a crash.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def transports_from_specs(
+    stdio: Sequence[str] = (),
+    urls: Sequence[str] = (),
+    tokens: Sequence[str] = (),
+) -> List["NamedTransport"]:
+    """Every server named on a command line, each with its namespace.
+
+    Order is **stdio first, then HTTP**, each in the order given, and the
+    automatic namespaces follow that order.  Stated rather than left to
+    ``argparse``: two ``append`` actions cannot record how the flags were
+    interleaved, so an order that looked like the command line would be an
+    order that changed with the flag spelling.
+
+    *tokens* pair with *urls* **by position** — the first ``--mcp-token`` is
+    the first ``--mcp-url``'s credential.  A different count, *when there are
+    URLs at all*, is a refusal and not a "use it for all of them": a bearer
+    token is one server's secret, and sending it to a second server because
+    the counting was convenient is the kind of leak nobody finds until the
+    other operator reads their logs.  Pass an empty ``--mcp-token ''`` to say
+    that a URL in that position needs none.
+
+    A token with **no** URL is ignored, unchanged: ``MCP_TOKEN`` is a
+    variable an operator's shell carries for whatever they last connected
+    to, and a stdio run refusing to start because of it would be this
+    function inventing a fault.
+
+    Every problem is collected into one message: an operator composing three
+    planes should not fix them one process launch at a time.
+    """
+    problems: List[str] = []
+    stdio_specs, url_specs = list(stdio), list(urls)
+    token_list = list(tokens)
+
+    if url_specs and token_list and len(token_list) != len(url_specs):
+        problems.append(
+            f"{len(token_list)} --mcp-token value(s) for {len(url_specs)} "
+            f"--mcp-url server(s); a token is ONE server's credential and is "
+            f"paired by position. Give one --mcp-token per --mcp-url, in the "
+            f"same order, and an empty one ('') where a server needs none"
+        )
+
+    parsed: List[Tuple[Optional[str], str, str, Optional[str]]] = []
+    for spec in stdio_specs:
+        name, rest = split_namespace(spec)
+        if not rest:
+            problems.append("--mcp-stdio is empty; it is a command line to run.")
+            continue
+        parsed.append((name, rest, "stdio", None))
+    for index, spec in enumerate(url_specs):
+        name, rest = split_namespace(spec)
+        if not rest:
+            problems.append("--mcp-url is empty; it is a URL to reach.")
+            continue
+        token = token_list[index] if index < len(token_list) else None
+        parsed.append((name, rest, "http", token or None))
+
+    # Explicit names are claimed first, so an automatic namespace never takes
+    # one a later flag spelled out.
+    claimed: List[str] = []
+    for name, _rest, _scheme, _token in parsed:
+        if name is None:
+            continue
+        if name in claimed:
+            problems.append(
+                f"two servers are both named {name!r}; a namespace tells one "
+                f"server's tools from another's and cannot be shared"
+            )
+        claimed.append(name)
+
+    servers: List[NamedTransport] = []
+    for name, rest, scheme, token in parsed:
+        namespace = name or auto_namespace(claimed)
+        if name is None:
+            claimed.append(namespace)
+        if scheme == "stdio":
+            import shlex
+
+            parts = shlex.split(rest)
+            if not parts:
+                problems.append(
+                    "--mcp-stdio is empty; it is a command line to run.")
+                continue
+            transport: McpTransport = StdioTransport(
+                command=parts[0], args=parts[1:])
+        else:
+            transport = StreamableHttpTransport(url=rest, token=token)
+        servers.append(NamedTransport(namespace=namespace, transport=transport))
+
+    if problems:
+        raise McpServersMisdeclared(
+            "the MCP servers named on this command line cannot be bridged:"
+            "\n  - " + "\n  - ".join(problems))
+    return servers
+
+
+def transports_from_args(args: Any) -> List["NamedTransport"]:
+    """:func:`transports_from_specs`, fed from parsed CLI arguments.
+
+    The environment forms (``MCP_STDIO``, ``MCP_URL``, ``MCP_TOKEN``) are
+    read HERE rather than as an ``argparse`` default, because a default on an
+    ``append`` action is a list the parser appends *to* — an operator with
+    ``MCP_STDIO`` set and one ``--mcp-stdio`` given would silently bridge two
+    servers, one of them a plane they had forgotten was in their shell.  Each
+    environment variable still names exactly one server, as it always did;
+    composing several planes is a command-line act.
+    """
+    stdio = _as_list(getattr(args, "mcp_stdio", None))
+    urls = _as_list(getattr(args, "mcp_url", None))
+    tokens = _as_list(getattr(args, "mcp_token", None))
+    if not stdio and not urls:
+        stdio = _as_list(os.environ.get("MCP_STDIO"))
+        urls = _as_list(os.environ.get("MCP_URL"))
+    if urls and not tokens:
+        # ``MCP_TOKEN`` credentials a URL wherever that URL came from — the
+        # flag or the environment — because that is what it did when there
+        # could only be one server, and an operator whose token stopped
+        # being sent the day the flag learned to repeat would debug the
+        # server's 401 rather than this function.
+        #
+        # One variable can only be one server's secret, so with several
+        # URLs named it is a refusal and not a guess: sending it to the
+        # wrong one is the leak, and ignoring it silently is an
+        # unauthenticated run nobody asked for.
+        from_env = _as_list(os.environ.get("MCP_TOKEN"))
+        if from_env and len(urls) == 1:
+            tokens = from_env
+        elif from_env:
+            raise McpServersMisdeclared(
+                f"MCP_TOKEN is set and {len(urls)} --mcp-url servers were "
+                f"named; one variable is one server's credential. Pass one "
+                f"--mcp-token per --mcp-url, in the same order, and an empty "
+                f"one ('') where a server needs none")
+    return transports_from_specs(stdio, urls, tokens)
+
+
+class McpFleet:
+    """Every named server, connected, bridged onto one bus, as one object.
+
+    A context manager, like :class:`McpClient`, and for the same reason: the
+    servers are subprocesses and sockets, and the failure this prevents is a
+    fleet that is half up.  If the third server cannot be reached, the two
+    already connected are stopped before the error leaves this class — a
+    caller that gets a fleet back has all of it.
+
+    One bridge per server, each with its own namespace, so a tool is named
+    ``<namespace>.<tool>`` on the bus and the audit row therefore NAMES which
+    server ran it.  That is the whole of the multi-server story: nothing
+    downstream — the capability engine, the closed set, the audit log,
+    :func:`~core.tools.descriptors.same_tool` — learns that there is more
+    than one.
+    """
+
+    def __init__(
+        self,
+        servers: Sequence["NamedTransport"],
+        bus: Any,
+        *,
+        timeout: float = 30.0,
+        scopes: Sequence[str] = McpToolBridge.DEFAULT_SCOPES,
+    ):
+        self._servers = list(servers)
+        self._bus = bus
+        self._timeout = timeout
+        self._scopes = list(scopes)
+        self._clients: List[McpClient] = []
+        self._bridges: List[McpToolBridge] = []
+        seen: List[str] = []
+        for server in self._servers:
+            if server.namespace in seen:
+                raise McpServersMisdeclared(
+                    f"two servers are both named {server.namespace!r}; a "
+                    f"namespace tells one server's tools from another's and "
+                    f"cannot be shared")
+            seen.append(server.namespace)
+
+    # ── lifecycle ───────────────────────────────────────────────────────
+
+    def start(self) -> "McpFleet":
+        for server in self._servers:
+            client = McpClient(server.transport, timeout=self._timeout)
+            # The whole of one server's bring-up is inside the ``try``, not
+            # only the connect: a ``tools/list`` that fails after the
+            # session opened leaves a live subprocess and, if the bridge got
+            # halfway, descriptors on the bus — and the caller sees an
+            # exception, so nobody is going to call :meth:`stop` for it.
+            try:
+                client.start()
+                self._clients.append(client)
+                bridge = McpToolBridge(
+                    client, self._bus,
+                    namespace=server.namespace, scopes=self._scopes)
+                self._bridges.append(bridge)
+                bridge.sync()
+                bridge.follow_changes()
+            except BaseException:
+                self.stop()
+                raise
+        return self
+
+    def stop(self) -> None:
+        """Withdraw every bridged tool and close every session.
+
+        In reverse order, and each in its own ``try``: one server that hangs
+        up badly must not leave the next one's descriptors on the bus,
+        dispatching into a closed transport.
+        """
+        for bridge in reversed(self._bridges):
+            try:
+                bridge.withdraw()
+            except Exception:  # pragma: no cover - shutdown noise
+                pass
+        self._bridges = []
+        for client in reversed(self._clients):
+            try:
+                client.stop()
+            except Exception:  # pragma: no cover - shutdown noise
+                pass
+        self._clients = []
+
+    def __enter__(self) -> "McpFleet":
+        return self.start()
+
+    def __exit__(self, *exc_info) -> None:
+        self.stop()
+
+    # ── what it bridged ─────────────────────────────────────────────────
+
+    @property
+    def servers(self) -> List["NamedTransport"]:
+        return list(self._servers)
+
+    @property
+    def clients(self) -> List[McpClient]:
+        return list(self._clients)
+
+    @property
+    def bridges(self) -> List[McpToolBridge]:
+        return list(self._bridges)
+
+    @property
+    def namespaces(self) -> List[str]:
+        return [server.namespace for server in self._servers]
+
+    @property
+    def discovered(self) -> List[str]:
+        """Every bridged bus name, server order then ``tools/list`` order."""
+        names: List[str] = []
+        for bridge in self._bridges:
+            names.extend(bridge.registered)
+        return names
+
+    def describe(self) -> str:
+        """What this fleet reaches, for the line an operator reads.
+
+        One server describes itself exactly as it did before there could be
+        two — the connected line for a single-server run is unchanged to the
+        byte — and several are listed with the namespace each one answers to,
+        because "connected to three servers" without saying which name is
+        which is a line that has to be read twice.
+        """
+        if len(self._servers) == 1:
+            return self._servers[0].transport.describe()
+        return "; ".join(server.describe() for server in self._servers)

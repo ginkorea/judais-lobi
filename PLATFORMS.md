@@ -326,9 +326,9 @@ releases.
 | `--mission` | — | mission mode. Without it none of the rest applies |
 | `--events` | `MISSION_EVENTS` | the record sink: `-`, `fd:N`, or a path |
 | `--control` | `MISSION_CONTROL` | the channel *into* the run (§7) |
-| `--mcp-url` | `MCP_URL` | an HTTP MCP endpoint |
-| `--mcp-stdio` | `MCP_STDIO` | an MCP server to spawn over stdio |
-| `--mcp-token` | `MCP_TOKEN` | the bearer token. **Use the variable**: argv is world-readable |
+| `--mcp-url` | `MCP_URL` | an HTTP MCP endpoint. Repeatable and namespaced |
+| `--mcp-stdio` | `MCP_STDIO` | an MCP server to spawn over stdio. Repeatable and namespaced |
+| `--mcp-token` | `MCP_TOKEN` | the bearer token, paired with the `--mcp-url` in the same position. **Use the variable**: argv is world-readable |
 | `--skill` | `MISSION_SKILL` | the manifest directory or file (§5) |
 | `--swarm` | `MISSION_SWARM` | plan the mission as steps rather than one loop |
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native` tool calling |
@@ -656,7 +656,15 @@ judais --mission --mcp-url https://host/mcp "…"          # env: MCP_URL
 judais --mission --mcp-stdio 'python -m my_server' "…"   # env: MCP_STDIO
 ```
 
-Passing both is a refusal naming both. Passing neither is **not** a refusal
+Both flags are **repeatable and combinable**, which is how a platform composes
+its own governed plane with this package's: each server's tools are namespaced
+`mcp.`, then `mcp2.`, …, or by a name written on the flag
+(`--mcp-stdio 'ours=python -m core.tools.serve --profile dev'`), and a
+`--mcp-token` pairs with the `--mcp-url` in the same position because a token is
+one server's credential. `python -m core.tools.serve` is this package's own
+tools published over MCP through the same bus — so your host's profile, sandbox
+and audit apply on the serving side. See the README's *Serving the built-in
+tools over MCP*. Passing neither is **not** a refusal
 since 0.16: the plane is then the package's own registered tools (the
 built-in descriptors — the console says `🧰 … BUILT-IN tools — no server was
 named`), and the refusal fires only when a skill's closed set names a tool the
@@ -1221,6 +1229,11 @@ python -m core.eval score --suite path/to/suite.yml --runs DIR
   Yesterday's runs can be re-scored against today's rubric, and a grounding
   change can be scored on runs it was not present for. Combined with `--replay`
   (§6) it is how a platform measures a change on runs it already has.
+* **`measure`** runs the same suite over a **matrix of configurations** against
+  one endpoint and prints the differences — `run` answers *how did this
+  configuration do*, `measure` answers *which configuration is better*. It is
+  what ROADMAP §3's "measure before default" is done with: nothing here becomes
+  on-by-default off one number. See `EVAL.md` §12.
 
 A fourth, **`live`**, lands in **0.16**: a platform's own suite driven against a
 running deployment rather than against an archive.
