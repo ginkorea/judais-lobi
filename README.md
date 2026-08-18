@@ -908,7 +908,14 @@ subprocess and pinning a release — that is its own guide:
 **[`PLATFORMS.md`](PLATFORMS.md)**. It covers the personality format and how to
 add a new named agent, the `SKILL.md` fields including `sdk_import`, the exact
 spawn shape, the release-and-pin loop, and the list of things that must never
-enter this repository. TAIPAN is the worked example throughout.
+enter this repository.
+
+**A platform integrates from `PLATFORMS.md` alone; the conformance kit under
+`tests/conformance/` goes red the day the contract breaks.** Those are the two
+halves of the same promise — the guide is held against the code by
+`tests/test_docs_track_the_code.py` and `tests/test_platforms_doc.py`, and the
+kit is two files a platform copies into its own repository, edits one dict in,
+and runs with no model, no server and no credential.
 
 ## Extensibility
 
