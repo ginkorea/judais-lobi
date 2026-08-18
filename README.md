@@ -1074,7 +1074,8 @@ If you want to understand the **current implementation**, inspect:
 
 * `core/agent.py` — concrete Agent class (replaced `elf.py` in Phase 3)
 * `core/runtime/contract.py` — the seam a consumer pins, as data
-* `core/runtime/mission.py`, `mission_stream.py`, `swarm.py` — the mission loop, its NDJSON account, and staged decomposition
+* `core/runtime/run.py` — the loop, as six objects: `Run(personality, plane, bounds, store, observer, model)`, each the one owner of a class of fact
+* `core/runtime/mission.py`, `mission_stream.py`, `swarm.py` — the mission vocabulary and the `MissionRunner` adapter that builds those six, its NDJSON account, and staged decomposition
 * `core/runtime/skills.py` — the `SKILL.md` loader: closed tool set, prompt, grounding grammar, `sdk_import`
 * `core/runtime/grounding.py`, `results.py` — the identifier/claim validator, and the per-mission result store it reads paths out of
 * `core/runtime/reading.py` — the field-misreading reader the `reading` tier asks: what does this field hold, cold, before the sentence is shown
