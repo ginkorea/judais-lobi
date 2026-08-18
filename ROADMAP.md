@@ -818,6 +818,54 @@ shell/python); specialised planes stay manifest choices under OPS/GOD. One of
 them (`research` or `repo`) ships as the default skill before 1.0 so §4's
 "zero flags" claim is a mission and not a chat.
 
+**It is more than a SKILL.md** (owner, 17 Aug: "the ability to do any mission
+set … a bit more than a skill.md as originally envisioned"). Three layers,
+each already named in this repo:
+
+* **Skill** — what the model is told and held to: persona text, the closed
+  set, grounding grammar, policy, `sdk_import`. A `SKILL.md`, kept small.
+* **Task** — one objective under one skill on one plane with bounds: one
+  `Run` (`--mission`; February's `--task`). What is missing is the **task
+  template**: the workflow shape (intake → plan → act → verify → finalize,
+  with a judge). The kernel's `WorkflowTemplate`s are this, and since lane E
+  the roles are `Run`s, so a template is a named composition of Runs with a
+  judge — data, not a second loop.
+* **Campaign / mission set** — a DAG of tasks with artifact handoff, human
+  approval, resumable: `CampaignOrchestrator`/`CampaignPlan`, dormant on the
+  kernel path. It stays *above* `Run` (§2.6.5) as a parent spawning children;
+  what makes it real is what the mission path already earned — the run store,
+  `--approval`, the supervisor — and the **wire**: lane D's OPTIONAL `branch`
+  says which child a record belongs to; the campaign plan rides the first
+  `step_started` the way the swarm's `plan` does, and an OPTIONAL
+  `artifacts` (handoff) field goes beside it. No new required field.
+
+The unit shipped is a **mission pack**: a directory holding `SKILL.md`, the
+tools it needs (built-in descriptors and/or MCP servers), workflow templates,
+campaign plans, and its own eval suite — loaded by `--pack <name>` /
+`Skill.load(<name>)`, versioned as data, scored by `core.eval live`. "Any
+mission set" means: write a pack.
+
+**Built-in tools and the MCP — one owner, two transports** (owner, 17 Aug:
+"should we move all of the tools to the MCP? … if we build all this
+capability, we should be able to use some of it on the MCP, instead of
+removing capability"). The tools do not move: in-process dispatch is what
+lets a fresh `pip install` run a governed mission with zero flags, and it is
+where bwrap, the profile, the audit and the schema check are enforced *here*.
+Instead the descriptors stay the one definition and gain a second transport:
+a first-party MCP server, `python -m core.tools.serve` (an `[mcp-server]`
+extra; stdio and streamable HTTP), exposing the same descriptors **through
+the same bus**, so profile/sandbox/audit apply on the serving side. Any MCP
+client — the reference platform's server, an IDE agent — gets research /
+repo / knowledge / ops without a line of ours being removed; the harness can
+run its own tools in-process (default) or over `--mcp-stdio "python -m
+core.tools.serve --profile dev"`, and the eval suite runs both transports to
+prove parity — the honest test of the 0.14.0 gate rule (a bridged tool's
+isolation is the server's, and here the server is ours). Requirement this
+exposes: the bus bridges ONE MCP server today (`--mcp-stdio` XOR
+`--mcp-url`); composing a platform's plane with ours needs `--mcp-stdio`/
+`--mcp-url` to be repeatable, each server namespaced. That is a Phase 15 lane
+of its own.
+
 ### 2.7 Phase 12 — providers and streaming (0.13)
 
 Properties 4 and 6.
