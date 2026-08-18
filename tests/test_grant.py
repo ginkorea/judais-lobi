@@ -247,7 +247,8 @@ class TestARefusalUnderAGrantNamesTheGrant:
         """The old sentence, unchanged, for the case it was written for."""
         engine = safe_bus().capability_engine
         verdict = engine.check("fetch_page_content", ["http.read"])
-        assert "http.read needs --profile ops" in verdict.reason
+        # The LOWEST profile that grants it — `research` since lane M.
+        assert "http.read needs --profile research" in verdict.reason
         assert "granted for this run" not in verdict.reason
 
     def test_the_two_sentences_come_from_one_function(self):

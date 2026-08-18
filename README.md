@@ -422,7 +422,7 @@ nobody took.
 
 | flag | what it does |
 | --- | --- |
-| `--profile` | `safe` (default), `dev`, `ops`, `god` — the one gate on every client of this plane |
+| `--profile` | `safe` (default), `dev`, `research`, `ops`, `god` — the one gate on every client of this plane |
 | `--unsandboxed` | no isolation. Without it, `bwrap` wherever bubblewrap exists, chosen by the same `select_sandbox` every other run uses |
 | `--audit PATH` | where the rows go (`off` for none). Default: the `JUDAIS_LOBI_AUDIT` resolution |
 | `--elfenv PATH` | the Python environment `run_python_code` runs in. Default: the one the server itself is running in, so a spawn costs nothing |
