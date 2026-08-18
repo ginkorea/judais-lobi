@@ -229,6 +229,60 @@ class TestTheWheelDoesNotShipTheTests:
         assert found - excluded == {"core", "judais", "lobi"}, sorted(found)
 
 
+class TestTheLibraryFacadeShipsAsAModule:
+    """`from judais_lobi import Run` off a plain `pip install`, without a
+    fourth top-level package.
+
+    The class above pins the wheel's top-level *package* set at exactly
+    three. The façade has to be importable under its own dotted name
+    anyway, so it ships as a single MODULE — `judais_lobi.py` at the root,
+    declared in `py_modules`, invisible to `find_packages()`. Both halves
+    are asserted, because either one alone is a wheel that installs and
+    does not work: no `py_modules` and the file is not in the
+    distribution; no file and `py_modules` names nothing.
+    """
+
+    def _py_modules(self) -> list:
+        node = _setup_kwargs().get("py_modules")
+        assert node is not None, (
+            "setup.py declares no py_modules; judais_lobi.py is at the root "
+            "and find_packages() cannot see a bare module, so the wheel "
+            "would ship without the façade")
+        return list(ast.literal_eval(node))
+
+    def test_the_facade_is_declared_as_a_module(self):
+        assert self._py_modules() == ["judais_lobi"]
+
+    def test_the_declared_module_is_a_file_that_exists(self):
+        """A name in `py_modules` with no file beside it builds a wheel
+        that is missing exactly the import the release was cut for."""
+        for name in self._py_modules():
+            assert (REPO / f"{name}.py").is_file(), name
+
+    def test_it_is_not_also_a_package(self):
+        """The whole point of the module form. A `judais_lobi/` directory
+        with an `__init__.py` would be a fourth top-level name in
+        site-packages and would break the assertion above it."""
+        assert not (REPO / "judais_lobi").exists()
+
+    def test_every_promised_name_imports(self):
+        """`__all__` is a promise, and a name in it that does not resolve
+        is the promise broken at the first `from judais_lobi import …`."""
+        import judais_lobi
+
+        assert judais_lobi.__all__, "the façade promises nothing"
+        missing = [name for name in judais_lobi.__all__
+                   if not hasattr(judais_lobi, name)]
+        assert not missing, missing
+
+    def test_the_facade_is_the_only_root_module_that_ships(self):
+        """The mirror of the top-level *package* rule, for modules. A
+        scratch script at the root is one `py_modules` line away from
+        shadowing somebody's `utils`; this says which single one is
+        deliberate. `main.py` and `setup.py` are at the root and are NOT
+        declared, which is the arrangement being pinned."""
+        assert set(self._py_modules()) == {"judais_lobi"}
+
 
 class TestTheAnthropicExtraIsTheOneTheRefusalNames:
     """`AnthropicBackend` soft-imports the SDK and refuses by naming an

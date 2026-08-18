@@ -9,6 +9,15 @@ setup(
     # would ship a top-level `tests` module into every site-packages. 0.8.0's
     # wheel was caught doing exactly that at release time.
     packages=find_packages(exclude=["tests", "tests.*"]),
+    # The library façade, and the reason it is a MODULE rather than a fourth
+    # package. `from judais_lobi import Run` has to work off a plain
+    # `pip install`, and the wheel's top-level *package* set is pinned at
+    # exactly {core, judais, lobi} by tests/test_packaging.py — a set that
+    # exists because 0.8.0 shipped a top-level `tests` into site-packages.
+    # `judais_lobi.py` at the root is invisible to `find_packages()`, so it
+    # ships without touching that set. A fourth top-level package is
+    # warranted the day the façade needs submodules and not before.
+    py_modules=["judais_lobi"],
     include_package_data=True,
     install_requires=[
         "openai>=1.0.0",

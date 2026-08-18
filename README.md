@@ -857,6 +857,49 @@ else is consulted and nothing is invented — the third outcome is a refusal nam
 what was checked. A guess that lands on the wrong checkout is worse than no
 guess, because it starts an agent whose stated rules are not the rules it loaded.
 
+### Library API
+
+```bash
+pip install 'judais-lobi[mission]'
+```
+
+```python
+from judais_lobi import Bounds, Model, Observer, Personality, Run, Store, ToolPlane, Tools
+
+bus = Tools().bus                                        # SAFE, sandboxed, audited
+run = Run(Personality(system_message="You are Tai."),    # what the model is told
+          ToolPlane(bus=bus, offered=["read_file"]),     # the only way out
+          Bounds(), Store(), Observer(), Model(ask=my_chat_fn))
+print(run.run("what does this repository build?").answer)
+```
+
+Six objects and a loop, and that is the whole API. Each one owns a class of
+fact: `Personality` what the model is told and what it is held to, `ToolPlane`
+the only way out and who may say yes to it, `Bounds` everything that can stop a
+run, `Store` what survives the process, `Observer` every record out, `Model` the
+client and the protocol. `my_chat_fn` is `messages -> str`: the loop is confined
+to one injected callable and cannot ask a backend anything you did not offer.
+Every default above means *nothing* — no ceiling, no clock, no durable log, no
+watcher — so you add the ones you want and pay for nothing else.
+
+**The CLI is a client of this.** `judais --mission` is argparse and then these
+same six objects handed to this same `Run`; there is no library dialect and no
+CLI dialect, and a stream from either one is the stream
+[`CONTRACT.md`](CONTRACT.md) describes. `from judais_lobi import contract` is
+that contract as data — `contract.conforms(record)` answers "is this one of
+ours" without a consumer keeping its own copy of the rules.
+
+The rest of what a platform builds the six out of is exported beside them:
+`Skill` and `load_skill` (a `SKILL.md` manifest — the closed set and the prompt),
+`Deadline`, `Cancellation` and `Supervisor` for `Bounds`, `MissionWindow` for
+`Model`, `RunStore` for `Store`, and `SCHEMA_VERSION`.
+
+A mission does **not** need an MCP server. With no `--mcp-stdio`/`--mcp-url`
+(and, as a library caller, with no bridge on your bus) the plane is this
+package's own registered tools, governed by the same profile and the same
+sandbox as everything else; the "needs a server" refusal fires only when a
+skill's closed set names a tool this host has not got, and it says which.
+
 ### For platforms
 
 If you are wiring this framework into a platform — giving it a personality,
