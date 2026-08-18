@@ -77,9 +77,11 @@ class MistralBackend(Backend):
     provider_name = "mistral"
 
     def __init__(self, client: Any = None):
+        # The key is read at construction and DEMANDED at the first request
+        # (`_headers`): a backend exists for every run, a `--replay` that
+        # never asks a model included, and a missing key is a fact about
+        # asking. See `OpenAIBackend.client` for the CI run that made it so.
         self.api_key = os.getenv("MISTRAL_API_KEY")
-        if not self.api_key:
-            raise RuntimeError("Missing MISTRAL_API_KEY")
         self._client = client if client is not None else httpx
         self.last_usage = None
         self.last_tool_calls = []
@@ -88,6 +90,8 @@ class MistralBackend(Backend):
 
     def _headers(self) -> Dict[str, str]:
         """Auth in a header, built per call and never in an argument list."""
+        if not self.api_key:
+            raise RuntimeError("Missing MISTRAL_API_KEY")
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

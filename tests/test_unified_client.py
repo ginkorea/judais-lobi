@@ -40,17 +40,23 @@ class TestUnifiedClientOpenAI:
         collected = list(result)
         assert len(collected) == 2
 
-    def test_missing_key_raises_without_injection(self):
+    def test_missing_key_raises_without_injection(self, monkeypatch):
+        """Constructed fine; refused by name at the first chat — a client
+        exists for a replay that never chats."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        client = UnifiedClient(provider_override="openai")
         with pytest.raises(RuntimeError, match="Missing OPENAI_API_KEY"):
-            UnifiedClient(provider_override="openai")
+            client.chat("m", [{"role": "user", "content": "hi"}])
 
 
 class TestUnifiedClientMistral:
     """Tests for Mistral provider (no injection needed — just key check)."""
 
-    def test_missing_mistral_key_raises(self):
+    def test_missing_mistral_key_raises(self, monkeypatch):
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        client = UnifiedClient(provider_override="mistral")
         with pytest.raises(RuntimeError, match="Missing MISTRAL_API_KEY"):
-            UnifiedClient(provider_override="mistral")
+            client.chat("m", [{"role": "user", "content": "hi"}])
 
     def test_unsupported_provider_raises(self):
         with pytest.raises(ValueError, match="Unsupported provider"):
@@ -201,8 +207,9 @@ class TestUnifiedClientAnthropic:
         """Not a fallback to whichever provider does have a key."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "key")
+        client = UnifiedClient(provider_override="anthropic")
         with pytest.raises(RuntimeError, match="Missing ANTHROPIC_API_KEY"):
-            UnifiedClient(provider_override="anthropic")
+            client.chat("m", [{"role": "user", "content": "hi"}])
 
     def test_the_side_channels_are_the_backends(self, monkeypatch):
         from core.runtime.backends.anthropic_backend import AnthropicBackend

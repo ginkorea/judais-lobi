@@ -530,21 +530,34 @@ class AnthropicBackend(Backend):
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ):
-        if client is not None:
-            self.client = client
-        else:
-            key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        # The SDK client is built at the FIRST call, not here — a backend
+        # exists for every run, a `--replay` that never asks a model
+        # included, and a missing key or SDK is a fact about asking. See
+        # `OpenAIBackend.client` for the CI run that made it so.
+        self._client = client
+        self._api_key = api_key
+        self._model = model or DEFAULT_ANTHROPIC_MODEL
+        self._max_tokens = max_tokens or DEFAULT_MAX_TOKENS
+        self.last_usage = None
+        self.last_tool_calls = []
+
+    @property
+    def client(self):
+        """The SDK client, built on first use; key and SDK demanded here."""
+        if self._client is None:
+            key = self._api_key or os.getenv("ANTHROPIC_API_KEY")
             if not key:
                 raise RuntimeError("Missing ANTHROPIC_API_KEY")
             if _Anthropic is None:
                 raise RuntimeError(
                     "The `anthropic` SDK is not installed. "
                     "Install it with: pip install 'judais-lobi[anthropic]'")
-            self.client = _Anthropic(api_key=key)
-        self._model = model or DEFAULT_ANTHROPIC_MODEL
-        self._max_tokens = max_tokens or DEFAULT_MAX_TOKENS
-        self.last_usage = None
-        self.last_tool_calls = []
+            self._client = _Anthropic(api_key=key)
+        return self._client
+
+    @client.setter
+    def client(self, value):
+        self._client = value
 
     @property
     def model(self) -> str:

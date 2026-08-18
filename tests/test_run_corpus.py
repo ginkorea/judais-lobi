@@ -67,7 +67,13 @@ from tests.test_record_replay import (
 #: 0.15.0.  Everything else — the outcome, the tools, the grounding
 #: verdict, the token count, the number of refused replies — has to be
 #: what it was.
-MOVING_KPIS = ("elapsed_s", "max_steps", "run_id")
+#: ``sandbox`` is a fact about the HOST the stream was scored on, not about
+#: the run: the corpus was recorded where bubblewrap is installed and says
+#: ``bwrap``; a runner without it (GitHub's, for one — CI found this) says
+#: ``none`` for the same records, and every verdict is the same. A guard that
+#: refused that would be a guard that only passes on the machine that
+#: recorded it.
+MOVING_KPIS = ("elapsed_s", "max_steps", "run_id", "sandbox")
 
 #: The one committed stream that is a recording of the OLD loop, with the
 #: columns it moves pinned rather than excused.

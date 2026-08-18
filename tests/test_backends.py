@@ -67,9 +67,15 @@ class TestOpenAIBackend:
             stream=True,
         )
 
-    def test_missing_key_raises(self):
+    def test_missing_key_raises_when_asked_not_when_built(self, monkeypatch):
+        """A backend exists for every run — a `--replay` that never asks a
+        model included — so the key is demanded at the first use of the SDK
+        client, by name, and not at construction (CI on a keyless runner
+        found the difference)."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        backend = OpenAIBackend()
         with pytest.raises(RuntimeError, match="Missing OPENAI_API_KEY"):
-            OpenAIBackend()
+            backend.client
 
     def test_capabilities(self):
         mock = MagicMock()
@@ -469,9 +475,13 @@ class TestMistralBackend:
         monkeypatch.setenv("MISTRAL_API_KEY", self.KEY)
         return MistralBackend(client=client)
 
-    def test_missing_key_raises(self):
+    def test_missing_key_raises_when_asked_not_when_built(self, monkeypatch):
+        """Same rule as OpenAI's: constructed without a key, refused by name
+        at the first request (`_headers` is where the key is spent)."""
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        backend = MistralBackend()
         with pytest.raises(RuntimeError, match="Missing MISTRAL_API_KEY"):
-            MistralBackend()
+            backend._headers()
 
     def test_capabilities(self, monkeypatch):
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
@@ -1226,10 +1236,11 @@ class TestAnthropicBackend:
 
     # ── construction ─────────────────────────────────────────────────────
 
-    def test_missing_key_raises(self, monkeypatch):
+    def test_missing_key_raises_when_asked_not_when_built(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        backend = AnthropicBackend()
         with pytest.raises(RuntimeError, match="Missing ANTHROPIC_API_KEY"):
-            AnthropicBackend()
+            backend.client
 
     def test_construction_contacts_nothing(self):
         client = _StubAnthropic()

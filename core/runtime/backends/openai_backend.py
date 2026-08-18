@@ -20,15 +20,29 @@ class OpenAIBackend(Backend):
     provider_name = "openai"
 
     def __init__(self, openai_client=None):
-        if openai_client is not None:
-            self.client = openai_client
-        else:
+        # The SDK client is built at the FIRST call, not here, and the key
+        # is demanded then. A backend is constructed for every run — a
+        # `--replay`, which never asks a model, included — and "no key"
+        # is a fact about asking, not about existing. CI proved the
+        # difference: a replay of a recorded run died on a machine with no
+        # OPENAI_API_KEY before it had read a byte of the recording.
+        self._client = openai_client
+        self.last_usage = None
+        self.last_tool_calls = []
+
+    @property
+    def client(self):
+        """The SDK client, built on first use; the key is demanded here."""
+        if self._client is None:
             key = os.getenv("OPENAI_API_KEY")
             if not key:
                 raise RuntimeError("Missing OPENAI_API_KEY")
-            self.client = OpenAI(api_key=key)
-        self.last_usage = None
-        self.last_tool_calls = []
+            self._client = OpenAI(api_key=key)
+        return self._client
+
+    @client.setter
+    def client(self, value):
+        self._client = value
 
     def chat(self, model: str, messages: List[Dict], stream: bool = False,
              **extra: Any):
