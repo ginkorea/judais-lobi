@@ -55,6 +55,34 @@ CLIENT_VERSION = "1"
 #: The environment variable a harness sets to say which agent is running.
 CLIENT_NAME_ENV = "MCP_CLIENT_NAME"
 
+#: How long a caller asking for a **synchronous** ``tools/list`` at a step
+#: boundary will wait for it, in seconds.  Short on purpose and separate
+#: from :attr:`McpClient._timeout`, which bounds a tool call and a
+#: connection: this one is paid at the top of every step by a loop that
+#: could otherwise carry on, so the cost of the guarantee has to be small
+#: enough to want.  A server that cannot answer inside it leaves the last
+#: set standing — see :meth:`McpToolBridge.sync`.
+RELIST_TIMEOUT_ENV = "MCP_RELIST_TIMEOUT_S"
+DEFAULT_RELIST_TIMEOUT = 5.0
+
+
+def relist_timeout() -> float:
+    """The bound on a boundary re-list, from the environment or the default.
+
+    Read per call rather than captured at import, for the reason
+    :func:`client_name` is: a harness that exports it before spawning a
+    mission expects it to take, and a process that read it once at import
+    would honour whatever was set when the module first loaded.  An
+    unreadable or non-positive value is the default: a zero here would
+    turn the guarantee off silently, which is exactly the failure this
+    knob exists to fix.
+    """
+    try:
+        value = float(os.getenv(RELIST_TIMEOUT_ENV) or 0)
+    except ValueError:
+        return DEFAULT_RELIST_TIMEOUT
+    return value if value > 0 else DEFAULT_RELIST_TIMEOUT
+
 
 def client_name() -> str:
     """Who this client says it is in the MCP ``initialize`` handshake.
@@ -592,25 +620,47 @@ class McpClient:
             except Exception:  # pragma: no cover
                 pass  # a listener must never kill the session
 
-    def _submit(self, coro):
+    def _submit(self, coro, timeout: Optional[float] = None):
+        """Run *coro* on the session's loop and wait for it, bounded.
+
+        *timeout* overrides this client's own for one request.  A caller
+        that has somewhere else to be — a mission at a step boundary — is
+        entitled to a shorter bound than a tool call gets, and the wait is
+        the caller's to state.
+        """
         loop = self._loop
         if loop is None or self._session is None:
             raise McpConnectionError(
                 f"not connected to {self._transport.name}; call start() first"
             )
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(self._timeout)
+        return future.result(self._timeout if timeout is None else timeout)
 
     # ── protocol ────────────────────────────────────────────────────────
 
-    def list_tools(self, refresh: bool = False) -> List[McpToolSpec]:
-        """The server's ``tools/list``, from cache unless asked otherwise."""
+    def list_tools(self, refresh: bool = False,
+                   timeout: Optional[float] = None) -> List[McpToolSpec]:
+        """The server's ``tools/list``, from cache unless asked otherwise.
+
+        ``refresh=True`` is a **synchronous** round trip: the request goes
+        out now and this returns when the server has answered, rather than
+        reporting whatever the notification-driven refresh on the session
+        thread had last cached.  That is what a caller needs when the
+        answer decides what the model is about to be told — see
+        :meth:`McpToolBridge.sync`.
+
+        *timeout* bounds that wait.  Overrunning it raises (a
+        ``concurrent.futures.TimeoutError``) and leaves the cache exactly
+        as it was: the request may still land on the session thread, but
+        this call will not adopt an answer nobody is waiting for any more.
+        """
         if refresh:
             if self._session is None:
                 raise McpConnectionError(
                     f"not connected to {self._transport.name}; call start() first"
                 )
-            self._tools = self._submit(self._fetch_tools(self._session))
+            self._tools = self._submit(
+                self._fetch_tools(self._session), timeout=timeout)
         return list(self._tools)
 
     def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> McpCallResult:
@@ -694,7 +744,8 @@ class McpToolBridge:
     def local_name(self, remote: str) -> str:
         return f"{self._namespace}.{remote}"
 
-    def sync(self, refresh: bool = False) -> List[str]:
+    def sync(self, refresh: bool = False,
+             timeout: Optional[float] = None) -> List[str]:
         """Reconcile the bus against ``tools/list``.
 
         Registers what the server now advertises and **unregisters what
@@ -704,8 +755,28 @@ class McpToolBridge:
         Only names this bridge put there are removed. Another bridge's
         namespace, and every compiled-in tool, are untouched — a server
         cannot cause the removal of `fs` by any list it sends.
+
+        ``refresh=True`` asks the server **now**, bounded by *timeout* (or
+        :func:`relist_timeout`).  A bridge that cannot re-list inside that
+        bound **keeps the last set**: the bus is left exactly as it was and
+        nothing is unregistered on the strength of an answer that never
+        arrived.  That is the trade a step boundary wants — one re-list
+        behind is a catalogue, a stalled loop is not — and it is why the
+        overrun is swallowed here rather than raised at a caller who could
+        only swallow it too.
         """
-        specs = self._client.list_tools(refresh=refresh)
+        if not refresh:
+            # The cached read, called exactly as it always was: a bound
+            # belongs to the request that goes out, and this one does not.
+            specs = self._client.list_tools()
+        else:
+            try:
+                specs = self._client.list_tools(
+                    refresh=True,
+                    timeout=relist_timeout() if timeout is None else timeout,
+                )
+            except Exception:           # noqa: BLE001 - see docstring
+                return list(self._registered)
         names = []
         for spec in specs:
             name = self.local_name(spec.name)
@@ -719,11 +790,31 @@ class McpToolBridge:
         return list(names)
 
     def follow_changes(self) -> None:
-        """Re-sync whenever the server says its tool list changed.
+        """Keep the bus current, by both halves of current.
 
-        Installed as the client's ``on_tools_changed`` listener.
+        **The push.**  Installed as the client's ``on_tools_changed``
+        listener, so a ``notifications/tools/list_changed`` re-syncs the
+        bus without anybody asking.
+
+        **The pull.**  Registered on the bus with
+        :meth:`core.tools.bus.ToolBus.follow`, so a caller that has to
+        decide *now* what the model may name can ask for a synchronous
+        re-list instead of reading whatever the push had delivered by then.
+        Both are needed and neither replaces the other: the push is free
+        and usually first, and the pull is the one that makes a step
+        boundary deterministic.  Measured, 18 Aug 2026 (``EVAL.md`` §12):
+        with only the push, the ``step_started`` after a tool that
+        registers another tool carried the grown catalogue in three
+        configurations and the pre-growth one in two, and the model
+        correctly refused to call a tool it had not been shown.
+
+        A bus that cannot be followed — a test double, another package's
+        registry — keeps the push and loses nothing it had.
         """
         self._client._on_tools_changed = lambda _specs: self.sync()
+        follow = getattr(self._bus, "follow", None)
+        if callable(follow):
+            follow(lambda: self.sync(refresh=True))
 
     def withdraw(self) -> List[str]:
         """Unregister everything this bridge added; return what went.

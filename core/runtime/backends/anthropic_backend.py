@@ -69,6 +69,13 @@ from core.runtime.backends.base import (
     attr_or_key,
     tool_calls_from,
 )
+from core.runtime.messages import NESTED, opaque_extra, tool_call_object
+
+#: The keys this repo understands on a ``tool_use`` block.  Anthropic puts
+#: the name and the arguments on the block itself where OpenAI nests them
+#: under ``function``, so the shape differs and the rule does not: see
+#: :func:`~core.runtime.messages.opaque_extra`.
+TOOL_USE_KEYS = ("type", "id", "name", "input")
 
 try:  # pragma: no cover - exercised by the install that lacks it
     from anthropic import Anthropic as _Anthropic
@@ -209,7 +216,16 @@ def to_anthropic_messages(
             if text:
                 blocks.append({"type": "text", "text": text})
             for call in tool_calls_from(attr_or_key(raw, "tool_calls")):
+                # The opaque half of the round trip: whatever the provider
+                # put on the block that this repo cannot name goes back on
+                # the block, under the four keys it can.  Flat, because
+                # that is where Anthropic's own extras were read from —
+                # `NESTED` only ever holds an OpenAI `function`'s extras,
+                # and a conversation's calls come from one provider.
+                extra = dict(call.get("extra") or {})
+                extra.pop(NESTED, None)
                 blocks.append({
+                    **extra,
                     "type": "tool_use",
                     "id": call["id"],
                     "name": call["name"],
@@ -269,14 +285,12 @@ def from_anthropic_messages(
                 "content": _as_text(blocks) or None,
             }
             calls = [
-                {
-                    "id": str(attr_or_key(block, "id") or ""),
-                    "type": "function",
-                    "function": {
-                        "name": str(attr_or_key(block, "name") or ""),
-                        "arguments": json.dumps(attr_or_key(block, "input") or {}),
-                    },
-                }
+                tool_call_object(
+                    str(attr_or_key(block, "id") or ""),
+                    str(attr_or_key(block, "name") or ""),
+                    json.dumps(attr_or_key(block, "input") or {}),
+                    opaque_extra(block, known=TOOL_USE_KEYS),
+                )
                 for block in blocks
                 if attr_or_key(block, "type") == "tool_use"
             ]
@@ -454,9 +468,16 @@ def tool_calls_from_blocks(blocks: Any) -> List[Dict[str, Any]]:
     the order they arrived — what a protocol then does with the second
     one is the protocol's decision, and it cannot make it about calls it
     was never shown.
+
+    A block's own unknown keys ride along at the top of the shaped call,
+    where :func:`tool_calls_from` collects them into ``extra`` — the same
+    opaque mapping every other backend produces, so the loop that rebuilds
+    an assistant turn does not have to know which provider filled it.
+    :func:`to_anthropic_messages` puts them back on the block.
     """
     shaped = [
         {
+            **opaque_extra(block, known=TOOL_USE_KEYS),
             "id": attr_or_key(block, "id"),
             "function": {
                 "name": attr_or_key(block, "name"),
@@ -648,6 +669,11 @@ class AnthropicBackend(Backend):
                     block = attr_or_key(event, "content_block")
                     if attr_or_key(block, "type") == "tool_use":
                         calls.add([{
+                            # Same opaque half as the non-streamed path:
+                            # what opens the block is where a provider's
+                            # own fields ride, and the accumulator folds
+                            # them like any other unknown key.
+                            **opaque_extra(block, known=TOOL_USE_KEYS),
                             "index": attr_or_key(event, "index"),
                             "id": attr_or_key(block, "id"),
                             "function": {"name": attr_or_key(block, "name"),

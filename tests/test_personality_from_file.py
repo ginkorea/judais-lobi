@@ -469,8 +469,16 @@ class TestCliWiring:
         assert name == "tai"
         assert seen["config"].system_message == "You are Tai."
         assert seen["provider"] == "local"
-        assert seen["model"] == "gpt-oss-20b"
         assert seen["profile"] == ProfileMode.SAFE
+        # `--model` as typed — `None` here — and the file's own default
+        # travelling beside it on the config, rather than resolved here.
+        # A second resolver of "which model" is what sent one provider's
+        # model name at another's endpoint; `resolve_model` owns the order
+        # now and `Agent` is where it is applied. The file's default is
+        # still what a run with no `--model` sends: see
+        # `tests/test_measure_fixes.py`, which asserts that end to end.
+        assert seen["model"] is None
+        assert seen["config"].default_model == "gpt-oss-20b"
 
     def test_an_explicit_model_beats_the_file(self, toml_file, monkeypatch):
         from argparse import Namespace

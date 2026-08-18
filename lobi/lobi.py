@@ -45,7 +45,9 @@ class Lobi(Agent):
         """
         super().__init__(
             config=LOBI_CONFIG,
-            model=model or LOBI_CONFIG.default_model,
+            # As typed; see `JudAIs.__init__` and
+            # `core.runtime.provider_config.resolve_model`.
+            model=model,
             provider=provider or LOBI_CONFIG.default_provider,
             debug=debug,
             **kwargs,

@@ -72,6 +72,7 @@ from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
     REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
 )
+from core.runtime.messages import assistant_turn
 from core.runtime.results import MissionResultStore
 
 __all__ = [
@@ -175,10 +176,11 @@ LOST_STAGED_EVIDENCE = (
     "than what the tool returned"
 )
 LOST_NATIVE_IDS = (
-    "the provider's own ids for {n} replayed tool call{s}: a `tool_call_id` "
-    "is the server's and never travelled on the event stream, so the "
-    "rebuilt turns quote ids this process minted — the conversation is "
-    "well-formed and the model will not recognise the ids as its own"
+    "the provider's own ids for {n} replayed tool call{s}, and any opaque "
+    "field it attached to them: a `tool_call_id` is the server's and never "
+    "travelled on the event stream, so the rebuilt turns quote ids this "
+    "process minted — the conversation is well-formed and the model will "
+    "not recognise the ids as its own"
 )
 
 
@@ -860,15 +862,13 @@ def _rebuild_native(runner: Any, recorded: Recorded,
     def flush() -> None:
         nonlocal calls, answers, notes, step_calls
         if calls:
-            tail.append({
-                "role": "assistant", "content": "",
-                "tool_calls": [
-                    {"id": call["id"], "type": "function",
-                     "function": {"name": call["tool"],
-                                  "arguments": json.dumps(
-                                      call["arguments"], ensure_ascii=False)}}
-                    for call in calls],
-            })
+            # Through the loop's own owner of that shape — see
+            # `core.runtime.messages.assistant_turn`. A rebuilt turn and a
+            # live one are the same bytes, including whatever opaque field
+            # a provider requires back on a call, for any caller that can
+            # still supply one; this replay cannot, and says so in
+            # `LOST_NATIVE_IDS`.
+            tail.append(assistant_turn("", calls))
             for call, answer in zip(calls, answers):
                 tail.append({"role": "tool", "tool_call_id": call["id"],
                              "content": answer})

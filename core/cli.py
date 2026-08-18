@@ -120,7 +120,13 @@ def _build_agent(AgentClass, args):
     config = PersonalityConfig.from_file(args.personality)
     agent = Agent(
         config=config,
-        model=args.model or config.default_model,
+        # `--model` as typed, and nothing else: `Agent` has the config and
+        # `resolve_model` owns the order it is consulted in. Answering it
+        # here with `or config.default_model` was a second owner, and it
+        # answered without knowing which provider was in force — which is
+        # how a persona's model name reached another provider's endpoint.
+        # See `core.runtime.provider_config.resolve_model`.
+        model=args.model,
         provider=args.provider or config.default_provider,
         sandbox_request=sandbox_request,
         profile=profile,

@@ -32,6 +32,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from core.runtime.messages import (
+    CALL_KEYS,
+    merge_extra,
+    opaque_extra,
+    plain_mapping,
+    tool_call_object,
+)
+
 #: The three counts an OpenAI-shaped ``usage`` object always names, and the
 #: three this dataclass gives fields to.  Everything else the provider sent
 #: — ``prompt_tokens_details`` with its cached-token breakdown, a queue
@@ -65,18 +73,9 @@ def _as_mapping(payload: Any) -> Optional[Dict[str, Any]]:
     """
     if payload is None:
         return None
-    if isinstance(payload, Mapping):
-        return dict(payload)
-    for name in ("model_dump", "to_dict", "dict"):
-        method = getattr(payload, name, None)
-        if not callable(method):
-            continue
-        try:
-            got = method()
-        except Exception:               # pragma: no cover - defensive
-            continue
-        if isinstance(got, Mapping):
-            return dict(got)
+    plain = plain_mapping(payload)
+    if plain is not None:
+        return plain
     named = {name: getattr(payload, name, None) for name in NAMED_COUNTS}
     return named if any(v is not None for v in named.values()) else None
 
@@ -148,8 +147,8 @@ def attr_or_key(payload: Any, name: str) -> Any:
 
     A JSON backend hands over nested ``dict``s; the OpenAI SDK hands over
     pydantic models.  Reading both here is the same bargain
-    :func:`_as_mapping` strikes for usage: one owner, rather than the
-    same ``isinstance`` at three call sites that will drift.
+    :func:`~core.runtime.messages.plain_mapping` strikes: one owner, rather
+    than the same ``isinstance`` at three call sites that will drift.
 
     Public because the frames themselves are read outside this package
     too: :mod:`core.runtime.answer_stream` walks ``choices[0].delta`` off
@@ -205,6 +204,25 @@ def tool_calls_from(payload: Any) -> List[Dict[str, Any]]:
     :meth:`~core.runtime.backends.local_backend.LocalBackend._as_mission_json`
     — but that is the protocol's decision to make and it cannot make it
     about calls it was never shown.
+
+    Anything the provider put on a call **beside** those three travels on
+    an ``extra`` key, collected by
+    :func:`~core.runtime.messages.opaque_extra` and given back verbatim by
+    :func:`~core.runtime.messages.tool_call_object` when the assistant turn
+    is rebuilt.  A provider may require a field it invented to come back
+    with the call it belongs to — a signature over the reasoning behind it,
+    most recently — and a normaliser that dropped what it did not
+    understand made the round trip a 400 rather than a conversation.
+    Never interpreted here, and **absent when there is nothing extra**, so
+    a provider that sends none produces exactly the dict this function has
+    always produced.
+
+    A provider whose calls are not OpenAI-shaped says what *it* understands
+    before it gets here, by spreading its own unknown keys onto the shaped
+    call — see
+    :func:`~core.runtime.backends.anthropic_backend.tool_calls_from_blocks`,
+    where the name and the arguments live on the block rather than under a
+    ``function``.
     """
     if not isinstance(payload, (list, tuple)):
         # No calls, or a field of a shape no provider sends.  Not an
@@ -224,6 +242,9 @@ def tool_calls_from(payload: Any) -> List[Dict[str, Any]]:
         }
         if unread is not None:
             call["arguments_raw"] = unread
+        extra = opaque_extra(raw, function, known=CALL_KEYS)
+        if extra:
+            call["extra"] = extra
         calls.append(call)
     return calls
 
@@ -242,7 +263,20 @@ class ToolCallAccumulator:
     ``index`` is what the provider says, and a fragment without one falls
     back to its position in the frame.  Order out is first-appearance
     order, which for every provider seen so far is index order.
+
+    Opaque provider fields are folded the same way and for the same
+    reason.  Which frame carries one is the provider's business — the
+    opening frame with the id, or the last one with the closing brace —
+    so each frame's unknown keys are merged into the slot as they arrive
+    and the reassembled call carries all of them.  ``index`` is not one of
+    them: it is how a fragment says where it goes and is meaningless on a
+    call that has arrived.
     """
+
+    #: The keys a *fragment* carries that this repo understands.
+    #: :data:`~core.runtime.messages.CALL_KEYS` plus the one that only a
+    #: streamed frame has.
+    FRAGMENT_KEYS = ("index",) + CALL_KEYS
 
     def __init__(self) -> None:
         self._by_index: Dict[Any, Dict[str, Any]] = {}
@@ -258,11 +292,14 @@ class ToolCallAccumulator:
             if not isinstance(index, int) or isinstance(index, bool):
                 index = f"position-{position}"
             slot = self._by_index.setdefault(
-                index, {"id": "", "name": "", "arguments": ""})
+                index, {"id": "", "name": "", "arguments": "", "extra": {}})
             call_id = attr_or_key(fragment, "id")
             if call_id:
                 slot["id"] = str(call_id)
             function = attr_or_key(fragment, "function")
+            slot["extra"] = merge_extra(
+                slot["extra"],
+                opaque_extra(fragment, function, known=self.FRAGMENT_KEYS))
             name = attr_or_key(function, "name")
             if name:
                 slot["name"] = str(name)
@@ -279,11 +316,13 @@ class ToolCallAccumulator:
 
         Through the same function, deliberately: a streamed call and a
         non-streamed one must not be two dialects of the same dict, and
-        the unparseable-arguments rule has one owner.
+        the unparseable-arguments rule has one owner.  The folded extras
+        are put back on the wire shape first and read off it again, for
+        the same reason — one owner of where an opaque field sits.
         """
         return tool_calls_from([
-            {"id": slot["id"], "function": {"name": slot["name"],
-                                            "arguments": slot["arguments"]}}
+            tool_call_object(slot["id"], slot["name"], slot["arguments"],
+                             slot["extra"])
             for slot in self._by_index.values()
         ])
 
@@ -325,8 +364,10 @@ class Backend(ABC):
     #: The native tool calls the **last** completion carried, as plain
     #: dicts — ``{"id": str, "name": str, "arguments": dict}``, with
     #: ``arguments_raw`` added when the provider's argument text could not
-    #: be read.  Every call the provider returned, in its order, whatever
-    #: the caller's protocol then chooses to do with them.
+    #: be read and ``extra`` added when the provider put fields on the call
+    #: that this repo does not name.  Every call the provider returned, in
+    #: its order, whatever the caller's protocol then chooses to do with
+    #: them.
     #:
     #: The same lifecycle as :attr:`last_usage`, for the same reasons:
     #: rebound to ``[]`` at the start of every call so a raised call

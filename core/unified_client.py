@@ -45,6 +45,22 @@ class UnifiedClient:
         return self._backend.capabilities
 
     @property
+    def default_model(self) -> str:
+        """The model this backend sends when the caller names none, or ``""``.
+
+        The third side channel, and the one with a cost: on the local
+        backend reading it is ``LOCAL_MODEL`` or a ``GET /models`` against
+        the server, so nothing asks unless nothing else can answer — see
+        :func:`core.runtime.provider_config.resolve_model`, its only
+        caller.
+
+        ``getattr`` with a default for the reason :attr:`last_usage` uses
+        one: a caller may inject any object as ``backend=``, and a backend
+        with no opinion about model names must say so rather than raise.
+        """
+        return str(getattr(self._backend, "model", "") or "")
+
+    @property
     def last_usage(self):
         """What the provider said the last completion cost, or ``None``.
 

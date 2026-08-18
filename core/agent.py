@@ -13,7 +13,7 @@ from core.memory import UnifiedMemory
 from core.tools import Tools
 from core.tools.run_shell import RunShellTool
 from core.tools.run_python import RunPythonTool
-from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
+from core.runtime.provider_config import resolve_model, resolve_provider
 from core.runtime.messages import build_system_prompt, build_chat_context
 from core.runtime.context_window import ContextConfig, MissionWindow
 
@@ -53,10 +53,22 @@ class Agent:
             requested=provider or config.default_provider,
             has_injected_client=(client is not None),
         )
-        self.model = model or config.default_model or DEFAULT_MODELS[self.provider]
-
         # --- Client / memory / tools ---
         self.client = client if client is not None else UnifiedClient(provider_override=self.provider)
+
+        # --- Model resolution ---
+        # After the client, because for a provider whose served name belongs
+        # to the endpoint the last question in the order is one only the
+        # backend can answer. ONE owner of that order: `resolve_model` says
+        # who is asked and when a personality's `default_model` counts, and
+        # this is the only place in the tree that resolves a model name —
+        # the CLI and the personalities hand their `--model` through
+        # untouched rather than pre-answering it with their own default.
+        self.model = resolve_model(
+            self.provider, model, config.default_model,
+            personality_provider=config.default_provider,
+            served=lambda: getattr(self.client, "default_model", ""),
+        )
         self.memory = memory if memory is not None else UnifiedMemory(
             Path.home() / f".{self.personality}_memory.db"
         )

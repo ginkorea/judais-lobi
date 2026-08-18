@@ -48,7 +48,11 @@ class JudAIs(Agent):
         """
         super().__init__(
             config=JUDAIS_CONFIG,
-            model=model or JUDAIS_CONFIG.default_model,
+            # Handed through as typed. The config travels beside it and
+            # `core.runtime.provider_config.resolve_model` decides when this
+            # personality's default is the right answer — it is not once
+            # `--provider` has named somebody else's endpoint.
+            model=model,
             provider=provider or JUDAIS_CONFIG.default_provider,
             debug=debug,
             **kwargs,
