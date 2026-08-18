@@ -16,7 +16,7 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v0.16.0**, 18 Aug 2026. 5,246 tests collected (`pytest --collect-only -q`);
+**v0.17.0**, 18 Aug 2026. 5,646 tests collected (`pytest --collect-only -q`);
 39,224 lines in `core/`+`judais/`+`lobi/` and 45,067 lines of tests (`wc -l`
 over `*.py`, so blanks and docstrings are in both numbers — this repository
 writes a lot of both on purpose).
@@ -120,7 +120,7 @@ merges. Version bump every phase.
 | 11 | One runtime (0.16) | ✅ 0.16.0 — `Run` and the six owners; `MissionRunner`/`SwarmRunner` adapters; `arun` the loop, `run` the façade; parallel children, OPTIONAL `branch`, `ToolPlane.lease`; chat and the kernel roles through `Run`; corpus diff empty throughout |
 | 12 | Providers and streaming (0.13) | ✅ properties 4 and 6 — constrained decoding (0.11.0), `answer_delta` + the AG-UI translator + the control channel (0.12.0), and the provider work — one HTTP policy owner and `--provider anthropic` (0.14.0) |
 | 13 | Embeddable (1.0) | ◑ 0.16.0 — `from judais_lobi import Run …` (the CLI a client of it); `model_state`; the `[server]` extra; CI on push + PyPI on tag; PLATFORMS.md + the conformance kit; the freeze text written. Left for 1.0: the freeze itself, the fresh-venv smoke, the adversarial review |
-| 15 | First-party skills | ◑ 0.16.0 — packs by name (`core/skills/library`), `analyst` + `research` (with the `research` profile) shipped with eval suites and live proofs; memory (core/recall/working); the built-in tools over MCP + multi-server bridging. In flight: `coding`, campaigns + `--grant` |
+| 15 | First-party skills | ✅ 0.17.0 — packs by name; `analyst`, `research` (+ the `research` profile), `coding` (multi-file, verified) with eval suites and live proofs; memory (core/recall/working); tools over MCP + multi-server; campaigns on `Run` + `--grant`. Left: the mission-pack `templates/` roles composed as `Run`s (post-1.0) |
 | 14 | The step budget is gone (0.15) | ✅ 0.15.0 — no framework step budget; operator ceilings only; `core/runtime/supervisor.py` catches repetition (§2.6a) |
 
 The release numbers in the second column are February's guesses at which
