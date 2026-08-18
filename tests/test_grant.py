@@ -197,6 +197,55 @@ class TestWhatAGrantMayNotSay:
         assert GRANT_FLAG in str(caught.value)
 
 
+class TestThePlaneIsTheOneOwnerOfTheCheck:
+    """The refusals belong to the object that performs the widening.
+
+    They were written into `parse_grants`, which is the CLI's door, and
+    `ToolPlane.grant` took whatever it was handed. So a library caller —
+    and `SwarmRunner` is one — could grant `*`, or a scope no profile
+    names, have the engine record it, and have the name advertised on
+    `mission_started.granted`: a run announcing a capability it does not
+    have. The door still refuses first, with the whole known set listed;
+    this is the check that cannot be walked around.
+    """
+
+    @pytest.fixture
+    def bus(self):
+        return safe_bus()
+
+    @pytest.fixture
+    def plane(self, bus):
+        return ToolPlane(bus=bus, offered=["fetch_page_content"])
+
+    def test_a_library_caller_cannot_grant_the_wildcard(self, plane):
+        with pytest.raises(ValueError, match=r"\*"):
+            plane.grant(["*"])
+
+    def test_the_wildcard_refusal_names_what_it_actually_is(self, plane):
+        with pytest.raises(ValueError, match="god"):
+            plane.grant(["*"])
+
+    def test_a_scope_no_profile_names_is_refused_by_name(self, plane):
+        with pytest.raises(ValueError, match="shel.exec"):
+            plane.grant(["shel.exec"])
+
+    def test_the_known_set_is_listed_so_the_typo_is_findable(self, plane):
+        with pytest.raises(ValueError) as exc:
+            plane.grant(["shel.exec"])
+        assert "shell.exec" in str(exc.value)
+
+    def test_nothing_is_granted_and_nothing_is_advertised(self, plane, bus):
+        """A refusal leaves the engine and the plane exactly as they were —
+        the refusal is not a partial grant."""
+        with pytest.raises(ValueError):
+            plane.grant(["http.read", "shel.exec"])
+        assert plane.granted == ()
+        assert bus.capability_engine.session_scopes() == []
+
+    def test_a_known_scope_is_still_granted(self, plane):
+        assert plane.grant(["http.read"]).granted == ("http.read",)
+
+
 class TestAGrantDoesNotWidenWhatIsNotAScope:
     """Three things a grant is not, each stated as a test because each is a
     thing somebody could reasonably have assumed it did."""

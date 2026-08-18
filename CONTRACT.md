@@ -110,9 +110,20 @@ A `--swarm` turn is one mission made of several child runs, and since 0.16 two
 of those children may be working **at the same time**. `branch` says which one
 a record came from: `"direct"` for the route a turn takes when its router says
 the question needs no plan, and the plan step's own id — `"s1"`, `"s2"` — for
-each stage of a staged turn. It is **absent** on every record the turn itself
-emitted (its `mission_started`, its `answer`, its `grounding`, its
-`mission_finished`), and absent on every record of every run without `--swarm`.
+each stage of a staged turn. It is **absent** on every record of every run
+without `--swarm`, and on a `--swarm` turn it is absent on the opening frame:
+`mission_started` is the turn's, emitted before the router is asked.
+
+**`direct` is the mission's answer, routed direct.** On the unplanned route the
+turn's `answer`, `grounding` and `mission_finished` come from the direct child
+and therefore carry `branch: "direct"`. Those records still belong to the
+**turn** — that is the whole difference between the direct route and a plan
+step, whose own opening and closing are dropped and whose id names one stage of
+a larger job. So: a record with no `branch` is the turn's; a record with
+`branch: "direct"` is the turn's too, told by the child that answered it; a
+record with a plan step's id is one step of it. A consumer that groups by
+`branch` and renders each group as a sub-agent must special-case `direct`, or
+it will show the whole answer of an unplanned turn as somebody's aside.
 
 **A consumer that ignores it reads one correctly-ordered sequence**, which is
 the whole reason this is an optional field and not a schema bump. `index` is
@@ -126,7 +137,8 @@ A consumer that reads it can demultiplex: collect the records of one plan step,
 show two steps progressing side by side, or attribute a tool call to the stage
 that made it. Group on the value and nothing else — the ids come from the
 planner's own plan, they are meaningful only inside one turn, and a redrawn
-plan may reuse one. Absence is not a branch called `""`: it means the turn.
+plan may reuse one. Absence is not a branch called `""`: it means the turn, and
+so does `direct`.
 
 ### The posture on the opening frame
 

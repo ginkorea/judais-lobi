@@ -23,9 +23,17 @@ unconfined, which is what a chat turn is.  See :mod:`core.tools.root`.
 
 ``my_chat_fn`` is ``messages -> str`` and nothing else: the loop is confined
 to one injected callable and cannot ask a backend anything the caller did
-not offer.  Everything else is a default that means *nothing*: no bus of its
-own, no ceiling, no clock, no durable log, no watcher.  A platform adds the
-ones it wants and pays for nothing else.
+not offer.  Almost every other default means *nothing*: no bus of its own,
+no ceiling, no clock, no durable log.  A platform adds the ones it wants and
+pays for nothing else.
+
+**The one default that is not nothing is the supervisor**, and ``Bounds()``
+above carries it: a run that starts repeating itself is reviewed by the same
+model and, if it is going nowhere, wound up.  It costs a run that is getting
+somewhere nothing at all — no signal, no call — and it is the only thing
+that ends an endless loop now that there is no step budget.  A run that is
+to have none says so: ``Bounds(supervisor=NO_SUPERVISOR)``, which is a run
+nothing but a clock or a person can stop.
 
 **The same contract the CLI speaks.**  A run built here emits the records
 :mod:`core.runtime.contract` declares — same events, same required fields,
@@ -74,7 +82,7 @@ from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.prompts import GOVERNED_PLANE
 from core.runtime.run import (
-    Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
+    NO_SUPERVISOR, Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
 )
 from core.runtime.skills import (SkillManifest as Skill, load_skill,
                                  resolve_skill)
@@ -108,6 +116,7 @@ __all__ = [
     "Deadline",         # a wall clock for `Bounds`
     "Cancellation",     # a switch for `Bounds`
     "Supervisor",       # what watches a run for repetition, for `Bounds`
+    "NO_SUPERVISOR",    # …and the word for a run that is to have none
     "MissionWindow",    # the context bound, for `Model`
     # The conduct every run is given between the protocol and the
     # catalogue — exported so a platform can READ what it is turning off

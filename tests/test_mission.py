@@ -595,15 +595,53 @@ class TestTheSupervisor:
         assert transcript.reason == "stuck"
 
     def test_a_run_with_no_supervisor_emits_the_stream_it_always_did(self, bus):
-        """`None` is a run nobody is watching, which is every library
-        caller that does not ask: no review field, no extra call, no
-        difference."""
+        """`NO_SUPERVISOR` is a run nobody is watching: no review field, no
+        extra call, no difference.
+
+        **It is spelled out now, and `None` no longer means it.** `None` is
+        "the default one" — `Run.__init__` builds a supervisor from the
+        model the run was given, because a bare `Bounds()` that switched
+        the endless-loop catch off was fail-open on the one bound this
+        harness has. Asking for a run nothing can stop is still available
+        and is now a thing somebody says out loud.
+        """
+        from core.runtime.run import NO_SUPERVISOR
+
         seen = []
         MissionRunner(
             ScriptedModel(*[tool_call("catalog.search", q="x")] * 3
                           + ['{"answer": "done"}']),
-            bus, ["catalog.search"], observer=seen.append).run("go")
+            bus, ["catalog.search"], observer=seen.append,
+            supervisor=NO_SUPERVISOR).run("go")
         assert not any("review" in r for r in seen)
+
+    def test_a_run_that_asked_for_nothing_is_watched_by_default(self, bus):
+        """The same run without the opt-out. Three identical calls is a
+        `repeated_call`, and the review rides the step after it — which is
+        the whole of what the default buys and the reason it is one."""
+        seen = []
+        MissionRunner(
+            ScriptedModel(*[tool_call("catalog.search", q="x")] * 3
+                          + [verdict("stuck"), '{"answer": "done"}']),
+            bus, ["catalog.search"], observer=seen.append).run("go")
+        reviewed = [r for r in seen
+                    if r["event"] == "step_started" and "review" in r]
+        assert reviewed and reviewed[0]["review"]["signal"] == "repeated_call"
+
+    def test_a_healthy_run_is_watched_and_never_asks_the_watcher_anything(
+            self, bus):
+        """The default costs a run that is getting somewhere nothing: no
+        signal fires, so no review call is made and the stream is byte for
+        byte the stream it was. This is why the recorded corpus did not
+        move."""
+        model = ScriptedModel(tool_call("catalog.search", q="a"),
+                              tool_call("catalog.search", q="b"),
+                              '{"answer": "done"}')
+        seen = []
+        MissionRunner(model, bus, ["catalog.search"],
+                      observer=seen.append).run("go")
+        assert not any("review" in r for r in seen)
+        assert len(model.seen) == 3
 
     def test_an_operator_ceiling_still_stops_a_watched_run(self, bus):
         """The two are independent: the supervisor is not a replacement for

@@ -194,6 +194,74 @@ class TestCLISmoke:
 
 
 
+class TestAnUnreachableServerIsANonZeroExit:
+    """The `silence` clause of `EXIT_CONTRACT`, honoured on the one channel
+    a consumer can read when there is no stream to read.
+
+    "A mission that emits ZERO events has failed … a consumer must report
+    it as a failure rather than render a blank reply", and the clause names
+    an unreachable MCP endpoint as one of the three ways it happens. The
+    handler printed a red line on stdout — the channel the contract says
+    not to parse — and returned, so the process exited **0**: a consumer
+    spawning us was told the turn finished, with nothing on the stream.
+    """
+
+    def _refusing(self, exc):
+        """`_mission` with the fleet refusing to come up, and no run store,
+        no audit and no memory written anywhere near the checkout."""
+        from core.tools import mcp_client
+
+        def boom(*_a, **_kw):
+            raise exc
+        return patch.object(mcp_client, "McpFleet", boom)
+
+    def _argv(self):
+        return ["test", "what exists?", "--mission",
+                "--mcp-url", "http://127.0.0.1:9/mcp"]
+
+    def _run(self, monkeypatch, tmp_path, exc):
+        from core.cli import _main
+
+        monkeypatch.setenv("JUDAIS_LOBI_RUNS", "off")
+        monkeypatch.setenv("JUDAIS_LOBI_AUDIT", "off")
+        monkeypatch.setenv("JUDAIS_LOBI_MEMORY", "off")
+        monkeypatch.chdir(tmp_path)
+        MockClass, mock_elf = TestCLISmoke()._make_mock_elf_class()
+        mock_elf.client.last_usage = None
+        mock_elf.system_message = "You are Tai."
+        with self._refusing(exc), patch("sys.argv", self._argv()):
+            with pytest.raises(SystemExit) as raised:
+                _main(MockClass)
+        return raised.value
+
+    def test_an_unreachable_endpoint_exits_non_zero(self, monkeypatch,
+                                                   tmp_path):
+        from core.tools.mcp_client import McpConnectionError
+
+        value = self._run(monkeypatch, tmp_path,
+                          McpConnectionError("connection refused"))
+        # `SystemExit(str)` is exit status 1 with the string on stderr,
+        # which is where the `diagnostic` clause says a consumer looks when
+        # a mission produced no events.
+        assert value.code not in (0, None)
+
+    def test_the_reason_travels_with_it(self, monkeypatch, tmp_path):
+        from core.tools.mcp_client import McpConnectionError
+
+        value = self._run(monkeypatch, tmp_path,
+                          McpConnectionError("connection refused"))
+        assert "connection refused" in str(value)
+
+    def test_a_missing_sdk_is_the_same_answer(self, monkeypatch, tmp_path):
+        """`McpUnavailable` is the other half of the same `except`: no
+        server was reached, so no events were emitted, so the run failed."""
+        from core.tools.mcp_client import McpUnavailable
+
+        value = self._run(monkeypatch, tmp_path,
+                          McpUnavailable("the mcp SDK is not installed"))
+        assert value.code not in (0, None)
+
+
 class TestTheWallClockDefault:
     """``MISSION_SECONDS`` is the flag's argparse default, so the flag wins.
 

@@ -79,7 +79,8 @@ __all__ = [
     "REPEATED_CALL", "REJECTED_REPLIES", "NO_NEW_EVIDENCE", "OSCILLATION",
     "FAILED_GATE", "SIGNALS", "PROGRESSING", "NUDGE", "STUCK", "REPLAN",
     "VERDICTS", "VERDICT_LINES", "REPEATS", "REJECTIONS", "STALE_STEPS",
-    "REVIEWS", "Review", "Supervisor", "NUDGE_NOTE", "WIND_UP", "describe",
+    "REVIEWS", "REFUNDS_ON_PROGRESSING", "REVIEW_REFUNDS",
+    "Review", "Supervisor", "NUDGE_NOTE", "WIND_UP", "describe",
 ]
 
 
@@ -186,6 +187,50 @@ OSCILLATES = 4
 #: So: three, the last of which is not offered :data:`PROGRESSING`, and
 #: after them a signal winds the run up with no further call.
 REVIEWS = 3
+
+#: The signals for which a :data:`PROGRESSING` verdict is **refunded** —
+#: the review is not counted against :data:`REVIEWS` and the last review is
+#: still offered the word.
+#:
+#: One member, and the reason it has one is the difference between the
+#: signals.  :data:`REPEATED_CALL`, :data:`REJECTED_REPLIES` and
+#: :data:`OSCILLATION` are *demonstrated repetition*: the same act three
+#: times, three replies the loop could not act on, A B A B.  A run that
+#: keeps producing those after three reviews has answered the question, and
+#: the arithmetic that ends it is the endless-loop catch working.
+#:
+#: :data:`NO_NEW_EVIDENCE` is not that.  It is an *absence* — nothing new
+#: came out of the last few steps — and absence is the thing a healthy run
+#: legitimately shows for a stretch: a long build, a retried fetch, a
+#: careful re-read.  Spending the budget on it meant a run that was told
+#: "this is fine" twice was forced ``stuck`` on the third, by arithmetic,
+#: while the model was still saying ``progressing`` and new results were
+#: still arriving.  The owner's instruction is the whole of the argument:
+#: *"instead we should only worry about catching an endless loop where it
+#: is stuck … if it just needs more thinking. Let it think."*
+#:
+#: A refund is not free.  :meth:`Supervisor._threshold` still rises on every
+#: ``progressing`` — four stale steps, then eight, then twelve — so the same
+#: absence costs geometrically more to report and cannot spend a run's turns
+#: on reviews.  What it cannot do any more is *end* a run that is working.
+REFUNDS_ON_PROGRESSING: frozenset = frozenset({NO_NEW_EVIDENCE})
+
+#: How many refunds one signal may have.  Two, and it is a number rather
+#: than "as many as it likes" because the endless-loop catch has to survive
+#: this.
+#:
+#: There is one stall the other three signals genuinely cannot see: a
+#: three-cycle, A B C A B C, with the same bytes back every time.
+#: :data:`OSCILLATION` reads two states and :data:`REPEATED_CALL` counts an
+#: identical act three times in a window of six, which a three-cycle never
+#: reaches — so :data:`NO_NEW_EVIDENCE` is the only thing watching it, and a
+#: refund with no floor would let a model that answers ``progressing``
+#: forever keep a dead run alive forever.  With two refunds such a run is
+#: reviewed five times, at thresholds of 4, 8, 12, 16 and 20 stale steps,
+#: and then wound up.  A healthy run pays none of this: since a step with
+#: either a new call or a new result is evidence, a run that is getting
+#: anywhere never fires the signal at all.
+REVIEW_REFUNDS = 2
 
 #: How much of a result the reviewing model is shown per act.  Enough to
 #: recognise a listing; short enough that twenty of them are a prompt and
@@ -511,6 +556,9 @@ class Supervisor:
         #: Its threshold is multiplied by one more than this, so a pattern
         #: somebody has explained does not keep buying reviews.
         self._raised: Dict[str, int] = {}
+        #: How many reviews each signal has been given back.  See
+        #: :data:`REFUNDS_ON_PROGRESSING` and :data:`REVIEW_REFUNDS`.
+        self._refunded: Dict[str, int] = {}
         #: Where the last review looked to, as ``(steps, acts)``.  Everything
         #: before it has been reviewed once and is not reviewed again: the
         #: next question is about what has happened SINCE.  Without this a
@@ -667,8 +715,21 @@ class Supervisor:
             seen = {digest for step in self._steps[:len(self._steps) - n]
                     for act in step.acts
                     for digest in (act.call, act.result)}
+            # `or`, not `and`. An act is new evidence if EITHER half of it
+            # is new: a call the run has not made before, or a result it has
+            # not seen before. `and` demanded both, which quietly made this
+            # signal fire on two of the healthiest shapes a run has — a
+            # polling loop (the same call, a new result every step: a job
+            # status, a test suite after each edit) and an edit loop (a new
+            # call every step, the same short "written 120 bytes" back). An
+            # act whose call AND result are both familiar is a repetition,
+            # and a repetition is what `REPEATED_CALL` above is for. Read
+            # the other way round it is the sentence this signal has always
+            # been described by, in `SIGNALS` and in PLATFORMS.md: it fires
+            # on steps with no new call AND no result the run had not
+            # already seen — both absent, which is what `not (a or b)` says.
             fresh = [act for step in steps[-n:] for act in step.acts
-                     if act.call not in seen and act.result not in seen]
+                     if act.call not in seen or act.result not in seen]
             if not fresh:
                 return NO_NEW_EVIDENCE, n
         return None, 0
@@ -691,17 +752,25 @@ class Supervisor:
                           reviews_left=0, count=count)
         self._spent += 1
         left = self.reviews_left
+        refundable = (signal in REFUNDS_ON_PROGRESSING
+                      and self._refunded.get(signal, 0) < REVIEW_REFUNDS)
         # On the LAST review `progressing` is not on the menu, and that is
         # the other half of the catch: a model asked "are you looping?"
         # three times and answering "no" three times has answered the
         # question. The prompt and the parser are narrowed together, so the
         # word is neither offered nor accepted.
         allowed = tuple(word for word in verdicts
-                        if word != PROGRESSING or left > 0)
+                        if word != PROGRESSING or left > 0 or refundable)
         verdict, note, asked = self._ask(objective, signal, count, allowed,
                                          extra, ledger)
         if verdict == PROGRESSING and asked:
             self._raised[signal] = self._raised.get(signal, 0) + 1
+            if refundable:
+                # See REFUNDS_ON_PROGRESSING: a false alarm about an
+                # absence costs the threshold, not the budget.
+                self._spent -= 1
+                self._refunded[signal] = self._refunded.get(signal, 0) + 1
+                left = self.reviews_left
         self._move_floor()
         return Review(signal=signal, verdict=verdict, note=note,
                       reviews_left=left, count=count)

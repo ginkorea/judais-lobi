@@ -22,7 +22,8 @@ import pytest
 
 from core.runtime.supervisor import (
     FAILED_GATE, NO_NEW_EVIDENCE, NUDGE, OSCILLATION, PROGRESSING,
-    REJECTED_REPLIES, REPEATED_CALL, REPLAN, REVIEWS, SIGNALS, STUCK,
+    REFUNDS_ON_PROGRESSING, REJECTED_REPLIES, REPEATED_CALL, REPLAN,
+    REVIEW_REFUNDS, REVIEWS, SIGNALS, STALE_STEPS, STUCK,
     VERDICTS, Review, Supervisor,
 )
 
@@ -219,6 +220,128 @@ class TestStepsThatProduceNothingNew:
             assert step(sup, ("governed_read", {"asset_id": f"a.{index}"},
                               f"result {index}")) is None
         assert reviewer.calls == 0
+
+
+class TestEitherHalfOfAnActIsEvidence:
+    """New call **or** new result. Not both, and the difference is two of
+    the healthiest shapes a run has.
+
+    The detector once demanded that an act be new in *both* halves before
+    it counted as evidence, which quietly made ``no_new_evidence`` fire on a
+    polling loop (the same call, a new result every step — a job status, a
+    test suite after each edit) and on an edit loop (a new call every step,
+    the same "written 120 bytes" back). Both are runs that are getting
+    somewhere; a run whose call AND result are both familiar is repeating
+    itself, and that is what ``repeated_call`` is for.
+    """
+
+    def test_a_polling_loop_with_a_new_result_each_step_is_progress(self):
+        """The same call, a new result every time — thirty steps of it."""
+        sup, reviewer = watching()
+        for index in range(30):
+            assert step(sup, ("job.status", {"id": 7},
+                              f"running {index}%")) is None
+        assert reviewer.calls == 0
+
+    def test_an_edit_loop_with_a_new_call_each_step_is_progress(self):
+        """A new call every time, the same short acknowledgement back."""
+        sup, reviewer = watching()
+        for index in range(30):
+            assert step(sup, ("fs", {"action": "write", "path": "x.py",
+                                     "content": f"v{index}"},
+                              "Written 12 bytes to x.py")) is None
+        assert reviewer.calls == 0
+
+    def test_a_run_repeating_both_halves_still_fires(self):
+        """The signal is not gone: an act the run has made before AND whose
+        result it has seen before is not evidence, and four steps of that
+        is still a stall."""
+        known = [("governed_read", {"asset_id": f"a.{n}"}, f"result {n}")
+                 for n in range(3)]
+        sup, _reviewer = watching(verdict(NUDGE, "you already have this"))
+        for act in known:
+            assert step(sup, act) is None
+        review = None
+        for index in range(4):
+            review = step(sup, known[index % 3])
+        assert review is not None and review.signal == NO_NEW_EVIDENCE
+
+
+class TestAnAbsenceOfEvidenceDoesNotSpendTheBudget:
+    """``progressing`` on ``no_new_evidence`` is refunded, twice.
+
+    The other signals are *demonstrated repetition* — the same act three
+    times, three replies the loop could not act on, A B A B — and a run
+    still producing those after three reviews has answered the question.
+    An absence of new evidence is not that: a long build or a careful
+    re-read shows it honestly, and a run told "this is fine" twice and then
+    forced ``stuck`` on the third by arithmetic is the step budget coming
+    back under another name.
+    """
+
+    def _stalling(self, *replies, steps=200):
+        """A three-cycle with the same bytes back: the one true stall that
+        `repeated_call` (3 identical acts in 6) and `oscillation` (two
+        states) both miss."""
+        sup, reviewer = watching(*replies)
+        seen = []
+        for index in range(steps):
+            review = step(sup, ("ABC"[index % 3], {}, "same"))
+            if review is not None:
+                seen.append(review)
+                if review.verdict == STUCK:
+                    break
+        return sup, reviewer, seen
+
+    def test_two_progressing_verdicts_cost_no_reviews(self):
+        _sup, _reviewer, seen = self._stalling(
+            verdict(PROGRESSING), verdict(PROGRESSING), verdict(NUDGE, "a"),
+            verdict(NUDGE, "b"), verdict(NUDGE, "c"))
+        assert [r.verdict for r in seen[:2]] == [PROGRESSING, PROGRESSING]
+        assert [r.reviews_left for r in seen[:2]] == [REVIEWS, REVIEWS]
+
+    def test_the_last_review_may_still_say_progressing_while_refunds_last(
+            self):
+        """The narrowing that ends a healthy run by arithmetic is the thing
+        being fixed, so the word is offered as long as saying it is free."""
+        _sup, reviewer, _seen = self._stalling(
+            verdict(PROGRESSING), verdict(PROGRESSING), verdict(NUDGE, "a"),
+            verdict(NUDGE, "b"), verdict(NUDGE, "c"))
+        assert '"progressing"' in reviewer.seen[0][0]["content"]
+        assert '"progressing"' in reviewer.seen[1][0]["content"]
+
+    def test_the_threshold_still_rises_so_a_refund_is_not_free(self):
+        """Four stale steps, then eight, then twelve: the same absence costs
+        geometrically more to report."""
+        _sup, reviewer, seen = self._stalling(
+            *[verdict(PROGRESSING)] * 10)
+        assert [r.count for r in seen[:3]] == [STALE_STEPS, STALE_STEPS * 2,
+                                               STALE_STEPS * 3]
+
+    def test_a_run_that_really_is_going_in_circles_is_still_wound_up(self):
+        """The endless-loop catch survives the refund. A model that answers
+        `progressing` forever gets `REVIEWS + REVIEW_REFUNDS` reviews and
+        then the arithmetic."""
+        _sup, reviewer, seen = self._stalling(*[verdict(PROGRESSING)] * 20)
+        assert seen[-1].verdict == STUCK
+        assert reviewer.calls == REVIEWS + REVIEW_REFUNDS
+
+    def test_the_other_signals_keep_the_arithmetic(self):
+        """`repeated_call` is demonstrated repetition and a `progressing`
+        verdict on it spends a review, exactly as it always did."""
+        sup, reviewer = watching(verdict(PROGRESSING))
+        seen = []
+        for _ in range(12):
+            review = step(sup, READ)
+            if review is not None:
+                seen.append(review)
+                break
+        assert seen[0].signal == REPEATED_CALL
+        assert seen[0].reviews_left == REVIEWS - 1
+
+    def test_the_refunded_signals_are_a_stated_set(self):
+        assert REFUNDS_ON_PROGRESSING == frozenset({NO_NEW_EVIDENCE})
+        assert REVIEW_REFUNDS == 2
 
 
 class TestGoingRoundInTwos:

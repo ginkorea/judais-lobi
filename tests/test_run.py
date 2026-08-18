@@ -28,8 +28,9 @@ from core.runtime.mission import (
 from core.runtime.results import RESULT_TOOL, MissionResultStore
 from core.runtime.backends.base import Usage
 from core.runtime.run import (
-    Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
+    NO_SUPERVISOR, Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
 )
+from core.runtime.supervisor import Supervisor
 from core.runtime.usage import Ledger
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
@@ -222,6 +223,89 @@ class TestBoundsIsTheOnlyVerdict:
         outcome, budget, reason = Bounds(
             deadline=Deadline(0.0).start(), cancel=cancel).stop()
         assert (outcome, budget, reason) == ("incomplete", None, CANCELLED)
+
+
+class TestABareBoundsIsWatched:
+    """``Bounds()`` builds a supervisor, and that is the one default here
+    that is not *nothing*.
+
+    Every other field of :class:`Bounds` is a bound an operator asks for and
+    the framework imposes none.  The supervisor is not one of those: it is
+    what *replaced* the step budget, it is the only thing that ends an
+    endless loop, and left unset it made the documented six-object example
+    — ``Run(personality, plane, Bounds(), …)`` — fail open on the single
+    bound 1.0 has.
+    """
+
+    def _run(self, model, bounds=None):
+        return Run(Personality(system_message="You are Tai."),
+                   ToolPlane(bus=object(), offered=[]),
+                   Bounds() if bounds is None else bounds,
+                   Store(), Observer(), model)
+
+    def test_a_bare_bounds_gets_one(self):
+        run = self._run(Model(ask=ScriptedModel()))
+        assert isinstance(run.bounds.supervisor, Supervisor)
+
+    def test_it_is_asked_through_the_plain_function_when_there_is_one(self):
+        plain = ScriptedModel()
+        run = self._run(Model(ask=ScriptedModel(), plain=plain))
+        assert run.bounds.supervisor._chat is plain
+
+    def test_a_json_run_with_no_plain_function_is_still_watched(self):
+        """The documented example is ``Model(ask=my_chat_fn)`` and nothing
+        else. Under the JSON protocol ``ask`` IS plain chat — the catalogue
+        lives in the system turn and a review replaces that turn — so the
+        example a platform copies gets the endless-loop catch."""
+        ask = ScriptedModel()
+        run = self._run(Model(ask=ask))
+        assert run.bounds.supervisor._chat is ask
+
+    def test_a_native_run_with_no_plain_function_is_not(self):
+        """A review is a question, and a model with a function namespace
+        declared answers a question with a tool call — the one failure
+        `plain` exists to prevent. Better no watcher than a review answered
+        with a call to a tool."""
+        run = self._run(Model(ask=ScriptedModel(), protocol=NATIVE_PROTOCOL))
+        assert run.bounds.supervisor is None
+
+    def test_a_supervisor_that_was_handed_in_is_the_one_used(self):
+        mine = object()
+        run = self._run(Model(ask=ScriptedModel()),
+                        bounds=Bounds(supervisor=mine))
+        assert run.bounds.supervisor is mine
+
+    def test_the_opt_out_is_a_word_and_it_means_no_watcher(self):
+        """``Bounds(supervisor=NO_SUPERVISOR)`` — a run nothing can stop.
+        Normalised back to ``None`` so the loop keeps ONE spelling of
+        "unwatched" and no reader learns a second sentinel."""
+        run = self._run(Model(ask=ScriptedModel()),
+                        bounds=Bounds(supervisor=NO_SUPERVISOR))
+        assert run.bounds.supervisor is None
+
+    def test_the_callers_bounds_object_is_left_as_it_was(self):
+        """Frozen and shared: a caller still holding the bounds it passed
+        still holds the bounds it passed."""
+        mine = Bounds()
+        self._run(Model(ask=ScriptedModel()), bounds=mine)
+        assert mine.supervisor is None
+
+    def test_one_supervisor_for_a_turn_and_its_children(self):
+        run = self._run(Model(ask=ScriptedModel()))
+        assert run.child(branch="s1").bounds.supervisor is \
+            run.bounds.supervisor
+
+    def test_a_watched_run_that_answers_never_asks_the_watcher_anything(
+            self, bus):
+        """The default costs a healthy run nothing: no signal fires, so no
+        review call is made and the model is asked exactly the turns the
+        mission took."""
+        ask = ScriptedModel('{"answer": "done"}')
+        run = Run(Personality(system_message="You are Tai."),
+                  ToolPlane(bus=bus, offered=["catalog.search"]),
+                  Bounds(), Store(), Observer(), Model(ask=ask))
+        assert run.run("q").outcome == "answered"
+        assert len(ask.seen) == 1
 
 
 # ── Model owns the fold ─────────────────────────────────────────────────────
@@ -499,8 +583,25 @@ class TestAChildSharesWhatItMustShare:
     def test_a_child_takes_the_bounds_it_is_given(self, parent):
         tighter = Bounds(max_steps=2)
         child = parent.child(bounds=tighter)
-        assert child.bounds is tighter
+        assert child.bounds.max_steps == 2
         assert parent.bounds.max_steps == 0
+
+    def test_a_child_given_narrower_bounds_keeps_the_turns_supervisor(
+            self, parent):
+        """A narrower `Bounds` says "less clock" or "fewer steps". It never
+        says "a second review budget" — and left alone it would be one,
+        because `Run.__init__` builds a supervisor for bounds that have
+        none, and a plan that loops across its steps is exactly the pattern
+        no single sub-mission can see."""
+        child = parent.child(bounds=Bounds(max_steps=2))
+        assert child.bounds.supervisor is parent.bounds.supervisor
+
+    def test_a_child_may_still_be_watched_by_something_else(self, parent):
+        """Handed one, the caller's wins: this is not the parent forcing its
+        watcher on a child, it is a default for the field nobody set."""
+        mine = object()
+        child = parent.child(bounds=Bounds(supervisor=mine))
+        assert child.bounds.supervisor is mine
 
     def test_a_named_child_gets_its_own_observer_on_the_same_sink(self):
         seen = []

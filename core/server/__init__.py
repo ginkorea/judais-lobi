@@ -196,17 +196,22 @@ def reconcile_hook(store: RunStore, *, stale_s: Optional[float] = None,
     once per staleness window per stream, so that sixty followers do not scan
     the store sixty times a minute.
 
-    **Off by default.**  ``reconcile_orphans`` closes any run whose metadata
-    has not moved for :data:`~core.runtime.resume.ORPHAN_STALE_S`, and a run
-    that is merely slow — one call to a cold local model — looks exactly like
-    that from outside.  Writing a terminal record into a live run's log from
-    a process that is only *watching* it is the one failure that would be
-    caused by this server rather than merely observed by it.  An operator
-    whose store accumulates orphans asks for it with ``--reconcile``.
+    **Off by default.**  ``reconcile_orphans`` closes a run whose lock is
+    free and whose log has no ending — and, where nobody ever claimed the
+    run, a run that has merely been quiet for
+    :func:`~core.runtime.resume.orphan_window`.  A mission that is slow —
+    one call to a cold local model — is a run in the second class if
+    whatever wrote it never took a lock.  Writing a terminal record into a
+    live run's log from a process that is only *watching* it is the one
+    failure that would be caused by this server rather than merely observed
+    by it, so an operator whose store accumulates orphans asks for it with
+    ``--reconcile``.
     """
-    from core.runtime.resume import ORPHAN_STALE_S, reconcile_orphans
+    from core.runtime.resume import orphan_window, reconcile_orphans
 
-    window = ORPHAN_STALE_S if stale_s is None else float(stale_s)
+    # Through the one owner of the number, so the poll interval and the
+    # rule it is polling for cannot drift apart.
+    window = orphan_window(stale_s)
     state = {"next": clock() + window}
 
     def hook() -> None:

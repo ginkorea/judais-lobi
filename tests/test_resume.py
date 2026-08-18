@@ -21,14 +21,16 @@ import json
 import pytest
 
 from core.contracts.schemas import PolicyPack
-from core.durable import RunStore
-from core.runtime.contract import conforms
+from core.durable import LOCKS, RunStore
+from core.runtime.contract import MISSION_STARTED, conforms
 from core.runtime.mission import MissionRunner
 from core.runtime.resume import (
     LOST_REJECTED_REPLY,
     RESUMABLE_OUTCOMES,
     LOST_STRUCTURED,
+    ORPHAN_FALLBACK_MARGIN_S,
     ORPHAN_STALE_S,
+    orphan_window,
     Recorded,
     ResumeRefused,
     open_for_resume,
@@ -222,7 +224,7 @@ class TestTheDoor:
         take resumability away from every orphan sixty seconds after it was
         born, and by a process that had nothing to do with it."""
         run_id = hard_kill(store, self._killed(bus, store))
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         assert reconcile_orphans(store) == [run_id]
         assert open_for_resume(store, run_id).outcome == "incomplete"
 
@@ -366,6 +368,15 @@ class TestTheStepBudgetIsTheRunsAndNotTheProcesss:
         number no operator ever typed."""
         recorded = self._recorded(spent=12, of=0)
         assert recorded.total_steps(None) == 0
+
+    def test_a_stated_zero_takes_the_ceiling_off(self):
+        """`0` is this harness's word for *unbounded* on the wire, in
+        `DEFAULT_MISSION_STEPS`, and in `--mission-steps`. Read here as
+        "nought further steps" a resume would end `budget_exhausted` before
+        its first turn, which is one flag meaning opposite things on two
+        command lines."""
+        recorded = self._recorded(spent=5, of=8)
+        assert recorded.total_steps(0) == 0
 
     def test_a_ceiling_may_be_put_on_an_unbounded_run_at_the_resume(self):
         """The other direction, and the one an operator reaches for after
@@ -711,10 +722,23 @@ class StagedScript(ScriptedModel):
 
 
 def staged_swarm(bus, plain, executor, store, run_id, **kw):
-    """A `SwarmRunner` wired the way the CLI wires one for this store."""
+    """A `SwarmRunner` wired the way the CLI wires one for this store.
+
+    With the supervisor OFF unless a test asks for one, and that is a
+    statement about what these tests are for.  A run built with no
+    ``supervisor=`` gets the default one (:data:`core.runtime.run
+    .NO_SUPERVISOR` is the opt-out), and on the staged path a supervisor
+    changes what a **failed gate** means: it is put to the reviewer rather
+    than settled as a failure.  These tests are about the resume machinery
+    — which step re-runs, which numbers carry over — and a reviewer that
+    was never scripted would answer every one of those questions with its
+    safe default.  The test that wants a verdict scripts one.
+    """
+    from core.runtime.run import NO_SUPERVISOR
     from core.runtime.swarm import SwarmRunner
 
     kw.setdefault("max_steps", 8)
+    kw.setdefault("supervisor", NO_SUPERVISOR)
     return SwarmRunner(executor, bus,
                        ["catalog.search", "catalog.get", "catalog.wipe"],
                        system_message="You are Tai.",
@@ -1005,6 +1029,17 @@ class TestTheCredentialIsRereadAndNotRecovered:
 # ── orphans ──────────────────────────────────────────────────────────────────
 
 
+#: How long a run in these tests is backdated to be past every window.
+#:
+#: The **wide** one, because a run created by :meth:`RunStore.create` alone
+#: has never been claimed — no lock file — and a run nobody ever claimed is
+#: one whose liveness nothing can speak to, so the clock is the whole rule
+#: and :func:`orphan_window` widens it past the longest silence a live run
+#: is entitled to.  A run that WAS claimed is read by the short one; that is
+#: :class:`TestLivenessIsALockAndNotAClock` below.
+ABANDONED_LONG_ENOUGH = orphan_window(locks=False) + 10
+
+
 def _age(store, run_id, seconds):
     """Backdate a run's ``updated_at`` by *seconds*, on the disk.
 
@@ -1048,26 +1083,26 @@ class TestOrphansAreClosed:
         with pytest.raises(ScriptedModel.Stop):
             runner(bus, ScriptedModel(tool_call("catalog.search", q="a"), Stop),
                    run_store=store, run_id=run_id).run("go")
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         before = store.meta(run_id).last_seq
         assert reconcile_orphans(store) == []
         assert store.meta(run_id).last_seq == before
 
     def test_a_stale_orphan_is_closed(self, bus, store):
         run_id = self._killed(bus, store)
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         assert reconcile_orphans(store) == [run_id]
         assert recorded_outcome(store.records(run_id)) == "incomplete"
 
     def test_the_closing_record_conforms(self, bus, store):
         run_id = self._killed(bus, store)
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         reconcile_orphans(store)
         assert conforms(store.records(run_id)[-1]) == []
 
     def test_it_carries_the_counts_off_the_log(self, bus, store):
         run_id = self._killed(bus, store)
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         reconcile_orphans(store)
         closing = store.records(run_id)[-1]
         # `0` is what the opening frame said, because the run that was
@@ -1080,7 +1115,7 @@ class TestOrphansAreClosed:
         ending, not merely find it if it goes looking."""
         run_id = self._killed(bus, store)
         cursor = store.meta(run_id).last_seq
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         reconcile_orphans(store)
         assert [r["record"]["event"] for r in store.since(run_id, cursor)] == \
             ["mission_finished"]
@@ -1103,7 +1138,7 @@ class TestOrphansAreClosed:
         about to append to it, and a terminal record in the middle of a live
         stream is the mistake the guard exists to prevent."""
         run_id = self._killed(bus, store)
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         assert reconcile_orphans(store, live=run_id) == []
         assert recorded_outcome(store.records(run_id)) == ""
 
@@ -1111,7 +1146,7 @@ class TestOrphansAreClosed:
         run_id = store.create(meta={"objective": "go"}).run_id
         runner(bus, ScriptedModel('{"answer": "ok"}'),
                run_store=store, run_id=run_id).run("go")
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         before = store.meta(run_id).last_seq
         assert reconcile_orphans(store) == []
         assert store.meta(run_id).last_seq == before
@@ -1120,7 +1155,7 @@ class TestOrphansAreClosed:
         """The run that failed to reach its server. It is the one somebody
         comes looking for, and an empty log is the least closed of all."""
         run_id = store.create(meta={"objective": "go"}).run_id
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         assert reconcile_orphans(store) == [run_id]
         assert store.records(run_id) == [
             {"event": "mission_finished", "outcome": "incomplete",
@@ -1132,16 +1167,16 @@ class TestOrphansAreClosed:
         consumer that had to learn a word to read this ending would be
         learning one about the reconciler rather than about the mission."""
         run_id = self._killed(bus, store)
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         reconcile_orphans(store)
         assert store.meta(run_id).meta["orphaned_at"]
         assert "orphaned" not in json.dumps(store.records(run_id))
 
     def test_running_it_twice_closes_nothing_twice(self, bus, store):
         run_id = self._killed(bus, store)
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         reconcile_orphans(store)
-        _age(store, run_id, ORPHAN_STALE_S + 10)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
         assert reconcile_orphans(store) == []
         assert [r["event"] for r in store.records(run_id)].count(
             "mission_finished") == 1
@@ -1149,7 +1184,7 @@ class TestOrphansAreClosed:
     def test_it_closes_every_orphan_and_returns_all_of_them(self, bus, store):
         ids = [self._killed(bus, store) for _ in range(3)]
         for run_id in ids:
-            _age(store, run_id, ORPHAN_STALE_S + 10)
+            _age(store, run_id, ABANDONED_LONG_ENOUGH)
         assert sorted(reconcile_orphans(store)) == sorted(ids)
 
     def test_no_store_is_not_a_crash(self):
@@ -1166,3 +1201,95 @@ class TestOrphansAreClosed:
         record["updated_at"] = "not a timestamp"
         path.write_text(json.dumps(record), encoding="utf-8")
         assert reconcile_orphans(store) == []
+
+
+class TestLivenessIsALockAndNotAClock:
+    """The bug this rule was rewritten around, in both directions.
+
+    A live run says nothing for as long as the slowest thing it does takes,
+    and the slowest thing it legitimately does is stand at a gate waiting
+    for a person — up to ``GATE_WAIT_S``, which is five minutes. Under the
+    old rule (metadata untouched for sixty seconds) any sibling
+    ``judais --mission`` starting in the same runs root closed its log,
+    abandoned its pending approval, and left it to append a SECOND
+    ``mission_finished`` with a different outcome when the decision came.
+
+    So the question is put to the kernel: a held run is being run, whatever
+    its clock says, and an orphan is a run whose lock is free and whose log
+    has no ending. The clock survives as the filter and as the fallback,
+    and where it is the fallback it is never shorter than the gate window.
+    """
+
+    def _gated(self, store):
+        """A run standing at a gate: opened, asked, and then silent."""
+        run_id = store.create(meta={"objective": "deploy it"}).run_id
+        store.append(run_id, {"event": MISSION_STARTED, "schema_version": 1,
+                              "objective": "deploy it", "catalogue": [],
+                              "gated": ["deploy"], "max_steps": 0,
+                              "history": 0})
+        store.append(run_id, {"event": "gate_requested", "index": 0,
+                              "tool": "deploy", "arguments": {},
+                              "reason": "gated"})
+        return run_id
+
+    @pytest.mark.skipif(not LOCKS, reason="no fcntl.flock on this platform")
+    def test_a_held_run_silent_past_every_window_is_left_alone(self, store):
+        run_id = self._gated(store)
+        hold = store.hold(run_id, heartbeat_s=0)
+        try:
+            _age(store, run_id, ABANDONED_LONG_ENOUGH * 10)
+            assert reconcile_orphans(store) == []
+            assert recorded_outcome(store.records(run_id)) == ""
+        finally:
+            hold.release()
+
+    @pytest.mark.skipif(not LOCKS, reason="no fcntl.flock on this platform")
+    def test_the_same_run_is_an_orphan_once_the_holder_is_gone(self, store):
+        """The lock goes when the process goes, however it went — which is
+        what makes a free lock evidence rather than a guess."""
+        run_id = self._gated(store)
+        store.hold(run_id, heartbeat_s=0).release()
+        _age(store, run_id, ORPHAN_STALE_S + 10)
+        assert reconcile_orphans(store) == [run_id]
+        assert recorded_outcome(store.records(run_id)) == "incomplete"
+
+    @pytest.mark.skipif(not LOCKS, reason="no fcntl.flock on this platform")
+    def test_a_claimed_dead_run_is_read_by_the_short_clock(self, store):
+        """A run with a lock file was run by something that takes locks, so
+        sixty seconds and a free lock settle it. The wide window is for
+        runs nothing can speak for."""
+        run_id = self._gated(store)
+        store.hold(run_id, heartbeat_s=0).release()
+        _age(store, run_id, ORPHAN_STALE_S + 10)
+        assert orphan_window(locks=True) == ORPHAN_STALE_S
+        assert reconcile_orphans(store) == [run_id]
+
+    def test_a_run_nobody_ever_claimed_gets_the_wide_window(self, store):
+        """The reviewer's repro: a live run written by a caller that never
+        took a lock. Nothing can say whether it is alive, so the clock is
+        the whole rule and it is never shorter than the gate window — a run
+        quiet for seventy seconds is not touched."""
+        run_id = self._gated(store)
+        _age(store, run_id, ORPHAN_STALE_S + 10)
+        assert reconcile_orphans(store) == []
+        assert recorded_outcome(store.records(run_id)) == ""
+
+    def test_and_is_closed_once_it_is_quiet_past_that_one(self, store):
+        run_id = self._gated(store)
+        _age(store, run_id, ABANDONED_LONG_ENOUGH)
+        assert reconcile_orphans(store) == [run_id]
+
+    def test_the_fallback_window_clears_the_gate_wait(self):
+        """The number that mattered: a gate waits ``GATE_WAIT_S`` for a
+        person, and a rule that closed runs before that had elapsed closed
+        runs that were waiting for one."""
+        from core.runtime.control import GATE_WAIT_S
+
+        assert orphan_window(locks=False) > GATE_WAIT_S
+        assert orphan_window(locks=False) == (
+            GATE_WAIT_S + ORPHAN_FALLBACK_MARGIN_S)
+
+    def test_a_caller_may_still_widen_the_clock(self):
+        assert orphan_window(10_000.0, locks=True) == 10_000.0
+        assert orphan_window(10_000.0, locks=False) == 10_000.0
+
