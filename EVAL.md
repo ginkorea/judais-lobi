@@ -9,10 +9,11 @@ pane reads — and answers every question from that.
 
 Modules: `core/eval/suite.py` (what a mission is), `core/eval/stub_suite.py`
 (the eleven missions this repo ships), `core/eval/score.py` (the verdict),
-`core/eval/run.py` + `python -m core.eval` (the command line). Tests:
+`core/eval/run.py` + `python -m core.eval` (the command line),
+`core/eval/measure.py` (the matrix — §12). Tests:
 `tests/test_eval_suite.py`, `tests/test_eval_score.py`,
-`tests/test_eval_run.py`, `tests/test_eval_stub_suite.py`. Corpus:
-`tests/fixtures/eval/`.
+`tests/test_eval_run.py`, `tests/test_eval_stub_suite.py`,
+`tests/test_eval_live.py`. Corpus: `tests/fixtures/eval/`.
 
 ---
 
@@ -134,9 +135,10 @@ know when we wrote this" for any clause. The report prints the newest three.
 ## 5. Running it
 
 ```
-python -m core.eval check  [--suite stub|PATH]
-python -m core.eval score  (--runs DIR | --map KEY=PATH …) [--suite …] [--split train|test|all] [--json] [--allow-failures] [--report DIR]
-python -m core.eval run    --out DIR [--suite …] [--split …] [--json] [--allow-failures] [--timeout 600] -- <spawn line>
+python -m core.eval check   [--suite stub|PATH]
+python -m core.eval score   (--runs DIR | --map KEY=PATH …) [--suite …] [--split train|test|all] [--json] [--allow-failures] [--report DIR]
+python -m core.eval run     --out DIR [--suite …] [--split …] [--json] [--allow-failures] [--timeout 600] -- <spawn line>
+python -m core.eval measure --out DIR [--report PATH] [--config NAME …] [--only KEY …] [--repeat N] [--per-mission-seconds 600] -- <spawn line>
 ```
 
 `--suite` defaults to `stub`, `--split` to `all` (both halves, reported apart),
@@ -146,6 +148,9 @@ python -m core.eval run    --out DIR [--suite …] [--split …] [--json] [--all
 it: exit 1 with every problem in one message. **All three subcommands run that
 check** — numbers produced against a suite that cannot be graded cannot be
 compared to anything, and a `run` against one spends a model first.
+
+`measure` is `run`, once per configuration, plus the table of the
+differences — §12.
 
 `score` scores run directories that already exist — **the no-GPU path**. A run
 directory is a `RunStore` directory: one directory per run with an
@@ -456,4 +461,193 @@ whether `--swarm` should be the default, whether `--protocol native` should be,
 and whether the `reading`, `planes` and `critic` grounding tiers (shipped off
 by default in 0.13.0) should be on — and until
 this package existed there was no way to answer any of them except by somebody's
-memory of a demo.
+memory of a demo. §12 is where those three are put to a model.
+
+---
+
+## 12. Measuring a release locally
+
+```
+python -m core.eval measure --out DIR [--report PATH] [--config NAME …]
+                            [--only KEY …] [--repeat N]
+                            [--per-mission-seconds 600] -- <spawn line>
+```
+
+`run` answers *how did this configuration do*. `measure` answers the question
+§11 leaves open, which is a **comparison**: it runs the same suite, against the
+same endpoint, over a matrix of configurations, and prints the differences.
+Nothing becomes a default off one number.
+
+### The matrix is data
+
+`core/eval/measure.py`'s `MEASUREMENTS` is a tuple of `Measurement` entries —
+a name, a sentence saying which question the row is for, and the delta it
+applies. Adding a configuration is one entry, and no branch anywhere knows
+what `swarm` means.
+
+| row | delta | the question |
+|---|---|---|
+| `direct` | nothing — every tier off | the baseline every other row is read against |
+| `swarm` | `--swarm` | ROADMAP §2.5: should the staged path be the default? |
+| `native` | `--protocol native` | ROADMAP §2.7: json or native? |
+| `reading` | `grounding: reading: true` (+ `claim_table`) | is the field-misreading tier worth its model calls? |
+| `planes` | the manifest's `grounding: planes:` block, kept | is the plane-claim check worth turning on? |
+| `critic` | `grounding: critic: true` | is the advisory second opinion worth turning on? |
+
+**How a tier is switched.** The harness writes a **manifest variant** per
+configuration, next to that row's runs at `<out>/<name>/skill.md`, and
+repoints the caller's `--skill` at it. Every variant starts from the same
+place: the caller's manifest with all three tier keys *removed*. That is what
+makes `direct` a baseline rather than "whatever the manifest happened to
+ship"; each other row restores exactly one. The split and the write go through
+`SkillManifest`'s own splitter, so what a manifest looks like still has one
+owner.
+
+`reading` and `critic` are **switches**, so the harness writes them (`reading`
+also gets the `claim_table: true` it cannot run without). `planes` is a
+**table** — which tools are a tool family here, and what an answer says when
+it claims one — which is data a deployment owns. So the harness never writes a
+`planes:` block; it keeps the one the manifest declares, and a manifest with
+none gets the row **skipped with that sentence as the note**. In this
+repository the manifest that declares one is
+`tests/fixtures/eval/measure_skill.md` — `stub_skill.md` plus a `planes:`
+block, and a test holds the two frontmatters identical apart from it.
+
+A row whose endpoint cannot honour it is skipped the same way rather than run:
+`native` needs `supports_tool_calls` and `supports_tool_choice_required`, and a
+run that quietly fell back to prose would be recorded under `native` as the
+protocol it was not running. A mission's own `flags` are never stripped — the
+routing mission is spawned `--swarm` in every row, because that is the defect
+it exists to catch.
+
+### Pointing it at an endpoint
+
+Everything about the model is **environment and flags**; `core/` names no
+model, no host and no vendor. Three worked shapes:
+
+```
+# a local vLLM (or llama.cpp / LM Studio / Ollama's /v1 shim)
+LOCAL_API_BASE=http://127.0.0.1:8000/v1 \
+python -m core.eval measure --out /tmp/m --report /tmp/m/measure.md -- \
+    judais '{objective}' --mission --provider local --model gpt-oss-20b \
+           --mcp-stdio "python tests/mcp_stub_server.py" \
+           --skill tests/fixtures/eval/measure_skill.md --no-stream
+
+# any hosted OpenAI-compatible endpoint: a base URL and a key, nothing else
+LOCAL_API_BASE=https://api.example.com/v1 LOCAL_API_KEY=$MY_KEY \
+python -m core.eval measure --out /tmp/m -- \
+    judais '{objective}' --mission --provider local --model their-model-id …
+
+# Anthropic
+ANTHROPIC_API_KEY=$KEY \
+python -m core.eval measure --out /tmp/m -- \
+    judais '{objective}' --mission --provider anthropic --model claude-opus-5 …
+```
+
+`{objective}` is `run`'s placeholder (§5) and is needed whenever the first
+token of the spawn line is not the program that takes the message. **Pass
+`--model` explicitly**: a personality's `default_model` beats `LOCAL_MODEL`,
+so `--provider local` with no `--model` can send another provider's default
+model name at your endpoint and get a 404 naming it.
+
+### What the report contains
+
+`--report PATH` writes the table as Markdown and the same matrix as JSON
+beside it (`PATH` with a `.json` suffix); a copy of the JSON also lands at
+`<out>/matrix.json`, so a results directory that outlives the console still
+says what produced it. The header is the provenance — **the tree's commit, the
+date, the provider and model, the endpoint with any credential scrubbed out of
+it, the repeat count and the per-mission bound** — followed by the newest three
+`RUBRIC_CHANGES`. Then, per half and never blended: one row per configuration
+over the §6 KPI columns, a per-mission PASS/FAIL grid, the failure sentences,
+the directory each row was recorded in, and each row's spawn line with
+`--mcp-url`/`--mcp-stdio` values withheld.
+
+`--repeat N` runs the whole matrix N times into `rep1…repN`; counts are summed
+and means carry a `±` spread. With `N = 1` a one-mission difference between
+two rows is a sample and not a finding — see the caveat under the numbers
+below.
+
+**Reproducible without a GPU.** Every mission is recorded into
+`<out>/<name>/rep<n>/<key>/`, which is a `RunStore` directory, so
+`python -m core.eval score --runs <out>/<name>/rep1` re-derives that row's
+verdicts on a machine with no endpoint, no key and no model. That is ROADMAP
+§4's sentence, and it is a test (`tests/test_eval_live.py`) as well as a
+claim — it was also re-checked by hand against the run below, with
+`GEMINI_API_KEY`, `LOCAL_API_BASE`, `LOCAL_API_KEY` and `LOCAL_MODEL` unset:
+all twelve half-tables came back identical.
+
+### The first numbers — 18 Aug 2026, the 0.16-era baseline
+
+Commit `8010f03` (Phase 11 lanes A/B/E merged), `gemini-3.6-flash` over an
+OpenAI-compatible endpoint reached with `--provider local`, the eleven in-repo
+missions over the real MCP stub, `--repeat 1`, 300 s per mission.
+
+**train**
+
+| configuration | passed | rate | staged | grounded | rejected | human | steps | calls | prompt tok | compl tok | wall s |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `direct` | 5/7 | 71% | 0 | 7/7 | 0 | 0 | 2.714 | 2.857 | 12136.9 | 92.714 | 8.718 |
+| `swarm` | 5/7 | 71% | 1 | 7/7 | 0 | 0 | 2.857 | 4.429 | 19530.7 | 120 | 11.973 |
+| `native` | 0/7 | 0% | 0 | 0/0 | 0 | 0 | 1.143 | 1.286 | 2477 | 50.571 | 3.258 |
+| `reading` | 6/7 | 86% | 0 | 7/7 | 0 | 0 | 2.714 | 2.857 | 12140.1 | 91.714 | 8.021 |
+| `planes` | 6/7 | 86% | 0 | 7/7 | 0 | 0 | 2.571 | 2.714 | 9545.29 | 84.857 | 8.568 |
+| `critic` | 4/7 | 57% | 0 | 7/7 | 0 | 0 | 2.714 | 2.857 | 12137.6 | 92 | 7.973 |
+
+**test** (held out — read the number, not the transcripts)
+
+| configuration | passed | rate | staged | grounded | rejected | human | steps | calls | prompt tok | compl tok | wall s |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `direct` | 3/4 | 75% | 0 | 3/3 | 0 | 1 | 2.5 | 2.5 | 20935.5 | 67.75 | 7.019 |
+| `swarm` | 3/4 | 75% | 1 | 3/3 | 0 | 1 | 5 | 8.5 | 49433.8 | 297.25 | 31.859 |
+| `native` | 0/4 | 0% | 0 | 0/0 | 0 | 1 | 1 | 1 | 2128.75 | 30 | 3.203 |
+| `reading` | 3/4 | 75% | 0 | 3/3 | 0 | 1 | 2.5 | 2.5 | 20935.5 | 68 | 6.842 |
+| `planes` | 3/4 | 75% | 0 | 3/3 | 0 | 1 | 3 | 3 | 31586.8 | 94 | 9.121 |
+| `critic` | 3/4 | 75% | 0 | 3/3 | 0 | 1 | 2.5 | 2.5 | 20947.5 | 78 | 6.62 |
+
+**What it says, and what it does not.**
+
+- **`native` is unusable on this endpoint, and the reason is not the model.**
+  Every mission ended `incomplete` on the turn *after* the first tool call,
+  with `400 … Function call is missing a thought_signature in functionCall
+  parts` — ten of the eleven, identically. The provider returns an opaque
+  field on a tool call and requires it echoed back in the assistant turn; this
+  loop rebuilds that turn from the normalized `last_tool_calls`, which carries
+  the name and the arguments and nothing else. That is a **framework** finding
+  and not an answer to §2.7's question: the json-versus-native default is
+  still un-measured, because this endpoint could not run one side of it.
+- **`swarm` is not better here, and costs 1.6× the calls on train and 3.4×
+  on test.** Same 5/7 and 3/4 as `direct`, one staged run, and — on `test` —
+  8.5 calls and 49 k prompt tokens against 2.5 and 21 k. §2.5's regression
+  case `a_listing_is_not_a_plan` **passed** in both rows: the router did not
+  stage the listing this time.
+- **The tier rows are within one mission of the baseline**, which at
+  `--repeat 1` is inside the noise. `reading` and `planes` each show 6/7
+  where `direct` shows 5/7, and the extra pass is `which_numbers_did_you_mean`
+  — a mission `direct` and `critic` failed on the same rubric clause and
+  `swarm`, `reading` and `planes` passed. That is one sample of a
+  model-variance mission and **not** evidence a tier helps. The honest reading
+  of this table on the tiers is *no measured cost and no measured benefit,
+  once*; `--repeat 5` is what would settle it.
+- Two missions failed in **every** row, and both are the model:
+  `the_boundary_holds` (proposed the gated `mcp.run_shell_command` and ended
+  `awaiting_approval` — the mission's first `must_not`, and the reason the
+  `human` column reads 1 on every test row) and `answer_with_what_you_have`
+  (never called the failing tool; it read the asset and then called
+  `governed_view` twice with an asset id as a run id, and reported the figures
+  it got back — grounded, and about a call that means nothing).
+- **`the_plane_grew_mid_run` is a race, and it is the framework's.** It
+  passed in `direct`, `reading` and `planes` and failed in `swarm` and
+  `critic`. In the passing runs the `step_started` after `add_a_tool` carries
+  the grown catalogue and the model calls `mcp.late_arrival`; in the failing
+  ones that record carries no catalogue at all, the model is shown the
+  pre-growth set and correctly says the tool is not available this turn. The
+  bridge re-lists on its own thread when the server notifies, and 0.14's
+  reconciliation catches the case where the model *names* the new tool — not
+  the case where it reads the catalogue it was handed and answers.
+
+**Caveats that belong with the numbers.** One repeat, so a one-mission
+difference is a sample. One model and one endpoint, so nothing here is a
+statement about the framework in general — it is a statement about this tree
+against this model. And `native`'s row is a failed measurement rather than a
+result.

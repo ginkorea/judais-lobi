@@ -790,15 +790,20 @@ harness that scores them is in the tree:
 
 ```
 python -m core.eval check                    # refuse a suite that cannot be graded
-python -m core.eval run   --out DIR -- …     # spawn every mission, capture the stream, score it
-python -m core.eval score --runs DIR         # score run directories that already exist — no GPU
+python -m core.eval run     --out DIR -- …   # spawn every mission, capture the stream, score it
+python -m core.eval measure --out DIR -- …   # the same suite over a matrix of configurations, live
+python -m core.eval score   --runs DIR       # score run directories that already exist — no GPU
 ```
 
 `check` refuses a suite whose missions cannot be graded — before anybody spends
 a model on it. `run` spawns the mission command line given after `--` once per
 mission, captures each stream off its own descriptor, and scores it. `score`
 reads run directories that already exist and computes the same verdict, which
-is the no-GPU path.
+is the no-GPU path. **`measure` runs the suite once per configuration against
+one endpoint — direct against `--swarm`, `json` against `native`, each
+grounding tier on against off — and prints the table those defaults are
+waiting on, recording every run so the same table can be produced again
+without a GPU ([`EVAL.md` §12](EVAL.md)).**
 
 **`--replay` plus `score` is how a grounding change is measured on yesterday's
 runs.** Every mission with a run store on records the model calls and the tool

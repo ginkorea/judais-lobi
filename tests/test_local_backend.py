@@ -177,6 +177,26 @@ class TestBaseNormalization:
     def test_existing_version_prefix_not_doubled(self):
         assert LocalBackend(endpoint="http://h:8000/v2").endpoint == "http://h:8000/v2"
 
+    def test_a_path_that_is_not_a_version_prefix_is_left_alone(self):
+        """A base that already carries a path is a path somebody typed.
+
+        Found live, 17 Aug 2026: the eval harness pointed `--provider local`
+        at a hosted OpenAI-compatible endpoint whose base is
+        `https://host/v1beta/openai/`, and the old rule — "append /v1 unless
+        the last segment looks like v<digits>" — turned a working endpoint
+        into `…/v1beta/openai/v1`. The prefix may be `/v1`, `/openai/v1`,
+        `/v1beta/openai` or a reverse proxy's own mount point; the repair is
+        for the one case where nothing at all was said.
+        """
+        for base in ("https://host/v1beta/openai/", "http://h:8000/openai/v1",
+                     "http://h/api/llm"):
+            assert LocalBackend(endpoint=base).endpoint == base.rstrip("/")
+
+    def test_a_bare_host_is_still_repaired_with_or_without_a_scheme(self):
+        assert LocalBackend(endpoint="http://h:8000").endpoint == \
+            "http://h:8000/v1"
+        assert LocalBackend(endpoint="h:8000").endpoint == "h:8000/v1"
+
 
 class TestProbe:
     def test_reports_served_model_and_context(self, stub):
@@ -216,6 +236,38 @@ class TestProbe:
         )
         backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b")
         assert backend.probe().max_model_len == 131072
+
+    def test_a_named_model_the_listing_does_not_carry_is_not_replaced(
+            self, stub):
+        """The probe reports what was ASKED FOR, never somebody else's model.
+
+        A listing is a courtesy and the chat endpoint is the authority: an
+        endpoint may serve a model it does not list. Falling through to the
+        first entry made the probe report a different model as served —
+        which is the probe inventing a fact, and it is what a hosted
+        endpoint's 51-entry listing did on 17 Aug 2026.
+        """
+        backend = LocalBackend(endpoint=stub.base, model="not-listed")
+        probed = backend.probe()
+        assert probed.model_id == "not-listed"
+        assert probed.max_model_len is None
+        assert probed.reachable is True
+
+    def test_a_namespaced_listing_still_matches_the_bare_name(self, stub):
+        """`models/<name>` in the listing, `<name>` at the chat endpoint.
+
+        A comparison that missed that would report a served model as absent
+        and throw away the `max_model_len` sitting beside it.
+        """
+        stub.models["data"] = [{"id": "models/gpt-oss-20b",
+                                "max_model_len": 131072}]
+        backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b")
+        probed = backend.probe()
+        assert probed.max_model_len == 131072
+        # And the name stays the caller's spelling, which is the one the
+        # chat endpoint was going to be sent: matching the listing must not
+        # rewrite the request.
+        assert probed.model_id == "gpt-oss-20b"
 
     def test_model_falls_back_to_served_name(self, stub, monkeypatch):
         monkeypatch.delenv("LOCAL_MODEL", raising=False)

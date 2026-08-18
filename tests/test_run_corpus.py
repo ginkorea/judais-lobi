@@ -79,10 +79,18 @@ MOVING_KPIS = ("elapsed_s", "max_steps", "run_id")
 #: today.  It is stale on ``master`` too — this lane did not do it — so the
 #: honest guard is not to skip the stream but to state exactly which
 #: columns it may move.  A column joining this set IS this lane's problem.
+#: ``prompt_tokens`` and ``completion_tokens`` joined the set on 18 Aug 2026,
+#: and they are not a new fact: they are ``tokens`` — already pinned here —
+#: split into the two halves the provider reports, added to
+#: ``core.eval.score._kpis`` so the measurement matrix can show what a
+#: configuration spends on framing against what it spends on answering. This
+#: stream moves the total for the reason above, so it moves the two halves of
+#: the total for exactly the same reason. A column joining this set for any
+#: OTHER reason is the lane that added it saying so.
 STALE = {
     ("a_listing_is_not_a_plan", "bad"): {
-        "model_calls", "outcome", "records", "reply_rejected", "steps",
-        "tokens",
+        "completion_tokens", "model_calls", "outcome", "prompt_tokens",
+        "records", "reply_rejected", "steps", "tokens",
     },
 }
 

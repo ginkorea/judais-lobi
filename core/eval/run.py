@@ -1,8 +1,8 @@
 # core/eval/run.py — spawn the missions, capture the streams, score them
 
-"""The harness's command line: ``run``, ``score``, ``check``.
+"""The harness's command line: ``run``, ``measure``, ``score``, ``check``.
 
-Three subcommands because there are three jobs, and only one of them needs a
+Four subcommands because there are four jobs, and only two of them need a
 model:
 
 ``run``
@@ -14,6 +14,13 @@ model:
     variables somebody is measuring and a harness that had opinions about
     them would be measuring itself.  This is the subcommand that needs a
     model.
+``measure``
+    ``run``, once per entry of :data:`core.eval.measure.MEASUREMENTS`, and a
+    table of the differences.  It is the subcommand that answers a question
+    a single score cannot — is ``--swarm`` a better default, is ``--protocol
+    native``, is each grounding tier worth its cost — because every one of
+    those is a comparison and not a number.  It spawns through
+    :func:`run_suite` below, so there is still exactly one spawner here.
 ``score``
     Scores run directories that already exist.  **This is the no-GPU path**:
     a recorded or replayed run is a directory with an ``events.jsonl`` in it,
@@ -316,6 +323,12 @@ def _parser() -> argparse.ArgumentParser:
     scorer.add_argument("--report", type=Path,
                         help="also write report.json and report.md here")
 
+    # Registered by the module that implements it, so the flags of the
+    # matrix and the matrix itself cannot drift apart. See
+    # `core.eval.measure.add_parser`.
+    from core.eval.measure import add_parser as _add_measure
+    _add_measure(subs, common)
+
     checker = subs.add_parser(
         "check", help="refuse a suite that cannot be graded")
     checker.add_argument("--suite", default="stub")
@@ -363,6 +376,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         report = score_suite(directories, suite, args.split)
         _emit(report, args, args.out)
         return 0 if args.allow_failures or not _failed(report) else 1
+
+    if args.command == "measure":
+        from core.eval.measure import from_args
+        return from_args(suite, args, template)
 
     runs: Dict[str, Any] = {}
     if args.runs is not None:
