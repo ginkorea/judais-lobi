@@ -41,9 +41,29 @@ class PatchTool:
         return (0 if result.success else 1, stdout, "")
 
     def _do_apply(
-        self, *, patch_set_json: str = "", use_worktree: bool = True, **kw
+        self, *, patch_set_json: str = "", use_worktree: bool = False, **kw
     ) -> Tuple[int, str, str]:
-        """Apply patches, optionally in a worktree."""
+        """Apply patches to the repository, or into a worktree if asked.
+
+        **The default is the repository and not a worktree**, which reverses
+        :meth:`core.patch.engine.PatchEngine.apply`'s own default, and the
+        reason is one the kernel already wrote down (see
+        ``core.kernel.roles.PatchRole``): the tests run where the repository
+        is. A worktree makes the change real, on disk, and in a directory
+        nothing verifies, so the verify that follows goes green — or stays
+        red — against the tree the patch never touched. That is the exact
+        shape of the seam ``tests/test_coding_loop_end_to_end.py`` exists to
+        catch, and the kernel's one caller passes ``use_worktree=False`` by
+        hand to avoid it.
+
+        A second caller having to pass it by hand is how a default becomes a
+        trap: a mission agent that omits the argument gets the silent wrong
+        answer, and the transcript looks ordinary. So the safe thing is the
+        default here, at the model-facing surface, and the worktree is what
+        somebody asks for. The engine's default is untouched — a library
+        caller that wants create/merge/discard, like
+        ``core.judge.candidates``, still reaches it directly.
+        """
         patch_set = self._parse_patch_set(patch_set_json)
         result = self._engine.apply(patch_set, use_worktree=use_worktree)
         stdout = json.dumps(result.to_dict())

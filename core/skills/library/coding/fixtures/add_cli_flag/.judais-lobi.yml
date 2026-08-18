@@ -1,0 +1,8 @@
+# .judais-lobi.yml — how this repository states the commands that verify it.
+#
+# `{python}` is expanded by core.tools.verify_tools.VerifyTool to the
+# interpreter running the agent, so the command does not depend on `python`
+# or `pytest` being on PATH inside a sandbox.
+verification:
+  test: "{python} -m pytest -q"
+  lint: "{python} -m compileall -q ."

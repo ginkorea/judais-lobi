@@ -1,0 +1,139 @@
+# plan_patch_verify — a TASK TEMPLATE, and today a documented placeholder.
+#
+# ROADMAP §2.6b names three layers: the skill (what the model is told and
+# held to — ../SKILL.md), the TASK (one objective under one skill on one
+# plane with bounds — one `Run`, which is what `--mission` already is),
+# and the campaign (a DAG of tasks with artifact handoff and human
+# approval). What is missing between the first two is this file: the
+# workflow shape a task is run in — intake, plan, act, verify, finalize,
+# with a judge — as DATA rather than as a second loop.
+#
+# NOTHING LOADS THIS YET. Two things already implement the shape and
+# neither is reachable from a mission:
+#
+#   * `core.kernel.workflows.get_coding_workflow()` — the kernel's
+#     WorkflowTemplate, ten phases with per-phase capabilities and a
+#     RUN → FIX → PATCH branch, on the kernel's orchestrator and not on
+#     `Run`;
+#   * `core.runtime.swarm` — a planner, executors and a synthesizer,
+#     which is the same shape with different names and does run on the
+#     mission path.
+#
+# Since lane E the roles are `Run`s, so a template is "a named composition
+# of Runs with a judge". Making that composition run is Phase 15's NEXT
+# lane. Until then the shape below is enforced by prose, in ../SKILL.md,
+# and a single `Run` follows it because it was told to — which is why
+# every role here is one of the four moves that skill's body names, in
+# that order, and `tests/test_pack_coding.py` holds the two documents to
+# each other so they cannot drift while nobody is looking.
+
+name: plan_patch_verify
+skill: coding
+description: >
+  Plan, edit across files, verify by running the repository's own tests,
+  report. One objective, five roles, and a judge that is a test run
+  rather than a second model.
+
+# What one pass through the template costs at most. A ceiling, not a
+# working figure: the framework has no step budget of its own since
+# 0.15.0 (ROADMAP §2.6a) and this is an operator's number.
+bounds:
+  max_passes: 3          # plan → patch → verify, repeated on a red verify
+  profile: dev
+  sandbox: bwrap
+
+workflow:
+
+  - role: intake
+    does: >
+      Restate the objective as the change to be made, and say what would
+      count as done. One sentence each. No tools.
+    tools: []
+    bounds:
+      steps: 1
+
+  - role: plan
+    does: >
+      Map the repository and name every file the change touches, with
+      what changes in each. A plan that names one file for a change that
+      spans three is the failure this role exists to catch.
+    tools: [repo_map, fs]
+    bounds:
+      steps: 6
+    # AND THE REASON THIS ROLE WANTS TO BE A ROLE.
+    #
+    # Inside one `Run` there is nowhere for a plan to go. The JSON
+    # protocol admits two replies — a tool call and the answer — so an
+    # agent that writes its plan as prose mid-run gets `reply_rejected`
+    # and loses a turn, and the native protocol is the same shape with
+    # functions. ../SKILL.md's workaround is to make the plan
+    # *observable* rather than spoken: read every file you will change,
+    # and the read set is the plan, on the record, comparable against the
+    # patch that follows. It works, a mission's `must` clause can be
+    # written against it, and it is a workaround.
+    #
+    # As a ROLE the plan is a `Run` of its own whose answer IS the file
+    # list, handed to `implement` as an artifact. That is what wiring
+    # this template buys and it is the clearest single argument for
+    # doing it.
+
+  - role: implement
+    does: >
+      One patch set carrying every file in the plan. A file in the patch
+      that was not in the plan is a finding, not an error — say it.
+    tools: [patch, fs]
+    bounds:
+      steps: 2
+
+  - role: verify
+    does: >
+      Run the repository's own test command. This role has no opinion:
+      it reports the exit code and the output verbatim.
+    tools: [verify]
+    bounds:
+      steps: 1
+
+  - role: finalize
+    does: >
+      The report: what changed, the verify verdict in the words it
+      printed, the diff summary or the commit, and what was left undone.
+    tools: [git]
+    bounds:
+      steps: 2
+
+# The branch, and the whole reason this template is not a straight line.
+# Same rule as the kernel's `branch_rules` for its RUN phase.
+transitions:
+  intake:    plan
+  plan:      implement
+  implement: verify
+  verify:
+    on_pass: finalize
+    on_fail: plan        # back to plan, not to implement: a red verify
+                         # is new information about the repository, and a
+                         # re-patch that skips reading it is a guess
+
+# THE JUDGE IS THE VERIFY RESULT.
+#
+# Not a rubric, not a second model, not a score. A coding task is the one
+# kind of task that carries its own oracle — the repository's tests — and
+# a template that asked a model to grade the change would be replacing a
+# fact with an opinion. `core.judge` exists and has an LLM review tier;
+# it belongs to review, which is a different question ("is this change
+# any good") from the one this template settles ("does it work").
+judge:
+  kind: tool_result
+  tool: verify
+  action: test
+  passes_when: exit_code == 0
+  reports: [exit_code, stdout, stderr]
+  never: >
+    An answer that claims a pass with no verify result in the run. The
+    skill's `evidence_requirements` says it and the
+    `no_claim_without_verify` mission measures it — from the STREAM, by
+    `expects_tools: [verify]`, and not from the grounding grammar. A
+    fabricated "3 passed" comes back grounded, because a figure is
+    supported if it equals any figure anywhere in the run's evidence and
+    a patch result carries match counts and byte offsets. The identifier
+    half of the grammar does bite: an invented file path is refused. See
+    the pack README, "Limits".

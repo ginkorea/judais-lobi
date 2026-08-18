@@ -142,6 +142,31 @@ class ToolDescriptor:
     #: descriptor that reduced them to "Arguments: a, b, c." had thrown
     #: away everything except the names.
     input_schema: Dict[str, Any] = field(default_factory=dict)
+    #: Whether a NON-ZERO exit from this tool is still a *result* — output
+    #: a model may quote and a grounding validator must accept as
+    #: evidence.
+    #:
+    #: False for every tool but one, and the default is the careful
+    #: direction.  ``mcp.run_code`` crashing and printing ``Traceback …
+    #: gradient was 3.1416`` did not compute a gradient, and a figure
+    #: lifted out of that traceback is exactly the plausible-looking
+    #: fabrication ``tests/test_grounding_code_is_not_a_claim.py`` refuses.
+    #:
+    #: ``verify`` is the exception, and it is the opposite case rather than
+    #: a relaxation of the same one.  A failing test suite has not failed
+    #: to produce a result; the failure IS the result — "1 failed, 1
+    #: passed" is the test runner's own report and the single most
+    #: important thing a coding mission learns.  Filtering it out made an
+    #: agent that truthfully reported the red run come back ungrounded,
+    #: and the repair turn deleted a true sentence.
+    #:
+    #: Declared here, on the tool, because that is the only place the
+    #: difference is knowable: it is a fact about what a non-zero exit
+    #: MEANS for this tool, which the store recording the result and the
+    #: validator reading it cannot derive.  Read at call time by
+    #: :func:`failure_reporting_tools` rather than frozen into a list, for
+    #: the reason :func:`~core.runtime.skills.code_plane_tools` is.
+    failure_is_a_result: bool = False
 
 
 #: How many enum members are shown before the rest are counted.  An enum
@@ -382,6 +407,249 @@ VOICE_DESCRIPTOR = ToolDescriptor(
 )
 
 # ---------------------------------------------------------------------------
+# The argument schemas of the built-in multi-action tools
+# ---------------------------------------------------------------------------
+#
+# Every one of the five tools below is dispatched as
+# ``{"tool": "patch", "arguments": {"action": "apply", ...}}`` — the bus
+# reads ``action`` out of the keyword arguments and forwards the rest to the
+# executor — and until Phase 15 not one of them published a schema. What the
+# catalogue could render was the prose description and nothing else, so a
+# model was told that ``patch`` does "validate, apply, diff, rollback, merge,
+# status" and left to guess that the patch set arrives as ``patch_set_json``,
+# a JSON *string*, holding ``task_id`` and a list of search/replace blocks.
+# The measured cost of that guess is the one ``core.runtime.schema_check``
+# was written for: turns spent on argument shape rather than on the question,
+# and on a local model a turn is an eighth of the budget.
+#
+# **One schema per tool, not per action.** ``if``/``then`` branching on
+# ``action`` is expressible in JSON Schema and is the wrong thing here for
+# two reasons: :func:`summarize_input_schema` renders one flat line into the
+# prompt and a branched schema summarises to nothing useful, and
+# ``core.runtime.schema_check``'s dependency-free fallback checks only
+# top-level ``required``/``type``/``enum`` — so a rule stated in a branch is
+# a rule that is enforced on some installs and not others. What every schema
+# below *can* state, and does, is that ``action`` is required and comes from
+# a closed list; which argument each action needs is written into that
+# argument's own ``description``, where it rides the refusal sentence at the
+# turn it binds.
+#
+# The action enums are written out rather than derived from
+# ``action_scopes``: a schema is a contract published to a model, and one
+# that silently grew a member because somebody added a scope row would be a
+# contract nothing agreed to.
+
+FS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["read", "write", "delete", "list", "stat"],
+            "description": "Which filesystem operation to perform.",
+        },
+        "path": {
+            "type": "string",
+            "description": "The file or directory to act on. Required by "
+                           "every action. Relative paths resolve against the "
+                           "working directory.",
+        },
+        "content": {
+            "type": "string",
+            "description": "For `write`: the WHOLE new contents of the file. "
+                           "`write` replaces the file; to change part of one, "
+                           "use the `patch` tool instead.",
+        },
+        "recursive": {
+            "type": "boolean",
+            "description": "For `list`: descend into subdirectories.",
+        },
+    },
+    "required": ["action", "path"],
+}
+
+GIT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["status", "diff", "log", "add", "commit", "branch",
+                     "push", "pull", "fetch", "stash", "tag", "reset"],
+            "description": "Which git operation to perform.",
+        },
+        "repo_path": {
+            "type": "string",
+            "description": "Run inside this repository. Omit for the working "
+                           "directory, which is the ordinary case.",
+        },
+        "message": {
+            "type": "string",
+            "description": "Required by `commit`: the commit message.",
+        },
+        "paths": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "For `add`: the paths to stage. Omit to stage "
+                           "everything.",
+        },
+        "staged": {
+            "type": "boolean",
+            "description": "For `diff`: show the staged change instead of "
+                           "the working tree.",
+        },
+        "path_spec": {
+            "type": "string",
+            "description": "For `diff`: restrict the diff to one path.",
+        },
+        "n": {
+            "type": "integer",
+            "description": "For `log`: how many commits.",
+        },
+        "oneline": {
+            "type": "boolean",
+            "description": "For `log`: one line per commit.",
+        },
+        "name": {
+            "type": "string",
+            "description": "For `branch` and `tag`: the name. Omit to list.",
+        },
+        "delete": {
+            "type": "boolean",
+            "description": "For `branch`: delete the named branch.",
+        },
+        "sub_action": {
+            "type": "string",
+            "enum": ["push", "pop", "list"],
+            "description": "For `stash`: which stash operation.",
+        },
+        "list_tags": {
+            "type": "boolean",
+            "description": "For `tag`: list instead of creating.",
+        },
+        "mode": {
+            "type": "string",
+            "enum": ["soft", "mixed", "hard"],
+            "description": "For `reset`: how far to reset.",
+        },
+        "ref": {
+            "type": "string",
+            "description": "For `reset`: the commit to reset to.",
+        },
+        "remote": {
+            "type": "string",
+            "description": "For `push`, `pull` and `fetch`: the remote.",
+        },
+        "branch": {
+            "type": "string",
+            "description": "For `push` and `pull`: the branch.",
+        },
+    },
+    "required": ["action"],
+}
+
+VERIFY_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["lint", "test", "typecheck", "format"],
+            "description": "Which of the repository's checks to run. The "
+                           "COMMAND is the repository's, declared under "
+                           "`verification:` in its .judais-lobi.yml; this "
+                           "argument only chooses among them. It takes no "
+                           "other arguments — there is no way to pass flags, "
+                           "select a file or compose a command line.",
+        },
+    },
+    "required": ["action"],
+}
+
+REPO_MAP_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["build", "excerpt", "status", "visualize", "symbol"],
+            "description": "Which repo-map operation to perform.",
+        },
+        "target_files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "For `excerpt` and `visualize`: focus on these "
+                           "files. Omit for the whole repository.",
+        },
+        "name": {
+            "type": "string",
+            "description": "Required by `symbol`: the function or class to "
+                           "retrieve, by name.",
+        },
+        "file_hint": {
+            "type": "string",
+            "description": "For `symbol`: which file to prefer when the name "
+                           "is defined more than once.",
+        },
+        "max_lines": {
+            "type": "integer",
+            "description": "For `symbol`: cap the returned span.",
+        },
+        "force": {
+            "type": "boolean",
+            "description": "For `build`: rebuild instead of reusing a cache.",
+        },
+        "format": {
+            "type": "string",
+            "enum": ["dot", "mermaid"],
+            "description": "For `visualize`: the output notation.",
+        },
+        "max_nodes": {
+            "type": "integer",
+            "description": "For `visualize`: cap the number of nodes.",
+        },
+    },
+    "required": ["action"],
+}
+
+PATCH_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["validate", "apply", "diff", "rollback", "merge",
+                     "status"],
+            "description": "Which patch operation to perform.",
+        },
+        "patch_set_json": {
+            "type": "string",
+            "description": (
+                "Required by `validate` and `apply`. A JSON *string* (not an "
+                "object) of "
+                '{"task_id": "<any label>", "patches": [{"file_path": '
+                '"<path relative to the repository root>", "action": '
+                '"modify"|"create"|"delete", "search_block": "<text that '
+                'appears in the file EXACTLY as written, indentation '
+                'included>", "replace_block": "<what replaces it>"}]}. '
+                "One call may carry patches for SEVERAL files; that is how a "
+                "change that spans files is made in one step. For `create`, "
+                "leave `search_block` empty and put the whole file in "
+                "`replace_block`."
+            ),
+        },
+        "use_worktree": {
+            "type": "boolean",
+            "description": "Apply into a throwaway git worktree instead of "
+                           "the repository. Defaults to false — the tests "
+                           "run in the repository, so a change made in a "
+                           "worktree is a change nothing verifies.",
+        },
+        "message": {
+            "type": "string",
+            "description": "For `merge`: the commit message.",
+        },
+    },
+    "required": ["action"],
+}
+
+
+# ---------------------------------------------------------------------------
 # Phase 4a: Consolidated multi-action tools
 # ---------------------------------------------------------------------------
 
@@ -396,6 +664,7 @@ FS_DESCRIPTOR = ToolDescriptor(
         "stat":   ["fs.read"],
     },
     description="Filesystem operations: read, write, delete, list, stat.",
+    input_schema=FS_SCHEMA,
 )
 
 #: Not ``allow_network=True``: a profile is per *tool* and git's need for
@@ -422,6 +691,7 @@ GIT_DESCRIPTOR = ToolDescriptor(
         "reset":  ["git.write"],
     },
     description="Git operations: status, diff, log, add, commit, branch, push, pull, fetch, stash, tag, reset.",
+    input_schema=GIT_SCHEMA,
 )
 
 VERIFY_DESCRIPTOR = ToolDescriptor(
@@ -434,6 +704,9 @@ VERIFY_DESCRIPTOR = ToolDescriptor(
         "format":    ["verify.run"],
     },
     description="Verification: lint, test, typecheck, format. Config-driven via .judais-lobi.yml.",
+    input_schema=VERIFY_SCHEMA,
+    # The one tool whose failure is its answer. See the field.
+    failure_is_a_result=True,
 )
 
 # ---------------------------------------------------------------------------
@@ -473,6 +746,7 @@ REPO_MAP_DESCRIPTOR = ToolDescriptor(
         "visualize (DOT/Mermaid), symbol (one function or class body with "
         "its path:start-end citation, instead of the whole file)."
     ),
+    input_schema=REPO_MAP_SCHEMA,
 )
 
 # ---------------------------------------------------------------------------
@@ -491,6 +765,7 @@ PATCH_DESCRIPTOR = ToolDescriptor(
         "status":   ["fs.read", "git.read"],
     },
     description="Patch engine: validate, apply, diff, rollback, merge, status.",
+    input_schema=PATCH_SCHEMA,
 )
 
 # ---------------------------------------------------------------------------
@@ -615,6 +890,21 @@ MEMORY_WRITE_DESCRIPTOR = ToolDescriptor(
         "required": ["action", "label", "reason"],
     },
 )
+
+def failure_reporting_tools() -> FrozenSet[str]:
+    """Every registered tool whose non-zero exit is still a result.
+
+    Read off :data:`ALL_DESCRIPTORS` at call time rather than frozen into
+    a constant, because a second hand-maintained list of "the tools whose
+    failures count" is a list that is correct until the day somebody adds
+    a linter. Today it is exactly ``{"verify"}``.
+
+    Used by :meth:`core.runtime.results.MissionResultStore.evidence_texts`,
+    which is the one place the distinction is spent.
+    """
+    return frozenset(descriptor.tool_name for descriptor in ALL_DESCRIPTORS
+                     if descriptor.failure_is_a_result)
+
 
 # All pre-built descriptors for iteration
 ALL_DESCRIPTORS = [

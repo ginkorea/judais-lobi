@@ -81,6 +81,63 @@ class TestPatchToolActions:
         assert data["success"] is True
         assert (tmp_path / "a.py").read_text() == "new\n"
 
+    def test_apply_lands_in_the_repository_when_nobody_says_otherwise(
+            self, tmp_path):
+        """The default is the tree the tests run in, not a worktree.
+
+        `PatchEngine.apply` defaults the other way, and a caller that
+        forgets the argument gets a change that is real, on disk, and in a
+        directory nothing verifies — so the verify that follows reports the
+        unchanged tree and the transcript looks ordinary. The kernel's
+        `PatchRole` passes `use_worktree=False` by hand for exactly this
+        reason; a second caller having to remember is how a default becomes
+        a trap, so the model-facing surface defaults to the safe thing.
+        """
+        (tmp_path / "a.py").write_text("old\n")
+        tool = PatchTool(repo_path=str(tmp_path))
+        ps_json = json.dumps({
+            "task_id": "t1",
+            "patches": [{
+                "file_path": "a.py",
+                "search_block": "old\n",
+                "replace_block": "new\n",
+                "action": "modify",
+            }],
+        })
+        rc, out, err = tool("apply", patch_set_json=ps_json)
+        assert rc == 0
+        assert (tmp_path / "a.py").read_text() == "new\n"
+        assert json.loads(out)["worktree_path"] == ""
+
+    def test_one_call_may_patch_several_files(self, tmp_path):
+        """A change that spans files is one call, and that is the point.
+
+        The coding pack's whole premise — plan, edit across files, verify —
+        rests on it: a patch set is a LIST of file patches, applied in
+        order, and a multi-file feature that had to be three calls would be
+        three chances to leave the tree half-changed.
+        """
+        (tmp_path / "core.py").write_text("A = 1\n")
+        (tmp_path / "api.py").write_text("B = 2\n")
+        tool = PatchTool(repo_path=str(tmp_path))
+        ps_json = json.dumps({
+            "task_id": "t1",
+            "patches": [
+                {"file_path": "core.py", "search_block": "A = 1\n",
+                 "replace_block": "A = 10\n", "action": "modify"},
+                {"file_path": "api.py", "search_block": "B = 2\n",
+                 "replace_block": "B = 20\n", "action": "modify"},
+                {"file_path": "extra.py", "search_block": "",
+                 "replace_block": "C = 30\n", "action": "create"},
+            ],
+        })
+        rc, out, err = tool("apply", patch_set_json=ps_json)
+        assert rc == 0, err
+        assert (tmp_path / "core.py").read_text() == "A = 10\n"
+        assert (tmp_path / "api.py").read_text() == "B = 20\n"
+        assert (tmp_path / "extra.py").read_text() == "C = 30\n"
+        assert len(json.loads(out)["file_results"]) == 3
+
     def test_diff_action_no_worktree(self, tmp_path):
         tool = PatchTool(repo_path=str(tmp_path))
         rc, out, err = tool("diff")

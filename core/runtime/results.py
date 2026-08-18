@@ -142,6 +142,19 @@ class StoredResult:
         except (TypeError, ValueError):       # pragma: no cover - defensive
             return str(self.arguments)
 
+    @property
+    def ran(self) -> bool:
+        """Whether a tool was reached and answered, whatever it answered.
+
+        The distinction :attr:`succeeded` cannot make, and the one
+        :meth:`MissionResultStore.evidence_texts` needs: ``-1`` is the
+        bus's number for a call that never got to a tool — an unknown
+        name, a capability refusal, an exception inside dispatch — and
+        anything from ``0`` upwards is a tool's own exit code. A failing
+        test suite is not an absent result; it is the result.
+        """
+        return self.exit_code >= 0
+
 
 class MissionResultStore:
     """Full results for one mission, addressed by handle.
@@ -241,44 +254,64 @@ class MissionResultStore:
     def evidence_texts(self) -> List[str]:
         """What this run established, for a grounding validator.
 
-        A **successful** result contributes its full text — not the
-        bounded rendering the model saw — and its typed payload as well:
-        an identifier the model correctly read out of a structured field
-        is grounded even though the text block never spelled it.
+        Three rules, each load-bearing, each with the failure that wrote it.
 
-        A **failed** result contributes its typed error payload and the
-        arguments it was called with, and nothing else.  A refusal is
+        **A successful result** contributes its full text — not the bounded
+        rendering the model saw — and its typed payload as well: an
+        identifier the model correctly read out of a structured field is
+        grounded even though the text block never spelled it.
+
+        **A failed result from a tool whose failures ARE results** — declared
+        by :attr:`~core.tools.descriptors.ToolDescriptor.failure_is_a_result`
+        (today ``verify``), read through
+        :func:`~core.tools.descriptors.failure_reporting_tools` and matched
+        with :func:`~core.tools.descriptors.same_tool` — contributes exactly as
+        a success does.  A failing test suite has not failed to produce a
+        result; "1 failed, 1 passed" is the most important thing a coding
+        mission learns, and filtering it out made an agent that truthfully
+        reported the red run come back ungrounded (the 10 August failure in a
+        new place).  Declared, not guessed: what a non-zero exit MEANS is a
+        fact only that tool can state — ``mcp.run_code`` crashing and printing
+        ``Traceback … gradient was 3.1416`` computed no gradient
+        (``tests/test_grounding_code_is_not_a_claim.py``).
+
+        **Any other failed result** contributes its typed error payload and
+        the arguments it was called with, and nothing else.  A refusal is
         still something this run did: *"I could not read that page — it
-        answered 404"* is a claim about the run, and before this the URL
-        and the status could not be grounded by the very call that
-        demonstrates them.  It is the same reasoning :meth:`called_tools`
-        already applies — the plane WAS used, and whether it worked is a
-        different question.
+        answered 404"* is a claim about the run, and before this the URL and
+        the status could not be grounded by the very call that demonstrates
+        them — the same reasoning :meth:`called_tools` applies.  Two things it
+        deliberately does NOT contribute: its **free text** (an error message
+        is prose written by whatever was on the other end), and its arguments
+        as an ordinary result — they are marked :attr:`SourcedEvidence.sent`,
+        because they are what the MODEL wrote, and a check grading whether a
+        figure came out of a tool must skip them, or a figure grounds itself
+        by being typed into a call that fails.
 
-        Two things a failure deliberately does NOT contribute, and each
-        closes a way in:
+        **A call that never reached a tool at all is never evidence**, whatever
+        it declares: ``exit_code == -1`` is the bus's own number for an unknown
+        name, a capability refusal or an exception in dispatch, and what those
+        carry is this harness's words about why it said no.
 
-        * its **free text**.  An error message is prose written by
-          whatever was on the other end, and an identifier that appears
-          only inside one has not been established by anything;
-        * its arguments as an ordinary result.  They are marked
-          :attr:`SourcedEvidence.sent`, because they are what the MODEL
-          wrote, and a check grading whether a figure came out of a tool
-          must skip them — otherwise a figure grounds itself by being
-          typed into a call that fails.
-
-        Each entry is a :class:`SourcedEvidence` — a ``str``, so nothing
-        that reads this list has to know — carrying the tool that wrote it
-        and the arguments it was called with.  **The pairing is made here
-        and only here.**  A check that re-derived "which call produced
-        this text" by matching strings back against the store would be a
-        second owner of a fact this loop already has in hand, and the one
-        that goes wrong the day two calls return the same bytes.
+        Each entry is a :class:`SourcedEvidence` — a ``str``, so nothing that
+        reads this list has to know — carrying the tool that wrote it and the
+        arguments it was called with.  **The pairing is made here and only
+        here.**  A check that re-derived "which call produced this text" by
+        matching strings back against the store would be a second owner of a
+        fact this loop already has in hand, and the one that goes wrong the
+        day two calls return the same bytes.
         """
+        from core.tools.descriptors import failure_reporting_tools, same_tool
+
+        reporting = failure_reporting_tools()
         texts: List[str] = []
         for stored in self._results:
+            if not stored.ran:
+                continue
             arguments = stored.arguments_text
-            if stored.succeeded:
+            reports = stored.succeeded or any(
+                same_tool(stored.tool, name) for name in reporting)
+            if reports:
                 returned = ((stored.text, False), (stored.evidence, False))
             else:
                 returned = ((stored.evidence, False), (arguments, True))

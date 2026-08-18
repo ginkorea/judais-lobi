@@ -151,11 +151,61 @@ class TestEvidenceForGrounding:
         assert any("rec.11" in e for e in evidence)
 
     def test_a_refused_call_is_not_evidence(self, store):
-        """A tool that refused did not establish anything. An identifier
-        that appears only in an error message is not grounded by it."""
-        store.record("t", text="", evidence="", exit_code=1)
-        store.record("t", text="asset.1234", exit_code=1)
+        """A call that never reached a tool established nothing.
+
+        ``-1`` is the bus's own number for that: an unknown tool name, a
+        capability denial, an exception inside dispatch. What those carry
+        is this harness's words about why it said no, and an identifier
+        that appears only there is not grounded by it.
+        """
+        store.record("t", text="", evidence="", exit_code=-1)
+        store.record("t", text="asset.1234", exit_code=-1)
         assert store.evidence_texts() == []
+
+    def test_a_failed_verify_is_evidence_because_verify_says_so(self, store):
+        """The one tool whose failure is its answer.
+
+        A failing test suite has not failed to produce a result. This
+        filtered on ``exit_code == 0`` until the coding pack, and an agent
+        reporting "1 failed, 1 passed before the change" was quoting a
+        result the validator had thrown away — so a true sentence came
+        back ungrounded and the repair turn deleted it.
+        """
+        store.record("verify", text="1 failed, 1 passed in 0.04s",
+                     exit_code=1)
+        assert store.evidence_texts() == ["1 failed, 1 passed in 0.04s"]
+
+    def test_a_bridged_verify_carries_the_same_declaration(self, store):
+        """Matched with ``same_tool``, like every other name comparison
+        in this harness: a server's ``verify`` under the bridge's
+        namespace is that tool under a namespace."""
+        store.record("mcp.verify", text="2 failed in 0.1s", exit_code=1)
+        assert store.evidence_texts() == ["2 failed in 0.1s"]
+
+    def test_another_tool_that_failed_is_not_evidence(self, store):
+        """And the default stays the careful one.
+
+        `mcp.run_code` crashing and printing a traceback computed
+        nothing, and a figure lifted out of that traceback is the
+        plausible fabrication `test_grounding_code_is_not_a_claim.py`
+        refuses. Only a tool that DECLARES
+        `failure_is_a_result` is read on failure.
+        """
+        store.record("mcp.run_code",
+                     text="Traceback: gradient was 3.1416", exit_code=1)
+        store.record("patch", text='{"success": false}', exit_code=1)
+        assert store.evidence_texts() == []
+
+    def test_a_failed_result_is_still_not_a_success(self, store):
+        """Widening the evidence did not widen anything else.
+
+        ``succeeded`` is what the rendering and the store's own index
+        read; ``ran`` is the separate question of whether a tool was
+        reached at all.
+        """
+        stored = store.record("verify", text="1 failed", exit_code=1)
+        assert stored.ran is True
+        assert stored.succeeded is False
 
 
 class TestTheBusTool:
