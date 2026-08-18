@@ -233,9 +233,16 @@ first release without it.
 
 The `[server]` extra serves a run's stream over HTTP by following `RunStore`
 (§6) rather than by holding a subprocess, so it is a *store* client: a pane can
-attach to a run it did not start, and reattach to one it lost. The routes ship
-with the extra and are named in its own module docstring; what a platform needs
-to know about them is the three operational rules they were built around,
+attach to a run it did not start, and reattach to one it lost. `python -m
+core.server` (`--runs DIR`, or `JUDAIS_LOBI_RUNS`) serves `GET /healthz`,
+`GET /runs`, `GET /runs/{run_id}`, `GET /runs/{run_id}/events?since=` (SSE:
+`event:` = the record's event, `id:` = its seq, `data:` = the record; replays
+from `since` then follows to `mission_finished`; `Last-Event-ID` reconnects)
+and `GET /runs/{run_id}/agui?since=` (the same, through the one AG-UI
+translator). It is read-only: the subprocess-and-NDJSON seam remains the one
+for a platform that owns the process and wants to steer it. What a platform
+needs to know beyond the routes is the three operational rules they were built
+around,
 because each is a production incident somebody already paid for:
 
 * **the stream cap sits below the connection ceiling**, so a run is closed by
