@@ -149,6 +149,7 @@ def coding_bus(repo: Path, *, sandbox=None, audit=None,
     from core.tools.git_tools import GitTool
     from core.tools.patch_tool import PatchTool
     from core.tools.repo_map_tool import RepoMapTool
+    from core.tools.root import MissionRoot
     from core.tools.sandbox import select_sandbox
     from core.tools.verify_tools import VerifyTool
 
@@ -159,10 +160,17 @@ def coding_bus(repo: Path, *, sandbox=None, audit=None,
         sandbox=sandbox if sandbox is not None else select_sandbox("bwrap")[0],
         audit=audit,
     )
-    bus.register(REPO_MAP_DESCRIPTOR, RepoMapTool(repo_path=str(repo)))
-    bus.register(FS_DESCRIPTOR, FsTool())
-    bus.register(PATCH_DESCRIPTOR, PatchTool(repo_path=str(repo)))
-    bus.register(GIT_DESCRIPTOR, GitTool())
+    # The repository is the mission root, and the in-process tools are
+    # confined to it: bwrap isolates the subprocess `verify` ends in and
+    # never sees `FsTool` or `PatchTool`, which are pathlib in this
+    # interpreter. The CLI hands the same root down from the working
+    # directory (`core.cli._build_agent`); here it is the fixture repo,
+    # which is the same fact this bus already aims three tools at.
+    root = MissionRoot(repo)
+    bus.register(REPO_MAP_DESCRIPTOR, RepoMapTool(repo_path=str(repo), root=root))
+    bus.register(FS_DESCRIPTOR, FsTool(root=root))
+    bus.register(PATCH_DESCRIPTOR, PatchTool(repo_path=str(repo), root=root))
+    bus.register(GIT_DESCRIPTOR, GitTool(root=root))
     # The repository's own commands, read out of its own `.judais-lobi.yml`
     # — or, for a repository that ships none, the default that
     # `{python}` makes portable.

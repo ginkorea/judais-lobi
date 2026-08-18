@@ -48,6 +48,33 @@ RESULT_TOOL = "mission_result"
 #: ``actors[0].score`` -> ``["actors", 0, "score"]``
 _INDEX = re.compile(r"\[(-?\d+)\]")
 
+#: The arguments that read a result's TEXT rather than its payload, named
+#: once because three callers have to spell them the same: the executor,
+#: :class:`BranchedStores` routing to a child's store, and
+#: :meth:`MissionResultStore.read`.
+PAGING = ("offset", "limit", "lines", "grep")
+
+#: ``lines=12-40``, ``lines=12-`` or ``lines=12``.  One line is a range of
+#: one; an open end runs to the end of the text.
+_LINES = re.compile(r"^\s*(\d+)\s*(?:-\s*(\d*)\s*)?$")
+
+#: How many matching lines a ``grep`` answers with when the caller named no
+#: ``limit``.  Bounded for the reason every other result is: a regex that
+#: matches most of a 40 KB log would otherwise paste the log back in.
+DEFAULT_MATCHES = 40
+
+
+def paging_of(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Just the :data:`PAGING` arguments out of *arguments*.
+
+    A filter and not a signature, so a caller forwarding a model's
+    keywords — :class:`BranchedStores` does — passes on the four this
+    store reads and nothing else.  The loop adds its own
+    :data:`BRANCH_ARGUMENT` to a store dispatch, and a model can write
+    anything at all.
+    """
+    return {key: arguments[key] for key in PAGING if key in arguments}
+
 
 class ResultStoreConflict(RuntimeError):
     """Something is already registered under the store's tool name."""
@@ -347,7 +374,31 @@ class MissionResultStore:
     # ── the tool ────────────────────────────────────────────────────────
 
     def descriptor(self, name: str = RESULT_TOOL) -> ToolDescriptor:
-        """The ``ToolDescriptor`` for reading this store."""
+        """The ``ToolDescriptor`` for reading this store.
+
+        **It does not yet advertise the paging arguments, and that is a
+        sequencing decision rather than an oversight.**  This description
+        and this schema are rendered into the SYSTEM TURN by
+        :meth:`core.runtime.run.Run.catalogue`, the committed corpus is
+        recorded against those bytes, and a served endpoint's prefix cache
+        is keyed on them — so the sentence that teaches a model to page
+        lands with the re-recording, in the one lane that moves prompt
+        bytes, and not from four lanes at once.  :meth:`read` accepts
+        ``offset``/``limit``/``lines``/``grep`` NOW; nothing tells the
+        model about them until this descriptor does.
+
+        What is to be added, verbatim, when the corpus is re-recorded: the
+        sentence ``A text-only result is read by page: offset/limit in
+        characters, lines="12-40", or grep="<regex>" for matching lines
+        with their numbers.`` after "…named in the truncation marker.",
+        and four properties beside ``path`` — ``offset`` (integer, "Start
+        of a page of the result's TEXT, in characters."), ``limit``
+        (integer, "How much of the text to return, in characters; with
+        `grep`, how many matching lines."), ``lines`` (string, "A 1-based
+        inclusive line range of the text, e.g. 12-40, or 12- to the
+        end."), ``grep`` (string, "Return the lines of the text matching
+        this regular expression, with their line numbers.").
+        """
         return ToolDescriptor(
             tool_name=name,
             required_scopes=[],
@@ -378,9 +429,15 @@ class MissionResultStore:
         )
 
     def executor(self):
-        """The callable ``ToolBus`` dispatches for :meth:`descriptor`."""
-        def _read(handle: str = "", path: str = "", **_ignored: Any):
-            return self.read(handle, path)
+        """The callable ``ToolBus`` dispatches for :meth:`descriptor`.
+
+        The paging arguments are forwarded through :func:`paging_of`
+        rather than named again here: :class:`BranchedStores` has the same
+        line, and two hand-written signatures are how one of them stops
+        carrying an argument the other does.
+        """
+        def _read(handle: str = "", path: str = "", **rest: Any):
+            return self.read(handle, path, **paging_of(rest))
         _read.__name__ = RESULT_TOOL
         _read.__doc__ = "Reads one field of a stored mission result."
         return _read
@@ -412,8 +469,31 @@ class MissionResultStore:
 
     # ── reading ─────────────────────────────────────────────────────────
 
-    def read(self, handle: str = "", path: str = "") -> Tuple[int, str, str]:
-        """``(exit_code, stdout, stderr)`` — the ToolBus executor shape."""
+    def read(self, handle: str = "", path: str = "", *,
+             offset: Any = 0, limit: Any = 0, lines: str = "",
+             grep: str = "") -> Tuple[int, str, str]:
+        """``(exit_code, stdout, stderr)`` — the ToolBus executor shape.
+
+        Two readers, and which one runs is decided by what was asked for.
+
+        ``path`` walks the **typed payload**: one field, by name.  It is
+        the original reader and it is what a governed view wants.
+
+        :data:`PAGING` — ``offset``/``limit`` in characters, ``lines=A-B``,
+        ``grep=<regex>`` — reads the **text**, and it is the answer to a
+        defect the coding pack recorded (lane N, 18 August 2026): a 40 KB
+        test log is bounded head-and-tail with a marker naming its handle,
+        and ``read(handle)`` with no ``path`` then returned a *summary*.
+        There was no way to see the middle at all, and the pack's skill
+        worked round it by telling the model to re-read files with ``fs``
+        — content standing in for a harness property, and no use whatever
+        for a log that was never a file.
+
+        The two are not combined.  A call naming both is refused rather
+        than served under a precedence rule nobody can see from the
+        outside: a model that asked for a field of a payload and got a
+        slice of the rendered text would quote the slice.
+        """
         if not (handle or "").strip():
             return (0, self._index(), "")
 
@@ -423,6 +503,18 @@ class MissionResultStore:
                 f"No result under handle {handle!r} in this mission. "
                 f"Handles: {', '.join(self._by_handle) or '(none yet)'}."
             ))
+
+        asked = self._paging_asked(offset, limit, lines, grep)
+        if asked and (path or "").strip():
+            listed = ", ".join(f"`{name}`" for name in asked)
+            return (1, "", (
+                f"{stored.handle}: two readers in one call — `path` reads "
+                f"one field of the typed payload, {listed} names a part of "
+                f"its text. Call this tool with one of them."
+            ))
+        if asked:
+            return self._page(stored, offset=offset, limit=limit,
+                              lines=lines, grep=grep)
 
         if not (path or "").strip():
             return (0, self._summary(stored), "")
@@ -440,6 +532,186 @@ class MissionResultStore:
         if problem:
             return (1, "", f"{stored.handle}: {problem}")
         return (0, self._render(value), "")
+
+    # ── paging a text result ────────────────────────────────────────────
+    #
+    # One owner of "read part of a result's text". The loop's truncation
+    # marker names the handle; this is what the handle is then good for
+    # when the result was never JSON. Every page is bounded by the same
+    # `_max_chars` a field read is, so no argument here is a way of
+    # pasting back in exactly what the transcript cap took out — the
+    # caller pages, and each page costs what a field costs.
+
+    @classmethod
+    def _paging_asked(cls, offset: Any, limit: Any, lines: Any,
+                      grep: Any) -> Tuple[str, ...]:
+        """Which of :data:`PAGING` the caller actually wrote, in order.
+
+        A zero and an empty string are *not written*: they are the
+        defaults every executor passes, and reading them as a request
+        would turn ``read("r3")`` into a page of the first nothing
+        characters.
+        """
+        named = {"offset": offset, "limit": limit,
+                 "lines": lines, "grep": grep}
+        return tuple(key for key in PAGING if cls._named(named[key]))
+
+    @staticmethod
+    def _named(value: Any) -> bool:
+        text = "" if value is None else str(value).strip()
+        return bool(text) and text != "0"
+
+    def _page(self, stored: StoredResult, *, offset: Any, limit: Any,
+              lines: str, grep: str) -> Tuple[int, str, str]:
+        """The text reader: a slice, a line range, or matching lines.
+
+        The three do not compose, and a call that mixes them is refused by
+        name.  ``limit`` is the exception and it is not one: with ``grep``
+        it bounds the **matches**, which is the same word meaning the same
+        thing — how much of this you get back.
+        """
+        if not stored.text:
+            return (1, "", (
+                f"{stored.handle}: {stored.tool} returned no text to page. "
+                f"Call this tool with just the handle for a summary of what "
+                f"it did return."
+            ))
+        if self._named(grep):
+            clash = [name for name, value in
+                     (("offset", offset), ("lines", lines))
+                     if self._named(value)]
+            if clash:
+                return (1, "", (
+                    f"{stored.handle}: `grep` searches the whole text and "
+                    f"{', '.join(clash)} names a part of it. Pass one; with "
+                    f"`grep`, `limit` bounds how many matching lines come "
+                    f"back."
+                ))
+            return self._grep(stored, str(grep), limit)
+        if self._named(lines):
+            if self._named(offset) or self._named(limit):
+                return (1, "", (
+                    f"{stored.handle}: `lines` and `offset`/`limit` are two "
+                    f"ways of naming a part of the text — one counts lines "
+                    f"and the other counts characters. Pass one."
+                ))
+            return self._lines(stored, str(lines))
+        return self._slice(stored, offset, limit)
+
+    def _slice(self, stored: StoredResult, offset: Any,
+               limit: Any) -> Tuple[int, str, str]:
+        """``offset``/``limit`` characters of the text."""
+        start, problem = _as_count(offset, "offset")
+        if problem:
+            return (1, "", f"{stored.handle}: {problem}")
+        want, problem = _as_count(limit, "limit")
+        if problem:
+            return (1, "", f"{stored.handle}: {problem}")
+        text = stored.text
+        if start >= len(text):
+            return (1, "", (
+                f"{stored.handle}: offset {start} is past the end — the text "
+                f"is {len(text)} characters."
+            ))
+        want = min(want or self._max_chars, self._max_chars)
+        page = text[start:start + want]
+        end = start + len(page)
+        header = (
+            f"{stored.handle}: {stored.tool}, characters {start}-{end} of "
+            f"{len(text)}."
+        )
+        more = "" if end >= len(text) else (
+            f"\n… [{len(text) - end} characters after this. Next page: "
+            f'{RESULT_TOOL}(handle="{stored.handle}", offset={end}).]'
+        )
+        return (0, f"{header}\n{page}{more}", "")
+
+    def _lines(self, stored: StoredResult, spec: str) -> Tuple[int, str, str]:
+        """``lines=A-B`` of the text, 1-based and inclusive."""
+        match = _LINES.match(spec)
+        if not match:
+            return (1, "", (
+                f"{stored.handle}: `lines` is {spec!r}; it is a 1-based "
+                f"inclusive range — `lines=\"12-40\"`, `lines=\"12-\"` to the "
+                f"end, or `lines=\"12\"` for one line."
+            ))
+        rows = stored.text.splitlines()
+        first = int(match.group(1))
+        tail = match.group(2)
+        if first < 1:
+            return (1, "", (
+                f"{stored.handle}: `lines` counts from 1, not from 0."
+            ))
+        if first > len(rows):
+            return (1, "", (
+                f"{stored.handle}: line {first} is past the end — the text "
+                f"is {len(rows)} lines."
+            ))
+        if tail is None:
+            last = first
+        else:
+            last = int(tail) if tail else len(rows)
+        if last < first:
+            return (1, "", (
+                f"{stored.handle}: `lines` is {spec!r}; the range ends "
+                f"before it begins."
+            ))
+        last = min(last, len(rows))
+        body, cut = self._bounded("\n".join(rows[first - 1:last]))
+        header = (
+            f"{stored.handle}: {stored.tool}, lines {first}-{last} of "
+            f"{len(rows)}."
+        )
+        return (0, f"{header}\n{body}{cut}", "")
+
+    def _grep(self, stored: StoredResult, pattern: str,
+              limit: Any) -> Tuple[int, str, str]:
+        """Matching lines of the text, with their line numbers."""
+        want, problem = _as_count(limit, "limit")
+        if problem:
+            return (1, "", f"{stored.handle}: {problem}")
+        try:
+            expression = re.compile(pattern)
+        except re.error as exc:
+            return (1, "", (
+                f"{stored.handle}: `grep` is not a usable regular "
+                f"expression: {exc}"
+            ))
+        rows = stored.text.splitlines()
+        hits = [(n, row) for n, row in enumerate(rows, start=1)
+                if expression.search(row)]
+        if not hits:
+            return (0, (
+                f"{stored.handle}: {stored.tool}, no line of {len(rows)} "
+                f"matches {pattern!r}."
+            ), "")
+        want = want or DEFAULT_MATCHES
+        shown = hits[:want]
+        body, cut = self._bounded(
+            "\n".join(f"{n}: {row}" for n, row in shown))
+        header = (
+            f"{stored.handle}: {stored.tool}, {len(shown)} of {len(hits)} "
+            f"lines matching {pattern!r} ({len(rows)} lines in all)."
+        )
+        rest = "" if len(shown) == len(hits) else (
+            f"\n… [{len(hits) - len(shown)} more matching lines; raise "
+            f"`limit`, or read around one of these with `lines`.]"
+        )
+        return (0, f"{header}\n{body}{cut}{rest}", "")
+
+    def _bounded(self, body: str) -> Tuple[str, str]:
+        """``(body, note)`` — the page cut to this store's cap, and why.
+
+        The same ``_max_chars`` a field read is bounded by, because it is
+        the same question: how much of one result may be pasted back into
+        a transcript that already bounded it once.
+        """
+        if len(body) <= self._max_chars:
+            return body, ""
+        return body[:self._max_chars], (
+            f"\n… [page cut at {self._max_chars} characters, this store's "
+            f"limit; ask for a narrower range]"
+        )
 
     def _index(self) -> str:
         if not self._results:
@@ -562,7 +834,7 @@ class BranchedStores:
             self._name = ""
 
     def _read(self, handle: str = "", path: str = "",
-              branch: str = "", **_ignored: Any) -> Tuple[int, str, str]:
+              branch: str = "", **rest: Any) -> Tuple[int, str, str]:
         """The executor the bus dispatches: one call, routed to one store."""
         with self._lock:
             store = self._stores.get(str(branch or ""))
@@ -575,7 +847,27 @@ class BranchedStores:
                 f"mission. Nothing was lost: this is the harness's own "
                 f"bookkeeping and the result is still in the transcript."
             ))
-        return store.read(handle, path)
+        return store.read(handle, path, **paging_of(rest))
+
+
+def _as_count(value: Any, name: str) -> Tuple[int, str]:
+    """``(count, problem)`` — exactly one is meaningful.
+
+    A model writes ``offset=4000`` under the native protocol and
+    ``offset="4000"`` under the JSON one, and both mean the same thing;
+    ``offset="soon"`` means nothing and is refused by name rather than
+    quietly read as zero, which would answer a question nobody asked with
+    the first page.
+    """
+    if value is None or str(value).strip() == "":
+        return 0, ""
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0, f"`{name}` is {value!r}; it is a whole number"
+    if count < 0:
+        return 0, f"`{name}` is {count}; it counts forward from the start"
+    return count, ""
 
 
 def _args(arguments: Dict[str, Any]) -> str:

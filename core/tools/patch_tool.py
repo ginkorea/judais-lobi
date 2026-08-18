@@ -1,10 +1,11 @@
 # core/tools/patch_tool.py — ToolBus-compatible multi-action patch tool
 
 import json
-from typing import Tuple
+from typing import Optional, Tuple
 
 from core.contracts.schemas import PatchSet
 from core.patch.engine import PatchEngine
+from core.tools.root import MissionRoot, rooted
 
 
 class PatchTool:
@@ -14,10 +15,48 @@ class PatchTool:
     All actions return (exit_code, stdout, stderr).
     JSON stdout for machine-friendly kernel orchestration.
     exit_code=0 only on success.
+
+    *root* confines every ``file_path`` in a patch set to one directory
+    tree, for the reason :mod:`core.tools.root` states: the engine writes
+    in this process, so the sandbox never sees it.  ``None`` — the default
+    — is the unconfined behaviour every existing caller has.
+
+    It is not the only guard and does not replace one:
+    :func:`core.patch.applicator.jail_path` already refuses an absolute
+    path, a ``..`` component and a symlink escape.  It refuses them
+    against ``repo_path`` — the directory this tool was *constructed*
+    with — and in the engine's words, at the bottom of a JSON result.
+    The root is the **mission's** answer to the same question: checked
+    before the engine is reached, and the one that bites when the two
+    directories are not the same.
+
+    Checked **here** and not in :class:`~core.patch.engine.PatchEngine`:
+    the engine is a library that a judge, a kernel role and this tool all
+    reach directly with paths their own callers chose, and a root is a
+    property of a *mission*, not of applying a patch.  This is the
+    model-facing surface — the same argument that put ``use_worktree``'s
+    safe default here rather than in the engine.
     """
 
-    def __init__(self, repo_path: str = ".", subprocess_runner=None):
+    def __init__(self, repo_path: str = ".", subprocess_runner=None,
+                 root: Optional[MissionRoot] = None):
         self._engine = PatchEngine(repo_path, subprocess_runner)
+        self._repo_path = repo_path
+        self._root = root
+
+    def _outside_root(self, patch_set: PatchSet) -> str:
+        """The refusal for the first file outside the root, or ``""``.
+
+        Every patch is checked before any is applied: a patch set is one
+        call because a half-applied change is a repository nobody asked
+        for, and refusing it halfway through would be exactly that.
+        """
+        for patch in patch_set.patches:
+            outside = rooted(self._root, getattr(patch, "file_path", ""),
+                             self._repo_path)
+            if outside:
+                return f"patch: {outside}"
+        return ""
 
     def __call__(self, action: str, **kwargs) -> Tuple[int, str, str]:
         handler = getattr(self, f"_do_{action}", None)
@@ -36,6 +75,9 @@ class PatchTool:
     def _do_validate(self, *, patch_set_json: str = "", **kw) -> Tuple[int, str, str]:
         """Dry-run match check."""
         patch_set = self._parse_patch_set(patch_set_json)
+        outside = self._outside_root(patch_set)
+        if outside:
+            return (1, "", outside)
         result = self._engine.validate(patch_set)
         stdout = json.dumps(result.to_dict())
         return (0 if result.success else 1, stdout, "")
@@ -65,6 +107,9 @@ class PatchTool:
         ``core.judge.candidates``, still reaches it directly.
         """
         patch_set = self._parse_patch_set(patch_set_json)
+        outside = self._outside_root(patch_set)
+        if outside:
+            return (1, "", outside)
         result = self._engine.apply(patch_set, use_worktree=use_worktree)
         stdout = json.dumps(result.to_dict())
         return (0 if result.success else 1, stdout, "")

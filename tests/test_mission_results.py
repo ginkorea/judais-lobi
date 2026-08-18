@@ -126,6 +126,14 @@ class TestReadingRefusals:
         assert code == 1
         assert "no structured payload" in err
 
+    def test_a_text_only_result_is_read_by_page_instead(self, store):
+        """The other half of the refusal above, and the reason it is not
+        a dead end: `path` walks a payload and a log has none, so the
+        text is read by page. The reader is
+        `tests/test_result_paging.py`; this is the seam between them."""
+        store.record("t", text="one\ntwo\nthree")
+        assert "two" in store.read("r1", lines="2")[1]
+
     def test_no_handle_lists_what_is_stored(self, loaded):
         code, out, _err = loaded.read()
         assert code == 0

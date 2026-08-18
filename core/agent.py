@@ -35,6 +35,7 @@ class Agent:
         tools=None,
         sandbox_request: Optional[str] = None,
         profile: Optional[ProfileMode] = None,
+        root=None,
     ):
         self._config = config
 
@@ -72,10 +73,18 @@ class Agent:
         self.memory = memory if memory is not None else UnifiedMemory(
             Path.home() / f".{self.personality}_memory.db"
         )
+        # `root` is the one directory this agent's in-process tools may
+        # touch, and it is `None` for chat — see `core.tools.root`. Handed
+        # through rather than decided here: whether this process is a
+        # governed mission is the CLI's fact (`core.cli._build_agent`) or
+        # the library caller's, and an Agent that read the working
+        # directory on its own would confine a chat nobody asked to
+        # confine.
         self.tools = tools if tools is not None else Tools(
             elfenv=self.env, memory=self.memory, enable_voice=False,
             sandbox_request=sandbox_request,
             profile=profile,
+            root=root,
         )
 
         # One window owner. `chat` used to bound its prompt with a

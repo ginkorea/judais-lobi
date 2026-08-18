@@ -7,11 +7,19 @@ Six objects and a loop, which is the whole API::
     from judais_lobi import Bounds, Model, Observer, Personality, Run, \\
         Store, ToolPlane, Tools
 
-    bus = Tools().bus                                   # SAFE, sandboxed, audited
+    bus = Tools(root=".").bus                           # SAFE, sandboxed, audited
     run = Run(Personality(system_message="You are Tai."),
               ToolPlane(bus=bus, offered=["read_file"]),
               Bounds(), Store(), Observer(), Model(ask=my_chat_fn))
     print(run.run("what does this repository build?").answer)
+
+``root=`` confines the in-process tools (``fs``, ``patch``, ``git``,
+``repo_map``) to one directory tree, and a platform building a plane by hand
+decides it: bwrap isolates a *subprocess* and those four are ``pathlib`` in
+the interpreter that asked, so an unrooted bus under a profile granting
+``fs.write`` writes anywhere the user can.  A path resolving outside the root
+comes back as an ordinary refusing tool result.  ``None`` — the default — is
+unconfined, which is what a chat turn is.  See :mod:`core.tools.root`.
 
 ``my_chat_fn`` is ``messages -> str`` and nothing else: the loop is confined
 to one injected callable and cannot ask a backend anything the caller did

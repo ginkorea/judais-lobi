@@ -128,3 +128,37 @@ class TestFsUnknownAction:
         rc, out, err = fs("explode", str(tmp_path))
         assert rc == 1
         assert "unknown" in err.lower()
+
+
+class TestFsIsUnconfinedUntilItIsGivenARoot:
+    """The default this whole module is written against.
+
+    `FsTool()` reaches whatever the caller names, which is chat: a person
+    at a prompt asking for a file means the file they said. A MISSION
+    hands a root down and the tool refuses anything outside it — see
+    `tests/test_fs_root.py`, and `core/tools/root.py` for why the sandbox
+    cannot do it (bwrap isolates a subprocess; this is pathlib in the
+    interpreter that asked).
+    """
+
+    def test_no_root_reaches_outside_the_working_directory(self, fs, tmp_path,
+                                                           monkeypatch):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "f.txt").write_text("reachable")
+        (tmp_path / "here").mkdir()
+        monkeypatch.chdir(tmp_path / "here")
+        assert fs("read", str(elsewhere / "f.txt")) == (0, "reachable", "")
+
+    def test_a_root_refuses_the_same_read(self, tmp_path, monkeypatch):
+        from core.tools.root import MissionRoot
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "f.txt").write_text("reachable")
+        (tmp_path / "here").mkdir()
+        monkeypatch.chdir(tmp_path / "here")
+        rc, _out, err = FsTool(root=MissionRoot(tmp_path / "here"))(
+            "read", str(elsewhere / "f.txt"))
+        assert rc == 1
+        assert "outside the mission root" in err

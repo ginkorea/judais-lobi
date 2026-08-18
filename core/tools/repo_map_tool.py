@@ -1,8 +1,9 @@
 # core/tools/repo_map_tool.py — ToolBus-compatible repo map tool
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from core.context.repo_map import RepoMap
+from core.tools.root import MissionRoot, rooted
 
 
 class RepoMapTool:
@@ -24,21 +25,51 @@ class RepoMapTool:
         repo_path: str = ".",
         subprocess_runner=None,
         token_budget: int = 4096,
+        root: Optional[MissionRoot] = None,
     ) -> None:
         self._repo_map = RepoMap(
             repo_path=repo_path,
             subprocess_runner=subprocess_runner,
             token_budget=token_budget,
         )
+        self._repo_path = repo_path
+        self._root = root
 
     def __call__(self, action: str, **kwargs) -> Tuple[int, str, str]:
         handler = getattr(self, f"_do_{action}", None)
         if handler is None:
             return (1, "", f"Unknown repo_map action: {action}")
+        # Read-only, and rooted anyway. A map is built against one
+        # repository, but `target_files` and `file_hint` are paths the
+        # MODEL writes, and "it only reads" is the same argument that left
+        # `fs read` able to quote `~/.ssh/id_rsa` back into a transcript.
+        for path in self._paths_in(kwargs):
+            outside = rooted(self._root, path, self._repo_path)
+            if outside:
+                return (1, "", f"repo_map {action}: {outside}")
         try:
             return handler(**kwargs)
         except Exception as exc:
             return (1, "", f"{type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _paths_in(arguments: dict) -> Sequence[str]:
+        """Every path a caller named, from whichever action named it.
+
+        Two arguments carry one across the whole tool — ``target_files``
+        for ``excerpt`` and ``visualize``, ``file_hint`` for ``symbol`` —
+        and listing them once here is what keeps a third action from
+        arriving with a third unchecked path.
+        """
+        paths: List[str] = []
+        target = arguments.get("target_files") or ()
+        if isinstance(target, str):
+            target = [target]
+        paths.extend(str(entry) for entry in target if str(entry or "").strip())
+        hint = arguments.get("file_hint")
+        if str(hint or "").strip():
+            paths.append(str(hint))
+        return paths
 
     def _do_build(self, *, force: bool = False, **kw) -> Tuple[int, str, str]:
         """Build or reload the repo map."""

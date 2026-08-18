@@ -257,6 +257,17 @@ class TestFigureGrounding:
         assert result.configured is False
         assert result.grounded is False
 
+    def test_every_result_grounds_a_figure_unless_a_manifest_narrows_it(self):
+        """The default, stated here because it is what every manifest
+        written before `figures_from:` means and what the committed
+        corpora were recorded under. The narrowed behaviour, and the
+        fabrication it catches, are `tests/test_evidence_scope.py`."""
+        config = GroundingConfig.from_mapping(
+            {"number_pattern": r"\b\d[\d,]{3,}\b"})
+        assert config.figures_from == ()
+        assert GroundingValidator.from_config(config).validate(
+            "12,481 records.", EVIDENCE).grounded
+
     def test_a_quoted_figure_passes(self):
         config = GroundingConfig(number_pattern=r"\b\d[\d,]{3,}\b")
         report = GroundingValidator.from_config(config).validate(

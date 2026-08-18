@@ -740,7 +740,11 @@ handle:
 mission_result(handle="r1", path="result.actors[0].score")
 ```
 
-A few dozen bytes instead of two hundred kilobytes. The store reaches nothing:
+A few dozen bytes instead of two hundred kilobytes. A result that is **text**
+and not a payload — a 40 KB test log — has no path into it, so it is read by
+page instead: `offset`/`limit` in characters, `lines="120-140"`, or
+`grep="FAILED"` for the matching lines with their line numbers. Each page is
+bounded exactly as a field read is. The store reaches nothing:
 every byte in it already arrived through a gated, audited dispatch of a tool the
 closed set allowed. It is registered on the bus for the length of one run and
 withdrawn after it.
@@ -777,7 +781,7 @@ satisfied by silence. `report.grounded` now means *nothing unsupported*;
 `report.verified` means *and something was actually checked*, and the CLI prints
 `NOTHING CHECKED` for the gap between them.
 
-**A figure is credited only where something measured it.** Three ways one used
+**A figure is credited only where something measured it.** Four ways one used
 to arrive without that, all closed in `NumericGroundingCheck` and all
 mechanical, because a rule that lives in skill prose holds for exactly as long
 as the model cooperates:
@@ -799,7 +803,16 @@ as the model cooperates:
   payload and its arguments, so *"I could not read that page — it answered
   404"* grounds the page and the status. The arguments are marked as *sent*
   and the figure check skips them, or an answer would support its own
-  arithmetic by typing it into a call that fails.
+  arithmetic by typing it into a call that fails;
+* **the tool-rich plane** — a `patch apply` result carries a match count, byte
+  offsets and a hash, so on a coding plane a small integer is nearly always
+  *somewhere* in the evidence, and an agent that never ran the tests came back
+  grounded having written "3 passed". `figures_from: [verify]` in the manifest
+  says which tool MEASURES the quantity the `number_pattern` describes, and a
+  figure then grounds against those results and nothing else. Unset, every
+  result grounds a figure, which is what every manifest written before the key
+  means. Figures only: identifiers keep the whole evidence set, because a file
+  path legitimately comes back from any tool that names one.
 
 **A claim table, where the figures matter.** `claim_table: true` turns on a
 third check. The skill's `output_format` asks for every figure a second time
@@ -1462,7 +1475,7 @@ The agent is now repo-aware. It understands structure, relationships, and what's
 Tools are dumb executors behind a capability-gated bus. The kernel decides everything.
 
 * **`core/tools/bus.py`** — Action-aware `ToolBus` with capability gating, sandboxing and JSONL audit logging. Structured JSON denial errors replace plain text. (The `preflight_hook` and `god_mode` constructor parameters were **deleted in 0.13.0**: nothing in the package ever passed either, and a hook nobody passes is a place a future caller puts a control and believes the run is governed. The bus's own capability check and `core/runtime/schema_check.py` are the preflights that actually run.)
-* **`core/tools/fs_tools.py`** — Consolidated `FsTool` with 5 actions (read, write, delete, list, stat). Pure `pathlib` I/O, no subprocess.
+* **`core/tools/fs_tools.py`** — Consolidated `FsTool` with 5 actions (read, write, delete, list, stat). Pure `pathlib` I/O, no subprocess — which is why a mission hands it a root (`core/tools/root.py`): bwrap isolates subprocesses and never sees this one.
 * **`core/tools/git_tools.py`** — Consolidated `GitTool` with 12 actions (status, diff, log, add, commit, branch, push, pull, fetch, stash, tag, reset) via `run_subprocess`.
 * **`core/tools/verify_tools.py`** — Config-driven `VerifyTool` (lint, test, typecheck, format). Reads `.judais-lobi.yml` for project-specific commands, falls back to sensible defaults.
 * **`core/tools/descriptors.py`** — 11 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
