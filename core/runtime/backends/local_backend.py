@@ -15,9 +15,11 @@ backend exists to expose — the served model's real ``max_model_len``.
 
 ``base`` includes the version prefix.  ``http://127.0.0.1:8000/v1``, not
 ``http://127.0.0.1:8000`` — that is what an OpenAI-compatible server
-advertises and what ``LOCAL_API_BASE`` is expected to hold.  A base that
-omits it is repaired at construction with a warning rather than
-producing a 404 an hour later.
+advertises and what ``LOCAL_API_BASE`` is expected to hold.  A **bare
+host** is repaired at construction rather than producing a 404 an hour
+later; a base that already carries a path is left exactly as written,
+because the prefix a deployment mounts on is its own business.  See
+:meth:`LocalBackend._normalize_base`.
 """
 
 from __future__ import annotations
@@ -117,18 +119,31 @@ class LocalBackend(Backend):
 
     @staticmethod
     def _normalize_base(base: str) -> str:
-        """Strip a trailing slash; append ``/v1`` when it is missing.
+        """Strip a trailing slash; append ``/v1`` to a **bare host**.
 
         A base without the version prefix is the single most common
         misconfiguration of this backend, and it fails as a 404 on the
         first chat rather than at construction.  Repairing it here keeps
         that hour.
+
+        **Only a bare host is repaired**, and that boundary was learned:
+        the rule used to be "append ``/v1`` unless the last segment looks
+        like ``v<digits>``", which turned the perfectly good OpenAI-
+        compatible base ``https://host/v1beta/openai/`` into
+        ``…/v1beta/openai/v1``.  A base that already carries a path is a
+        path somebody typed — the prefix may be ``/v1``, ``/openai/v1``,
+        ``/v1beta/openai`` or a reverse proxy's own mount point — and
+        guessing a suffix onto it is how a working endpoint becomes a 404
+        the backend put there itself.  Nothing is guessed where something
+        was said; the repair is for the one case where nothing was.
         """
         base = (base or "").strip().rstrip("/")
         if not base:
             return DEFAULT_LOCAL_API_BASE
-        tail = base.rsplit("/", 1)[-1]
-        if not tail.startswith("v") or not tail[1:].isdigit():
+        # Everything after the scheme, or the whole string when a caller
+        # wrote `host:8000` with no scheme at all.
+        rest = base.partition("://")[2] or base
+        if "/" not in rest:             # a bare host: nothing was said
             base = f"{base}/v1"
         return base
 
@@ -177,18 +192,47 @@ class LocalBackend(Backend):
         entry: Dict[str, Any] = {}
         if self._model:
             entry = next(
-                (e for e in entries if isinstance(e, dict) and e.get("id") == self._model),
+                (e for e in entries if isinstance(e, dict)
+                 and self._same_model(e.get("id"), self._model)),
                 {},
             )
-        if not entry and entries and isinstance(entries[0], dict):
+        elif entries and isinstance(entries[0], dict):
+            # Only when nobody named one. A listing's first entry is the
+            # server's idea of what it serves; it is an answer to "what is
+            # there", never to "what did you ask for", and reporting it as
+            # the served model of a run that asked for something else is
+            # the probe inventing a fact. That is what it used to do: this
+            # backend, pointed at a hosted OpenAI-compatible endpoint with
+            # `LOCAL_MODEL` set, reported a DIFFERENT model as served
+            # because the listing spelled ids `models/<name>`.
             entry = entries[0]
 
         self._probed = ServedModel(
-            model_id=str(entry.get("id") or fallback),
+            # What was asked for wins. An endpoint that does not list the
+            # model may still serve it — a listing is a courtesy and the
+            # chat endpoint is the authority — so a named model is never
+            # replaced here, only annotated with what the listing knew.
+            model_id=str(self._model or entry.get("id") or fallback),
             max_model_len=self._as_int(entry.get("max_model_len")),
             reachable=True,
         )
         return self._probed
+
+    @staticmethod
+    def _same_model(listed: Any, wanted: str) -> bool:
+        """Whether a listing entry names the model the caller asked for.
+
+        Exactly, or by the last path segment: an OpenAI-compatible listing
+        may spell its ids with a namespace (``models/<name>``) while the
+        chat endpoint takes the bare name, and a comparison that missed
+        that would report a served model as absent and throw away the
+        ``max_model_len`` sitting beside it.
+        """
+        listed = str(listed or "")
+        if not listed or not wanted:
+            return False
+        return (listed == wanted
+                or listed.rsplit("/", 1)[-1] == wanted.rsplit("/", 1)[-1])
 
     @staticmethod
     def _as_int(value: Any) -> Optional[int]:

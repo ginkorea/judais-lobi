@@ -257,6 +257,14 @@ def _kpis(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "elapsed_s": (finished or {}).get("elapsed_s"),
         "budget": (finished or {}).get("budget"),
         "tokens": usage.get("total_tokens"),
+        # The two halves of the total, kept apart because they are two
+        # different costs: a prompt is what the harness spent on framing
+        # and a completion is what the model spent on answering, they are
+        # priced differently everywhere, and a configuration that doubles
+        # the prompt to halve the completion is a finding that a single
+        # total hides. Absent, never zero, for `tokens`' own reason.
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
         "model_calls": usage.get("calls"),
         "cost": usage.get("cost"),
         "tools": list(_tools_called(records)),
