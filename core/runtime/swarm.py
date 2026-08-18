@@ -760,10 +760,11 @@ class SwarmRunner:
         # second, slightly different, idea of what a staged turn is.
         self._adopt(Run(personality, plane, bounds, store,
                         RunObserver(observer, store=store), model),
-                    max_plan_steps, summary_chars)
+                    max_plan_steps, summary_chars, parallel)
 
     @classmethod
     def from_run(cls, run: Run, *, max_plan_steps: Optional[int] = None,
+                 parallel: int = 1,
                  summary_chars: Optional[int] = None) -> "SwarmRunner":
         """A staged turn over a :class:`~core.runtime.run.Run` already built.
 
@@ -786,11 +787,11 @@ class SwarmRunner:
         only two parameters here.
         """
         self = cls.__new__(cls)
-        self._adopt(run, max_plan_steps, summary_chars)
+        self._adopt(run, max_plan_steps, summary_chars, parallel)
         return self
 
     def _adopt(self, run: Run, max_plan_steps: Optional[int],
-               summary_chars: Optional[int]) -> None:
+               summary_chars: Optional[int], parallel: int = 1) -> None:
         """Everything a staged turn is, over one :class:`Run`.
 
         The body both constructors share.  Nothing here reads a parameter
