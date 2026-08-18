@@ -69,9 +69,18 @@ CORPUS = Path(__file__).parent / "fixtures" / "runs"
 JSON_RUN = "run_corpusjson-0001"
 NATIVE_RUN = "run_corpusnative-0001"
 SWARM_RUN = "run_corpusswarm-0001"
+#: The staged turn whose synthesized answer could not support itself.
+#:
+#: Added in Phase 11 lane B, because the swarm's caveat path — the repair
+#: turn it announces, the report it marks the answer with, the
+#: ``answered_with_caveat`` it ends on — was exercised by no committed
+#: fixture at all, and that lane moved every one of those decisions to a
+#: new owner.  A refactor's only honest guard is a recording of the branch
+#: it touched.
+CAVEAT_RUN = "run_corpusswarmcaveat-0001"
 
 #: Every committed run, for the checks that are true of all of them.
-CORPUS_RUNS = (JSON_RUN, NATIVE_RUN, SWARM_RUN)
+CORPUS_RUNS = (JSON_RUN, NATIVE_RUN, SWARM_RUN, CAVEAT_RUN)
 
 #: The identifier the corpus mission cites, and the one thing the
 #: grounding grammar below is looking for.
@@ -116,6 +125,19 @@ STRICTER = _SKILL.format(grounding=textwrap.indent(
     "must_cite:\n"
     "  identifiers: 2\n"
     "max_repairs: 0\n", "    "))
+
+
+#: ``SKILL`` with a grammar the corpus's staged synthesis cannot satisfy:
+#: two identifiers required, one repair turn allowed.  What
+#: :data:`CAVEAT_RUN` was recorded under, and what a replay of it has to be
+#: handed — a replay rebuilds the loop's own decisions from the manifest,
+#: so replaying that run under the default grammar would replay a
+#: different mission.
+CAVEAT = _SKILL.format(grounding=textwrap.indent(
+    "identifier_pattern: '\\basset\\.[0-9a-z]{4,}\\b'\n"
+    "must_cite:\n"
+    "  identifiers: 2\n"
+    "max_repairs: 1\n", "    "))
 
 
 def write_skill(directory, text=SKILL):
@@ -299,6 +321,29 @@ def record_swarm_run(tmp_path):
     return root, only_run(root)
 
 
+#: The same staged mission, synthesized into an answer that names ONE of
+#: the two runs it read.  Under :data:`CAVEAT` that is one identifier short
+#: of what the skill requires, so the turn spends its one repair turn — the
+#: ``grounding`` record carrying ``repairing: true`` — is given the same
+#: sentence again, and ends ``answered_with_caveat`` wearing the
+#: validator's own note.  Eight model calls: the router, the planner, four
+#: mission turns, the draft and the repair.
+SWARM_CAVEAT_REPLIES = SWARM_REPLIES[:-1] + (
+    f"Both runs hold 12481 records, including {ASSET}.",
+    f"Both runs hold 12481 records, including {ASSET}.",
+)
+
+
+def record_swarm_caveat_run(tmp_path):
+    """Record the staged run that could not support its answer."""
+    MockClass, _ = scripted_elf(SWARM_CAVEAT_REPLIES)
+    run_cli(MockClass, *mission_argv("what do the two runs hold?",
+                                     write_skill(tmp_path, CAVEAT),
+                                     "--swarm"))
+    root = Path(os.environ[RUNS_ENV])
+    return root, only_run(root)
+
+
 def rename_run(root, run_id, wanted):
     """Move a recorded run to a stable id, id references included.
 
@@ -347,7 +392,8 @@ def record_corpus(destination, tmp_path):
     made = []
     for record, wanted in ((record_json_run, JSON_RUN),
                            (record_native_run, NATIVE_RUN),
-                           (record_swarm_run, SWARM_RUN)):
+                           (record_swarm_run, SWARM_RUN),
+                           (record_swarm_caveat_run, CAVEAT_RUN)):
         root, run_id = record(tmp_path)
         rename_run(root, run_id, wanted)
         if (destination / wanted).exists():
@@ -881,6 +927,31 @@ class TestTheCorpusIsComplete:
         # each, renumbered into the sequence a watcher reads.
         assert len(started) == 4
 
+    def test_the_caveat_run_records_the_branch_no_other_fixture_reaches(self):
+        """``answered_with_caveat``, on the staged path, with the repair
+        turn that precedes it.
+
+        Every decision in that sequence moved to a new owner in Phase 11
+        lane B — the interim ``repairing`` record, the marked report, the
+        verdict-before-the-prose order — and a branch no recording covers
+        is a branch a corpus diff cannot guard.
+        """
+        recorded = records(CORPUS, CAVEAT_RUN)
+        grounding = [r for r in recorded if r["event"] == "grounding"]
+        assert [r["repairing"] for r in grounding] == [True, False]
+        assert grounding[-1]["grounded"] is False and grounding[-1]["caveat"]
+        # The verdict BEFORE the prose it qualifies, which is the order the
+        # whole record exists to be read in.
+        events = [r["event"] for r in recorded]
+        assert events[-3:] == ["grounding", "answer", "mission_finished"]
+        assert recorded[-1]["outcome"] == "answered_with_caveat"
+        assert recorded[-2]["text"].endswith(grounding[-1]["caveat"])
+
+    def test_the_caveat_run_is_one_mission_like_the_other_staged_one(self):
+        events = [r["event"] for r in records(CORPUS, CAVEAT_RUN)]
+        assert events.count("mission_started") == 1
+        assert events.count("mission_finished") == 1
+
     def test_the_native_run_kept_the_decision_that_was_not_in_the_string(self):
         first = lines(CORPUS / NATIVE_RUN / MODEL_LOG)[0]
         assert first["reply"]["content"] == ""
@@ -946,6 +1017,16 @@ class TestTheCorpusIsWhatThisHarnessProduces:
         assert [line["kind"] for line in fresh] == \
             [line["kind"] for line in committed]
 
+    def test_the_caveat_run_records_the_same_requests_and_kinds(self,
+                                                                tmp_path):
+        root, run_id = record_swarm_caveat_run(tmp_path)
+        fresh = lines(root / run_id / MODEL_LOG)
+        committed = lines(CORPUS / CAVEAT_RUN / MODEL_LOG)
+        assert [line["request"] for line in fresh] == \
+            [line["request"] for line in committed]
+        assert [line["kind"] for line in fresh] == \
+            [line["kind"] for line in committed]
+
 
 # ── replaying it ────────────────────────────────────────────────────────────
 
@@ -981,7 +1062,13 @@ def replay_argv(run_id, skill, *extra):
 #: router's and a planner's that the ordinary loop never builds at all —
 #: so the flag is part of *which run this is*, and it rides here rather
 #: than being guessed at.  ``meta.json`` carries it as ``flags.swarm``.
-REPLAY_FLAGS = {SWARM_RUN: ("--swarm",)}
+REPLAY_FLAGS = {SWARM_RUN: ("--swarm",), CAVEAT_RUN: ("--swarm",)}
+
+#: The manifest a recorded run has to be replayed under, where it is not
+#: the default one.  Same argument as :data:`REPLAY_FLAGS`: the grounding
+#: grammar is part of *which mission this is*, and the loop reads it from
+#: the manifest rather than from the recording.
+REPLAY_SKILL = {CAVEAT_RUN: CAVEAT}
 
 
 class TestARunWithAReviewInIt:
@@ -1053,8 +1140,9 @@ class TestReplayingTheCorpus:
     def test_the_replayed_stream_is_the_recorded_stream(
             self, corpus, tmp_path, run_id):
         MockClass, _ = scripted_elf(refuse=True)
-        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path),
-                                        *REPLAY_FLAGS.get(run_id, ())))
+        run_cli(MockClass, *replay_argv(
+            run_id, write_skill(tmp_path, REPLAY_SKILL.get(run_id, SKILL)),
+            *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
         assert comparable(records(corpus, fresh.run_id)) == \
             comparable(records(corpus, run_id))

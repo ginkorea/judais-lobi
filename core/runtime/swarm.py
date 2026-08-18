@@ -21,8 +21,9 @@ Five roles, one backend, no second model:
   with a checkable result, each tagged with its rung: a registered tool,
   code via a code-execution tool, or code that composes platform data
   with computation (the SDK inside the code).
-* **EXECUTE** — one step, one small :class:`MissionRunner`, under the
-  same supervisor and the same operator ceiling as the whole turn.  There
+* **EXECUTE** — one step, one small child :class:`~core.runtime.run.Run`
+  of the turn's, under the same supervisor and the same operator ceiling
+  as the whole turn — the same objects, by identity.  There
   is no per-step slice of a budget any more: a step takes the turns it
   needs, and the turn stops where an operator said it stops or where the
   supervisor says it is going round.  The sub-mission's transcript holds
@@ -58,16 +59,24 @@ mission with more steps, and a sub-mission proposing a gated tool ends
 the whole turn at ``awaiting_approval`` holding the proposed call, the
 same as it always did.
 
-Approvals are the direct path's, entirely.  A sub-runner *is* a
-:class:`~core.runtime.mission.MissionRunner`, so it writes the durable
-request itself and the ``approval_id`` reaches a watcher on the
-``gate_requested`` this class re-emits — which passes gate records
-through with their fields untouched, so there is no second copy of the
-id to drift.  A resumed turn carries one
-:class:`~core.runtime.approvals.ApprovalTicket` into every sub-runner it
-builds; the ticket spends itself once, on the dispatch that uses it, so
-a plan of five steps that calls the approved tool in the third has spent
-exactly one decision.
+Approvals are the direct path's, entirely.  A sub-mission *is* a whole
+:class:`~core.runtime.run.Run`, sharing this turn's
+:class:`~core.runtime.run.Store`, so it writes the durable request itself
+and the ``approval_id`` reaches a watcher on the ``gate_requested`` its
+branch passes through with the fields untouched — there is no second copy
+of the id to drift.  The one
+:class:`~core.runtime.approvals.ApprovalTicket` is on that shared store
+too; it spends itself once, on the dispatch that uses it, so a plan of
+five steps that calls the approved tool in the third has spent exactly
+one decision.
+
+**This class is a composition over one** :class:`~core.runtime.run.Run`.
+Its constructor is that class's adapter with the staging knobs beside it —
+thirty parameters in, six objects out — and every stage of a turn is a
+child of the one run those six make: one plane, one durable log, one
+observer, one model and therefore one ledger, one clock, one supervisor.
+What used to be here instead was a second copy of ten of them, which is
+what ``ROADMAP.md`` §2.6.1's table is a list of.
 
 The stream opens before triage.  Triage is a call to the model like any
 other, and the contract's silence clause promises ``mission_started``
@@ -82,31 +91,29 @@ from __future__ import annotations
 
 import json
 import re
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import (
-    Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple,
+    Any, Callable, Dict, List, Mapping, Optional, Sequence,
 )
 
+from core.bounding import bound_result
 from core.durable import RunStore
 from core.runtime.control import GATE_WAIT_S
-from core.budgets import BudgetExhausted, Deadline, cancelled
-from core.redact import scrub_record
+from core.budgets import Deadline
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.context_window import MissionWindow
-from core.runtime.contract import SCHEMA_VERSION
-from core.runtime.grounding import GroundingReport, GroundingValidator
+from core.runtime.grounding import GroundingValidator
 from core.runtime.mission import (
-    AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL, MissionRunner,
-    MissionTranscript, _finished_record, _grounding_record, _profile_field,
-    _protocol_field, _run_field, audit_ref_of, persist_record, sandbox_of,
-    second_opinion, stacked, validate_history,
+    AWAITING_APPROVAL, JSON_PROTOCOL, MissionTranscript, _finished_record,
+    stacked,
 )
 from core.runtime.mission_stream import (
-    ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
-    Observer, REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
+    ANSWER, MISSION_FINISHED, MISSION_STARTED, Observer,
 )
 from core.runtime.results import RESULT_TOOL
+from core.runtime.run import (
+    Bounds, Model, Observer as RunObserver, Personality, Run, Store, ToolPlane,
+)
 from core.runtime.supervisor import NUDGE, PROGRESSING, REPLAN
 from core.runtime.usage import Ledger, Rate
 
@@ -129,6 +136,15 @@ __all__ = ["SwarmRunner", "PlanStep", "RUNGS", "RUNGS_WITHOUT_SDK",
 MAX_PLAN_STEPS = 8
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
+
+#: What a child run's records are called, for the observer.  Neither name
+#: reaches the wire — an OPTIONAL ``branch`` field is the parallel-children
+#: lane's (``ROADMAP.md`` §2.6.2, item 5) — and they exist so that the two
+#: kinds of child are named where they are made: the direct route is the
+#: mission continued, a plan step is one stage of it.  A step's branch is
+#: named for the step, so the day the field does reach the wire a consumer
+#: can demultiplex by plan id without this file changing.
+_DIRECT = "direct"
 
 #: Every rung this runner knows how to describe.  The vocabulary is the
 #: planner's whole knowledge of the platform's rungs; everything
@@ -431,143 +447,16 @@ def _dispatched(step: Any) -> Sequence[Any]:
     return [step] if step.tool else []
 
 
-class _OpenedAlready:
-    """A sub-mission's observer with the sub-mission's opening removed.
-
-    :meth:`SwarmRunner.run` announces the mission before triage, which is the
-    only way the contract's silence clause can hold across a router that is
-    itself a call to the model.  The direct path underneath is a whole
-    :class:`MissionRunner` and would announce it a second time: one turn, two
-    ``mission_started`` records, and a pane that renders two missions.
-
-    Everything else passes through untouched — ``mission_finished``
-    emphatically included.  That record comes out of the sub-runner's own
-    ``finally`` holding the step count this object does not have, and dropping
-    it here would trade a doubled opening for a stream that never closes.
-
-    Untouched, and through :meth:`SwarmRunner._emit` rather than straight to
-    the observer, exactly as :class:`_StageObserver` does.  There is one
-    choke point per runner and it is where the durable transcript is written;
-    a direct path that handed its records to the observer around it would put
-    a run's own answer on a pane and not in its log.  Re-scrubbing what a
-    sub-runner already scrubbed costs a pass and changes nothing —
-    :func:`~core.redact.scrub_record` is idempotent.
-    """
-
-    def __init__(self, emit: Callable[..., None]):
-        self._emit = emit
-
-    def __call__(self, record: Dict[str, Any]) -> None:
-        if record.get("event") == MISSION_STARTED:
-            return
-        fields = dict(record)
-        event = fields.pop("event", "")
-        self._emit(event, **fields)
-
-
-class _StageObserver:
-    """One watcher for many sub-missions, speaking as a single mission.
-
-    Sub-runners each emit ``mission_started`` … ``mission_finished`` around
-    their own little run; a pane fed those raw would render five missions
-    for one turn.  This filter drops the sub-mission bookkeeping, renumbers
-    ``index`` into one global sequence, and passes everything else through
-    untouched — so the events a watcher sees are indistinguishable in
-    vocabulary from a single longer mission.
-
-    It also carries the plan.  The plan cannot ride ``mission_started`` any
-    more — that record is emitted before triage, and at that moment there is
-    no plan and may never be one — so it rides the first ``step_started`` the
-    plan produces, which is the next thing a watcher hears and the moment the
-    plan starts being true.  See :data:`core.runtime.contract.OPTIONAL`.
-
-    *start_index* is where the global numbering begins, and it is ``0``
-    everywhere except a resumed staged turn: those records go into the log
-    the earlier stretch wrote, and an index that started again would put two
-    records with the same ``index`` in one run.  *resumed* rides the first
-    ``step_started`` of the new stretch beside the plan, for the reason the
-    plan does — one record announcing what a watcher is about to see, and
-    not a fact restated on every step.
-    """
-
-    _PASS = frozenset({
-        STEP_STARTED, REPLY_REJECTED, TOOL_CALL, TOOL_RESULT, GATE_REQUESTED,
-    })
-
-    def __init__(self, emit: Callable[..., None], *, start_index: int = 0,
-                 resumed: Optional[Dict[str, Any]] = None):
-        self._emit = emit
-        self._next_index = max(0, int(start_index))
-        self._offset = self._next_index
-        self._seen_high = -1
-        self._pending_plan: Optional[List[Dict[str, str]]] = None
-        self._pending_resumed = dict(resumed) if resumed else None
-        self._pending_review: Optional[Dict[str, Any]] = None
-
-    def begin_stage(self) -> None:
-        """A new sub-mission is starting; its indexes begin at zero."""
-        self._offset = self._next_index
-        self._seen_high = -1
-
-    def announce(self, plan: Sequence[PlanStep]) -> None:
-        """Carry this plan on the next ``step_started`` to come through.
-
-        Called once for the plan as drawn and again for a redraw, so what a
-        watcher holds is the plan the steps it is now seeing belong to rather
-        than the one that was abandoned.
-        """
-        self._pending_plan = _plan_record(plan)
-
-    def reviewed(self, review: Any) -> None:
-        """Carry a step-level review on the next ``step_started``.
-
-        The staged path's reviews happen BETWEEN sub-missions — a gate said
-        no and the supervisor was asked what that means — so they have no
-        step of their own to ride.  They ride the next one, which is
-        exactly what ``review`` is documented to mean on the direct path
-        too: *the step that follows a review turn*.  A review with no step
-        after it — the last step of a plan, settled ``stuck`` — is not
-        announced, and ``mission_finished`` is what says how the turn
-        ended; inventing a record type for it would be the one additive
-        change a consumer cannot absorb quietly.
-        """
-        self._pending_review = review.as_record() if review is not None else None
-
-    def __call__(self, record: Dict[str, Any]) -> None:
-        event = record.get("event")
-        if event not in self._PASS:
-            return
-        fields = dict(record)
-        fields.pop("event", None)
-        if "index" in fields:
-            local = int(fields["index"])
-            self._seen_high = max(self._seen_high, local)
-            fields["index"] = self._offset + local
-            self._next_index = max(self._next_index,
-                                   self._offset + self._seen_high + 1)
-        if event == STEP_STARTED:
-            # On ``step_started`` and nowhere else: ``plan`` and ``resumed``
-            # are declared optional on that event alone, and a field an event
-            # does not declare is a field a consumer meets with no sentence
-            # for it.
-            if self._pending_plan is not None:
-                fields["plan"] = self._pending_plan
-                self._pending_plan = None
-            if self._pending_resumed is not None:
-                fields["resumed"] = self._pending_resumed
-                self._pending_resumed = None
-            if self._pending_review is not None:
-                fields["review"] = self._pending_review
-                self._pending_review = None
-        self._emit(event, **fields)
-
-
 class SwarmRunner:
     """Triage, then either one mission or a staged handful of small ones.
 
-    Constructed exactly like a :class:`MissionRunner` plus the staging
-    knobs, so the CLI can build either from the same material.  The same
-    ``chat_fn`` drives every role — one leased endpoint, no second model.
+    Constructed exactly like a :class:`~core.runtime.mission.MissionRunner`
+    plus the staging knobs, so the CLI can build either from the same
+    material — and, like that class, the constructor is an **adapter**:
+    the parameters below find the six objects of
+    :mod:`core.runtime.run` and what this class holds is one
+    :class:`~core.runtime.run.Run` built from them.  The same ``chat_fn``
+    drives every role — one leased endpoint, no second model.
 
     Parameters beyond the runner's:
 
@@ -592,14 +481,15 @@ class SwarmRunner:
         An operator's ceiling on model turns for the WHOLE turn — every
         sub-mission's steps summed — or ``0``, the default, for no ceiling.
         Exactly :class:`~core.runtime.mission.MissionRunner`'s parameter,
-        with the same meaning and the same default, because a staged turn
+        with the same meaning and the same default — it is one field of
+        the one :class:`~core.runtime.run.Bounds` — because a staged turn
         is a mission and an operator who typed ``--mission-steps 20``
         typed it once.
     supervisor:
         The turn's :class:`~core.runtime.supervisor.Supervisor`, or
         ``None``.  **One per turn**, shared exactly as the clock and the
-        switch are: it is handed to every :class:`MissionRunner` this
-        builds, so a plan that loops *across* its steps — step two reading
+        switch are — one :class:`~core.runtime.run.Bounds`, inherited by
+        every child — so a plan that loops *across* its steps — step two reading
         what step one read, step three reading it again — is a pattern
         something can see, and so the review budget is the turn's rather
         than five copies of it.
@@ -633,10 +523,11 @@ class SwarmRunner:
         platform it is pointed at, and a manifest is where a platform
         describes itself.
     window:
-        **The one window for the whole turn.**  Passed straight through to
-        every :class:`MissionRunner` this builds — see that class's
-        ``window`` parameter — and, since the live run of 16 August, used
-        on this runner's *own* four roles as well: the router, the
+        **The one window for the whole turn.**  It lives on the one
+        :class:`~core.runtime.run.Model` every stage shares — see
+        :class:`~core.runtime.mission.MissionRunner`'s ``window``
+        parameter — and, since the live run of 16 August, it is applied to
+        this runner's *own* four roles as well: the router, the
         planner, every gate and the synthesizer go out through
         :meth:`_fit`.
 
@@ -655,26 +546,33 @@ class SwarmRunner:
         who passes no window is asking for.
     run_store, run_id:
         The durable transcript, exactly as
-        :class:`~core.runtime.mission.MissionRunner` takes it — and
-        **not** passed through to the sub-missions this builds.  Their
-        records already arrive here to be renumbered and filtered; a
-        sub-runner writing to the same run as well would put every step
-        in the log twice, once under its own index and once under the
-        global one.  One turn is one run.
+        :class:`~core.runtime.mission.MissionRunner` takes it, and one
+        :class:`~core.runtime.run.Store` shared with every sub-mission.
+
+        **One writer**, still, and it is the turn's
+        :class:`~core.runtime.run.Observer`: a stage emits into a *branch*
+        of it, and a branch is a caller of the parent's ``emit`` rather
+        than a second one beside it, so a record is scrubbed once and
+        appended once whichever child spoke.  It used to be stated by
+        withholding the log from the sub-runner — it was handed the id and
+        not the store — which was half an object where the property wanted
+        one.
     usage_fn, rate:
-        As :class:`MissionRunner`'s, and handed down to every runner this
-        builds.  The staged path makes model calls of its own — the
-        router, the planner, each gate, the synthesizer and its repair
-        turns — *outside* any :class:`MissionRunner`, so those are folded
-        in here; everything a sub-mission spends is folded into the SAME
-        :class:`~core.runtime.usage.Ledger` by handing it down rather
-        than by adding sub-totals up afterwards.  One ledger per turn,
-        one place the arithmetic happens: a second accumulator is how the
-        opening frame once carried six of ten grounding fields, and
-        numbers are the half nobody notices is wrong.
+        As :class:`~core.runtime.mission.MissionRunner`'s, and they live on
+        the one :class:`~core.runtime.run.Model` every stage shares.  The
+        staged path makes model calls of its own — the router, the
+        planner, each gate, the synthesizer and its repair turns — outside
+        any sub-mission, and every one of them folds through
+        :meth:`~core.runtime.run.Model.spend` into the same
+        :class:`~core.runtime.usage.Ledger` a sub-mission's steps fold
+        into.  One ledger per turn, ONE place the arithmetic happens: this
+        class used to hold its own copy of those four lines, and a second
+        accumulator is how the opening frame once carried six of ten
+        grounding fields.  Numbers are the half nobody notices is wrong.
     protocol, tool_calls_fn:
-        As :class:`MissionRunner`'s, and handed down to every sub-mission
-        this builds: a rung's execution is an ordinary mission loop, and a
+        As :class:`~core.runtime.mission.MissionRunner`'s, on the one
+        :class:`~core.runtime.run.Model` every stage shares: a rung's
+        execution is an ordinary mission loop, and a
         staged turn that spoke one protocol at the top and another
         underneath would be a turn whose opening frame is false of most of
         its records.
@@ -727,7 +625,8 @@ class SwarmRunner:
         an instruction folded into a yes/no prompt would corrupt the answer
         that prompt exists to get.  A ``cancel`` still reaches them,
         because the channel throws the switch from its own thread and
-        :meth:`_stop` is asked before each of those round trips.
+        :meth:`~core.runtime.run.Bounds.stop` is asked before each of
+        those round trips.
     """
 
     def __init__(
@@ -766,90 +665,62 @@ class SwarmRunner:
         control: Any = None,
         gate_wait_s: float = GATE_WAIT_S,
     ):
-        self._chat = chat_fn
-        self._plain_chat = plain_chat_fn or chat_fn
-        # Only ever consulted by `_json_reply`, and only ever set by a
-        # caller that also handed in a `plain_chat_fn` able to take the
-        # keyword: a runner given a bare `chat_fn` keeps the old call shape.
-        self._json_mode = bool(json_mode) and plain_chat_fn is not None
-        self._bus = bus
-        self._tool_names = list(tool_names)
-        self._system_message = system_message
-        # Zero is NO CEILING and is the default, exactly as it is on
-        # `MissionRunner`: the turn runs until it answers, until somebody
-        # stops it, or until the supervisor says it is going round.
-        self._max_steps = max(0, int(max_steps))
-        self._validator = validator
-        #: ONE watcher for the whole turn, handed to every runner below.
-        #: See the class docstring; `None` is a turn with no retries and
-        #: no redraw.
-        self._supervisor = supervisor
-        #: A :class:`~core.critic.mission.MissionCritic`, or ``None``, and
-        #: it belongs to the SYNTHESIZER.
-        #:
-        #: A staged turn's answer is written once, at the end, over every
-        #: step's evidence — so the second opinion is asked there, exactly
-        #: where the direct path asks it of its own answer, and not once per
-        #: sub-mission. The sub-runners have no validator either, for the
-        #: same reason: a step's summary is not an answer to the objective.
-        #:
-        #: `_direct` DOES hand it on, because that path's MissionRunner is
-        #: writing the turn's answer itself. Duck-typed rather than
-        #: imported, as in `MissionRunner`: `core.critic` pulls in pydantic
-        #: and a transport, and a turn that is not using a critic must not
-        #: pay for either.
-        self._critic = critic
-        #: Handed to every MissionRunner this builds and used by nothing
-        #: here — the two halves of "the plane may change under a run"
-        #: (see `MissionRunner`'s own parameter documentation).
-        #:
-        #: Threaded rather than dropped because a sub-mission with no
-        #: `admits` takes whatever the bus grows, and a staged turn that
-        #: widened itself where the direct one would not would make
-        #: `--swarm` the looser of the two governance paths. This runner's
-        #: OWN view of the plane — `_offered`, the opening frame, the
-        #: planner's short catalogue — is the set the turn started with;
-        #: Phase 11's one runtime is where that stops being two views.
-        self._admits = admits
-        self._plane_changed = plane_changed
-        self._gated = list(gated)
-        self._approvals = approvals
-        self._approval = approval
-        if approval is not None:
-            # Narrowed HERE as well as in every MissionRunner this builds,
-            # because `_opening` renders the gated names for the whole turn
-            # from this list and a consumer must not be able to tell from the
-            # opening frame which route ran. One owner for the subtraction
-            # itself: `ApprovalTicket.widen`.
-            self._gated = approval.widen(self._gated)
-        self._history = validate_history(history)
-        self._observer = observer
-        # The durable transcript, and it stays HERE. Every record a
-        # sub-mission emits reaches this runner's `_emit` — through
-        # `_StageObserver` on the staged path and `_OpenedAlready` on the
-        # direct one — so a sub-runner given a store of its own would append
-        # the same record twice, once under its own index and once under the
-        # renumbered one. One run, one log, one writer.
-        self._run_store = run_store
-        self._run_id = str(run_id or "")
-        # ONE window, handed to every MissionRunner this builds AND used
-        # by `_fit` on this runner's own four roles. A rung's execution is
-        # an ordinary mission loop and grows the same unbounded message
-        # list; the planner and the synthesizer build lists of their own
-        # that are not short either, and a character cap standing in for a
-        # context bound is what starved the 16 August run.
-        self._window = window
-        self._usage_fn = usage_fn
-        # Handed down to every MissionRunner this builds and used by
-        # nothing here. A rung's execution is an ordinary mission loop and
-        # speaks whichever protocol the turn was started with; this
-        # runner's OWN calls — the router, the planner, each gate, the
-        # synthesizer — go through `plain_chat_fn`, which declares no
-        # tools at all, because a yes/no question answered with a tool
-        # call is the failure that function exists to prevent.
-        self._tool_calls_fn = tool_calls_fn
-        self._protocol = protocol
-        self._rate = rate
+        # THE ADAPTER, and it is `MissionRunner.__init__`'s adapter with
+        # the staging knobs beside it: the same thirty parameters find the
+        # same six objects, and what is built out of them is ONE `Run` that
+        # every stage of this turn is a child of. Nothing here decides
+        # anything — every line is a parameter finding the object that owns
+        # it — and the constructor's surface is unchanged because `core/cli
+        # .py` and this class's conformance suite hold it.
+        store = Store(runs=run_store, run_id=run_id, approvals=approvals,
+                      ticket=approval)
+        # ONE plane for the whole turn, shared by every sub-mission. Each
+        # used to build its own from the manifest's list, so a tool the bus
+        # grew mid-turn was offered to the step that learned of it and to
+        # no later one — two views of what may be called, which is the
+        # thing a closed set exists to be one of. The ticket's subtraction
+        # happens once, inside `Run`, so the opening frame and every stage
+        # read the same gated set.
+        plane = ToolPlane(bus=bus, offered=tool_names, store_tool=RESULT_TOOL,
+                          gated=gated, admits=admits,
+                          plane_changed=plane_changed)
+        personality = Personality(system_message=system_message,
+                                  history=history, grounding=validator,
+                                  critic=critic, sdk_import=sdk_import)
+        # ONE model, therefore ONE ledger: `run` puts a fresh one on it and
+        # every child shares the object, so the router's call, the
+        # planner's, every sub-mission's step and the synthesizer's repair
+        # all fold into the same totals. `plain` is never `None` here — a
+        # caller that handed no plain function is asking for the roles to
+        # go through the same one the steps do.
+        model = Model(ask=chat_fn, plain=plain_chat_fn or chat_fn,
+                      protocol=protocol, window=window,
+                      # Only ever consulted by `_json_reply`, and only ever
+                      # true for a caller that also handed in a
+                      # `plain_chat_fn` able to take the keyword: a runner
+                      # given a bare `chat_fn` keeps the old call shape.
+                      json_mode=bool(json_mode) and plain_chat_fn is not None,
+                      usage_fn=usage_fn, tool_calls_fn=tool_calls_fn,
+                      rate=rate)
+        # ONE bounds: one clock, one switch, one channel and ONE supervisor
+        # for the whole turn — handed to every child by identity, so a plan
+        # that loops ACROSS its steps is a pattern something can see and the
+        # review budget is the turn's rather than five copies of it. Zero
+        # steps is NO CEILING and is the default.
+        bounds = Bounds(deadline=deadline, cancel=cancel, control=control,
+                        gate_wait_s=gate_wait_s, max_steps=max(0, int(max_steps)),
+                        supervisor=supervisor)
+        #: ONE observer for the whole turn, and the one place a record is
+        #: scrubbed and the durable log is written. Every stage emits into
+        #: a BRANCH of this — see `Observer.branch` — so a sub-runner
+        #: cannot reach a sink without passing through here.
+        self._observer = RunObserver(observer, store=store)
+        #: The turn, as one loop object. This class is a composition over
+        #: it: the six objects above are read back off it below, so there
+        #: is one copy of each fact rather than one here and one there.
+        self._run = Run(personality, plane, bounds, store, self._observer,
+                        model)
+
         # Replaced at the top of every `run`, so a runner used twice does
         # not report the first turn's tokens on the second.
         self._ledger = Ledger()
@@ -861,33 +732,27 @@ class SwarmRunner:
         #: Every tool this staged turn dispatched, across every sub-mission,
         #: once each.  Accumulated here rather than threaded back through
         #: `_execute_step` beside `evidence` because it comes from the same
-        #: place `evidence` does — the sub-runner's own store — and the
+        #: place `evidence` does — the sub-mission's own store — and the
         #: plane-claim check needs the union over the whole turn, not one
         #: step's.  See `MissionResultStore.called_tools`.
         self._called: List[str] = []
-        # One clock and one switch for the whole turn, handed to every
-        # runner `_runner` and `_direct` build. See the class docstring for
-        # why seconds are shared where steps are portioned.
-        self._deadline = deadline
-        self._cancel = cancel
-        # One channel for the whole turn, like the clock and the switch,
-        # and handed to the sub-missions for the same reason: an operator
-        # steering this turn is steering the mission, not whichever stage
-        # happened to be listening.
-        self._control = control
-        self._gate_wait_s = max(0.0, float(gate_wait_s))
         self._started_at: Optional[float] = None
+        #: Where this turn's global step numbering begins: `0` cold, and a
+        #: resumed stretch's `next_index` when there is a log to continue.
+        #: Handed to each stage's branch, which is what allocates.
+        self._start_index = 0
         # A cap on the LENGTH of a list the planner writes, and no longer
         # than an operator's ceiling could pay for when there is one. See
         # the class docstring for why this is not one of the numbers that
         # was deleted around it.
+        ceiling = self._run.bounds.max_steps
         self._max_plan_steps = (
             max(1, int(max_plan_steps)) if max_plan_steps is not None
-            else (min(MAX_PLAN_STEPS, max(2, self._max_steps // 2))
-                  if self._max_steps else MAX_PLAN_STEPS))
+            else (min(MAX_PLAN_STEPS, max(2, ceiling // 2))
+                  if ceiling else MAX_PLAN_STEPS))
         #: ``None`` is "the window decides": a step's result travels whole
         #: and `_fit` bounds the prompt it lands in. An int is a caller
-        #: asking for a cut in characters, which is what this was.
+        #: asking for a cut, in bytes, through `core.bounding.bound_result`.
         self._summary_chars = (max(200, int(summary_chars))
                                if summary_chars is not None else None)
 
@@ -896,13 +761,42 @@ class SwarmRunner:
         # validator and the executor's instruction cannot disagree about
         # which routes exist — a planner offered a rung the validator then
         # rejects burns a re-plan on the harness's own inconsistency.
-        self._sdk_import = str(sdk_import or "").strip()
-        self._rungs = RUNGS if self._sdk_import else RUNGS_WITHOUT_SDK
+        sdk = self._run.personality.sdk_import
+        self._rungs = RUNGS if sdk else RUNGS_WITHOUT_SDK
         self._rung_sentences = dict(_RUNG_SENTENCES)
         self._rung_plan_lines = dict(_RUNG_PLAN_LINES)
-        if self._sdk_import:
-            self._rung_sentences[SDK_RUNG] = sdk_rung_sentence(self._sdk_import)
-            self._rung_plan_lines[SDK_RUNG] = sdk_rung_plan_line(self._sdk_import)
+        if sdk:
+            self._rung_sentences[SDK_RUNG] = sdk_rung_sentence(sdk)
+            self._rung_plan_lines[SDK_RUNG] = sdk_rung_plan_line(sdk)
+
+    # ── the six objects, read off the one that holds them ───────────────
+    #
+    # Not copied into fields of this class.  A second copy of "what the
+    # ceiling is" or "which tools are gated" is exactly the arrangement
+    # this phase is deleting: the `Run` holds each fact once and these
+    # read it, so a child and its parent cannot disagree about any of them.
+
+    @property
+    def _model(self) -> Model:
+        """What this turn asks, how it reads the reply, what the call cost."""
+        return self._run.model
+
+    @property
+    def _bounds(self) -> Bounds:
+        """Everything that can stop this turn — one clock, one supervisor."""
+        return self._run.bounds
+
+    @property
+    def _plane(self) -> ToolPlane:
+        """The only way out, and the live set of what may be called now."""
+        return self._run.plane
+
+    @property
+    def _persona(self) -> str:
+        """The bytes every role and every sub-mission of this turn opens
+        with.  One string, so the prefix a served endpoint has cached is
+        the same one whichever stage is speaking."""
+        return self._run.personality.system_message
 
     # ── the one window, applied to this runner's own roles ──────────────
 
@@ -917,9 +811,14 @@ class SwarmRunner:
         applied now, so a turn with a large window carries the conversation
         it actually had, and a turn with a small one has its oldest turns
         evicted by the same policy every mission step is bounded by.
+
+        The turns come off the :class:`~core.runtime.run.Personality`,
+        which validated them once at construction: a role seeded from a
+        second copy of the history is a role that can be seeded from a
+        malformed one.
         """
         return [{"role": "system", "content": system},
-                *[dict(turn) for turn in self._history],
+                *[dict(turn) for turn in self._run.personality.history],
                 {"role": "user", "content": user}]
 
     def _fit(self, messages: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -932,98 +831,51 @@ class SwarmRunner:
         .fit`, which never drops the newest round trip, so the question
         itself always survives.
 
+        **Not** :meth:`core.runtime.run.Run._fit`, and the difference is
+        the reason there are two: that one bounds a *conversation* — it
+        pins the whole seeded prefix, announces the compaction on the
+        stream and heals a native request whose tool messages lost their
+        call — and these four calls are none of those things.  They are
+        single round trips with no ``step_started`` to ride and no tool
+        namespace declared.  One window (``Model.window``, the object both
+        read); two ways of fitting into it, because a role and a loop are
+        two shapes of request.
+
         No window is this class as it ran before there was one: the list
-        goes out whole.  The compaction is not announced on the stream —
-        these four calls are not mission steps and have no ``step_started``
-        to ride, and inventing a record for them would be a contract
-        change for a fact the ``usage`` totals already imply.
+        goes out whole.
         """
-        if self._window is None:
+        window = self._model.window
+        if window is None:
             return [dict(message) for message in messages]
-        kept, _compaction = self._window.fit(
+        kept, _compaction = window.fit(
             [dict(message) for message in messages], pinned=1)
         return kept
-
-    # ── telling a watcher ───────────────────────────────────────────────
-
-    def _emit(self, event: str, **fields: Any) -> None:
-        """The staged path's choke point, redaction included.
-
-        Same contract as :meth:`MissionRunner._emit`, and scrubbing here for
-        the same reason: the records this runner writes itself — the opening,
-        the synthesized answer, the swarm's own grounding verdict — never pass
-        through a :class:`MissionRunner`, so a redactor installed only there
-        would cover the sub-missions and miss the swarm.  Scrubbing is
-        idempotent, so a sub-mission's record that arrives here already
-        scrubbed is unharmed by being scrubbed again.
-        """
-        if not self._recording:
-            return
-        record = scrub_record({"event": event, **fields})
-        # The store first, then the watcher, for the reason
-        # :meth:`MissionRunner._emit` gives: the sink is a client of the
-        # durable log rather than a second truth beside it.
-        persist_record(self._run_store, self._run_id, record)
-        if self._observer is None:
-            return
-        try:
-            self._observer(record)
-        except Exception:                       # pragma: no cover - defensive
-            pass
-
-    @property
-    def _recording(self) -> bool:
-        """Whether anything at all is listening — a watcher or a disk.
-
-        Asked before a record is built rather than only before it is sent,
-        because a swarm with neither must run exactly as it ran before
-        either existed.
-        """
-        return self._observer is not None or self._run_store is not None
 
     @property
     def run_id(self) -> str:
         """The run this swarm's records are recorded under, or ``""``."""
-        return self._run_id
+        return self._run.run_id
+
     # ── what the last call cost ─────────────────────────────────────────
 
-    def _spent(self) -> Dict[str, Any]:
-        """Fold this object's own model call in; render its per-call field.
+    def _asked(self) -> Dict[str, Any]:
+        """Fold the call this object just made into the turn's ledger.
 
-        The sub-missions do not come through here — they are handed
-        ``ledger=self._ledger`` and fold themselves in through
-        :meth:`MissionRunner._spent`, which is the same
-        :meth:`~core.runtime.usage.Ledger.add`.  What is left for this
-        method is the four roles that are this class's own calls: triage,
-        the planner, each gate and the synthesizer.
+        The **fold** is :meth:`core.runtime.run.Model.spend`'s and is not
+        written here: the same four lines used to stand in this file and
+        in the loop's, which is two owners of arithmetic and the half of a
+        record nobody notices is wrong.  Every sub-mission's step folds
+        through the same method into the same :class:`~core.runtime.usage
+        .Ledger`, because there is one :class:`~core.runtime.run.Model` and
+        it is shared by identity.
 
-        ``{}`` when the provider reported nothing, so a record carries no
-        ``usage`` key rather than a zeroed one.  Never raises.
+        What is left here is the one fact this class contributes: *which*
+        call wrote the text a record is about.  ``{}`` when the provider
+        reported nothing, so a record carries no ``usage`` key rather than
+        a zeroed one.
         """
-        try:
-            usage = self._usage_fn() if self._usage_fn is not None else None
-        except Exception:                       # pragma: no cover - defensive
-            usage = None
-        recorded = self._ledger.add(usage)
-        self._last_spent = ({"usage": recorded.as_record()}
-                            if recorded is not None else {})
+        self._last_spent = self._model.spend(self._ledger)
         return self._last_spent
-
-    def _usage_kw(self) -> Dict[str, Any]:
-        """``{"usage": totals}`` for :func:`_finished_record`, or ``{}``."""
-        spent = self._ledger.as_record(self._rate)
-        return {"usage": spent} if spent is not None else {}
-
-    def _totals(self) -> Dict[str, Any]:
-        """``{"usage": …}`` for ``mission_finished``, or ``{}``.
-
-        Through :meth:`~core.runtime.usage.Ledger.as_record`, which is the
-        direct path's renderer too — this record is emitted from three
-        places in this file and a hand-listed copy in any of them is the
-        drift the grounding renderer already paid for once.
-        """
-        spent = self._ledger.as_record(self._rate)
-        return {"usage": spent} if spent is not None else {}
 
     # ── the one entry point ─────────────────────────────────────────────
 
@@ -1041,13 +893,17 @@ class SwarmRunner:
         all and was reported as never having run, while it had in fact run
         and asked.
 
+        The record itself is :meth:`core.runtime.run.Run.opening`'s — the
+        loop's own builder, called early rather than copied — so a consumer
+        cannot read which route the router took off the frame that promises
+        it one vocabulary.
+
         *resumption* is a
         :class:`core.runtime.resume.StagedResumption` — a staged run's
         checkpointed plan and completed steps, read back — and ``None`` is
         every turn that starts cold, which is the shape this method had
         before staged resuming existed.  Duck-typed rather than imported,
-        for the reason :meth:`core.runtime.mission.MissionRunner.run`
-        duck-types its own.
+        for the reason :meth:`core.runtime.run.Run.run` duck-types its own.
 
         **A resumed staged turn announces nothing and decides nothing.**
         There is no second ``mission_started`` — it is the same mission,
@@ -1057,17 +913,18 @@ class SwarmRunner:
         one.  What the resumed stretch does is run the steps the plan has
         left, and say so on its first ``step_started``.
         """
-        # One ledger for the whole turn, made here: the router's call is
-        # already part of what this turn spent, and every runner below is
-        # handed this same object.
+        # One ledger for the whole turn, put on the one Model every child
+        # of this run shares: the router's call is already part of what
+        # this turn spent, and a stage folding into a ledger of its own
+        # would report a turn that cost less than it did.
         self._ledger = Ledger()
-        # The first start wins, so this is where the mission's clock begins
-        # — before triage, which is a model call and part of the turn — and
-        # the sub-missions below inherit the same started clock rather than
-        # rewinding it.
-        if self._deadline is not None:
-            self._deadline.start()
-        self._started_at = time.monotonic()
+        self._model.ledger = self._ledger
+        # `Bounds.begin` is the one owner of "a run's clock starts here",
+        # and it starts HERE — before triage, which is a model call and
+        # part of the turn. First start wins, so the sub-missions below
+        # inherit the same started clock rather than rewinding it.
+        self._started_at = self._bounds.begin()
+        plan: Optional[List[PlanStep]] = None
         if resumption is not None:
             plan = [PlanStep.from_state(state) for state in resumption.plan]
             # Every tool the recorded stretch dispatched, so the answer's
@@ -1075,211 +932,124 @@ class SwarmRunner:
             # this process ran. Same owner as the live path's: the result
             # store, here rebuilt from the log rather than from a dispatch.
             self._called = list(resumption.called)
-            return self._staged(objective, plan, resumption=resumption)
-        self._emit(MISSION_STARTED, **self._opening(objective))
-        stop = self._stop()
-        if stop is not None:
-            # Already over before the router was asked. It happens on a
-            # resumed switch and on a deadline of zero, and the honest run
-            # is one that opens, says why it is stopping, and closes.
-            return self._finish_early(objective, stop)
+        else:
+            self._observer.emit(MISSION_STARTED,
+                                **self._run.opening(objective))
+        # ONE transcript for the turn, whichever way it ends, so the record
+        # below is written from state rather than from three hand-listings
+        # of what each ending happens to know.
+        transcript = MissionTranscript(objective=objective,
+                                       catalogue=list(self._run.offered),
+                                       usage=self._ledger)
+        # Whether THIS object owes the stream its closing record. It does,
+        # on every path but one: the direct route hands the whole ending to
+        # the child, whose own `finally` emits it holding the step count
+        # this object does not have.
+        mine = True
         try:
+            if resumption is not None:
+                return self._staged(objective, plan, transcript,
+                                    resumption=resumption)
+            stop = self._bounds.stop()
+            if stop is not None:
+                # Already over before the router was asked. It happens on a
+                # resumed switch and on a deadline of zero, and the honest
+                # run is one that opens, says why it is stopping, and closes.
+                return Run._stopped(transcript, stop)
             plan = (self._plan(objective)
                     if self._route(objective) == "staged" else None)
-        except BaseException:
-            # Neither path below has been reached, so neither path's
-            # ``finally`` will close what was just opened — and a stream that
-            # opens and then stops is the spinner-forever state the
-            # ``finished`` clause exists to prevent.  Announcing early would
-            # otherwise have manufactured that state where there was honest
-            # silence before.
-            # Zero steps and possibly two model calls: triage and the
-            # planner both ran before this. What they cost is on the
-            # record even though nothing was accomplished with it.
-            self._emit(MISSION_FINISHED, **_finished_record(
-                started_at=self._started_at,
-                outcome="incomplete", steps=0, max_steps=self._max_steps,
-                **self._usage_kw()))
-            raise
-        # Not asked again here, deliberately. Triage and planning are two
-        # model round trips and a small budget can be gone by now — but
-        # every route below opens a MissionRunner holding the same clock
-        # and the same switch, and that runner asks before its first step.
-        # A second check here would be a branch no test can make fail,
-        # which is the kind of code that rots into a wrong answer.
-        if plan is None or len(plan) == 1:
-            # A plan the planner could not state, or a plan of one step, IS
-            # the direct path.  Falling back is the honest move: the direct
-            # runner is a complete agent, and a swarm that refuses to answer
-            # because its planner misfired would be machinery failing the
-            # question the machinery exists to serve.
-            return self._direct(objective)
-        return self._staged(objective, plan)
+            # Not asked again here, deliberately. Triage and planning are
+            # two model round trips and a small budget can be gone by now —
+            # but every route below opens a run holding the same clock and
+            # the same switch, and that run asks before its first step. A
+            # second check here would be a branch no test can make fail,
+            # which is the kind of code that rots into a wrong answer.
+            if plan is None or len(plan) == 1:
+                # A plan the planner could not state, or a plan of one step,
+                # IS the direct path.  Falling back is the honest move: the
+                # direct runner is a complete agent, and a swarm that
+                # refused to answer because its planner misfired would be
+                # machinery failing the question the machinery exists to
+                # serve.
+                mine = False
+                return self._direct(objective)
+            return self._staged(objective, plan, transcript)
+        finally:
+            # ONE call site, in a `finally`, and that is the whole of this
+            # record in this file. There were three — the exception out of
+            # triage, the stop before the router, and the staged path's own
+            # — each passing a slightly different subset of what
+            # `_finished_record` takes, and the one that predated `usage`
+            # never grew it. A stream that opens and then stops is the
+            # spinner-forever state the `finished` clause exists to
+            # prevent, so a turn that opened owes this record however it
+            # ended, including by raising.
+            if mine:
+                self._observer.emit(MISSION_FINISHED, **_finished_record(
+                    started_at=self._started_at,
+                    outcome=transcript.outcome,
+                    steps=len(transcript.steps),
+                    max_steps=self._bounds.max_steps,
+                    budget=transcript.budget,
+                    reason=transcript.reason,
+                    # The run's totals, ABSENT when no provider reported
+                    # anything — not three zeros. Off the one ledger every
+                    # call of this turn folded into.
+                    usage=self._ledger.as_record(self._model.rate)))
 
     # ── the clock and the switch, shared by every stage ─────────────────
+    #
+    # `Bounds.stop` is the question, asked at the three junctions a
+    # sub-mission's own check cannot see: before triage, before a redraw,
+    # and before the synthesizer.  Each of those is a model round trip this
+    # class makes itself.  Everywhere else — between plan steps, inside a
+    # step's retries — the next thing to happen is a child holding this
+    # same `Bounds`, and asking here as well would be a branch no test
+    # could make fail.  This file used to carry its own copy of that
+    # question and its own copy of writing the verdict down, line for line
+    # the loop's; both are the loop's now.
 
-    def _stop(self) -> Optional[Tuple[str, Optional[BudgetExhausted], str]]:
-        """``(outcome, budget, reason)`` when this turn must stop, else ``None``.
+    def _child_bounds(self, max_steps: Optional[int] = None) -> Bounds:
+        """This turn's bounds, for one child of it.
 
-        The same question :meth:`MissionRunner._stop` asks, asked at the
-        three junctions a sub-mission's own check cannot see: before
-        triage, before a redraw, and before the synthesizer.  Each of
-        those is a model round trip this class makes itself.  Everywhere
-        else — between plan steps, inside a step's retries — the next
-        thing to happen is a runner holding this same clock, and asking
-        here as well would be a branch no test could make fail.
+        One clock, one switch, one channel and ONE supervisor — shared by
+        **identity**, which is what makes five sub-missions of a minute
+        each not fit inside a one-minute budget and what makes a plan that
+        loops across its steps a pattern something can see.
 
-        Same order and same words as the direct path's: a cancellation
-        outranks a clock, because the person who threw the switch is the
-        one who will read the sentence.
+        Two things differ from the turn's own, and both are facts about a
+        child rather than about the bounds.  ``started_at`` is the instant
+        the TURN began, so a sub-mission's ``elapsed_s`` counts from triage
+        and not from itself.  ``max_steps``, when a caller names one, is
+        what an operator's ceiling has LEFT for the whole turn — not a
+        slice of it for this step: a step takes the turns its work takes,
+        and the four-turn slice this replaced is what starved the live run
+        of 16 August.
         """
-        if cancelled(self._cancel):
-            return "incomplete", None, CANCELLED
-        exhausted = (self._deadline.exhausted()
-                     if self._deadline is not None else None)
-        if exhausted is not None:
-            return "budget_exhausted", exhausted, ""
-        return None
-
-    def _finish_early(self, objective: str,
-                      stop: Tuple[str, Optional[BudgetExhausted], str],
-                      ) -> MissionTranscript:
-        """Close a turn that stopped before it had any steps to report.
-
-        Through the same renderer both other finishes use.  A turn that
-        opened its stream owes it a ``mission_finished``, and one that never
-        reached a sub-mission has nobody else to write it.
-        """
-        transcript = MissionTranscript(objective=objective,
-                                       catalogue=list(self._offered))
-        transcript.outcome, transcript.budget, transcript.reason = stop
-        self._emit(MISSION_FINISHED, **_finished_record(
-            started_at=self._started_at,
-            outcome=transcript.outcome, steps=0, max_steps=self._max_steps,
-            budget=transcript.budget, reason=transcript.reason))
-        return transcript
-
-    @property
-    def _offered(self) -> List[str]:
-        """Every tool name a sub-mission may call: the set, plus the store."""
-        return [*self._tool_names, RESULT_TOOL]
-
-    def _opening(self, objective: str) -> Dict[str, Any]:
-        """The ``mission_started`` fields, whichever way this turn goes.
-
-        Built once for both routes, and built to be the record the direct
-        path's own :class:`MissionRunner` would have emitted: same catalogue,
-        same gated names in catalogue order.  A consumer that could tell from
-        the opening frame which way the router went would be reading an
-        internal decision of this harness off a contract that promises it one
-        vocabulary.
-        """
-        offered = self._offered
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "objective": objective,
-            "catalogue": offered,
-            "gated": [name for name in offered if name in self._gated],
-            "max_steps": self._max_steps,
-            "history": len(self._history),
-            # The bus is the one owner of the string; the direct runner reads
-            # the same property, so the two paths cannot disagree about
-            # whether this mission's tool subprocesses were isolated.
-            "sandbox": sandbox_of(self._bus),
-            # Same OPTIONAL `run_id` field, from the same owner, for the
-            # same reason as `profile` below it: the route this turn took
-            # must not be readable off the opening frame.
-            **_run_field(self._run_id),
-            # Same OPTIONAL `protocol` field, from the same owner: absent
-            # on an ordinary run, `native` on one that declared its tools as
-            # functions. A staged turn's sub-missions speak whatever this
-            # says, so the opening frame is true of every step under it.
-            **_protocol_field(self._protocol),
-            # Same OPTIONAL `profile` field the direct path's MissionRunner
-            # emits, from the same owner — a consumer must not be able to tell
-            # which route ran from the opening frame.
-            **_profile_field(self._bus),
-            # Through the direct path's own helper, not a second reading of
-            # the same bus. This dict is a hand-written copy of a record
-            # another module emits, which is precisely the arrangement that
-            # let the swarm ship six grounding fields where the direct path
-            # emitted ten.
-            "audit_ref": audit_ref_of(self._bus),
-        }
+        return replace(
+            self._bounds, started_at=self._started_at,
+            **({} if max_steps is None else {"max_steps": max_steps}))
 
     # ── DIRECT: the path that already worked, untouched ─────────────────
 
-    def _runner(self, *, system_message: str, max_steps: int,
-                history: Sequence[Dict[str, str]] = (),
-                observer: Optional[Observer] = None) -> MissionRunner:
-        return MissionRunner(
-            self._chat, self._bus, self._tool_names,
-            system_message=system_message,
-            max_steps=max_steps,
-            validator=None,
-            # THE SAME watcher, not one per stage: a plan that loops across
-            # its steps is precisely the pattern one sub-mission cannot see,
-            # and five supervisors would be five review budgets for one turn.
-            supervisor=self._supervisor,
-            admits=self._admits,
-            plane_changed=self._plane_changed,
-            gated=self._gated,
-            approvals=self._approvals,
-            approval=self._approval,
-            run_id=self._run_id,
-            history=history,
-            observer=observer,
-            window=self._window,
-            usage_fn=self._usage_fn,
-            tool_calls_fn=self._tool_calls_fn,
-            protocol=self._protocol,
-            rate=self._rate,
-            ledger=self._ledger,
-            # The mission's clock and the mission's switch, not a fresh
-            # one per stage: five sub-missions of a minute each must not
-            # fit inside a one-minute budget.
-            deadline=self._deadline,
-            cancel=self._cancel,
-            control=self._control,
-            gate_wait_s=self._gate_wait_s,
-            started_at=self._started_at,
-        )
-
     def _direct(self, objective: str) -> MissionTranscript:
-        runner = MissionRunner(
-            self._chat, self._bus, self._tool_names,
-            system_message=self._system_message,
-            max_steps=self._max_steps,
-            validator=self._validator,
-            critic=self._critic,
-            supervisor=self._supervisor,
-            admits=self._admits,
-            plane_changed=self._plane_changed,
-            gated=self._gated,
-            approvals=self._approvals,
-            approval=self._approval,
-            run_id=self._run_id,
-            history=self._history,
-            observer=(_OpenedAlready(self._emit)
-                      if self._recording else None),
-            window=self._window,
-            usage_fn=self._usage_fn,
-            tool_calls_fn=self._tool_calls_fn,
-            protocol=self._protocol,
-            rate=self._rate,
-            # THE SAME ledger, not a fresh one. The direct path's runner
-            # emits this turn's `mission_finished` itself, and the router
-            # call that chose this path was already made — a runner with
-            # its own ledger would report a turn that cost one call less
-            # than it did.
-            ledger=self._ledger,
-            deadline=self._deadline,
-            cancel=self._cancel,
-            control=self._control,
-            gate_wait_s=self._gate_wait_s,
-            started_at=self._started_at,
-        )
-        return runner.run(objective)
+        """One whole mission, inside this turn's stream.
+
+        A child with **nothing overridden but the branch**, and that is the
+        statement: the direct route's persona, history, validator and
+        critic ARE the turn's, and the only way it differs from a mission
+        run without ``--swarm`` is that its opening frame has already gone
+        out — which is what a non-staged branch drops.  Its ``answer``, its
+        ``grounding`` and its ``mission_finished`` are the turn's own,
+        written where the run ends, which here is inside the child.
+
+        It shares the ledger by sharing the model, and that is not an
+        optimisation: the router call that chose this path was already
+        made, and a child with a ledger of its own would report a turn that
+        cost one call less than it did.
+        """
+        return self._run.child(branch=_DIRECT,
+                               bounds=self._child_bounds()).run(objective)
 
     # ── TRIAGE ──────────────────────────────────────────────────────────
 
@@ -1291,7 +1061,7 @@ class SwarmRunner:
         complex question the slow way — the reverse mistake (ceremony around
         a small question) has no such recovery.
         """
-        tools = ", ".join(self._tool_names) or "(none)"
+        tools = ", ".join(self._plane.offered) or "(none)"
         # Constant first, this run's tool set after it, the objective last —
         # `MissionRunner.seed`'s ordering discipline applied to a role that
         # is called once per turn rather than once per step.  Through
@@ -1320,10 +1090,18 @@ class SwarmRunner:
         schemas plans worse than one shown fifty sentences — on a window of
         any size.  What the window now decides is whether the sentences
         themselves fit, which is :meth:`_fit`'s business one level up.
+
+        Over the **plane's** list and not a second copy of it, and without
+        the mission result store on it: the store tool is this harness's
+        own descriptor and the planner is choosing platform actions.
+        :attr:`~core.runtime.run.ToolPlane.offered` is live, so a redraw
+        after a server registered something plans against what is
+        registered now — which is the whole point of there being one plane
+        for the turn.
         """
         lines = []
-        for name in self._tool_names:
-            info = self._bus.describe_tool(name)
+        for name in self._plane.offered:
+            info = self._plane.bus.describe_tool(name)
             if "error" in info:
                 continue
             desc = str(info.get("description") or "").strip()
@@ -1351,7 +1129,7 @@ class SwarmRunner:
         # cached.  Everything that differs between the first plan and a
         # redraw — what succeeded, what failed — is in the user turn below.
         system = stacked(
-            self._system_message,
+            self._persona,
             PLAN_PROMPT.format(max_steps=self._max_plan_steps,
                                rungs=self._plan_rung_lines()),
             "Tools that exist here:\n" + self._short_catalogue(),
@@ -1451,10 +1229,11 @@ class SwarmRunner:
         .persist_record` does not: a staged mission must not die because
         the disk it was being indexed on filled up.
         """
-        if self._run_store is None or not self._run_id:
+        store = self._run.store
+        if store.runs is None or not store.run_id:
             return
         try:
-            self._run_store.update_meta(self._run_id, **facts)
+            store.runs.update_meta(store.run_id, **facts)
         except Exception:                       # pragma: no cover - defensive
             pass
 
@@ -1488,19 +1267,17 @@ class SwarmRunner:
                 "summary": outcome.summary if outcome.ok else outcome.why}
 
     def _staged(self, objective: str, plan: List[PlanStep],
+                transcript: MissionTranscript,
                 resumption: Optional[Any] = None) -> MissionTranscript:
-        transcript = MissionTranscript(objective=objective,
-                                       catalogue=list(self._offered),
-                                       usage=self._ledger)
         # `run` opened the stream before triage; the plan did not exist then.
-        # It travels on the first `step_started` instead. On a resumed turn
-        # the numbering continues the log this stretch is being appended to,
-        # and the first new `step_started` says that it does.
-        stage = _StageObserver(
-            self._emit,
-            start_index=resumption.next_index if resumption else 0,
-            resumed=resumption.as_record() if resumption else None)
-        stage.announce(plan)
+        # It travels on the first `step_started` instead — carried by the
+        # observer, which is what every stage's branch drains. On a resumed
+        # turn the numbering continues the log this stretch is being
+        # appended to, and the first new `step_started` says that it does.
+        self._start_index = resumption.next_index if resumption else 0
+        self._observer.carry(plan=_plan_record(plan))
+        if resumption is not None:
+            self._observer.carry(resumed=resumption.as_record())
         # The plan, before the first step of it runs. A checkpoint written
         # after the work is a checkpoint that is missing exactly when the
         # work was what died.
@@ -1514,30 +1291,19 @@ class SwarmRunner:
                          steps_done=list(_steps_done(resumption)),
                          replanned=bool(resumption.replanned)
                          if resumption else False)
-        try:
-            outcome = self._work_through(objective, plan, transcript, stage,
-                                         resumption=resumption)
-        finally:
-            # The direct path's own renderer, not a second hand-listing of
-            # the same record.
-            self._emit(MISSION_FINISHED, **_finished_record(
-                started_at=self._started_at,
-                outcome=transcript.outcome,
-                steps=len(transcript.steps),
-                max_steps=self._max_steps,
-                budget=transcript.budget,
-                reason=transcript.reason,
-                **self._usage_kw()))
-        return outcome
+        # No `finally` writing `mission_finished` here: `run` owns that
+        # record on every path this turn can take, which is what makes it
+        # one call site rather than three.
+        return self._work_through(objective, plan, transcript,
+                                  resumption=resumption)
 
     def _work_through(self, objective: str, plan: List[PlanStep],
                       transcript: MissionTranscript,
-                      stage: _StageObserver,
                       resumption: Optional[Any] = None) -> MissionTranscript:
         # `None` is no ceiling — the default — and an int is what an
         # operator's ceiling has left for the whole turn. There is no
         # per-step slice of it any more: see `_execute_step`.
-        left: Optional[int] = self._max_steps or None
+        left: Optional[int] = self._bounds.max_steps or None
         evidence: List[str] = []
         results: Dict[str, _StepOutcome] = {}
         replanned = False
@@ -1579,7 +1345,7 @@ class SwarmRunner:
         while queue:
             step = queue.pop(0)
             outcome, attempts, gathered, spent = self._execute_step(
-                objective, step, results, stage, left)
+                objective, step, results, left)
             if left is not None:
                 left = max(0, left - spent)
             # Every attempt is folded in, not only the one that stuck: the
@@ -1619,9 +1385,9 @@ class SwarmRunner:
             # inside it — in which case replanning is the harness spending
             # a bound it has already exceeded on planning work it cannot
             # then do.
-            stop = self._stop()
+            stop = self._bounds.stop()
             if stop is not None:
-                return self._stopped(transcript, stop)
+                return Run._stopped(transcript, stop)
 
             # The supervisor's verdict and not a counter. A redraw used to
             # be "once per turn, on any failure", which meant a plan that
@@ -1653,11 +1419,12 @@ class SwarmRunner:
                     # the union of this plan and everything else that
                     # settled, so nothing that ran is lost either way.
                     plan = fresh
-                    stage.announce(fresh)
-                    # The plan as REDRAWN replaces the plan as drawn, for
-                    # the reason `_StageObserver.announce` is called again:
-                    # what is checkpointed has to be the plan the steps
-                    # arriving next belong to.
+                    # The plan as REDRAWN replaces the plan as drawn, on the
+                    # stream and on the checkpoint alike: what a watcher
+                    # holds, and what a restart reads, has to be the plan
+                    # the steps arriving next belong to rather than the one
+                    # that was abandoned. `carry` replaces for that reason.
+                    self._observer.carry(plan=_plan_record(fresh))
                     self._checkpoint(plan=_plan_state(fresh),
                                      replanned=True)
                     continue
@@ -1670,29 +1437,15 @@ class SwarmRunner:
         # clock ran out on the final step must not spend a further model
         # call writing prose about it: the outcome IS the answer here, and
         # the steps that did run are on the transcript either way.
-        stop = self._stop()
+        stop = self._bounds.stop()
         if stop is not None:
-            return self._stopped(transcript, stop)
+            return Run._stopped(transcript, stop)
         return self._synthesize(objective, plan, results, evidence,
                                 transcript)
 
-    @staticmethod
-    def _stopped(transcript: MissionTranscript,
-                 stop: Tuple[str, Optional[BudgetExhausted], str],
-                 ) -> MissionTranscript:
-        """Write a :meth:`_stop` verdict onto the transcript and hand it back.
-
-        No ``answer`` record follows, and that is the direct path's
-        behaviour too: a run that stopped did not answer, and emitting the
-        step summaries as one would be the harness writing the conclusion
-        it was stopped before reaching.
-        """
-        transcript.outcome, transcript.budget, transcript.reason = stop
-        return transcript
-
     def _execute_step(self, objective: str, step: PlanStep,
                       results: Dict[str, _StepOutcome],
-                      stage: _StageObserver, left: Optional[int]):
+                      left: Optional[int]):
         """Run one step, and let the supervisor say what a failed gate means.
 
         Returns ``(outcome, attempts, evidence, tool_turns_spent)`` —
@@ -1732,20 +1485,35 @@ class SwarmRunner:
             allowance = 0 if left is None else left - spent
             if left is not None and allowance <= 0:
                 break
-            stage.begin_stage()
-            runner = self._runner(
-                # The persona LEADS and the executor's paragraph follows it,
-                # so every sub-mission of every staged turn opens with the
-                # same bytes the direct path opens with.
-                system_message=stacked(self._system_message, EXECUTE_PROMPT),
-                max_steps=allowance,
-                observer=stage,
-            )
-            sub = runner.run(
+            # ONE `Run.child` where there were two constructors, each
+            # threading twenty collaborators by hand. What differs between
+            # a stage and the turn is exactly what is named here: the
+            # prompt it is given, what an operator's ceiling has left, and
+            # that its records are one stage's rather than the mission's.
+            # Everything else — the plane, the store, the observer, the
+            # model and therefore the ledger, the clock, the switch, the
+            # channel and the supervisor — is the parent's, by identity.
+            child = self._run.child(
+                personality=replace(
+                    self._run.personality,
+                    # The persona LEADS and the executor's paragraph
+                    # follows it, so every sub-mission of every staged turn
+                    # opens with the same bytes the direct path opens with.
+                    system_message=stacked(self._persona, EXECUTE_PROMPT),
+                    # A step is not a conversation and is not the answer.
+                    # The history belongs to the turn, and the validator
+                    # and the critic to the synthesizer: a step's summary
+                    # is not an answer to the objective, so holding it to
+                    # the objective's grammar would fail it for not being
+                    # one.
+                    history=(), grounding=None, critic=None),
+                bounds=self._child_bounds(allowance),
+                branch=step.id, stage=True, start_index=self._start_index)
+            sub = child.run(
                 self._step_objective(objective, step, results, failure))
             attempts.append(sub)
-            evidence.extend(runner.store.evidence_texts())
-            self._note_calls(runner)
+            evidence.extend(child.results.evidence_texts())
+            self._note_calls(child)
             spent += len(sub.steps)
             if sub.outcome == AWAITING_APPROVAL:
                 return (_StepOutcome(step=step, ok=False,
@@ -1754,7 +1522,7 @@ class SwarmRunner:
 
             ok, why = self._gate(step, sub)
             if ok:
-                summary = self._bound_summary(sub.answer or "")
+                summary = self._summary(sub.answer or "")
                 # `evidence` and not `runner.store.evidence_texts()`: every
                 # attempt at this step read something real, and the answer
                 # is written over what the mission read rather than over
@@ -1763,22 +1531,31 @@ class SwarmRunner:
                                      evidence=list(evidence)),
                         attempts, evidence, spent)
             failure = why
-            if self._supervisor is None:
+            if self._bounds.supervisor is None:
                 # Nobody is watching, so nothing decides to try again. A
                 # turn with no supervisor settles a failed gate as a failed
                 # step and carries on, which is the honest behaviour of a
                 # harness with no judgement available to it.
                 break
-            review = self._supervisor.review_gate(
+            review = self._bounds.supervisor.review_gate(
                 objective, goal=step.goal, why=why,
                 ledger=self._ledger)
-            stage.reviewed(review)
+            if review is not None:
+                # It rides the NEXT `step_started`, which is what `review`
+                # means on the direct path too: the step that follows a
+                # review turn. This one happened BETWEEN sub-missions — a
+                # gate said no and the supervisor was asked what that means
+                # — so it has no step of its own. A review with no step
+                # after it (the last step of a plan, settled `stuck`) is
+                # not announced, and `mission_finished` is what says how
+                # the turn ended.
+                self._observer.carry(review=review.as_record())
             if review.verdict == PROGRESSING:
                 # The gate is overruled. What the step reported stands, and
                 # it stands as the step's own summary — the same text a
                 # passed gate would have carried forward.
                 return (_StepOutcome(step=step, ok=True,
-                                     summary=self._bound_summary(
+                                     summary=self._summary(
                                          sub.answer or ""),
                                      evidence=list(evidence)),
                         attempts, evidence, spent)
@@ -1886,7 +1663,7 @@ class SwarmRunner:
             {"role": "user", "content": (
                 f"Step goal: {step.goal}\n"
                 f"Success looks like: {step.done}\n"
-                f"The step reported: {self._bound_summary(sub.answer or '')}"
+                f"The step reported: {self._summary(sub.answer or '')}"
             )},
         ]
         decision = self._json_reply(messages)
@@ -2025,15 +1802,16 @@ class SwarmRunner:
         order = self._settled_order(plan, results)
         lines = self._result_lines(order, plan, results)
         blocks = self._evidence_blocks(order, results, evidence)
-        system = stacked(self._system_message, SYNTHESIZE_PROMPT)
+        system = stacked(self._persona, SYNTHESIZE_PROMPT)
+        window = self._model.window
         kept = list(blocks)
         while True:
             messages = self._fit(self._role_messages(
                 system, self._synthesis_user(objective, lines, kept,
                                              len(blocks) - len(kept))))
-            if not kept or self._window is None:
+            if not kept or window is None:
                 return messages, lines
-            if self._window.estimate(messages) <= self._window.limit_tokens:
+            if window.estimate(messages) <= window.limit_tokens:
                 return messages, lines
             kept.pop(0)
 
@@ -2043,15 +1821,53 @@ class SwarmRunner:
                     transcript: MissionTranscript) -> MissionTranscript:
         messages, lines = self._synthesis_messages(
             objective, plan, results, evidence)
-        answer = str(self._plain_chat(messages) or "").strip()
-        self._spent()
+        answer = str(self._model.plain(messages) or "").strip()
+        self._asked()
         if not answer:
             # The synthesizer said nothing.  The step results themselves are
             # the honest fallback — facts the gates passed, not prose.
             answer = ("The mission's steps completed as follows and no "
                       "synthesis could be produced:\n" + "\n".join(lines))
 
-        answer, report = self._ground(answer, messages, evidence)
+        # ── the same discipline the direct path applies to its answer ──
+        #
+        # Through the loop's own four owners and not a second copy of them.
+        # What this path contributes is the two things the loop cannot
+        # know: the evidence is the UNION of every sub-mission's store
+        # (plus a resumed stretch's, read back off the log), and the repair
+        # is one more call to a model with no tools rather than another
+        # turn of a loop.  Everything decided ABOUT the answer — what a
+        # check that could not run means, when a repair is announced, what
+        # the caveated report says, what the `grounding` record carries and
+        # in which order it and the `answer` go out — is `Run`'s.
+        #
+        # This file used to hold all of it, and the drift was measured: the
+        # record it built by hand carried six of the ten fields the
+        # contract requires.
+        validator = self._run.personality.grounding
+        repairs = 0
+        report = self._run._ground(answer, repairs, evidence=evidence,
+                                   called=self._called)
+        while (report is not None and report.ran and not report.grounded
+               and repairs < validator.max_repairs):
+            repairs += 1
+            messages.append({"role": "assistant", "content": answer})
+            messages.append({
+                "role": "user",
+                "content": self._run._repairing_turn(report, repairs)})
+            answer = str(
+                self._model.plain(self._fit(messages)) or "").strip() or answer
+            self._asked()
+            report = self._run._ground(answer, repairs, evidence=evidence,
+                                       called=self._called)
+        # The draft is what the model wrote; the caveat is this harness's
+        # own sentence about it, and the critic below is shown the first
+        # and not the second.
+        draft = answer
+        if report is not None and report.ran and not report.grounded:
+            report = self._run._caveated(report, repairs)
+            answer = answer + report.caveat
+
         transcript.answer = answer
         transcript.grounding = report
         # A plan step with no outcome at all, not a count: `results` may
@@ -2065,42 +1881,19 @@ class SwarmRunner:
         else:
             transcript.outcome = "answered_with_caveat" if failed else "answered"
         if report is not None:
-            # Through the SAME renderer the direct path uses. Hand-listing the
-            # fields here is how this record came to be six of the ten the
-            # contract requires: a consumer switching on `event` gets one shape
-            # per event or it is not a vocabulary.
-            #
-            # And the second opinion through the SAME function, for the
-            # same reason one level down: `advisory: true` is what stops a
-            # model's verdict being read as a mechanical one, and a
-            # hand-built row here is a row that will one day be missing it.
-            # Asked on the clean path too — no rule in `core.critic
-            # .triggers` fires on a grounded answer — so the decision has
-            # one owner rather than a copy of the trigger policy in `if`s.
-            caveat = report.caveat or ""
-            drafted = (transcript.answer[:-len(caveat)]
-                       if caveat and transcript.answer.endswith(caveat)
-                       else transcript.answer)
-            self._emit(GROUNDING, **_grounding_record(
-                report, repairs=report.repairs, caveat=caveat,
-                # The DRAFT, not the caveated text: the critic is asked
-                # about what the model wrote, and the caveat is this
-                # harness's own sentence about it — a critic shown its own
-                # harness's caveat is being asked to review the grader.
-                opinions=second_opinion(
-                    self._critic, objective, drafted, evidence,
-                    unsupported=report.unsupported,
-                    answered_with_caveat=bool(caveat))))
-        # `_last_spent` and not the synthesizer's own call, because
-        # `_ground` above may have spent a repair turn — and then the text
+            self._run._verdict(objective, draft, report,
+                               repairs=report.repairs, caveat=report.caveat,
+                               evidence=evidence)
+        # `_last_spent` and not the synthesizer's own call, because the
+        # grounding above may have spent a repair turn — and then the text
         # on this record is the repair's, not the draft's. The per-call
         # field is the cost of the call that produced the text beside it;
         # the run's total is on `mission_finished`.
-        self._emit(ANSWER, text=transcript.answer, outcome=transcript.outcome,
-                   **self._last_spent)
+        self._observer.emit(ANSWER, text=transcript.answer,
+                            outcome=transcript.outcome, **self._last_spent)
         return transcript
 
-    def _note_calls(self, runner) -> None:
+    def _note_calls(self, child: Any) -> None:
         """Fold one sub-mission's dispatched tools into the turn's set.
 
         A direct mission's plane-claim check reads one store; a staged
@@ -2108,51 +1901,9 @@ class SwarmRunner:
         the SDK is true if *any* step used it.  One owner still — each
         store's own record of what it dispatched — merged, not re-derived.
         """
-        for name in runner.store.called_tools():
+        for name in child.results.called_tools():
             if name not in self._called:
                 self._called.append(name)
-
-    def _ground(self, answer: str, messages: List[Dict[str, str]],
-                evidence: List[str]):
-        """The same discipline the direct path applies to its answer.
-
-        The validator checks the synthesized answer against the evidence
-        every sub-mission's tools actually returned; one repair turn, then
-        the caveat.  Skipped entirely when no validator was configured,
-        exactly like the direct path.
-        """
-        if self._validator is None:
-            return answer, None
-        report = self._validator.validate(answer, evidence,
-                                          called=self._called)
-        if not report.ran:
-            return answer, GroundingReport(results=report.results)
-        repairs = 0
-        while not report.grounded and repairs < self._validator.max_repairs:
-            repairs += 1
-            # The interim report, through the same renderer the direct path
-            # uses.  A repair turn is a whole extra round-trip to the model
-            # and from outside looks exactly like a stall; the staged path
-            # spent them silently and a watcher saw only the verdict, minutes
-            # later, with no way to tell the wait from a hang.  `repairing`
-            # marks it as work in progress — the record that follows is the
-            # verdict.
-            self._emit(GROUNDING, **_grounding_record(
-                report, repairs=repairs, repairing=True))
-            messages.append({"role": "assistant", "content": answer})
-            messages.append({"role": "user",
-                             "content": self._validator.repair_prompt(report)})
-            answer = str(
-                self._plain_chat(self._fit(messages)) or "").strip() or answer
-            self._spent()
-            report = self._validator.validate(answer, evidence,
-                                              called=self._called)
-        if not report.grounded:
-            caveat = self._validator.caveat(report)
-            return answer + caveat, GroundingReport(
-                results=report.results, repairs=repairs, caveat=caveat)
-        return answer, GroundingReport(results=report.results,
-                                       repairs=repairs)
 
     # ── plumbing ────────────────────────────────────────────────────────
 
@@ -2165,7 +1916,7 @@ class SwarmRunner:
             step.index = len(transcript.steps)
             transcript.steps.append(step)
 
-    def _bound_summary(self, text: str) -> str:
+    def _summary(self, text: str) -> str:
         """A step's reported result, whole unless a caller asked for a cut.
 
         ``summary_chars=None`` — the default — returns the executor's own
@@ -2176,14 +1927,25 @@ class SwarmRunner:
         a 34,000-character governed view arrived as 1.2 KB of prose about
         it, and the answer said the actor list "was not reported".
 
-        An int is a caller who wants the cut, and gets exactly the cut
-        this always made, marker included.
+        An int is a caller who wants the cut, and the cut is
+        :func:`core.bounding.bound_result`'s — the one owner of "how much
+        of a result reaches a model, and how it says so".  This method
+        used to be a fifth implementation of that rule beside the four
+        that module was written to end, and it was the worst of them: a
+        head-only cut, which throws away the totals a governed view puts
+        at the bottom, under a marker that promises nothing about where
+        the rest went.  What a caller gets now is head AND tail inside the
+        bound, and a marker that says how much of each and that the middle
+        must not be guessed at.
+
+        In bytes, therefore, and not characters — a context budget is
+        bytes, and a multi-byte character costs what it costs.
         """
         text = " ".join(str(text).split())
-        if self._summary_chars is None or len(text) <= self._summary_chars:
+        if self._summary_chars is None:
             return text
-        return (text[:self._summary_chars]
-                + f" … [cut at {self._summary_chars} characters]")
+        bounded, _cut = bound_result(text, self._summary_chars)
+        return bounded
 
     def _json_reply(self, messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
         """One JSON object from the plain backend, or ``None``.  Never raises.
@@ -2216,9 +1978,9 @@ class SwarmRunner:
         a grammar that forbids prose would forbid the answer.
         """
         extra = ({"response_format": {"type": "json_object"}}
-                 if self._json_mode else {})
+                 if self._model.json_mode else {})
         try:
-            reply = str(self._plain_chat(self._fit(messages), **extra) or "")
+            reply = str(self._model.plain(self._fit(messages), **extra) or "")
         except Exception:
             # Nothing to fold: `last_usage` is cleared at the start of
             # every call, so a call that raised reports nothing and adding
@@ -2226,7 +1988,7 @@ class SwarmRunner:
             return None
         # Folded even when the reply turns out to be unparseable below — a
         # call that produced garbage was still billed.
-        self._spent()
+        self._asked()
         text = _FENCE.sub("", reply.strip()).strip()
         if not text:
             return None
