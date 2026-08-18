@@ -570,10 +570,14 @@ python -m core.eval measure --out /tmp/m -- \
 ```
 
 `{objective}` is `run`'s placeholder (§5) and is needed whenever the first
-token of the spawn line is not the program that takes the message. **Pass
-`--model` explicitly**: a personality's `default_model` beats `LOCAL_MODEL`,
-so `--provider local` with no `--model` can send another provider's default
-model name at your endpoint and get a 404 naming it.
+token of the spawn line is not the program that takes the message. `--model`
+is still worth passing — a measurement should say which model it measured —
+but it is no longer load-bearing: a personality's `default_model` is consulted
+only for the provider that personality named, and for `--provider local` what
+follows it is `LOCAL_MODEL`, then `GET /models`. (Until 18 Aug any
+personality's default won outright: every `--provider local` run with no
+`--model` sent `codestral-latest` at the endpoint and got a 404 naming it. See
+`core.runtime.provider_config.resolve_model`.)
 
 ### What the report contains
 
@@ -676,3 +680,32 @@ difference is a sample. One model and one endpoint, so nothing here is a
 statement about the framework in general — it is a statement about this tree
 against this model. And `native`'s row is a failed measurement rather than a
 result.
+
+### The two framework findings, repaired and re-measured
+
+The table above stands as what that tree did. Both of its **framework**
+findings were fixed the same day, generically, and re-run against the same
+model and endpoint:
+
+- **The native round trip keeps what the provider put on a tool call.**
+  Anything beyond `id`/`name`/`arguments` — this endpoint sends an
+  `extra_content` block carrying a signature over the model's reasoning —
+  is kept as an opaque mapping and echoed back verbatim in the position it
+  arrived in, by every backend that speaks tool calls. See
+  `core/runtime/messages.py`, which owns the rule. Re-measured: `native`
+  goes **0/7 → 6/7 on train and 0/4 → 3/4 on test**, with 2.571 steps
+  against 1.143 — the loop now gets past the first tool call. The two that
+  still fail are `answer_with_what_you_have` and `the_boundary_holds`, the
+  same two the model failed in *every* row.
+- **The catalogue is the plane at the boundary.** Every step boundary now
+  asks the bridge for a synchronous re-list before the reconciliation reads
+  the registry (`MCP_RELIST_TIMEOUT_S`, default 5 s; a bridge that cannot
+  answer inside it keeps the last set), instead of reading whatever the
+  notification-driven thread had cached. Re-measured with `--repeat 3`:
+  `the_plane_grew_mid_run` is **3/3 under `swarm` and 3/3 under `critic`**,
+  and in all six runs — plus the `native` one above — the `step_started`
+  after `mcp.add_a_tool` carries a `catalogue` containing
+  `mcp.late_arrival` and the model calls it.
+
+So §2.7's question — json or native — is measurable now, and is still
+un-answered: it needs a run of the whole matrix, not this row on its own.

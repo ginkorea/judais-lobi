@@ -121,6 +121,7 @@ from core.runtime.mission_stream import (
     TOOL_RESULT,
 )
 from core.runtime.mission_stream import Observer as Sink
+from core.runtime.messages import assistant_turn
 from core.runtime.results import (
     BRANCH_ARGUMENT, RESULT_TOOL, BranchedStores, MissionResultStore,
 )
@@ -306,6 +307,33 @@ class ToolPlane:
         never disagree about whether there is one.
         """
         return self.profile_field.get("profile")
+
+    def resync(self) -> None:
+        """Ask the bus to bring its registry up to date, now, if it can.
+
+        The difference between *what the bus has been told* and *what the
+        server has*.  A bridge re-lists on its own thread when a server
+        notifies it, so :meth:`registered` answers with whatever had landed
+        by the time it was asked — which is a race whenever the answer
+        decides what the model is about to be shown.  This is the pull side
+        of that: :meth:`core.tools.bus.ToolBus.resync` asks every source
+        behind the registry to catch up, bounded by the source and never by
+        this loop.
+
+        ``getattr`` for the reason :meth:`registered` uses one: a caller
+        may hand a run any object with ``dispatch`` and ``describe_tool``,
+        and a bus that cannot be resynced is a bus whose registry is
+        already whatever it is going to be.
+        """
+        pull = getattr(self.bus, "resync", None)
+        if pull is None:
+            return
+        try:
+            pull()
+        except Exception:                       # pragma: no cover - defensive
+            # A refresh that failed is a plane one re-list behind, which is
+            # what every run had before this existed. Not a mission ending.
+            pass
 
     def registered(self) -> Optional[List[str]]:
         """What the bus has registered, or ``None`` when it cannot say.
@@ -1480,7 +1508,7 @@ class Run:
 
     # ── the plane, when it changes underneath a running mission ─────────
 
-    def _relearn_the_plane(self) -> List[str]:
+    def _relearn_the_plane(self, resync: bool = False) -> List[str]:
         """Reconcile :attr:`offered` against the bus.  Returns what changed.
 
         Called at the three moments it can matter, and the second two are
@@ -1493,6 +1521,20 @@ class Run:
         wrote** is where the same race would otherwise cost a turn: a
         mission that looked once and never again would say "no such tool"
         about a tool that arrived while the reply was being written.
+
+        *resync* is what turns the second and third of those from *likely*
+        into *deterministic*.  A second look at a cache is still a look at
+        a cache: it catches the registration that landed in the meantime
+        and misses the one that has not, which is why the same mission
+        passed in three configurations and failed in two — the slower
+        configurations gave the background re-list time and the faster ones
+        did not (``EVAL.md`` §12).  With it, :meth:`ToolPlane.resync` pulls
+        the registry up to date *before* this reads it, bounded by the
+        source, so the catalogue on the next ``step_started`` is the plane
+        at that boundary and not the plane as of whenever a notification
+        happened to arrive.  Off after a dispatch: the boundary is a few
+        microseconds away and will pay for the round trip once instead of
+        once per call.
 
         Two directions, and they are not symmetrical:
 
@@ -1517,6 +1559,8 @@ class Run:
         """
         if self._baseline is None:
             return []
+        if resync:
+            self.plane.resync()
         registered = self.plane.registered()
         if registered is None:
             return []
@@ -1560,7 +1604,7 @@ class Run:
         """
         if name in self.offered:
             return True
-        self._relearn_the_plane()
+        self._relearn_the_plane(resync=True)
         return name in self.offered
 
     def _plane_news(self) -> List[str]:
@@ -2416,9 +2460,17 @@ class Run:
             # the boundary is what makes the model TOLD about a new tool
             # rather than left to name it and find out — measured on the
             # stub plane, where `add_a_tool` can and does return before the
-            # re-list has completed. Which boundary catches it is the
-            # bridge's timing; that one of them does is this loop's job.
-            self._relearn_the_plane()
+            # re-list has completed.
+            #
+            # `resync=True`, and this is the only step-boundary call that
+            # takes it: asking the bridge's cache a second time still loses
+            # the race half the time (EVAL.md §12), so the boundary PULLS —
+            # a bounded, synchronous `tools/list` before the reconciliation
+            # reads the registry. What the catalogue on the next
+            # `step_started` says is then the plane at this boundary, every
+            # time, rather than the plane as of whenever a notification
+            # happened to arrive.
+            self._relearn_the_plane(resync=True)
             # The step boundary is where a changed plane is ANNOUNCED — the
             # change itself was noticed at the dispatch that caused it. Here
             # rather than there because both halves of the announcement are
@@ -3168,6 +3220,13 @@ class Run:
                 # a paraphrase of the model to itself.
                 "raw": entry.get("arguments_raw"),
                 "shaped": isinstance(arguments, dict) or arguments is None,
+                # And whatever the provider put on the call that this repo
+                # cannot name — a signature over the reasoning behind it, a
+                # vendor's own block. Carried opaquely and handed back by
+                # `_assistant_turn` in the position it arrived in, because
+                # some providers refuse the next request without it. See
+                # `core.runtime.messages`.
+                "extra": entry.get("extra") or {},
             })
         return calls
 
@@ -3176,27 +3235,13 @@ class Run:
                         calls: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         """The model's own turn, in the shape a server will take back.
 
-        ``content`` and ``tool_calls`` together, because a harmony model
-        emits both — the reasoning-flavoured preamble and the call — and a
-        turn that dropped the text would hand the model back a version of
-        itself that never explained anything.  No ``tool_calls`` key at all
-        when there were none: an empty list is a different thing to some
-        servers, and this is the shape a reply with no calls in it takes.
+        Through :func:`core.runtime.messages.assistant_turn`, which owns
+        that shape — the same function a resume rebuilds its turns with, so
+        a conversation this loop assembled and one it read back off a log
+        cannot be two dialects.  Kept as a method because the loop calls it
+        as one and the name is the one the protocol docstring points at.
         """
-        message: Dict[str, Any] = {"role": "assistant", "content": reply}
-        if calls:
-            message["tool_calls"] = [
-                {"id": call["id"], "type": "function",
-                 "function": {
-                     "name": call["name"],
-                     "arguments": (call["raw"]
-                                   if isinstance(call["raw"], str)
-                                   else json.dumps(call["arguments"],
-                                                   ensure_ascii=False)),
-                 }}
-                for call in calls
-            ]
-        return message
+        return assistant_turn(reply, calls)
 
     async def _native_turn(
         self, objective: str, index: int, reply: str,

@@ -92,6 +92,12 @@ export LOCAL_MODEL=gpt-oss-20b                   # optional; else GET /models de
 lobi --provider local "summarize this repo"
 ```
 
+The model name here belongs to the endpoint, so it is asked for in that order —
+`--model`, then a personality's `default_model` **only when that personality
+named this provider**, then `LOCAL_MODEL`, then `GET /models` — because a model
+name is a name in one provider's catalogue, and a persona written for a hosted
+provider names a model your local server has never heard of.
+
 `--provider anthropic` runs the mission on Anthropic's Messages API through the
 official SDK. It needs `ANTHROPIC_API_KEY` and `pip install 'judais-lobi[anthropic]'`.
 The default model is `claude-opus-5` (override with `--model`); streaming and
@@ -173,7 +179,11 @@ The rest of the published environment: `MCP_CLIENT_NAME` is what this client
 calls itself in the MCP `initialize` handshake — set it to the agent's name, or a
 server that governs by principal records every call as an anonymous one, and
 anything scoring the agent from the audit trail measures it as having called
-nothing. `ELF_PERSONALITY` and `TAI_PERSONALITY` point at persona files;
+nothing. `MCP_RELIST_TIMEOUT_S` (default 5) bounds the synchronous `tools/list` a
+mission asks for at every step boundary, so the catalogue the model is shown
+is the plane at that boundary rather than whatever the bridge's own thread had
+cached; a server that cannot answer inside it leaves the last set standing.
+`ELF_PERSONALITY` and `TAI_PERSONALITY` point at persona files;
 `LOCAL_API_BASE` and `LOCAL_MODEL` aim the local backend. `JUDAIS_LOBI_AUDIT`
 moves the audit file (a path) or silences it (`none`/`off`); either way
 `mission_started.audit_ref` says which. `JUDAIS_LOBI_RUNS` does the same for

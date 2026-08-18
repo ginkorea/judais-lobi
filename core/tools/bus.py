@@ -105,6 +105,11 @@ class ToolBus:
         #: dispatch at the same time now, and a per-call fact left in a dict
         #: on a shared bus is a column that is wrong rather than absent.
         self.audit_context: Dict[str, Any] = {}
+        #: Sources that can bring this registry up to date on demand.  See
+        #: :meth:`follow` and :meth:`resync`.  Empty on a bus whose tools
+        #: are all compiled in, which is every bus that has no server
+        #: behind it.
+        self._sources: List[Callable[[], Any]] = []
 
     @property
     def capability_engine(self) -> CapabilityEngine:
@@ -472,6 +477,47 @@ class ToolBus:
     def _restore_subprocess_runner(saved):
         for obj, attr, old in saved:
             setattr(obj, attr, old)
+
+    def follow(self, source: Callable[[], Any]) -> None:
+        """Register something that can bring this registry up to date.
+
+        A bus is a registry and not a client: it holds whatever was
+        registered on it and has no idea where any of it came from.  That
+        is fine until something registers *asynchronously* — a bridge that
+        re-lists on its own thread when a server notifies it — because then
+        :meth:`list_tools` answers with whatever had landed by the time it
+        was asked, and a caller that has to decide **now** what the model
+        may name is reading a cache with a race in it.
+
+        So a source that can be asked says so here, and :meth:`resync` is
+        the asking.  The bus still knows nothing about MCP, or threads, or
+        what a re-list costs; it knows that some of its entries have an
+        upstream and that an upstream can be pulled.
+        """
+        if callable(source):
+            self._sources.append(source)
+
+    def resync(self) -> bool:
+        """Ask every followed source to bring this registry up to date, now.
+
+        Returns whether the set of registered names is different
+        afterwards — the one fact a caller can act on, and one this bus can
+        state without knowing what a source is.
+
+        **Bounded by the source, not here.**  A source that cannot answer
+        in whatever time it gives itself is expected to return, leaving the
+        last set standing: a step boundary that blocked on a server would
+        be a worse failure than a catalogue one re-list behind.  A source
+        that raises is treated the same way and for the same reason — a
+        registry that cannot be refreshed is still a registry.
+        """
+        before = list(self._descriptors)
+        for source in list(self._sources):
+            try:
+                source()
+            except Exception:               # noqa: BLE001 - see docstring
+                continue
+        return list(self._descriptors) != before
 
     def list_tools(self) -> List[str]:
         """Return names of all registered tools."""
