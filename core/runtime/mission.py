@@ -1252,6 +1252,30 @@ class MissionRunner:
         property of the *platform* holding the other end of the channel,
         which is the caller constructing this object, and a mission with no
         channel is unaffected by it either way.
+    memory:
+        A :class:`~core.memory.bank.MemoryBank`, or ``None`` — which is
+        every mission until a deployment sets ``JUDAIS_LOBI_MEMORY`` or a
+        library caller builds one, and which is byte-for-byte the harness
+        that had no memory.
+
+        With one, four things change and nothing else does: a small pinned
+        "core memory" section joins the system turn **after** the
+        catalogue, a titles-only hint may join the objective turn beside
+        the objective, ``memory_recall`` and ``memory_write`` join the
+        catalogue for the length of the run, and a run that answered ends
+        with one bounded reflection call that may distil up to three
+        notes.  Nothing new appears on the stream: a recall is an ordinary
+        ``tool_call``/``tool_result`` pair.  See
+        :mod:`core.memory.bank` for the three tiers and
+        :meth:`~core.runtime.run.Run._reflect` for what the reflection may
+        and may not do.
+    plain_chat_fn:
+        The same model with **no tools declared** — the CLI's
+        ``plain_chat_fn`` — for the side questions this harness asks that
+        must not be answered with a tool call.  ``None`` falls back to
+        ``chat_fn``, which is what the swarm has always done: a caller
+        that never built one is better served by the model it did build
+        than by the question going unasked.
 
     The store tool is offered **in addition to** ``tool_names``, and
     that is not a hole in a closed set: it reaches nothing outside the
@@ -1293,6 +1317,8 @@ class MissionRunner:
         control: Any = None,
         gate_wait_s: float = GATE_WAIT_S,
         started_at: Optional[float] = None,
+        memory: Any = None,
+        plain_chat_fn: Optional[Callable[..., Any]] = None,
     ):
         # Here and not at module scope, and it is the one import in this
         # package that points that way. `core.runtime.run` reads this
@@ -1318,8 +1344,15 @@ class MissionRunner:
                           plane_changed=plane_changed)
         personality = Personality(system_message=system_message,
                                   history=history, grounding=validator,
-                                  critic=critic)
-        model = Model(ask=chat_fn, protocol=protocol, window=window,
+                                  critic=critic, memory=memory)
+        # `plain_chat_fn or chat_fn` is the swarm's own fallback, restated
+        # here rather than left as `None`: the side questions this harness
+        # asks — a supervisor's, a reflection's — want the same model with
+        # no tools declared, and a caller that never built one is better
+        # served by the model it did build than by the question not being
+        # asked. A caller that built neither gets neither.
+        model = Model(ask=chat_fn, plain=plain_chat_fn or chat_fn,
+                      protocol=protocol, window=window,
                       usage_fn=usage_fn, tool_calls_fn=tool_calls_fn,
                       rate=rate, ledger=ledger)
         bounds = Bounds(deadline=deadline, cancel=cancel, control=control,

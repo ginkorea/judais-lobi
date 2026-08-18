@@ -144,5 +144,6 @@ class TestActionMetadataSets:
             "perform_web_search", "perform_web_research", "fetch_page_content",
             "rag_crawl", "speak_text",
             "fs", "git", "verify", "repo_map", "patch",
+            "memory_recall", "memory_write",
         }
         assert len(names) == len(set(names)), "a descriptor is listed twice"
