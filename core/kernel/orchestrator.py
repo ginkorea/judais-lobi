@@ -276,14 +276,17 @@ class Orchestrator:
     def _apply_phase_scopes(self, phase: str) -> None:
         if self._tool_bus is None:
             return
-        cap = getattr(self._tool_bus, "capability_engine", None)
-        if cap is None or not hasattr(cap, "set_scope_constraints"):
-            return
         workflow_scopes = set(self._workflow.required_scopes)
         step_scopes = set(self._step_scopes) if self._step_scopes is not None else set(workflow_scopes)
         phase_scopes = set(self._workflow.phase_capabilities.get(phase, workflow_scopes))
         effective = workflow_scopes & step_scopes & phase_scopes
-        cap.set_scope_constraints(list(effective))
+        # Governance has one surface now: the mission's closed set and the
+        # kernel's scope allowlist are the same object's two methods, and
+        # narrowing a plane is how a phase is told it may do less. Imported
+        # here rather than at module load — the orchestrator is above `Run`,
+        # not part of it, and only this line needs the object.
+        from core.runtime.run import ToolPlane
+        ToolPlane(bus=self._tool_bus).narrow(list(effective))
 
     def _clear_phase_scopes(self) -> None:
         if self._tool_bus is None:

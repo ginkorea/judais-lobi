@@ -259,8 +259,31 @@ class RoleContext:
     #: dispatcher onto the :class:`PhaseResult`, so the orchestrator can
     #: write it where the phase's other records go.
     compactions: List[Compaction] = field(default_factory=list)
+    #: The :class:`~core.runtime.run.Bounds` this session's roles are held
+    #: to: one clock, one operator ceiling, one control channel — the same
+    #: object the mission loop is bounded by (Phase 11, one runtime). Handed
+    #: in **by construction** so a role gets the deadline and the control
+    #: channel the mission path has, even where the kernel path passes the
+    #: default — no clock, no ceiling, ``None`` — today. Typed ``Any`` so
+    #: this module stays a cheap import: the loop object it comes from pulls
+    #: in every backend, and a role file that imported it at module load
+    #: would make ``import core.kernel`` wait on that.
+    bounds: Optional[Any] = None
+    #: The durable half a role writes through — a
+    #: :class:`~core.runtime.run.Store`. The seam is here even though the
+    #: kernel path hands ``Store.none()`` today: a role given a store by
+    #: construction is a role whose work survives the process the day the
+    #: kernel path grows one, without a second wiring being invented then.
+    store: Optional[Any] = None
     _window: Optional[RoleWindow] = field(default=None, init=False,
                                           repr=False, compare=False)
+    #: The composed :class:`~core.runtime.run.Model` — ``ask``, ``window``
+    #: and ``ledger`` in one object, the mission loop's own. Built once at
+    #: first :meth:`ask`, so a role's usage folds into one ledger across the
+    #: phase rather than into a fresh one per turn. Lazy for the reason
+    #: :attr:`bounds` is.
+    _model: Optional[Any] = field(default=None, init=False,
+                                  repr=False, compare=False)
 
     @property
     def trace(self) -> List[str]:
@@ -281,6 +304,32 @@ class RoleContext:
             )
         return self._window
 
+    @property
+    def model(self) -> Any:
+        """The :class:`~core.runtime.run.Model` this role asks through.
+
+        ``RoleContext.ask`` used to be a hand-rolled model: a chat callable,
+        a window, and — before the ledger existed — nowhere to put what a
+        call cost.  Phase 11 makes it the mission loop's own object.  ``ask``
+        is the role's ``chat``, ``window`` is the effective
+        :class:`RoleWindow`, and ``ledger`` is one :class:`~core.runtime
+        .usage.Ledger` built once and folded into on every turn — so a
+        role's usage has the seam the mission's does, through the same
+        :meth:`Model.spend`, even while the kernel path reports nothing yet.
+
+        Built at first read and cached, so one phase's turns share one
+        ledger rather than each opening a fresh one.  Imported here rather
+        than at module load for the reason :attr:`bounds` is typed ``Any``:
+        the loop object pulls in every backend, and a role file that loaded
+        it eagerly would make ``import core.kernel`` wait on that.
+        """
+        if self._model is None:
+            from core.runtime.run import Model
+            from core.runtime.usage import Ledger
+            self._model = Model(ask=self.chat, window=self.prompt_window,
+                                ledger=Ledger())
+        return self._model
+
     def schema_for(self, phase: str) -> Optional[Type]:
         if self.workflow is None:
             return None
@@ -289,6 +338,15 @@ class RoleContext:
     def ask(self, messages: List[Dict[str, str]], *,
             pinned: Optional[int] = None) -> str:
         """One turn at the model, bounded by the window a role may fill.
+
+        The turn goes through the composed :attr:`model` — a
+        :class:`~core.runtime.run.Model` whose ``window`` is this role's
+        effective :class:`RoleWindow` and whose ``ask`` is the role's chat
+        function — so the kernel's roles ask a backend the same way the
+        mission loop does.  What is sent is byte-for-byte what it was: the
+        same window, the same estimator, the same per-message character cap,
+        the same :func:`role_compaction_note` where a dropped round trip
+        was.
 
         Two bounds, answering two different questions.
 
@@ -309,8 +367,13 @@ class RoleContext:
         *pinned* is how many messages at the front are not compactable.
         ``None`` pins all of them: a caller that has not said which part of
         its prompt is history is not one whose history may be dropped.
+
+        The call's usage folds into the model's ledger through
+        :meth:`Model.spend`, which is a no-op until a caller wires a usage
+        source — the seam, not a second accountant.
         """
-        window = self.prompt_window
+        model = self.model
+        window = model.window
         limit = window.limit_tokens
         prompt = (_truncate_messages(messages, limit * 4) if limit > 0
                   else list(messages))
@@ -321,7 +384,9 @@ class RoleContext:
         )
         if compaction is not None:
             self.compactions.append(compaction)
-        return str(self.chat(fitted) or "")
+        reply = str(model.ask(fitted) or "")
+        model.spend(model.ledger)
+        return reply
 
     def drain_compactions(self) -> List[Compaction]:
         """Take the compactions made since the last drain, and forget them.

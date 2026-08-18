@@ -283,15 +283,42 @@ class ToolPlane:
     def narrow(self, scopes: Sequence[str]) -> "ToolPlane":
         """This plane restricted to *scopes*, for a role that may do less.
 
-        Not implemented in this lane.  It is what
-        ``set_scope_constraints`` becomes when governance has one surface
-        instead of two (``ROADMAP.md`` §2.6.4, lane E), and the state
-        machine that owns those constraints today is not this lane's to
-        move.
+        This is what ``CapabilityEngine.set_scope_constraints`` becomes now
+        that governance has **one** surface instead of two.  The mission
+        path narrows a plane already — a closed set plus per-tool profiles
+        decides which registered tools a run may name — and the kernel path
+        narrowed a *scope* allowlist on the bus's capability engine through
+        a second method that only the orchestrator ever called.  Both are a
+        plane admitting less than its bus can do, and after this both are
+        one object's :meth:`narrow`.
+
+        The constraint is applied to the bus's own
+        :class:`~core.tools.capability.CapabilityEngine`, read off the bus
+        through ``getattr`` exactly as
+        :func:`~core.runtime.mission.audit_ref_of` reads the audit
+        reference: a caller may hand a run any object with ``dispatch`` and
+        ``describe_tool``, and a fake bus in a test suite owes no capability
+        engine.  A bus with no engine to constrain is one whose dispatch was
+        never scope-gated, and narrowing it is a no-op rather than a
+        failure — the honest reading of "restrict what is already
+        unrestricted".
+
+        Returned, not mutated in place: the plane the orchestrator hands its
+        roles is the value this returns, and the plane it started with is
+        left as it was — a frozen object copied through
+        :func:`~dataclasses.replace`, so a caller still holding the wider
+        plane still holds the wider plane.  The *effect* — which scopes the
+        engine now allows — lives on the shared engine, because that is the
+        one object every dispatch consults; an allowlist that lived anywhere
+        else would be a constraint the dispatch never read.  The
+        orchestrator re-narrows at each phase boundary, so the engine's
+        allowlist is this phase's and not the last one's, exactly as
+        ``set_scope_constraints`` was called once per phase before it.
         """
-        raise NotImplementedError(
-            "ToolPlane.narrow is the roles lane's — see ROADMAP.md §2.6.4, "
-            "lane E")
+        engine = getattr(self.bus, "capability_engine", None)
+        if engine is not None and hasattr(engine, "set_scope_constraints"):
+            engine.set_scope_constraints([str(scope) for scope in scopes])
+        return replace(self)
 
 
 # ── everything that can stop a run ──────────────────────────────────────────

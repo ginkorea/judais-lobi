@@ -1,4 +1,12 @@
-# tests/test_agent_run_task.py — Tests for Agent.run_task() (replaces test_elf_run_task.py)
+# tests/test_agent_run_task.py — Tests for the Agent's coding-kernel seam
+#
+# `Agent.run_task` was deleted in Phase 11 (lane E): it had no caller in
+# `core/` or `main.py`, and a library caller that wants the single-task path
+# builds the six lines PLATFORMS.md documents ("Running the coding kernel as
+# a library"). The four tests that drove `run_task` end to end went with it;
+# what a mutation of Phase 11 would still have to survive — that the kernel
+# path is reachable and shares the mission's window — is `_make_task_
+# dispatcher`, and those tests stay.
 
 from types import SimpleNamespace
 
@@ -7,7 +15,7 @@ from pathlib import Path
 
 from core.agent import Agent
 from core.contracts.schemas import PersonalityConfig
-from core.kernel import Phase, BudgetConfig
+from core.kernel import BudgetConfig
 from tests.conftest import FakeUnifiedClient
 
 
@@ -20,38 +28,12 @@ STUB_CONFIG = PersonalityConfig(
 
 
 class TestAgentRunTask:
-    def test_run_task_returns_session_state(self, fake_client, memory, fake_tools):
+    def test_run_task_is_gone(self, fake_client, memory, fake_tools):
+        """The single-task entry point has no caller and is deleted; the
+        campaign path and `_make_task_dispatcher` are the reachable forms."""
         agent = Agent(config=STUB_CONFIG, debug=False,
                       client=fake_client, memory=memory, tools=fake_tools)
-        state = agent.run_task("add pagination")
-        assert state.task_description == "add pagination"
-
-    def test_a_client_that_only_chats_halts_instead_of_claiming_success(
-        self, fake_client, memory, fake_tools,
-    ):
-        """This asserted COMPLETED, and it was the stub talking.
-
-        `fake_client` answers every prompt with "Hello from fake client".
-        Under `StubDispatcher` that walked INTAKE -> ... -> COMPLETED and
-        reported a finished task, because the dispatcher returned
-        success without looking at the reply. INTAKE now has to produce a
-        TaskContract, prose is not one, and the session halts naming the
-        phase. A halt here is the correct answer and the old pass was not.
-        """
-        agent = Agent(config=STUB_CONFIG, debug=False,
-                      client=fake_client, memory=memory, tools=fake_tools)
-        state = agent.run_task("add pagination")
-        assert state.current_phase == Phase.HALTED
-        assert "INTAKE" in state.halt_reason
-
-    def test_run_task_with_custom_budget(self, fake_client, memory, fake_tools):
-        """The budget still reaches the orchestrator; see the halt reason."""
-        agent = Agent(config=STUB_CONFIG, debug=False,
-                      client=fake_client, memory=memory, tools=fake_tools)
-        budget = BudgetConfig(max_total_iterations=50, max_phase_retries=1)
-        state = agent.run_task("add pagination", budget=budget)
-        assert state.current_phase == Phase.HALTED
-        assert "1/1" in state.halt_reason  # one retry, as configured
+        assert not hasattr(agent, "run_task")
 
     def test_the_dispatcher_is_no_longer_a_stub(self, fake_client, memory,
                                                 fake_tools):
@@ -60,23 +42,6 @@ class TestAgentRunTask:
         agent = Agent(config=STUB_CONFIG, debug=False,
                       client=fake_client, memory=memory, tools=fake_tools)
         assert isinstance(agent._make_task_dispatcher(), LLMRoleDispatcher)
-
-    def test_the_dispatcher_and_orchestrator_share_one_workflow(
-        self, fake_client, memory, fake_tools,
-    ):
-        """They used to default independently, which a role-mapped
-        dispatcher cannot survive."""
-        from core.kernel.workflows import get_generic_workflow
-
-        agent = Agent(config=STUB_CONFIG, debug=False,
-                      client=fake_client, memory=memory, tools=fake_tools)
-        workflow = get_generic_workflow()
-        state = agent.run_task("do a thing", workflow=workflow,
-                               budget=BudgetConfig(max_phase_retries=1))
-        # The generic workflow has phases the coding roles do not serve, so
-        # this halts — but on "no role is registered", not on a mismatch
-        # nobody could explain.
-        assert state.current_phase == Phase.HALTED
 
     def test_the_kernel_path_gets_the_window_the_mission_path_gets(
         self, memory, fake_tools,
