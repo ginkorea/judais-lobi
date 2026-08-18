@@ -386,7 +386,11 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #:
     #: ``profile`` — the capability profile the run is governed by, one of
     #: :class:`~core.contracts.schemas.ProfileMode`'s values (``safe``,
-    #: ``dev``, ``ops``, ``god``).  Deny-by-default means ``safe`` unless
+    #: ``dev``, ``research``, ``ops``, ``god``).  The enum is the owner of
+    #: that list and this comment quotes it; a value added there is a new
+    #: word on an OPTIONAL field, which a consumer already reads with a
+    #: default, so it is a documentation line and not a schema change.
+    #: Deny-by-default means ``safe`` unless
     #: ``--profile`` / ``JUDAIS_LOBI_PROFILE`` opted up, and a watcher reading
     #: the opening frame can see which — a ``safe`` mission and a ``god`` one
     #: are otherwise indistinguishable on the wire.  Absent (not ``null``)

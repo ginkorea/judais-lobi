@@ -9,6 +9,7 @@ class TestProfileMode:
     def test_values(self):
         assert ProfileMode.SAFE == "safe"
         assert ProfileMode.DEV == "dev"
+        assert ProfileMode.RESEARCH == "research"
         assert ProfileMode.OPS == "ops"
         assert ProfileMode.GOD == "god"
 
@@ -16,8 +17,19 @@ class TestProfileMode:
         assert isinstance(ProfileMode.SAFE, str)
 
     def test_iteration_order(self):
+        """The declaration order IS the ladder, so it is asserted.
+
+        `policy_for_profile` accumulates `PROFILE_SCOPES` in this order and
+        stops at the level asked for; `lowest_profile_for_scope` walks it to
+        name the cheapest grant in a refusal. `research` sits between `dev`
+        and `ops` because reading a page is not a deploy right — move it to
+        the end of the enum and `--profile research` silently becomes
+        "everything ops has, plus the web".
+        """
         modes = list(ProfileMode)
-        assert modes == [ProfileMode.SAFE, ProfileMode.DEV, ProfileMode.OPS, ProfileMode.GOD]
+        assert modes == [ProfileMode.SAFE, ProfileMode.DEV,
+                         ProfileMode.RESEARCH, ProfileMode.OPS,
+                         ProfileMode.GOD]
 
     def test_from_string(self):
         assert ProfileMode("safe") is ProfileMode.SAFE

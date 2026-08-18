@@ -204,7 +204,7 @@ WHY_VERBATIM: Mapping[str, str] = {
     "sandbox": (
         "One of two closed words, `bwrap` or `none`, chosen by the harness "
         "and never containing anything a redactor would look for."),
-    "profile": "One of the four ProfileMode names, chosen by the harness.",
+    "profile": "One of the ProfileMode names, chosen by the harness.",
     "audit_ref": (
         "The path of the audit file, stated ON PURPOSE so a consumer can "
         "find the record; a scrubbed path names a file nobody can open. It "

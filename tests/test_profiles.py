@@ -29,12 +29,24 @@ class TestProfileScopes:
         assert "python.exec" in scopes
         assert "shell.exec" in scopes
 
+    def test_research_scopes(self):
+        """The one scope `research` adds, and the one it must not have.
+
+        A profile that only means "read the web" is worth naming; a profile
+        that quietly also meant "push" would be `ops` under a friendlier
+        word, which is the failure mode of adding a level.
+        """
+        scopes = PROFILE_SCOPES[ProfileMode.RESEARCH]
+        assert "http.read" in scopes
+        assert "git.push" not in scopes
+        assert "pip.install" not in scopes
+        assert "fs.delete" not in scopes
+
     def test_ops_scopes(self):
         scopes = PROFILE_SCOPES[ProfileMode.OPS]
         assert "git.push" in scopes
         assert "git.fetch" in scopes
         assert "pip.install" in scopes
-        assert "http.read" in scopes
         assert "fs.delete" in scopes
 
     def test_god_is_wildcard(self):

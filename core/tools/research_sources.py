@@ -1,13 +1,57 @@
+"""The keyless literature search behind ``perform_web_research(mode="academic")``.
+
+Three public APIs that need no key — arXiv's Atom feed, Semantic
+Scholar's graph endpoint, OpenAlex's works endpoint — normalised to one
+record shape so a mission can cite a paper the same way whichever index
+found it.
+
+They matter more than they look: they are the one *search* this framework
+can do with nothing configured, and ``perform_web_search`` cannot make
+that promise (see :mod:`core.tools.web_search`). A literature question is
+therefore answerable on a bare install, and the ``research`` pack says so.
+
+Every source here goes through :func:`_get`, which is the one place the
+user agent, the timeout and the ``RESEARCH_ALLOWED_HOSTS`` allow-list are
+applied. An operator who narrowed the reachable web meant it, and a
+second HTTP client in this package that quietly ignored that would be the
+hole the allow-list exists to close.
+"""
+
 from __future__ import annotations
 
 import json
 import re
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
 import requests
 from xml.etree import ElementTree
+
+from core.tools.fetch_page import USER_AGENT, default_timeout, host_allowed
+
+
+def _get(url: str, **params: Any) -> Optional[requests.Response]:
+    """One GET, allow-listed and timed out, or ``None``.
+
+    ``None`` rather than a raise, because a source that cannot be reached
+    is one fewer index and not the end of the search: the caller merges
+    what the reachable ones returned and
+    :func:`~core.tools.web_research.academic` reports which answered.
+    """
+    if not host_allowed(url):
+        return None
+    try:
+        response = requests.get(
+            url,
+            params=params or None,
+            headers={"User-Agent": USER_AGENT},
+            timeout=default_timeout(),
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return None
+    return response
 
 
 class ResearchSource(ABC):
@@ -27,10 +71,8 @@ class ArxivSource(ResearchSource):
             f"search_query=all:{quote_plus(query)}"
             f"&start=0&max_results={max_results}"
         )
-        try:
-            res = requests.get(url, timeout=20)
-            res.raise_for_status()
-        except requests.RequestException:
+        res = _get(url)
+        if res is None:
             return []
         try:
             root = ElementTree.fromstring(res.text)
@@ -84,10 +126,8 @@ class SemanticScholarSource(ResearchSource):
             "limit": max_results,
             "fields": "title,authors,year,venue,abstract,externalIds,url,openAccessPdf",
         }
-        try:
-            res = requests.get(url, params=params, timeout=20)
-            res.raise_for_status()
-        except requests.RequestException:
+        res = _get(url, **params)
+        if res is None:
             return []
         try:
             data = res.json()
@@ -124,10 +164,8 @@ class OpenAlexSource(ResearchSource):
             "search": query,
             "per-page": max_results,
         }
-        try:
-            res = requests.get(url, params=params, timeout=20)
-            res.raise_for_status()
-        except requests.RequestException:
+        res = _get(url, **params)
+        if res is None:
             return []
         try:
             data = res.json()
@@ -141,7 +179,13 @@ class OpenAlexSource(ResearchSource):
                 doi = doi.replace("https://doi.org/", "")
             host_venue = item.get("host_venue") or {}
             venue = host_venue.get("display_name", "") or ""
-            url = item.get("primary_location", {}).get("source", {}).get("homepage_url", "")
+            # `or {}` at every hop and not `.get(k, {})`: OpenAlex sends the
+            # key with a null value for a work with no located source, and
+            # `.get("primary_location", {})` returns that null, so the next
+            # `.get` raised AttributeError on a record the index is entitled
+            # to send. One unlocated paper took the whole search down.
+            location = item.get("primary_location") or {}
+            url = ((location.get("source") or {}).get("homepage_url") or "")
             if not url:
                 url = item.get("id", "") or ""
             authors = [
