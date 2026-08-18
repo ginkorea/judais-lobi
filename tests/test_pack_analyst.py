@@ -1041,3 +1041,32 @@ class TestTheCommandLineTakesThePackByName:
         message = str(caught.value)
         assert message.startswith("--skill:")
         assert "analyst" in message
+
+
+class TestTheCommandLineOpensTheMemoryBank(TestTheCommandLineTakesThePackByName):
+    """`JUDAIS_LOBI_MEMORY` set → the CLI opens the bank and the run is
+    TOLD about it: the console names the bank and the memory tools are on
+    the plane; unset → not a byte differs (the corpus guard is the other
+    half of that proof)."""
+
+    def test_a_bank_is_opened_and_offered(self, workdir, capsys, monkeypatch):
+        bank_dir = workdir / "bank"
+        monkeypatch.setenv("JUDAIS_LOBI_MEMORY", str(bank_dir))
+        records = self._run(workdir, SCRIPTS["the_reply_is_the_right_shape"]
+                            ["good"])
+        out = capsys.readouterr().out
+        assert "🧠 memory:" in out
+        assert (bank_dir / "bank.db").exists()
+        opening = records[0]
+        assert opening["event"] == "mission_started"
+        assert "memory_recall" in opening["catalogue"]
+        assert "memory_write" in opening["catalogue"]
+
+    def test_no_bank_means_no_memory_on_the_plane(self, workdir, capsys,
+                                                  monkeypatch):
+        monkeypatch.delenv("JUDAIS_LOBI_MEMORY", raising=False)
+        records = self._run(workdir, SCRIPTS["the_reply_is_the_right_shape"]
+                            ["good"])
+        out = capsys.readouterr().out
+        assert "🧠 memory:" not in out
+        assert "memory_recall" not in records[0]["catalogue"]

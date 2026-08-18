@@ -646,7 +646,8 @@ def _run_meta_flags(args) -> dict:
 # module: `judais --help` must not pay for the mission runtime.
 
 
-def _personality_of(system_message, history, validator, critic, manifest):
+def _personality_of(system_message, history, validator, critic, manifest,
+                    memory=None):
     """What the model is told, and what it is held to."""
     from core.runtime.run import Personality
 
@@ -655,6 +656,10 @@ def _personality_of(system_message, history, validator, critic, manifest):
         history=history,
         grounding=validator,
         critic=critic,
+        # The memory bank is what the model is TOLD it may remember and
+        # recall — core blocks in the system turn, a titles-only hint beside
+        # the objective, two tools on the plane — so it is this object's.
+        memory=memory,
         # The manifest is the only thing here that knows what the platform
         # is called to `import`, and it is a fact about what the model is
         # TOLD, which is what this object owns. Without a manifest the
@@ -1769,8 +1774,21 @@ def _mission(elf, args, name, style):
             # `from judais_lobi import Run` gives a platform, which is
             # what makes this function a CLIENT of the library rather
             # than a second implementation of it.
+            # One owner of "is there a bank and where" — `open_bank` reads
+            # JUDAIS_LOBI_MEMORY exactly as `open_run_store` reads its
+            # variable — and it reuses THIS run's store for the episodic
+            # half rather than opening a second one.
+            from core.memory.bank import open_bank
+            bank = open_bank(skill=(manifest.name if manifest else ""),
+                             runs=run_store)
+            if bank is not None:
+                console.print(
+                    f"🧠 memory: {bank.db_path} — principal "
+                    f"{bank.principal!r}, {len(bank.blocks())} core "
+                    f"block(s), {len(bank.notes())} note(s)",
+                    style=style)
             personality = _personality_of(system_message, history, validator,
-                                          critic, manifest)
+                                          critic, manifest, memory=bank)
             plane = _plane_of(bus, tool_names, gated, manifest, _redeclare)
             bounds = _bounds_of(max_steps, deadline, cancel, control,
                                 gate_wait_s, supervisor)
