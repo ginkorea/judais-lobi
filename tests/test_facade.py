@@ -194,6 +194,8 @@ class TestEveryPromisedNameIsItsOwners:
         "Model": "core.runtime.run",
         "Tools": "core.tools",
         "load_skill": "core.runtime.skills",
+        "resolve_skill": "core.runtime.skills",
+        "packs": "core.skills.library",
         "Deadline": "core.budgets",
         "Cancellation": "core.budgets",
         "Supervisor": "core.runtime.supervisor",

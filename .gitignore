@@ -16,6 +16,11 @@ dist/
 # Ignore test/output artifacts
 *.wav
 *.log
+# …except a mission pack's own fixtures. A pack's data files ship in the
+# wheel as package_data and in the sdist through MANIFEST.in, and both are
+# built from what git has: a fixture caught by the rule above is a mission
+# that passes here and has no data to run against on any install.
+!core/skills/library/*/fixtures/*.log
 .coverage
 .coverage.*
 htmlcov/

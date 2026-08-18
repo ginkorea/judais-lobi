@@ -1,0 +1,79 @@
+# find_and_report — a TASK TEMPLATE, and today a documented placeholder.
+#
+# ROADMAP §2.6b names three layers: the skill (what the model is told and
+# held to — SKILL.md), the TASK (one objective under one skill on one
+# plane with bounds — one `Run`, which is what `--mission` already is),
+# and the campaign (a DAG of tasks with artifact handoff and human
+# approval). What is missing between the first two is this file: the
+# workflow shape a task is run in — intake, plan, act, verify, finalize,
+# with a judge — as DATA rather than as a second loop.
+#
+# NOTHING LOADS THIS YET, and saying so is the point of the file. The
+# kernel's `WorkflowTemplate`s are this shape, and since lane E the roles
+# are `Run`s, so a template is a named composition of Runs with a judge.
+# The lane that makes that composition run is a later one. What is fixed
+# here is the SHAPE, so that the pack layout has a place for it and the
+# first template written against a real runner is not also the first
+# argument about where templates live.
+#
+# `core.skills.load("analyst").templates` lists this file. A test asserts
+# it parses and carries a `workflow:` naming its roles — a placeholder
+# that cannot be checked is decoration.
+
+name: find_and_report
+skill: analyst
+description: >
+  The shape of the two-part job this pack is asked for most: work out what
+  the data says, then leave the answer somewhere a person can pick it up.
+  One objective, five roles, one judge.
+
+workflow:
+
+  - role: intake
+    does: >
+      List the working directory and read the head of every file the
+      question could plausibly be about. Produces: the file list, and for
+      each file its row count and its column names.
+    bounds:
+      steps: 3
+
+  - role: plan
+    does: >
+      Say, in one paragraph, which files answer the question and what has
+      to be computed from them. Produces: the computation, in words,
+      before any of it is written.
+    bounds:
+      steps: 1
+
+  - role: act
+    does: >
+      Run the computation and print every figure that will appear in the
+      answer, each with its label and the file it came from.
+    bounds:
+      steps: 6
+
+  - role: verify
+    does: >
+      Re-derive the headline figure a second way — a different aggregation
+      over the same rows — and print both. Two numbers that disagree is a
+      finding; one number computed once is a hope.
+    bounds:
+      steps: 2
+
+  - role: finalize
+    does: >
+      Write the FINDINGS/NUMBERS answer, and the report file if the
+      objective asked for one.
+    bounds:
+      steps: 2
+
+judge:
+  role: judge
+  asks: >
+    Is every figure in the answer one the `act` or `verify` step printed,
+    with the same label? Does the answer name its file, its row count and
+    its columns? If a file could not be read, does it say which and why?
+  on_fail: >
+    Back to `act` once, with the unsupported figures named. A second
+    failure finalizes with a caveat rather than looping — an answer that
+    says what it could not verify beats a run that never ends.

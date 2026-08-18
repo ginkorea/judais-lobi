@@ -1,0 +1,18 @@
+# MANIFEST.in — what goes into the SOURCE distribution.
+#
+# `setup.py` names the mission packs in `package_data`, which is what puts
+# them in the WHEEL. An sdist is built from a different list, and a file
+# that is in neither is a file `pip install judais-lobi` never sees. Both
+# are needed, and a release is built from a clean `git archive` of the tag
+# — so this file is the sdist half of the same statement.
+#
+# The packs are data (`core/skills/library/<name>/`: SKILL.md,
+# missions.yaml, README.md, fixtures/, templates/) and carry no
+# `__init__.py`, deliberately: the wheel's top-level set stays
+# {core, judais, lobi}.
+
+recursive-include core/skills/library *
+
+include README.md
+include LICENSE
+include requirements.txt

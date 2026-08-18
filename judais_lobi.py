@@ -67,8 +67,10 @@ from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.run import (
     Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
 )
-from core.runtime.skills import SkillManifest as Skill, load_skill
+from core.runtime.skills import (SkillManifest as Skill, load_skill,
+                                 resolve_skill)
 from core.runtime.supervisor import Supervisor
+from core.skills.library import packs
 from core.tools import Tools
 
 #: Every name this façade promises.  Explicit, and asserted against by
@@ -88,6 +90,12 @@ __all__ = [
     "Tools",            # the default bus: SAFE, sandboxed, audited
     "Skill",            # a SKILL.md manifest — the closed set and the prompt
     "load_skill",       # …and how to read one off disk
+    # The shipped mission packs. `Skill.load("analyst")` takes a path OR a
+    # pack name; `packs()` says which names there are. A platform that
+    # writes its own manifest keeps using `load_skill` and never calls
+    # either.
+    "resolve_skill",    # a path, or the name of a shipped pack
+    "packs",            # ('analyst', 'coding', 'research')
     "Deadline",         # a wall clock for `Bounds`
     "Cancellation",     # a switch for `Bounds`
     "Supervisor",       # what watches a run for repetition, for `Bounds`
