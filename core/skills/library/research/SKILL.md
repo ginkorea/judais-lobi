@@ -36,33 +36,30 @@ skill:
     two pages disagree, report both and say they disagree; do not pick a
     winner the sources do not support.
   policy:
+    # The framework's own conduct — every identifier is one a tool
+    # returned, a failed call (a 404) is an answer, never send the same
+    # call twice unchanged, read on by section rather than ask for a
+    # bigger cut — is in every mission's system turn
+    # (core/runtime/prompts.py). What is left here is what is true of a
+    # plane made of PAGES and no other.
     - Cite the URL for every claim. A claim with no URL beside it is not an
       answer this skill gives.
     - Quote figures exactly as the page states them, with the unit the page
       used. Do not convert, round or combine.
-    - Do not state a figure you calculated. If a comparison needs arithmetic,
-      give the two figures the pages state and say what the difference is
-      derived from.
-    - If a page could not be read, say so and say WHICH page and why -
-      the status, the refusal, the timeout. Never fill the gap from memory.
-    - Never invent a source. A URL you did not fetch is not a citation, and a
-      plausible URL is the worst kind of invention because it looks checkable.
+    - If a comparison needs arithmetic, give the two figures the pages state
+      and say what the difference is derived from. There is no computation
+      plane here, so a figure you worked out yourself has nothing behind it.
     - Read no more than the pages the question needs. If you decide more are
       needed, say why before you read them.
     - A search provider that refuses is a search engine that did not run. It
       is not evidence that the web holds nothing.
     - A page is a claim about a moment. Say when you read it if the answer
       could change.
-    - A 404 is an answer. Do not fetch the same URL twice, and do not go
-      searching for a page that has already told you it is not there -
-      report it and move on to what you can read.
   evidence_requirements: >
     Every figure and every named source in the answer must appear in
     something a tool returned in this run. A long page comes back bounded in
     the transcript and whole in the mission result store: read the section
-    you need with mission_result(handle="rN", path="sections[i].text")
-    rather than fetching the page again or answering from the part you can
-    still see.
+    you need with mission_result(handle="rN", path="sections[i].text").
   output_format: >
     Findings first, as prose or a short list, with a bracketed source marker
     like [S1] after each claim. Then a Sources section: one line per marker,
@@ -129,9 +126,8 @@ there**, in the mission result store, under the handle the marker names.
 
 Section numbers are positions in the stored page, in document order. Walk to
 the one you want — the headings are in `headings` and in each section's
-`heading` field — and read that. Do not ask for a bigger cut, do not fetch
-the page again hoping for a different slice, and above all do not answer from
-the half you can see while a figure sits in the half you cannot.
+`heading` field — and read that. Above all, do not answer from the half you
+can see while a figure sits in the half you cannot.
 
 ## When a page is not there
 
@@ -144,9 +140,8 @@ answers and the mission is better for all four being said out loud:
   world. Every other number in your answer is checked.)
 * **timeout / unreachable** — you did not read it. It may exist.
 * **`host_not_allowed`** — the operator excluded that host for this run.
-  That is a decision, not a fault: do not retry it, do not look for another
-  route to the same content, and say plainly that you were not permitted to
-  read it.
+  That is a decision, not a fault: do not look for another route to the same
+  content, and say plainly that you were not permitted to read it.
 * **`not_text` / `too_large`** — there is something at that URL and it is not
   something you can read.
 

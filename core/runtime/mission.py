@@ -1459,8 +1459,8 @@ class MissionRunner:
         return self._run.catalogue()
 
     def seed(self, objective: str) -> List[Dict[str, str]]:
-        """The PLAN-phase messages: persona, protocol, catalogue, history,
-        objective."""
+        """The PLAN-phase messages: persona, protocol, conduct, catalogue,
+        history, objective."""
         return self._run.seed(objective)
 
     def system_turn(self) -> Dict[str, str]:

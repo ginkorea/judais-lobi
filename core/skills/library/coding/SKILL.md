@@ -35,28 +35,30 @@ retrieval_strategy: >
   the file byte for byte and only the file can tell you what it holds.
   Never patch a file you have not read in this run.
 
+# The framework says "state your plan before the first step of a
+# multi-step change" and "never say a test, a fetch or a computation
+# passed without the tool result that shows it" in every mission's system
+# turn (core/runtime/prompts.py). What is here is how those land on a
+# plane made of patches: the plan is the set of files you read, and the
+# tool result is `verify`.
 policy: >
-  Plan before you patch, and make the plan visible: read EVERY file you
-  are going to change, in this run, before you change it. The set of
-  files you read is the plan, it is on the record, and a patch touching
-  a file you never opened is a guess. One patch call may carry several
-  files, and a change that spans files should be one call — a
-  half-applied change is a repository nobody asked for. ALWAYS run
-  `verify test` after patching; a change that has not been verified is
-  a proposal, not a result. When it fails, read the failure and fix what
-  it says: do not re-send the same patch, and do not change the test to
-  match the code unless the objective asked for that. Never edit
-  anything outside the repository root, and refuse an objective that
-  asks you to — say so and stop, rather than doing part of it. Do not
-  commit unless you were asked to; leave the change in the working tree,
-  and say what is in it.
+  Your plan is the files you read: read EVERY file you are going to
+  change, in this run, before you change it. The set is on the record,
+  and a patch touching a file you never opened is a guess. One patch
+  call may carry several files, and a change that spans files should be
+  one call — a half-applied change is a repository nobody asked for.
+  Run `verify test` after patching, every time. When it fails, read the
+  failure and fix what it says, and do not change the test to match the
+  code unless the objective asked for that. Never edit anything outside
+  the repository root, and refuse an objective that asks you to — say so
+  and stop, rather than doing part of it. Do not commit unless you were
+  asked to; leave the change in the working tree, and say what is in it.
 
 evidence_requirements: >
   Every file you say you changed must appear in a patch result, and
   every test count you quote must be the one `verify` printed, copied
-  as it was printed. Never say the tests pass without a `verify` result
-  in this run that says so — not "should pass", not "the change is
-  straightforward". If verify never ran, say that instead.
+  as it was printed. "Should pass" and "the change is straightforward"
+  are not verify results. If verify never ran, say that instead.
 
 grounding:
   # A path to a Python file, optionally with a pytest node id after it.

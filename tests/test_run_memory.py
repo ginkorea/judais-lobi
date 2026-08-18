@@ -13,7 +13,7 @@ prompts are the recorded prompts.  What is here is the reason it holds:
 :meth:`~core.runtime.run.Run.seed`'s objective turn is the objective alone.
 
 With a bank there are exactly four visible differences, and each has a
-class below: a fourth section in the system turn AFTER the catalogue, a
+class below: a further section in the system turn AFTER the catalogue, a
 titles-only hint in the USER turn beside the objective, two more names in
 the catalogue, and — after a run that answered — a reflection that writes
 notes and spends tokens on the run's own ledger.  Nothing on the wire is
@@ -28,6 +28,7 @@ from core.contracts.schemas import PolicyPack
 from core.memory.bank import MEMORY_POLICY, MemoryBank
 from core.runtime.mission import PROTOCOL, MissionRunner, stacked
 from core.runtime.mission_stream import TOOL_CALL, TOOL_RESULT
+from core.runtime.prompts import GOVERNED_PLANE
 from core.runtime.run import (
     Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
 )
@@ -60,11 +61,19 @@ def bank(tmp_path):
 
 
 def a_run(bus, *replies, memory=None, records=None, plain=None,
-          usage_fn=None, history=()):
+          usage_fn=None, history=(), conduct=None):
+    """One run, built the way every question in this file asks it.
+
+    *conduct* is passed through untouched, ``None`` included: ``None`` is
+    the framework's own :data:`~core.runtime.prompts.GOVERNED_PLANE` and
+    it is what an ordinary run gets, so a default of anything else here
+    would make this helper answer a question the loop was not asked.
+    ``tests/test_prompts.py`` is the caller that passes the other two.
+    """
     store = Store(run_id="run-1")
     return Run(
         Personality(system_message="You are Tai.", memory=memory,
-                    history=history),
+                    history=history, conduct=conduct),
         ToolPlane(bus=bus, offered=["catalog.search"], store_tool=""),
         Bounds(),
         store,
@@ -86,10 +95,20 @@ def tool_call(name, **arguments):
 
 
 class TestWithNoBankNothingMoved:
-    def test_the_system_turn_is_the_three_sections_and_no_more(self, bus):
+    def test_the_system_turn_is_the_four_sections_and_no_more(self, bus):
+        """Persona, protocol, conduct, catalogue — and no memory section.
+
+        Three sections until Phase 13 lane I put the framework's conduct
+        (:data:`~core.runtime.prompts.GOVERNED_PLANE`) between the protocol
+        and the catalogue.  The claim this test makes is unchanged and it
+        is the one the file is named for: with no bank, the turn is the
+        sections a run has ALWAYS had and nothing memory contributed.  The
+        four are spelled out rather than summed, so a fifth arriving from
+        anywhere is a failure here.
+        """
         run = a_run(bus)
         assert run.system_turn() == {"role": "system", "content": stacked(
-            "You are Tai.", PROTOCOL.strip(),
+            "You are Tai.", PROTOCOL.strip(), GOVERNED_PLANE.strip(),
             "Tool catalogue:\n" + run.catalogue())}
 
     def test_the_objective_turn_is_the_objective(self, bus):

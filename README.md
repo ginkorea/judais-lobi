@@ -750,6 +750,14 @@ withdrawn after it.
 
 ### Grounding — every identifier has to have come from a tool
 
+**If a number is not in the view, it is not in the draft.** That sentence is
+in the system turn of every mission this framework runs — it is
+`core/runtime/prompts.py`'s `GOVERNED_PLANE`, the framework's default conduct,
+stacked between the protocol and the catalogue — and what follows is the
+machinery that makes it true whether the model cooperates or not. Every
+deployment used to write it into its own prompt; none has to now (see
+`PLATFORMS.md` §4).
+
 `core/runtime/grounding.py` is the mission-tier analogue of `CompositeJudge`.
 Every identifier-shaped token in the answer must appear in a tool output **of
 this run**. An unsupported claim gets one repair turn naming the exact tokens;

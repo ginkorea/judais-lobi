@@ -64,6 +64,7 @@ from core.durable import RunStore
 from core.runtime import contract
 from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
+from core.runtime.prompts import GOVERNED_PLANE
 from core.runtime.run import (
     Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
 )
@@ -100,6 +101,10 @@ __all__ = [
     "Cancellation",     # a switch for `Bounds`
     "Supervisor",       # what watches a run for repetition, for `Bounds`
     "MissionWindow",    # the context bound, for `Model`
+    # The conduct every run is given between the protocol and the
+    # catalogue — exported so a platform can READ what it is turning off
+    # with `Personality(conduct="")`, or stack its own text on top of it.
+    "GOVERNED_PLANE",
     "RunStore",         # the durable transcript, for `Store`
     # The wire, so a consumer can check a stream without owning a copy of
     # the rules.

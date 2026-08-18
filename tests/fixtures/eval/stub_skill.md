@@ -15,10 +15,15 @@ skill:
     - add_a_tool
     - late_arrival?
     - mcp.run_shell_command
-  policy:
-    - Never invent an asset id, an actor or a figure.
-    - If a number is not in a view, it is not in the answer.
-    - A refusal names the reason and what would unblock it.
+  # No `policy:` block, and its absence is the point. The three lines
+  # that were here — never invent an id or a figure, "if a number is not
+  # in a view it is not in the answer", a refusal names the reason and
+  # what would unblock it — were this fixture writing out the framework's
+  # own conduct by hand. It is in every mission's system turn now
+  # (`core/runtime/prompts.py`), so a manifest that repeats it is the
+  # second emitter this repository keeps paying for. What is left is what
+  # is particular to the stub plane: the closed set above, the output
+  # shape, and the grammar the suite is scored with.
   output_format: >
     Short prose. Every identifier and every figure exactly as the plane
     spelled it.
@@ -65,5 +70,4 @@ and no tool returned, and `number_pattern` is the figure grammar from
 in a payload are found the same way.
 
 Work the plane, then answer. If a step fails, say what you did get and mark
-the rest as unverified — an answer with a caveat is worth more than a
-refusal.
+the rest as unverified.

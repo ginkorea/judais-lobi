@@ -241,6 +241,16 @@ Eleven missions over `tests/mcp_stub_server.py`, run under
 `tests/fixtures/eval/stub_skill.md`. No GPU, no platform, no network: the
 model is scripted and the tool plane is a subprocess.
 
+That manifest has **no `policy:` block**, and its absence is a result rather
+than an omission. It used to carry three lines — never invent an id or a
+figure, "if a number is not in a view it is not in the answer", a refusal
+names the reason and what would unblock it — which were the framework's own
+conduct written out by hand. They moved to `core/runtime/prompts.py` and the
+suite was re-recorded with every verdict unchanged, which is the evidence
+that the framework's text does the work the fixture's did. A platform writing
+its own manifest should read the stub the same way: `policy:` is for what is
+true of *your* plane and nothing else.
+
 | key | flag | split |
 |---|---|---|
 | `what_can_you_do_here` | orientation | train |

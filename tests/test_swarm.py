@@ -144,9 +144,27 @@ VIEW_PLAN = plan(
 
 
 def _tiny_window():
+    """Small enough that a few tool results overflow it, and no smaller.
+
+    1400 rather than 1100 since Phase 13 lane I: the framework's conduct
+    (:data:`~core.runtime.prompts.GOVERNED_PLANE`) is 243 tokens of the
+    system turn, and the system turn is PINNED — a compaction may not
+    touch it.  At 1100 the staged executor's pinned prefix alone
+    (persona + the executor's paragraph + the protocol + the conduct +
+    the catalogue, then the step objective, which carries the mission's
+    objective for context) came to 1041 against a 900 ceiling, so the
+    window had nothing left to evict and the assertion below was about
+    arithmetic rather than about compaction.  Raised so it is again a
+    window a mission can run inside while still overflowing on the third
+    page — which is what these tests are for.
+
+    It is also the honest number: a deployment's floor for the mission
+    loop went up by ~240 tokens with the conduct, and this constant is
+    the one place in the suite that says so.
+    """
     from core.runtime.context_window import ContextConfig, MissionWindow
     return MissionWindow(config=ContextConfig(
-        max_context_tokens=1100, max_output_tokens=200))
+        max_context_tokens=1400, max_output_tokens=200))
 
 
 class Sink:
