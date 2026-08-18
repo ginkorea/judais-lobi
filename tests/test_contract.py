@@ -868,6 +868,50 @@ class TestTheFieldEveryEventMayCarry:
         working. This is that rule, spent."""
         assert c.SCHEMA_VERSION == 1
 
+
+class TestWhatPhase15AddedToTheWire:
+    """Two optional fields and three flags, and nothing else moved.
+
+    ``--grant`` widens a run's scopes past its profile, so ``profile``
+    stopped being the whole answer to "what may this run do" and
+    ``mission_started`` gained ``granted``.  A campaign is a plan of
+    missions with files handed between its steps, so ``step_started``
+    gained ``artifacts``.  Both are OPTIONAL and both are absent on every
+    run that is neither — which is what makes this a minor release rather
+    than a schema bump, and is the claim the two absence tests below are.
+    """
+
+    def test_the_opening_frame_may_say_what_was_granted(self):
+        assert "granted" in c.OPTIONAL[ms.MISSION_STARTED]
+        assert "granted" not in c.FIELDS[ms.MISSION_STARTED]
+
+    def test_a_step_may_say_what_it_takes_and_what_it_owes(self):
+        assert "artifacts" in c.OPTIONAL[ms.STEP_STARTED]
+        assert "artifacts" not in c.FIELDS[ms.STEP_STARTED]
+
+    def test_neither_field_is_declared_on_any_other_event(self):
+        """A field an event does not declare is a field a consumer meets
+        with no sentence for it."""
+        for event in c.EVENTS:
+            if event != ms.MISSION_STARTED:
+                assert "granted" not in c.OPTIONAL[event], event
+            if event != ms.STEP_STARTED:
+                assert "artifacts" not in c.OPTIONAL[event], event
+
+    def test_the_three_flags_are_published(self):
+        """``--grant`` and the two campaign flags are what a consumer may
+        spawn us by now. ``--auto-approve`` deliberately is NOT: it is an
+        operator standing at a terminal declining to ask anybody, in the
+        same class as ``--approve``/``--refuse``, and a platform that
+        wanted a campaign dispatched without review would be asking this
+        contract to promise it a way past a gate."""
+        for flag in ("--grant", "--campaign", "--campaign-plan"):
+            assert flag in c.CLI_FLAGS, flag
+        assert "--auto-approve" not in c.CLI_FLAGS
+
+    def test_the_schema_version_still_did_not_move(self):
+        assert c.SCHEMA_VERSION == 1
+
     def test_a_consumer_checking_conformance_never_asks_for_it(self):
         """``conforms`` is what a consumer runs, and a record with no
         ``branch`` is a conformant record — which is every record of every
@@ -1070,6 +1114,8 @@ _FLAG_VALUES = {
     "--protocol": "native",
     "--control": "fd:9",
     "--gate-wait": "45",
+    "--grant": "http.read,fs.write",
+    "--campaign-plan": "mission.json",
 }
 
 

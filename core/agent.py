@@ -353,52 +353,28 @@ class Agent:
     # =======================
     # Agentic task execution
     # =======================
-    # `run_task` is gone (Phase 11, lane E). It had no caller in `core/` or
-    # `main.py` — the coding kernel is driven through `run_campaign` and its
-    # `_make_task_dispatcher`, which stays — so a library caller that wants
-    # the single-task path builds the six lines directly; PLATFORMS.md,
-    # "Running the coding kernel as a library", is where they are.
-
-    def run_campaign(self, plan, base_dir: Optional[Path] = None,
-                     auto_approve: bool = False, editor: Optional[str] = None):
-        """Run a multi-step CampaignPlan through the CampaignOrchestrator."""
-        from core.campaign import CampaignOrchestrator
-
-        base = base_dir or Path.cwd()
-
-        def dispatcher_factory(step):
-            return self._make_task_dispatcher()
-
-        orch = CampaignOrchestrator(
-            dispatcher_factory=dispatcher_factory,
-            base_dir=base,
-            tool_bus=self.tools.bus,
-        )
-        return orch.run(plan, auto_approve=auto_approve, editor=editor)
-
-    def draft_campaign_plan(self, mission: str, max_attempts: int = 2):
-        from core.campaign.planner import draft_campaign_plan
-        from core.kernel.workflows import list_workflows
-
-        def chat_fn(messages):
-            return self.client.chat(model=self.model, messages=messages, stream=False)
-
-        return draft_campaign_plan(
-            mission=mission,
-            chat_fn=chat_fn,
-            available_workflows=list_workflows(),
-            max_attempts=max_attempts,
-        )
-
-    def run_campaign_from_description(
-        self,
-        mission: str,
-        base_dir: Optional[Path] = None,
-        auto_approve: bool = False,
-        editor: Optional[str] = None,
-    ):
-        plan = self.draft_campaign_plan(mission)
-        return self.run_campaign(plan, base_dir=base_dir, auto_approve=auto_approve, editor=editor)
+    # `run_task` is gone (Phase 11, lane E), and `run_campaign`,
+    # `run_campaign_from_description` and `draft_campaign_plan` are gone
+    # with it (Phase 15, lane Q).
+    #
+    # They were the door onto a SECOND dispatcher. `CampaignOrchestrator
+    # .run` walked a campaign's DAG through the coding kernel's task
+    # dispatcher, while `core.runtime.swarm` walked a plan's DAG through
+    # `Run` — two loops over one shape, and the campaign one had none of
+    # what the mission path earned: no run store, no `--approval`, no
+    # supervisor, nothing on the wire and no resume. A campaign is
+    # `core.runtime.campaign.CampaignRunner` now, which is the swarm's
+    # loop with the plan supplied by a person instead of a planner.
+    #
+    # A library caller that had these three writes the six lines that
+    # replace them; `PLATFORMS.md`, "Campaigns — a plan of missions", is
+    # where they are. `draft_campaign_plan` was one call into
+    # `core.campaign.planner`, which is unchanged and is still the one
+    # owner of the drafting prompt — what it needed and this method could
+    # not give it was a model with NO TOOLS DECLARED (`Model.plain`), for
+    # the reason every JSON-answering role in this harness needs one.
+    # `_make_task_dispatcher` below stays: the coding kernel's roles are
+    # still driven through it.
 
     def _make_task_dispatcher(self, workflow=None, budget=None):
         """The role dispatcher for agentic task execution.

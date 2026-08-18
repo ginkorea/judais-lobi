@@ -254,6 +254,13 @@ class ToolPlane:
     #: plane and :func:`~dataclasses.replace` — the ticket's widening,
     #: :meth:`narrow`, :meth:`lease` — carries the same one through.
     stores: Any = None
+    #: The scopes an operator pre-authorised for this run beyond its
+    #: profile, sorted, or ``()`` for the ordinary run nobody widened.  Set
+    #: by :meth:`grant` and by nothing else; it is what the opening frame
+    #: says as ``granted`` and what the console announces, and the *effect*
+    #: of it lives on the bus's capability engine, which is the one object
+    #: every dispatch consults.
+    granted: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # A list of this object's own: a caller's sequence is data it still
@@ -266,6 +273,9 @@ class ToolPlane:
                            frozenset(str(name) for name in self.gated if name))
         object.__setattr__(self, "store_branch",
                            str(self.store_branch or "").strip())
+        object.__setattr__(self, "granted",
+                           tuple(sorted({str(scope) for scope in self.granted
+                                         if str(scope).strip()})))
         if self.stores is None:
             object.__setattr__(self, "stores", BranchedStores())
 
@@ -303,6 +313,21 @@ class ToolPlane:
         never disagree about whether there is one.
         """
         return self.profile_field.get("profile")
+
+    @property
+    def granted_field(self) -> Dict[str, Any]:
+        """``{"granted": [...]}`` or ``{}`` — the opening frame's OPTIONAL
+        field, in the shape the record wants it.
+
+        A dict and not the list, for the reason :attr:`profile_field` is
+        one: *whether the field is present* is the same decision as *what it
+        says*, and one owner holds both.  Empty on every run nobody widened,
+        which is nearly every run — so a consumer that has never heard of
+        ``granted`` reads the stream it always read, and one that has can
+        answer "what may this run do" off the opening frame instead of
+        inferring it from a profile name that is no longer the whole truth.
+        """
+        return {"granted": list(self.granted)} if self.granted else {}
 
     def registered(self) -> Optional[List[str]]:
         """What the bus has registered, or ``None`` when it cannot say.
@@ -455,6 +480,59 @@ class ToolPlane:
         if engine is not None and hasattr(engine, "set_scope_constraints"):
             engine.set_scope_constraints([str(scope) for scope in scopes])
         return replace(self)
+
+    def grant(self, scopes: Sequence[str]) -> "ToolPlane":
+        """This plane pre-authorised for *scopes*, for a run allowed more.
+
+        :meth:`narrow`'s opposite and its neighbour on purpose: one plane
+        object owns both directions of "what may this run ask for", so an
+        operator's widening and a step's least privilege are read in one
+        place rather than in a flag handler and an orchestrator.  ``narrow``
+        constrains, ``grant`` widens, and both return a new plane rather
+        than mutating this one.
+
+        **What it is.**  February named three ways a capability is granted:
+        the interactive prompt (this repo's ``--gate-tool``/``--gate-wait``
+        seam), a policy file, and *session-scoped pre-authorisation* — an
+        operator saying at the door, once, that this run may do a thing its
+        profile does not carry.  This is the third, and the flag is
+        ``--grant``.
+
+        **The ceiling.**  A grant may name any scope
+        :func:`~core.policy.profiles.known_scopes` knows, including scopes
+        above the run's profile — withholding those would make the flag a
+        no-op.  It may not name ``*``: that is ``--profile god``, and it
+        should stay the loud decision it already is.  Three things it does
+        **not** widen, because they are not scopes:
+
+        * the **sandbox** — ``python.exec`` granted to a run whose manifest
+          says ``sandbox: bwrap`` still executes under bwrap; a grant says
+          what may be asked for, never how it is isolated;
+        * the **gated set** — a tool behind ``--gate-tool`` still stops for
+          an approval, which is a decision about one call rather than about
+          a capability;
+        * the **closed set** — a scope is not a tool, and a name the skill
+          manifest never offered stays unofferable.
+
+        The refusal of a scope this grant covers is worded differently for
+        the same reason (see
+        :func:`~core.policy.profiles.denial_reason`): if a granted scope is
+        still denied, something *narrower* said no, and naming the profile
+        would send an operator to raise a ceiling they have already cleared.
+
+        A bus with no capability engine is a bus whose dispatch was never
+        scope-gated, and granting on it is a no-op rather than a failure —
+        the same reading :meth:`narrow` gives, for the same reason.  The
+        plane still records what was asked for, so the opening frame says
+        what an operator typed even where nothing enforced it.
+        """
+        wanted = [str(scope).strip() for scope in scopes if str(scope).strip()]
+        if not wanted:
+            return self
+        engine = getattr(self.bus, "capability_engine", None)
+        if engine is not None and hasattr(engine, "grant_scopes"):
+            engine.grant_scopes(wanted)
+        return replace(self, granted=tuple(self.granted) + tuple(wanted))
 
 
 # ── everything that can stop a run ──────────────────────────────────────────
@@ -696,6 +774,13 @@ class Observer:
         #: first sub-mission exists, and a review of a failed gate happens
         #: between two of them.
         self._carried: Dict[str, Any] = {}
+        #: The same queue, per named child: fields waiting for the next
+        #: ``step_started`` **that one child** emits and no other.  Also
+        #: here on the parent, because the child that will take them may
+        #: not exist yet either — a campaign materialises a step's input
+        #: artifacts before it builds the run that will read them.  See
+        #: :meth:`carry`, which is the one door onto both dicts.
+        self._carried_by: Dict[str, Dict[str, Any]] = {}
 
     def emit(self, event: str, **fields: Any) -> None:
         """One record to every watcher, or nothing.  Never raises.
@@ -732,7 +817,7 @@ class Observer:
         except Exception:                       # pragma: no cover - defensive
             pass
 
-    def carry(self, **fields: Any) -> None:
+    def carry(self, *, branch: str = "", **fields: Any) -> None:
         """Put *fields* on the next ``step_started`` a child of this
         observer emits.
 
@@ -759,11 +844,30 @@ class Observer:
         carries them, whatever the children do, and it is the earliest
         step of the stretch the fields are about, which is what a plan is
         a fact about.
+
+        **Named a child, they wait for that child.**  Everything above is
+        true of a fact about the *stretch* — a plan, a resumption, a review
+        — where "whichever step opens first" is the right answer.  It is
+        the wrong answer for a fact about ONE child: a campaign step's
+        ``artifacts`` says what *that step* was handed and what it owes, and
+        under a parallel wave the unkeyed queue would give both steps'
+        artifacts to whichever step opened first and neither to the other.
+        So *branch* names the child whose next ``step_started`` takes them,
+        and the two queues drain together — the stretch's first, the
+        child's over the top of it, because the more specific statement
+        about a record is the one the record should carry.
+
+        Still on the parent for both, because the child that will carry
+        them may not exist yet: a campaign materialises a step's input
+        artifacts before it builds the run that reads them.
         """
         with self._numbering:
-            self._carried.update(fields)
+            if branch:
+                self._carried_by.setdefault(branch, {}).update(fields)
+            else:
+                self._carried.update(fields)
 
-    def _take(self) -> Dict[str, Any]:
+    def _take(self, branch: str = "") -> Dict[str, Any]:
         """What :meth:`carry` left, once.  Draining is the point: a field
         that arrived on every step would be a state restated rather than an
         event announced.
@@ -772,8 +876,13 @@ class Observer:
         :meth:`_Branch.emit`, in the same breath as the allocation, which
         is what makes "exactly one step_started carries the plan" true of
         two children as well as of one.
+
+        *branch* is the name of the child asking, so that what was carried
+        *for it* comes back too, over the top of the stretch's own.
         """
         carried, self._carried = self._carried, {}
+        if branch and branch in self._carried_by:
+            carried = {**carried, **self._carried_by.pop(branch)}
         return carried
 
     def numbered(self, index: int) -> int:
@@ -905,7 +1014,15 @@ class _Branch(Observer):
                     fields = dict(fields, index=self._allocate(
                         int(fields["index"])))
                 if event == STEP_STARTED:
-                    carried = self._parent._take()
+                    # BY NAME, so that a fact about ONE child reaches that
+                    # child. What the turn carries — a plan, a resumption,
+                    # a review — is a fact about the *stretch* and rides
+                    # whichever step opens first, which is right. A
+                    # campaign's `artifacts` is a fact about one step, and
+                    # under a parallel wave the unkeyed queue would hand
+                    # both steps' artifacts to whichever step got there
+                    # first and none to the other.
+                    carried = self._parent._take(self.name)
         if carried:
             # The record's own fields first and the carried ones after,
             # and a carried key REPLACES: a review the turn is carrying
@@ -1574,6 +1691,11 @@ class Run:
             **_run_field(self.store.run_id),
             **_protocol_field(self.model.protocol),
             **self.plane.profile_field,
+            # What an operator pre-authorised beyond that profile, and
+            # ABSENT on every run they did not — so "what may this run do"
+            # is answerable off the opening frame rather than off a profile
+            # name that a `--grant` has made only half of the answer.
+            **self.plane.granted_field,
         }
 
     def seed(self, objective: str) -> List[Dict[str, str]]:

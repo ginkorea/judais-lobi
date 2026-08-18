@@ -260,6 +260,118 @@ def _load_skill(args):
         raise SystemExit(f"--skill: {exc}")
 
 
+def _grants_of(args):
+    """``--grant`` as a tuple of scopes, or a refusal at the door.
+
+    THE ONE CALL SITE, for the reason :func:`_load_skill` is one: an
+    operator who typed ``--grant shel.exec`` and got a run without the
+    scope would watch a mission be refused for a capability they believe
+    they granted, and the refusal would name the *profile* rather than
+    their typo.  :func:`~core.policy.profiles.parse_grants` owns which
+    words are scopes; this turns its ``ValueError`` into the ``SystemExit``
+    every other bad flag gets.
+    """
+    from core.policy.profiles import parse_grants
+
+    try:
+        return parse_grants(getattr(args, "grant", None))
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+
+
+def _campaign_packs(args, personality):
+    """``(templates, packs)`` for a campaign run under ``--skill <pack>``.
+
+    The task templates a plan's steps may name, and the persona a step
+    under each pack is given.  Empty for a mission whose ``--skill`` is a
+    path rather than an installed pack, and empty when there is no skill —
+    a plan may then still name the kernel's own workflows, which is
+    February's campaign unchanged.
+
+    :mod:`core.skills.library` is asked which packs exist and what a pack's
+    files are; nothing here parses one.  A pack that will not load is not a
+    reason to refuse a campaign that never named a template, so the failure
+    is quiet and the validator's ``unknown_workflow`` is what an operator
+    hears if their plan did name one.
+    """
+    from core.runtime.campaign import templates_of
+
+    name = str(getattr(args, "skill", "") or "").strip()
+    if not name or Path(name).expanduser().exists():
+        return {}, {}
+    try:
+        from core.skills import library
+
+        if name not in library.packs():
+            return {}, {}
+        pack = library.load(name)
+    except Exception:
+        return {}, {}
+    return templates_of(pack), {name: personality}
+
+
+def _at_a_terminal() -> bool:
+    """Whether a person is here to edit a plan in ``$EDITOR``.
+
+    Both halves, because both are required and each fails differently: no
+    ``EDITOR`` is a deployment that never configured one, and no tty is a
+    mission spawned by another program — and opening an editor on a pipe is
+    a subprocess that never returns, which for a spawned mission is a hang
+    rather than a refusal.  When this is ``False`` a campaign's plan goes
+    to the durable approval store and the run ends at
+    ``awaiting_approval``, which is a thing a platform can answer.
+    """
+    import sys
+
+    return bool(os.getenv("EDITOR")) and sys.stdin.isatty() \
+        and sys.stdout.isatty()
+
+
+def _drafted_campaign(objective, model, manifest):
+    """``--campaign "<mission>"``: a plan drafted by the model.
+
+    :func:`~core.campaign.planner.draft_campaign_plan` is the one owner of
+    the drafting prompt and of reading a plan out of a reply, and it is
+    asked through ``model.plain`` — **the model with no tools declared** —
+    for the reason the router, the planner, the gates and the synthesizer
+    are: a model handed a function namespace answers a request for JSON
+    with a tool call.
+
+    The menu it may pick from is the installed packs' task templates plus
+    the kernel's workflows, which is the same vocabulary
+    :class:`~core.runtime.campaign.CampaignRunner` validates against — a
+    drafter offered a name the validator then rejects burns a re-draft on
+    the harness's own inconsistency.  Nothing is dispatched off the back of
+    this: the plan goes to approval, whoever approves it.
+    """
+    from core.campaign.planner import draft_campaign_plan
+    from core.runtime.campaign import templates_of
+
+    names = set()
+    try:
+        from core.kernel.workflows import list_workflows
+        names.update(list_workflows())
+    except Exception:                           # pragma: no cover - defensive
+        pass
+    try:
+        from core.skills import library
+        names.update(templates_of(*(library.load(pack)
+                                    for pack in library.packs())))
+    except Exception:                           # pragma: no cover - defensive
+        pass
+
+    def chat_fn(messages):
+        return model.plain(messages)
+
+    try:
+        return draft_campaign_plan(objective, chat_fn=chat_fn,
+                                   available_workflows=sorted(names))
+    except ValueError as exc:
+        raise SystemExit(
+            f"--campaign: the model did not produce a usable CampaignPlan "
+            f"({exc}). Write one and pass --campaign-plan <file>.")
+
+
 def _resolve_gates(wanted, offered):
     """``--gate-tool`` names as the bus dispatches them, or a refusal.
 
@@ -669,7 +781,7 @@ def _personality_of(system_message, history, validator, critic, manifest,
     )
 
 
-def _plane_of(bus, tool_names, gated, manifest, plane_changed):
+def _plane_of(bus, tool_names, gated, manifest, plane_changed, grants=()):
     """The only way out, and who may say yes to it.
 
     ``admits`` and ``plane_changed`` are the two hooks a plane that changes
@@ -678,6 +790,14 @@ def _plane_of(bus, tool_names, gated, manifest, plane_changed):
     offered the whole bridge, so whatever it grew is offered too), and
     ``_redeclare`` keeps the native protocol's function namespace in step
     with the catalogue.
+
+    ``grants`` is ``--grant``, already parsed and refused at the door by
+    :func:`~core.policy.profiles.parse_grants`.  Applied here, through
+    :meth:`~core.runtime.run.ToolPlane.grant`, because the plane is the one
+    object that owns both directions of what a run may ask for — ``grant``
+    widens and ``narrow`` constrains — and a widening applied anywhere else
+    would be a second surface for governance.  An empty tuple returns the
+    plane unchanged, which is every run nobody widened.
     """
     from core.runtime.results import RESULT_TOOL
     from core.runtime.run import ToolPlane
@@ -689,7 +809,7 @@ def _plane_of(bus, tool_names, gated, manifest, plane_changed):
         gated=gated,
         admits=manifest.admits if manifest else None,
         plane_changed=plane_changed,
-    )
+    ).grant(grants)
 
 
 def _bounds_of(max_steps, deadline, cancel, control, gate_wait_s, supervisor):
@@ -873,6 +993,9 @@ def _mission(elf, args, name, style):
         ORPHAN_STALE_S, ResumeRefused, open_for_resume, rebuild,
         reconcile_orphans,
     )
+    from core.runtime.campaign import (
+        CampaignRefused, CampaignRunner, plan_from_file, resumed_campaign,
+    )
     from core.runtime.results import RESULT_TOOL
     # THE LIBRARY. Everything this function does after argparse is build the
     # six objects this class takes and hand them over — see the six builders
@@ -887,6 +1010,11 @@ def _mission(elf, args, name, style):
     from core.tools.mcp_client import McpClient, McpUnavailable, McpConnectionError
 
     manifest = _load_skill(args)
+    # At the door with the manifest and the history, and for the same
+    # reason: a scope that is not a scope is a typo, and finding out about
+    # it when the tool it was meant to reach is refused sends the operator
+    # after the profile instead of after the word they mistyped.
+    grants = _grants_of(args)
     # The word, validated at the door; whether this run may speak it is
     # settled below, once `--resume` has had its say about which protocol
     # the run actually is.
@@ -963,6 +1091,19 @@ def _mission(elf, args, name, style):
     # recorded run, and the budget is a TOTAL for that run rather than a
     # fresh allowance for this process.
     objective = args.message
+    # `--campaign-plan` is read HERE and not beside the runner, because a
+    # campaign's objective is a **field of the plan**: an operator who
+    # names a plan file and types no message means the objective somebody
+    # wrote and is about to approve, not an empty one. Reading the file is
+    # a refusal at the door like every other bad argument — no server
+    # dialled, no run directory minted.
+    planned = None
+    if args.campaign_plan is not None:
+        try:
+            planned = plan_from_file(args.campaign_plan)
+        except Exception as exc:
+            raise SystemExit(f"--campaign-plan: {scrub(str(exc))}")
+        objective = objective or planned.objective
     max_steps = (DEFAULT_MISSION_STEPS if args.mission_steps is None
                  else max(1, int(args.mission_steps)))
     resume_id = (getattr(args, "resume", "") or "").strip()
@@ -1789,7 +1930,19 @@ def _mission(elf, args, name, style):
                     style=style)
             personality = _personality_of(system_message, history, validator,
                                           critic, manifest, memory=bank)
-            plane = _plane_of(bus, tool_names, gated, manifest, _redeclare)
+            plane = _plane_of(bus, tool_names, gated, manifest, _redeclare,
+                              grants)
+            if grants:
+                # Said on the console as well as on the opening frame, and
+                # said as what it is: an operator widened this run past its
+                # profile, which is exactly the line somebody reading a
+                # terminal afterwards needs to find.
+                console.print(
+                    f"🔑 granted for this run: {', '.join(grants)} — beyond "
+                    f"profile '{plane.profile or 'none'}'. Scopes only: the "
+                    f"sandbox, the gated set and the skill's closed set are "
+                    f"unchanged",
+                    style="yellow")
             bounds = _bounds_of(max_steps, deadline, cancel, control,
                                 gate_wait_s, supervisor)
             store = _store_of(run_store, run_id, recorder, approvals, ticket)
@@ -1814,6 +1967,26 @@ def _mission(elf, args, name, style):
             # by the staged runner whether or not `--swarm` was typed, and
             # a run that was not is continued by the loop that recorded it
             # even when it was.
+            #
+            # A CAMPAIGN extends that rule rather than adding a second one:
+            # a recorded campaign carries its approved plan in its metadata
+            # (`campaign_meta`), and it resumes as a campaign — with its
+            # steps' artifacts and its steps' scopes — because a staged
+            # runner picking it up would re-run the remaining steps holding
+            # neither. The plan is read off the record and not off whatever
+            # `--campaign-plan` names now, since the plan is immutable once
+            # approved.
+            campaign_plan = None
+            if recorded is not None:
+                campaign_plan = resumed_campaign(recorded.meta.meta)
+            elif planned is not None:
+                campaign_plan = planned
+            elif getattr(args, "campaign", False):
+                console.print(
+                    "🗂  campaign: drafting a plan of missions — it is shown "
+                    "for approval before any of it runs",
+                    style=style)
+                campaign_plan = _drafted_campaign(objective, model, manifest)
             staged_resume = recorded is not None and recorded.staged
             if (getattr(args, "swarm", False) and recorded is not None
                     and not staged_resume):
@@ -1829,8 +2002,43 @@ def _mission(elf, args, name, style):
                     "mission under the same run id",
                     style="yellow",
                 )
-            if staged_resume or (getattr(args, "swarm", False)
-                                 and recorded is None):
+            if campaign_plan is not None:
+                # A campaign is a `SwarmRunner` whose plan a person wrote
+                # and approved rather than one a planner drew, so it is
+                # built here beside the staged turn and out of the same
+                # `Run`. `--swarm` beside it is not honoured and is not
+                # silently dropped: a plan of missions IS the staging.
+                if getattr(args, "swarm", False):
+                    console.print(
+                        "🐝 swarm: set aside — a campaign is already a plan "
+                        "of missions, and triaging one would replace the "
+                        "plan somebody approved",
+                        style="yellow")
+                templates, campaign_packs = _campaign_packs(args, personality)
+                console.print(
+                    f"🗂  campaign {campaign_plan.campaign_id}: "
+                    f"{len(campaign_plan.steps)} step(s), "
+                    f"{'auto-approved' if args.auto_approve else 'needs approval'}"
+                    f" — each step is a child run with its own scopes, and "
+                    f"artifacts hand off between them",
+                    style=style)
+                try:
+                    runner = CampaignRunner(
+                        Run(personality, plane, bounds, store, observer,
+                            model),
+                        campaign_plan,
+                        templates=templates, packs=campaign_packs,
+                        # Serial. `CampaignRunner` takes `parallel=`
+                        # and a library caller may pass it; nothing on this
+                        # command line sets it, exactly as nothing sets the
+                        # swarm's.
+                        parallel=1,
+                        auto_approve=bool(args.auto_approve),
+                        interactive=_at_a_terminal())
+                except CampaignRefused as exc:
+                    raise SystemExit(f"--campaign: {exc}")
+            elif staged_resume or (getattr(args, "swarm", False)
+                                   and recorded is None):
                 from core.runtime.swarm import SwarmRunner
                 if not staged_resume:
                     console.print(
@@ -1947,6 +2155,22 @@ def _mission(elf, args, name, style):
                 console.print(f"   {scrub(call.error)}", style="yellow")
         if step.error:
             console.print(f"   {scrub(step.error)}", style="yellow")
+
+    if (isinstance(runner, CampaignRunner)
+            and transcript.outcome != AWAITING_APPROVAL):
+        # A campaign's product is FILES, and the answer is prose about
+        # them. An operator who ran one and got only the prose has to go
+        # looking for what it actually left behind, which for a plan of
+        # missions is the thing they wanted. Not on a plan that stopped for
+        # approval: nothing ran, and a list of empty directories would be
+        # noise over the sentence that says what to do next.
+        console.print(f"🗂  campaign artifacts under {runner.campaign_dir}:",
+                      style=style)
+        for entry in campaign_plan.steps:
+            left = runner.artifacts_of(entry.step_id)
+            console.print(f"   {entry.step_id}: "
+                          + (", ".join(left) if left else "(nothing)"),
+                          style=style)
 
     report = transcript.grounding
     if report is not None and report.ran:
@@ -2103,6 +2327,19 @@ def _main(AgentClass):
                              "wildcard. Unset falls back to JUDAIS_LOBI_PROFILE "
                              "then 'safe'; a flag beats the env var "
                              "(env: JUDAIS_LOBI_PROFILE)")
+    parser.add_argument("--grant", action="append", default=None,
+                        metavar="SCOPE[,SCOPE...]",
+                        help="Pre-authorise capability scopes for THIS run, "
+                             "beyond whatever --profile grants. Comma-"
+                             "separated and repeatable: --grant http.read "
+                             "lets a mission under 'safe' fetch a page "
+                             "without opting the whole run up to 'ops'. It "
+                             "widens SCOPES only — the sandbox, the gated "
+                             "set and the skill's closed set are unchanged, "
+                             "and a campaign step narrower than the grant is "
+                             "still refused. '*' is not a grant; that is "
+                             "--profile god. The scopes ride the opening "
+                             "frame as `granted`")
     # Both published names, in the published order — see
     # `_personality_default` and `TAI_PERSONALITY_ENV` below.
     parser.add_argument("--personality", type=Path,
@@ -2374,9 +2611,28 @@ def _main(AgentClass):
 
     parser.add_argument("--summarize", action="store_true", help="Summarize tool output")
     parser.add_argument("--voice", action="store_true", help="Speak the response aloud (lazy TTS)")
-    parser.add_argument("--campaign", action="store_true", help="Run a multi-step campaign")
-    parser.add_argument("--campaign-plan", type=Path, help="Path to CampaignPlan JSON/YAML")
-    parser.add_argument("--auto-approve", action="store_true", help="Skip HUMAN_REVIEW editor step")
+    parser.add_argument("--campaign", action="store_true",
+                        help="Run a CAMPAIGN: a plan of missions. The "
+                             "message is drafted into a CampaignPlan, the "
+                             "plan is approved by a person, and then each "
+                             "step runs as its own child mission — its own "
+                             "skill, its own effective scopes, with declared "
+                             "artifacts handed from one step to the next. "
+                             "Implies --mission. Every record carries "
+                             "`branch`; the plan and each step's `artifacts` "
+                             "ride `step_started`; --resume continues it")
+    parser.add_argument("--campaign-plan", type=Path, metavar="FILE",
+                        help="Run the CampaignPlan in this JSON or YAML "
+                             "file instead of drafting one. Implies "
+                             "--mission. With no message, the plan's own "
+                             "`objective` is the mission's")
+    parser.add_argument("--auto-approve", action="store_true",
+                        help="Dispatch a campaign plan WITHOUT asking "
+                             "anybody. Without it an unapproved plan ends "
+                             "the run at awaiting_approval holding the plan, "
+                             "to be approved by --approve <id> and carried "
+                             "back with --approval <id> — or edited in "
+                             "$EDITOR when a person is at a terminal")
 
     # RAG
     parser.add_argument("--rag", nargs="+",
@@ -2413,17 +2669,21 @@ def _main(AgentClass):
     if args.approve or args.refuse:
         return _decide_approval(args)
     if (not (args.message or "").strip() and not getattr(args, "resume", "")
-            and not getattr(args, "replay", "")):
+            and not getattr(args, "replay", "")
+            and getattr(args, "campaign_plan", None) is None):
         # ONE check for the positional, after the two commands that never
-        # take one have returned. The remaining exceptions are a resume and
-        # a replay: the recorded run already holds the objective, and both
-        # refuse a different one rather than run it.
+        # take one have returned. The remaining exceptions are a resume, a
+        # replay and a campaign plan: in all three the objective is already
+        # written down — on the recorded run, or in the plan file's own
+        # `objective` — and all three refuse a different one rather than
+        # quietly run it.
         raise SystemExit(
             "a message is required — the question, or the mission's "
             "objective. The exceptions: `--mission --resume <run-id>` takes "
             "the objective from the run it continues, `--mission --replay "
-            "<run-id>` from the run it re-runs, and --approve/--refuse "
-            "answer a gate rather than ask anything.")
+            "<run-id>` from the run it re-runs, `--campaign-plan <file>` "
+            "takes it from the plan, and --approve/--refuse answer a gate "
+            "rather than ask anything.")
 
     print(f"{GREEN}👤 You: {args.message}{RESET}")
 
@@ -2434,7 +2694,15 @@ def _main(AgentClass):
     console.print(f"🧠 Using provider: {provider_name} | Model: {elf.model}", style=style)
 
     # --- mission mode (the model chooses the tools) ---
-    if args.mission:
+    #
+    # A campaign is mission mode. It used to be a branch of its own, three
+    # hundred lines below this one, running a second dispatcher over the
+    # coding kernel: no run store, no `--approval`, no supervisor, nothing
+    # on the wire and no resume — the whole of what the mission path had
+    # earned, absent from the surface that most needed it. It is
+    # `CampaignRunner` now, built where the staged runner is built and out
+    # of the same six objects.
+    if args.mission or args.campaign or args.campaign_plan:
         return _run_mission(elf, args, name, style)
 
     # --- lazy voice registration ---
@@ -2460,26 +2728,6 @@ def _main(AgentClass):
             console.print(f"📚 Injected {len(hits)} RAG hits", style=style)
         if subcmd != "enhance":
             return
-
-    # --- Campaign handling ---
-    if args.campaign or args.campaign_plan:
-        if args.campaign_plan is not None:
-            from core.contracts.campaign import CampaignPlan
-            plan_path = args.campaign_plan
-            raw = plan_path.read_text()
-            if plan_path.suffix in {".yml", ".yaml"}:
-                import yaml
-                data = yaml.safe_load(raw) or {}
-                plan = CampaignPlan.model_validate(data)
-            else:
-                plan = CampaignPlan.model_validate_json(raw)
-            state = elf.run_campaign(plan, base_dir=Path.cwd(), auto_approve=args.auto_approve)
-        else:
-            state = elf.run_campaign_from_description(
-                args.message, base_dir=Path.cwd(), auto_approve=args.auto_approve
-            )
-        console.print(f"Campaign finished: {state.status}", style=style)
-        return
 
     # --- memory management ---
     if args.empty:

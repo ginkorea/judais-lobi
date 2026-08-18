@@ -198,15 +198,16 @@ knowing which of the two produced the stream.
 
 > **0.16.** The façade ships as a single top-level module, `judais_lobi.py`, so
 > the wheel's top-level names stay `core`, `judais`, `lobi` — which
-> `tests/test_packaging.py` pins. Until then, `core.runtime.mission.MissionRunner`
-> and `core.runtime.swarm.SwarmRunner` are the objects, and they are not a
-> stable surface.
+> `tests/test_packaging.py` pins. Until then, `core.runtime.mission.MissionRunner`,
+> `core.runtime.swarm.SwarmRunner` and `core.runtime.campaign.CampaignRunner`
+> are the objects, and none of the three is a stable surface: the façade
+> exports the six and what builds them, and a runner over them is reached by
+> its module path.
 
 **The coding kernel, for a platform that wants the other half.** A mission is
 one loop; the kernel is the multi-phase coding path, and a library caller drives
-it through its own objects. Six lines, using the same dispatcher the campaign
-path uses — so it is bounded against the endpoint's real context window without
-being asked:
+it through its own objects. Six lines, and the dispatcher is bounded against the
+endpoint's real context window without being asked:
 
 ```python
 from core.agent import Agent
@@ -222,12 +223,62 @@ state = Orchestrator(dispatcher=agent._make_task_dispatcher(workflow=workflow),
 `state` is the final `SessionState` — `COMPLETED` or `HALTED`, the halt naming
 the phase that stopped it. Pass `budget=BudgetConfig(...)` to both (the same
 object, so the dispatcher's per-phase and the orchestrator's per-session budgets
-agree), and `session_manager=` to `Orchestrator` for durable artifacts. For a
-multi-step campaign rather than one task, `agent.run_campaign(plan)` and
-`agent.run_campaign_from_description(mission)` are the higher-level path and
-need none of this. The single-task entry point `Agent.run_task` was **removed**
-in Phase 11 — nothing in the package or its CLI called it — so `0.16` is the
-first release without it.
+agree), and `session_manager=` to `Orchestrator` for durable artifacts. The
+single-task entry point `Agent.run_task` was **removed** in Phase 11 — nothing
+in the package or its CLI called it — so `0.16` is the first release without
+it, and `Agent.run_campaign`, `Agent.run_campaign_from_description` and
+`Agent.draft_campaign_plan` went the same way in 0.17: they were the door onto
+a *second* dispatcher, and a campaign is a `Run` client now. See
+**Campaigns — a plan of missions**, below.
+
+### 2.2b Campaigns — a plan of missions &nbsp;·&nbsp; **0.17**
+
+A campaign is a DAG of missions with artifact handoff, human approval and a
+resume. From the command line it is `--campaign-plan ./mission.json` (or
+`--campaign "<description>"`, which drafts one); as a library it is one more
+object over the same `Run` a mission is:
+
+```python
+from core.runtime.campaign import CampaignRunner, plan_from_file, templates_of
+from core.skills import library
+from judais_lobi import Run                      # plus the six, as in 2.2
+
+pack = library.load("analyst")
+runner = CampaignRunner(
+    Run(personality, plane, bounds, store, observer, model),
+    plan_from_file("mission.json"),
+    templates=templates_of(pack),                # the menu a step may name
+    packs={"analyst": personality},              # what a step is told it is
+    parallel=2,                                  # independent steps together
+    auto_approve=False,                          # ask, through the store
+)
+transcript = runner.run()
+```
+
+Four things a driver has to know about one:
+
+* **It stops for approval.** With no ticket the run ends at
+  `awaiting_approval` having dispatched nothing, with the whole plan on a
+  `gate_requested` record whose `tool` is `campaign_plan` and whose
+  `arguments` carry the plan and its digest. That is the **same** mechanism a
+  gated tool call uses — the same store, the same `approval_id`, the same
+  `--approve <id>` / `--approval <id>` round trip (§5, *Gates and approvals*) —
+  so a platform that already answers gates answers campaign plans with no new
+  code. The digest is compared on the way back in, so a yes to one plan is not
+  a yes to the plan that replaced it.
+* **Each step is a child run.** Every record carries `branch` — the step's id —
+  exactly as a `--swarm` stage's does; the plan rides the first `step_started`
+  as `plan` (with `rung` naming each step's task template) and each step's own
+  `step_started` carries `artifacts`: `{"in": [...], "out": [...]}`. Nothing
+  required was added and `SCHEMA_VERSION` is still `1`.
+* **Files, not summaries, travel between steps.** A step's declared inputs are
+  copied into `sessions/<campaign>/steps/<step>/handoff_in/` before it starts
+  and its declared exports are collected from `handoff_out/` after. A step that
+  promised a file and did not write it **failed**.
+* **`--resume` continues it as a campaign.** The approved plan is in the run's
+  metadata, so the runner that picks a recorded run back up is chosen off the
+  *record* and not off the resuming command line — the same rule `--protocol`
+  and the objective are read under.
 
 ### 2.3 Server-sent events over the run store &nbsp;·&nbsp; **0.16**
 
@@ -305,7 +356,7 @@ the supervisor asks for a best answer, which usually earns `answered` (§7).
 ### The opening frame is the run's posture
 
 `mission_started` is the one record to read in full before rendering anything.
-Its five optional fields say what kind of run this is:
+Its six optional fields say what kind of run this is:
 
 | field | what a driver does with it |
 | --- | --- |
@@ -314,6 +365,7 @@ Its five optional fields say what kind of run this is:
 | `audit_ref` | the path of this process's append-only audit file, or **`null`** when `JUDAIS_LOBI_AUDIT` was `none`/`off` |
 | `run_id` | the durable transcript (§6). **Absent**, not null, when nothing is being recorded |
 | `protocol` | `"native"`, and **absent** on a `json` run — which keeps every stream recorded before the field existed byte-identical |
+| `granted` | the scopes `--grant` pre-authorised **beyond** `profile`, sorted, and **absent** on every run nobody widened. Read it beside `profile`: since 0.17 the profile is the floor a deployment set and this is what the operator typed on top of it, so a pane that renders only `profile` is now under-reporting what a run may do |
 
 ### The published spawning surface
 
@@ -344,6 +396,9 @@ releases.
 | `--provider` | — | `openai` \| `anthropic` \| `mistral` \| `local` (§8) |
 | `--model` | — | the model name, as the provider serves it |
 | `--profile` | `JUDAIS_LOBI_PROFILE` | `safe` \| `dev` \| `ops` \| `god` |
+| `--grant` | — | pre-authorise named scopes for this run, past the profile. Comma-separated, repeatable. Scopes only: the sandbox, the gated set and the manifest's closed set are unchanged. Arrives back as `granted` (§5) |
+| `--campaign` | — | run a plan of missions drafted from the message (§5) |
+| `--campaign-plan` | — | run a plan of missions from a `CampaignPlan` JSON/YAML file. Both imply `--mission` |
 | `--unsandboxed` | `JUDAIS_LOBI_SANDBOX` | run tool subprocesses with no isolation |
 | `--temperature`, `--top-p`, `--seed` | — | sampling, passed through to the backend |
 
@@ -357,6 +412,8 @@ The rest of `contract.ENV_VARS`, which have no flag:
 | `JUDAIS_LOBI_AUDIT` | move the audit file (a path) or silence it (`none`/`off`) |
 | `JUDAIS_LOBI_RUNS` | move the run store (a path) or keep nothing (`none`/`off`) |
 | `JUDAIS_LOBI_APPROVALS` | move the approvals directory |
+| `JUDAIS_LOBI_MEMORY` | where the memory bank lives (a path), or `none`/`off` to run with no memory at all. Unset is no bank, so a platform that wants one opts in |
+| `JUDAIS_LOBI_MEMORY_PRINCIPAL` | **who** the bank's blocks and notes belong to, as free text. The harness *attributes*, it does not authenticate — the same rule the approvals module states about `decided_by` — so a deployment serving several people sets this per run or shares one memory between them |
 
 ### The exit contract
 
@@ -718,6 +775,23 @@ A refusal is a `tool_result` with `ok: false` naming the **scope** that was
 missing and the profile that grants it — `shell.exec`, and `dev` — rather than
 a generic denial, because "permission denied" is the message that gets worked
 around instead of read.
+
+**`--grant` is the way past a profile without climbing it.** A mission that
+needs one OPS scope — `http.read`, say, which is why web research is denied
+under `safe` — had to run as `ops`, which also hands it `git.push`,
+`pip.install` and `fs.delete`. `--grant http.read` adds that one scope to this
+run and nothing else, and the scopes it added ride `mission_started.granted`
+so a driver can render them. Three things it deliberately does **not** widen,
+because none of them is a scope: the **sandbox** (`sandbox:` in the manifest,
+§5, still decides how a code-plane tool is isolated — a granted `python.exec`
+still runs under bwrap), the **gated set** (`--gate-tool` plus the approvals
+store, below, is a decision about one call rather than about a capability), and
+the manifest's **closed set** (a scope is not a tool). A scope no profile names
+is refused at the door by name, and `*` is refused with the sentence saying
+that `--profile god` is what that means. Where a *step* of a campaign is
+narrower than the grant, its refusal says so — "granted for this run and this
+step is narrower than the grant" — rather than naming a profile the operator
+has already cleared.
 
 **`mcp.call` is in the lowest profile on purpose**, and that is the one line of
 this table worth reading twice: an MCP-only mission is a `safe` mission. What a

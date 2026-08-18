@@ -1,7 +1,7 @@
 # core/policy/profiles.py — Profile → PolicyPack mapping
 
 import os
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from core.contracts.schemas import PolicyPack, ProfileMode
 
@@ -70,6 +70,83 @@ PROFILE_SCOPES: Dict[ProfileMode, List[str]] = {
     ],
     ProfileMode.GOD: ["*"],
 }
+
+
+#: The wildcard the GOD level carries, and the one word a ``--grant`` may
+#: never say.  See :func:`parse_grants`.
+WILDCARD = "*"
+
+#: The flag that pre-authorises scopes for one run, named here because the
+#: refusals below quote it and the CLI is not the owner of its spelling.
+GRANT_FLAG = "--grant"
+
+
+def known_scopes() -> Tuple[str, ...]:
+    """Every scope this framework has a name for, sorted, without the
+    wildcard.
+
+    Derived from :data:`PROFILE_SCOPES` and never listed a second time: the
+    table that decides which profile grants a scope is the same table that
+    decides whether a scope exists at all, so a scope added to a profile is
+    grantable the same day and a typo is refused by a check that cannot go
+    stale.
+    """
+    return tuple(sorted({
+        scope
+        for scopes in PROFILE_SCOPES.values()
+        for scope in scopes
+        if scope != WILDCARD
+    }))
+
+
+def parse_grants(values: Optional[Iterable[str]]) -> Tuple[str, ...]:
+    """``["http.read,fs.write"]`` → ``("fs.write", "http.read")``.
+
+    What ``--grant`` accepts, in one function, so the CLI and a library
+    caller refuse the same words.  Comma-separated inside one value and
+    repeatable across several; blanks are dropped; the result is sorted and
+    deduplicated, because a grant is a *set* and an operator who typed a
+    scope twice meant it once.
+
+    **The ceiling, and it is deliberately not "nothing".**  A grant may name
+    a scope the run's profile does not carry — that is the whole point of the
+    flag, and the alternative (a grant that can only re-state the profile) is
+    a flag with no effect.  Two things it may *not* do:
+
+    * ``*`` is refused.  A wildcard grant is ``--profile god`` spelled
+      quietly, and opting into everything should be the loud decision it
+      already has a name for.
+    * A scope no profile names is refused **by name**, with the known set
+      listed.  ``--grant shel.exec`` silently granting nothing is how an
+      operator comes to believe a run may do something it may not.
+
+    And two things a grant does not touch, which is the rest of the ceiling:
+    the **sandbox** (a code-plane scope such as ``python.exec`` or
+    ``shell.exec`` still runs under whatever the manifest's ``sandbox:``
+    rule and ``--unsandboxed`` decided — a grant widens *what may be asked
+    for*, never *how it is isolated*), and the **gated set** (``--gate-tool``
+    and the approval store are a different mechanism, and a granted scope
+    does not answer a gate).
+    """
+    wanted: List[str] = []
+    for value in values or ():
+        for part in str(value).split(","):
+            scope = part.strip()
+            if scope and scope not in wanted:
+                wanted.append(scope)
+    if not wanted:
+        return ()
+    known = known_scopes()
+    unknown = [scope for scope in wanted if scope not in known]
+    if unknown:
+        raise ValueError(
+            f"{GRANT_FLAG}: no such scope "
+            + ", ".join(repr(scope) for scope in unknown)
+            + (f" — {GRANT_FLAG} '*' is not a grant; that is --profile god"
+               if WILDCARD in unknown else "")
+            + ". Known scopes: " + ", ".join(known)
+        )
+    return tuple(sorted(wanted))
 
 
 def policy_for_profile(profile: ProfileMode) -> PolicyPack:
@@ -164,7 +241,8 @@ def scope_grant_hint(scope: str) -> str:
 
 
 def denial_reason(denied_scopes: List[str],
-                  current_profile: Optional[str] = None) -> str:
+                  current_profile: Optional[str] = None,
+                  granted: Sequence[str] = ()) -> str:
     """A refusal sentence that names each missing scope and its fix.
 
     Given the scopes a :class:`~core.tools.capability.CapabilityEngine`
@@ -178,10 +256,24 @@ def denial_reason(denied_scopes: List[str],
     ``--profile god`` all the same; a scope already in the default profile
     (which should not be denied unless a constraint narrowed it) is named
     without a profile clause.
+
+    *granted* is what ``--grant`` pre-authorised for this run, and a denied
+    scope that appears in it gets a **different sentence**: the profile is
+    not the fix, because the operator already widened past it and something
+    narrower said no anyway — a campaign step's effective scopes, or a
+    role's :meth:`~core.runtime.run.ToolPlane.narrow`.  Naming the profile
+    there would send an operator to raise a ceiling they have already
+    cleared.  The clause is stated once, here, so the console, the model's
+    ``capability_denied`` message and the audit read the same words.
     """
     under = f" under profile '{current_profile}'" if current_profile else ""
+    covered = {str(scope) for scope in granted}
     parts: List[str] = []
     for scope in denied_scopes:
+        if scope in covered:
+            parts.append(f"{scope} was granted for this run and this step "
+                         f"is narrower than the grant")
+            continue
         hint = scope_grant_hint(scope)
         if hint:
             parts.append(f"{scope} needs {hint}")
