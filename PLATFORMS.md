@@ -649,8 +649,12 @@ judais --mission --mcp-url https://host/mcp "…"          # env: MCP_URL
 judais --mission --mcp-stdio 'python -m my_server' "…"   # env: MCP_STDIO
 ```
 
-Passing both is a refusal naming both; passing neither is a refusal, because
-there is nothing to discover otherwise.
+Passing both is a refusal naming both. Passing neither is **not** a refusal
+since 0.16: the plane is then the package's own registered tools (the
+built-in descriptors — the console says `🧰 … BUILT-IN tools — no server was
+named`), and the refusal fires only when a skill's closed set names a tool the
+host lacks — an `mcp.*` entry with no server, or a name nothing registered —
+and it names those entries and lists what is here.
 
 * **`MCP_TOKEN`** — the bearer token for `--mcp-url`. There is a `--mcp-token`
   flag and you should not use it: an argument is visible in
