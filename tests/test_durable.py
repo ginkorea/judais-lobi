@@ -21,14 +21,19 @@ lesson comes across with the mechanism or it does not come across at all.
 import json
 import os
 import threading
+import time
 
 import pytest
 
 from core.durable import (
     DISABLE_WORDS,
+    LOCKS,
+    LOCK_FILENAME,
     NoSuchRun,
     RUNS_ENV,
     Run,
+    RunClosed,
+    RunHold,
     RunStore,
     atomic_write_json,
     atomic_write_text,
@@ -48,6 +53,19 @@ def store(tmp_path):
 def _events(store, run_id):
     """The event names in the log, in order, straight off the disk."""
     return [e["record"].get("event") for e in store.since(run_id)]
+
+
+def _age(store, run_id, seconds):
+    """Backdate a run's ``updated_at`` on the disk, so a test can watch the
+    heartbeat move it forward again."""
+    from datetime import datetime, timedelta, timezone
+
+    path = store.meta_path(run_id)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["updated_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    ).isoformat(timespec="seconds")
+    path.write_text(json.dumps(record), encoding="utf-8")
 
 
 # ── replacing a file is atomic or it is not done ─────────────────────────────
@@ -492,6 +510,212 @@ class TestTheEnvironment:
         assert open_run_store() is None
 
 
+# ── who is running this ──────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(not LOCKS, reason="no fcntl.flock on this platform")
+class TestALiveRunIsOneSomebodyIsHolding:
+    """Liveness by lock, not by clock.
+
+    The clock was the whole rule and as the whole rule it was wrong: a run
+    standing at a gate for five minutes, or waiting on a cold model, says
+    nothing for longer than any staleness number worth having, and a
+    sibling process read that silence as death. A held ``flock`` cannot be
+    wrong about it — the kernel releases it when the process ends however
+    it ended, and no amount of silence releases it while the process lives.
+    """
+
+    def test_a_fresh_run_is_held_by_nobody(self, store):
+        run_id = store.create().run_id
+        assert store.held(run_id) is False
+
+    def test_holding_it_says_so(self, store):
+        run_id = store.create().run_id
+        hold = store.hold(run_id, heartbeat_s=0)
+        try:
+            assert hold.locked and store.held(run_id) is True
+        finally:
+            hold.release()
+
+    def test_releasing_it_lets_go(self, store):
+        run_id = store.create().run_id
+        store.hold(run_id, heartbeat_s=0).release()
+        assert store.held(run_id) is False
+
+    def test_releasing_twice_is_not_an_error(self, store):
+        run_id = store.create().run_id
+        hold = store.hold(run_id, heartbeat_s=0)
+        hold.release()
+        hold.release()
+
+    def test_a_second_holder_does_not_get_the_lock(self, store):
+        """Two descriptors on one file are two lockers even inside one
+        process, which is what makes `held` able to answer about a run this
+        process is itself running."""
+        run_id = store.create().run_id
+        first = store.hold(run_id, heartbeat_s=0)
+        try:
+            assert RunHold(store, run_id, heartbeat_s=0).locked is False
+        finally:
+            first.release()
+
+    def test_the_lock_file_lives_in_the_runs_own_directory(self, store):
+        run_id = store.create().run_id
+        store.hold(run_id, heartbeat_s=0).release()
+        assert (store.directory(run_id) / LOCK_FILENAME).exists()
+
+    def test_a_run_that_was_never_held_has_no_lock_file(self, store):
+        """The distinction the reconciler reads: a run with a lock file was
+        run by something that takes locks, so a FREE lock means that
+        something is gone. A run without one was written by somebody who
+        never said whether it was alive."""
+        run_id = store.create().run_id
+        assert store.claimed(run_id) is False
+        store.hold(run_id, heartbeat_s=0).release()
+        assert store.claimed(run_id) is True
+
+    def test_it_works_as_a_context_manager(self, store):
+        run_id = store.create().run_id
+        with store.hold(run_id, heartbeat_s=0):
+            assert store.held(run_id) is True
+        assert store.held(run_id) is False
+
+
+class TestTheHeartbeatKeepsTheClockHonest:
+    """What a platform with no ``flock`` has instead — and belt and braces
+    where there is one. A run that is thinking is a run whose metadata is
+    still moving."""
+
+    def test_it_moves_updated_at_while_the_run_says_nothing(self, store):
+        run_id = store.create().run_id
+        _age(store, run_id, 600)
+        before = store.meta(run_id).updated_at
+        hold = store.hold(run_id, heartbeat_s=0.01)
+        try:
+            for _ in range(200):
+                if store.meta(run_id).updated_at != before:
+                    break
+                time.sleep(0.01)
+            assert store.meta(run_id).updated_at != before
+        finally:
+            hold.release()
+
+    def test_touch_moves_the_stamp_and_nothing_else(self, store):
+        run_id = store.create(meta={"objective": "x"}).run_id
+        store.append(run_id, {"event": "a"})
+        before = store.meta(run_id)
+        _age(store, run_id, 600)
+        aged = store.meta(run_id).updated_at
+        store.touch(run_id)
+        after = store.meta(run_id)
+        assert after.updated_at != aged
+        assert (after.last_seq, after.meta, after.created_at) == (
+            before.last_seq, before.meta, before.created_at)
+        assert _events(store, run_id) == ["a"]
+
+    def test_a_released_hold_stops_touching(self, store):
+        run_id = store.create().run_id
+        store.hold(run_id, heartbeat_s=0.01).release()
+        _age(store, run_id, 600)
+        settled = store.meta(run_id).updated_at
+        time.sleep(0.1)
+        assert store.meta(run_id).updated_at == settled
+
+
+class TestALogHasAtMostOneEnding:
+    """The other half of the orphan bug, prevented independently.
+
+    A sibling process that decided a live run was an orphan appends the
+    ending it thinks the run had; the run then finishes and appends its
+    own, and a follower — or the SSE stream built from the log — sees two
+    terminal records with different outcomes and has to guess. The store is
+    the only thing that can see the whole log, so the store refuses.
+    """
+
+    def _claimed(self, store):
+        run_id = store.create().run_id
+        hold = store.hold(run_id, heartbeat_s=0)
+        store.append(run_id, {"event": "mission_started"})
+        return run_id, hold
+
+    def test_an_ending_that_arrived_after_the_claim_refuses_the_second(
+            self, store):
+        run_id, hold = self._claimed(store)
+        try:
+            RunStore(store.root).append(
+                run_id, {"event": "mission_finished", "outcome": "incomplete"})
+            with pytest.raises(RunClosed):
+                store.append(run_id, {"event": "mission_finished",
+                                      "outcome": "answered"})
+        finally:
+            hold.release()
+        assert _events(store, run_id).count("mission_finished") == 1
+
+    def test_the_refusal_names_the_outcome_somebody_else_wrote(self, store):
+        run_id, hold = self._claimed(store)
+        try:
+            RunStore(store.root).append(
+                run_id, {"event": "mission_finished", "outcome": "incomplete"})
+            with pytest.raises(RunClosed, match="incomplete"):
+                store.append(run_id, {"event": "mission_finished",
+                                      "outcome": "answered"})
+        finally:
+            hold.release()
+
+    def test_the_ordinary_ending_is_appended_as_it_always_was(self, store):
+        run_id, hold = self._claimed(store)
+        try:
+            store.append(run_id, {"event": "mission_finished",
+                                  "outcome": "answered"})
+        finally:
+            hold.release()
+        assert _events(store, run_id) == ["mission_started", "mission_finished"]
+
+    def test_an_unclaimed_run_is_appended_to_exactly_as_before(self, store):
+        """A ``--resume`` legitimately writes a second ending onto a log an
+        earlier stretch closed as ``incomplete``. That ending was there
+        before this process claimed the run, so nothing refuses it — and a
+        store nobody asked to hold anything behaves as it always did."""
+        run_id = store.create().run_id
+        store.append(run_id, {"event": "mission_finished",
+                              "outcome": "incomplete"})
+        store.append(run_id, {"event": "mission_started"})
+        store.append(run_id, {"event": "mission_finished",
+                              "outcome": "answered"})
+        assert _events(store, run_id).count("mission_finished") == 2
+
+    def test_an_ending_written_before_the_claim_is_not_somebody_elses(
+            self, store):
+        """The resume path with the claim taken: the reconciler's
+        ``incomplete`` is already on the log when this process claims the
+        run, so the ending this stretch writes is its first."""
+        run_id = store.create().run_id
+        store.append(run_id, {"event": "mission_finished",
+                              "outcome": "incomplete"})
+        hold = store.hold(run_id, heartbeat_s=0)
+        try:
+            store.append(run_id, {"event": "mission_started"})
+            store.append(run_id, {"event": "mission_finished",
+                                  "outcome": "answered"})
+        finally:
+            hold.release()
+        assert _events(store, run_id).count("mission_finished") == 2
+
+    def test_a_non_terminal_record_costs_nothing_to_check(self, store):
+        run_id, hold = self._claimed(store)
+        try:
+            RunStore(store.root).append(
+                run_id, {"event": "mission_finished", "outcome": "incomplete"})
+            store.append(run_id, {"event": "step_started", "index": 4})
+        finally:
+            hold.release()
+        assert _events(store, run_id)[-1] == "step_started"
+
+    def test_the_terminal_word_is_the_stores_and_it_is_overridable(self):
+        assert RunStore.TERMINAL_EVENT == "mission_finished"
+
+
+# ── the record itself ────────────────────────────────────────────────────────
 # ── the record itself ────────────────────────────────────────────────────────
 
 

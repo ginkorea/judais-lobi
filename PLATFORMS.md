@@ -196,11 +196,22 @@ mission runs in, and a mission that needs another one is run from there.
 
 `my_chat_fn` is `messages -> str` and nothing else: the loop is confined to one
 injected callable and cannot ask a backend anything the caller did not offer.
-**Every other default means *nothing*** — no bus of its own, no ceiling, no
-clock, no durable log, no watcher — so a platform adds the ones it wants and
+**Almost every other default means *nothing*** — no bus of its own, no ceiling,
+no clock, no durable log — so a platform adds the ones it wants and
 pays for nothing else. `Skill` and `load_skill` read a `SKILL.md` (§5);
-`Deadline`, `Cancellation` and `Supervisor` build a real `Bounds` (§7);
-`RunStore` is the `Store` (§6); `MissionWindow` is the `Model`'s context bound.
+`Deadline` and `Cancellation` build a real `Bounds` (§7); `RunStore` is the
+`Store` (§6); `MissionWindow` is the `Model`'s context bound.
+
+The exception — the one default that is not *nothing* — is the **supervisor**.
+`Bounds()` carries one: `Run` builds it from the model the run was given, and
+every child of the run shares it, so a turn has one review budget the way it
+has one clock. A run that is getting somewhere pays nothing for it (no signal
+fires, no call is made), and it is the only thing that ends an endless loop now
+that there is no step budget — so leaving it unset would have made the example
+above fail open on the single bound 1.0 has. A platform that wants a run
+nothing but a clock or a person can stop says so out loud:
+`Bounds(supervisor=NO_SUPERVISOR)`. Passing your own `Supervisor(...)` (§7)
+still wins over both.
 
 The `Observer` is handed the **same records** that go on the `--events` stream,
 so everything in §3 applies unchanged and a platform can move between the
@@ -329,8 +340,12 @@ is the short one, and a test holds it against the module in both directions.
 
 Every record carries `event`. One optional field is universal — **`branch`**
 (0.16): present on a record a *child* run emitted (a `--swarm` plan step, a
-campaign step) and absent on every record the turn itself emitted; its value is
-`"direct"` or the step's id. A consumer that never heard of it reads one
+campaign step, the direct route) and absent on the records the turn emitted
+itself, which on a `--swarm` turn is the opening frame; its value is `"direct"`
+or the step's id. **`direct` is the mission's own answer routed direct**, not a
+stage of anything: on the unplanned route the turn's `answer`, `grounding` and
+`mission_finished` carry it, and a consumer that groups by `branch` must read
+that group as the turn. A consumer that never heard of the field reads one
 correctly-ordered sequence — the stream it always read; a consumer that wants
 to demultiplex children groups by it. It is not listed per row below because
 what it says is not about the record's kind.
@@ -1279,7 +1294,7 @@ What stops a run that is going nowhere is the supervisor, and it watches for
 | --- | --- |
 | `repeated_call` | the same call returning the same result three times within the last six acts. *Not* three in a row — a stall threads productive-looking reads between its repeats |
 | `rejected_replies` | three replies running that the loop could not act on |
-| `no_new_evidence` | four steps with no new call and no result the run had not already seen |
+| `no_new_evidence` | four steps in which no act was new. An act is new if **either** its call **or** its result is one the run has not seen — so a polling loop (same call, new result) and an edit loop (new call, same result) are both progress |
 | `oscillation` | A B A B — alternating between two calls rather than going forward from either |
 | `failed_gate` | swarm only, and *reported* rather than noticed: a plan step ran and what came back is not what the plan asked for |
 
@@ -1301,6 +1316,20 @@ cap is the whole of the endless-loop catch, and it is arithmetic rather than
 judgement on purpose: each review is a model call and each verdict is the
 model's opinion of itself, so a run that can keep asking for another opinion is
 a run that can loop forever with a review turn in it.
+
+One signal is excepted: a `progressing` verdict on `no_new_evidence` is
+**refunded** — not counted against the three — twice. The other four are
+demonstrated repetition and the arithmetic is right for them; an absence of new
+evidence is something a healthy run shows honestly for a stretch, and ending
+such a run by counting is what replacing the step budget was for. The
+threshold still rises on every `progressing` (4 stale steps, then 8, then 12),
+and after two refunds the count applies again, so a run that is genuinely stuck
+is still wound up.
+
+The supervisor is **built by default**: `Bounds()` with no `supervisor=` gets
+one made from the run's own model and shared with every child, so a turn has
+one review budget the way it has one clock. `Bounds(supervisor=NO_SUPERVISOR)`
+is the explicit opt-out — a run nothing but a clock or a person can stop.
 
 ### `--control` — the channel into a running mission
 

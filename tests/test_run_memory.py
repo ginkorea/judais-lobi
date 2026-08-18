@@ -365,6 +365,44 @@ class TestTheReflectionRunsOnceAndCannotFailTheRun:
         assert transcript.outcome == "budget_exhausted"
         assert plain.calls == 0 and bank.notes() == []
 
+    def test_a_run_wound_up_stuck_reflects_on_nothing(self, bus, bank):
+        """The one unfinished ending that wears a finished outcome.
+
+        A `stuck` verdict asks the run for its best answer with what it has;
+        if it writes one the outcome is `answered` and
+        `mission_finished.reason` is `stuck`. Reflected, that becomes a
+        lesson distilled from a run the supervisor judged to be going in
+        circles, banked beside lessons distilled from work and offered back
+        to the next run on the same subject. Excluded by `reason`, because
+        the outcome cannot say it.
+        """
+        from core.runtime.supervisor import STUCK, Supervisor
+
+        plain = ReflectingModel()
+        run = a_run(bus, *[tool_call("catalog.search", q="a")] * 2,
+                    answer("best I can do"), memory=bank, plain=plain)
+        run.bounds = type(run.bounds)(supervisor=Supervisor(
+            lambda _messages, **_extra: json.dumps({"verdict": STUCK}),
+            repeats=2))
+        transcript = run.run("go")
+        assert (transcript.outcome, transcript.reason) == ("answered", STUCK)
+        assert plain.calls == 0 and bank.notes() == []
+
+    def test_a_run_that_answered_without_being_wound_up_still_reflects(
+            self, bus, bank):
+        """The other side: `reason` is the discriminator, not "a supervisor
+        was watching". A watched run that answers on its own terms is a run
+        that answered."""
+        from core.runtime.supervisor import PROGRESSING, Supervisor
+
+        plain = ReflectingModel()
+        run = a_run(bus, answer("done"), memory=bank, plain=plain)
+        run.bounds = type(run.bounds)(supervisor=Supervisor(
+            lambda _messages, **_extra: json.dumps({"verdict": PROGRESSING})))
+        transcript = run.run("go")
+        assert (transcript.outcome, transcript.reason) == ("answered", "")
+        assert plain.calls == 1 and len(bank.notes()) == 1
+
     def test_a_reflection_that_raises_does_not_fail_the_run(self, bus, bank):
         def explode(_messages, **_extra):
             raise RuntimeError("endpoint down")

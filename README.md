@@ -242,7 +242,7 @@ trips it, evaluated free at every step boundary:
 | --- | --- |
 | `repeated_call` | the same tool, the same arguments and the same result, three times within the last six calls — not necessarily consecutive, because a run polling for something that never arrives threads other reads between its attempts. A *different* result is progress: a paging loop is not a stall |
 | `rejected_replies` | three replies in a row that were not decisions this loop could act on |
-| `no_new_evidence` | four steps with no new tool call and no result the run had not already seen |
+| `no_new_evidence` | four steps in which no act was new: **either** a call the run had not made **or** a result it had not seen counts as evidence, so a polling loop with a new result each time and an edit loop with a new call each time are both progress |
 | `oscillation` | the run is going A B A B rather than forward from either |
 | `failed_gate` | (`--swarm` only) a plan step just failed its gate |
 
@@ -268,6 +268,23 @@ keeps tripping signals and keeps being told it is fine is exactly the endless
 loop this exists to catch, so after the last review the next signal winds the
 run up with no further call. A review is a model call like any other — it is
 on the ledger, in the recording, and served back by `--replay`.
+
+**One exception, and it is `no_new_evidence`.** The other signals are
+demonstrated repetition — the same act three times, three replies the loop
+could not act on, A B A B — and a run still producing those after three reviews
+has answered the question. An *absence* of new evidence is not that: a long
+build or a careful re-read shows it honestly, and a run being told "this is
+fine" twice and then forced `stuck` on the third by arithmetic is the owner's
+exact complaint about the step budget. So a `progressing` verdict on that one
+signal is **refunded** — the review is not counted — up to twice. Its threshold
+still doubles, then triples, on each one, so the same absence costs
+geometrically more to report; and after two refunds the arithmetic applies
+again, so a run that really is going in circles is still wound up.
+
+The supervisor is **on by default**. `Bounds()` with no `supervisor=` gets one
+built from the run's own model, shared with every child of the run;
+`Bounds(supervisor=NO_SUPERVISOR)` is how you ask for a run nothing but a clock
+or a person can stop.
 
 `SwarmRunner` uses the same object for the whole turn, so a plan that loops
 *across* its steps is a pattern something can see. A gate that says no is put
@@ -1338,8 +1355,15 @@ the only way out and who may say yes to it, `Bounds` everything that can stop a
 run, `Store` what survives the process, `Observer` every record out, `Model` the
 client and the protocol. `my_chat_fn` is `messages -> str`: the loop is confined
 to one injected callable and cannot ask a backend anything you did not offer.
-Every default above means *nothing* — no ceiling, no clock, no durable log, no
-watcher — so you add the ones you want and pay for nothing else.
+Almost every default above means *nothing* — no ceiling, no clock, no durable
+log — so you add the ones you want and pay for nothing else.
+
+The exception is the **supervisor**, which `Bounds()` carries by default: a run
+that starts repeating itself is reviewed by the same model and wound up if it
+is going nowhere. It costs a run that is getting somewhere nothing — no signal,
+no call — and it is the only thing that ends an endless loop now that there is
+no step budget. `Bounds(supervisor=NO_SUPERVISOR)` is how you say you want a
+run nothing but a clock or a person can stop.
 
 **The CLI is a client of this.** `judais --mission` is argparse and then these
 same six objects handed to this same `Run`; there is no library dialect and no

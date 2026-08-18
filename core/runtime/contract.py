@@ -360,10 +360,23 @@ FIELDS: dict[str, tuple[str, ...]] = {
 #: can demultiplex: group the records of one plan step, show two steps
 #: progressing side by side, attribute a tool call to the stage that made it.
 #:
-#: Records with no ``branch`` are the turn's own — its opening, its
-#: ``answer``, its ``grounding``, its ``mission_finished`` — and that is a
-#: fact worth reading rather than a gap: the answer of a staged turn belongs
-#: to the turn and not to any step of it.
+#: **What a missing ``branch`` means, and what it does not.**  A record
+#: without one was emitted by the mission itself.  On a run without
+#: ``--swarm`` that is every record there is.  On a ``--swarm`` turn it is
+#: the opening frame and nothing else: ``mission_started`` is the parent's,
+#: because the router is itself a call to the model and the ``silence``
+#: clause promises an opening ahead of the first one.
+#:
+#: The turn's ``answer``, ``grounding`` and ``mission_finished`` are the
+#: **turn's** — they belong to the mission and not to any step of it — but
+#: on the route a router sends straight through they are emitted by the
+#: direct child and carry ``branch: "direct"``.  That is not a step of a
+#: plan and it is not a fragment of the answer: ``direct`` **is** the
+#: mission's own answer, routed direct, and a consumer showing the turn's
+#: result must read it as such.  A consumer that groups by ``branch`` and
+#: renders each group as a sub-agent will render the whole answer of an
+#: unplanned turn as a sub-agent's — so the rule is: ``direct`` is the
+#: turn; a plan step id (``"s1"``, ``"s2"``) is a step of it.
 COMMON_OPTIONAL: tuple[str, ...] = ("branch",)
 
 #: What each event may carry **of its own**, before :data:`COMMON_OPTIONAL` is
@@ -944,7 +957,10 @@ EXIT_CONTRACT: Mapping[str, str] = MappingProxyType({
         "never got that far: a cold model server, a refused token, an "
         "unreachable MCP endpoint. It is never an empty answer, and a "
         "consumer must report it as a failure rather than render a blank "
-        "reply."),
+        "reply. The EXIT STATUS says so too: a run that never reached its "
+        "server exits non-zero with the reason on stderr, so a consumer "
+        "that reads the status and a consumer that reads the stream reach "
+        "the same conclusion."),
     "finished": (
         "`mission_finished` is emitted from a `finally`, so a mission killed "
         "by an exception still closes its own stream. A stream that simply "

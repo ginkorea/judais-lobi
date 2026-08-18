@@ -153,6 +153,9 @@ SIGTERM_CAUSE = "sigterm"
 def close_on_sigterm(sink: Optional[NdjsonSink], cancel: Any = None) -> None:
     """Wind up cleanly when this process is asked to stop.
 
+    A no-op only when there is nothing to wind up — no sink to close AND
+    no cancellation to throw.
+
     A consumer that stops a turn sends ``SIGTERM`` and expects the events
     already written to be on the transcript — TAIPAN's ``MissionAgent.stop``
     says so in as many words, and picks ``SIGTERM`` over ``SIGKILL`` precisely
@@ -182,11 +185,24 @@ def close_on_sigterm(sink: Optional[NdjsonSink], cancel: Any = None) -> None:
     flight, a tool mid-subprocess — and the honest answer is the old
     behaviour: flush what there is, close, and die of the signal.
 
+    **A run with no sink still winds up.**  There are two ways to watch a
+    mission — ``--events`` and the durable run store — and only the first
+    of them is a sink.  Guarding on the sink alone meant the whole of the
+    clause above was true for a consumer reading a pipe and false for one
+    following a run directory: no handler was installed, the default
+    disposition killed the process, and the log ended on whatever record
+    happened to be last with no ``mission_finished`` after it — the
+    spinner-forever state, and later an orphan for somebody else to close.
+    So the handler is installed whenever there is something to wind up:
+    a sink, a cancellation, or both.  With a cancellation and no sink the
+    first signal is still cooperative and the mission still writes its own
+    ending; there is simply no stream to flush.
+
     Best effort by construction.  A platform without ``SIGTERM``, or a call
     from a thread that is not the main one, is a no-op rather than a mission
     that failed to start because somebody was watching it.
     """
-    if sink is None:
+    if sink is None and cancel is None:
         return
     import signal
 
@@ -198,8 +214,9 @@ def close_on_sigterm(sink: Optional[NdjsonSink], cancel: Any = None) -> None:
         if cancel is not None and not cancel.is_set():
             cancel.cancel(SIGTERM_CAUSE)
             return
-        sink.flush()
-        sink.close()
+        if sink is not None:
+            sink.flush()
+            sink.close()
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 

@@ -67,8 +67,23 @@ chose.  See :func:`runs_root`, which is to this module what
 :func:`open_run_store`, which is :func:`~core.policy.audit
 .default_audit_logger`.
 
-Nothing here knows what a mission is.  It stores records; what a record
-means is :mod:`core.runtime.contract`'s to say.
+**A run being run is a run somebody is holding.**  :meth:`RunStore.hold`
+takes an ``flock`` on ``<run>/lock`` and keeps it for the life of the
+process, and :meth:`RunStore.held` asks the kernel whether anybody is.
+That is the one liveness signal that cannot be wrong: the kernel drops
+the lock when the process ends however it ended, and no amount of silence
+drops it while the process lives.  What it replaced was a clock — "the
+metadata has not moved for sixty seconds, so it must be dead" — which
+read a run waiting at a gate, or on a cold model, or inside a long
+sandboxed tool as a corpse and closed its log underneath it.  A claim
+also carries a **watermark**, and a terminal record arriving after it is
+somebody else's ending: see :class:`RunClosed`.
+
+Nothing here knows what a mission is, with exactly one word of exception
+— :data:`RunStore.TERMINAL_EVENT`, because "a log has at most one ending"
+is a fact about logs and something has to be able to say which record the
+ending is.  Everything else: it stores records, and what a record means
+is :mod:`core.runtime.contract`'s to say.
 """
 
 from __future__ import annotations
@@ -86,11 +101,17 @@ from typing import (
     Any, Dict, Iterator, List, Mapping, Optional, Tuple, Union,
 )
 
+try:                                            # pragma: no cover - POSIX
+    import fcntl
+except ImportError:                             # pragma: no cover - Windows
+    fcntl = None                                # type: ignore[assignment]
+
 __all__ = [
-    "RUNS_ENV", "RUNS_DIRNAME", "DISABLE_WORDS", "POLL_S",
+    "RUNS_ENV", "RUNS_DIRNAME", "DISABLE_WORDS", "POLL_S", "HEARTBEAT_S",
+    "LOCKS", "LOCK_FILENAME",
     "atomic_write_text", "atomic_write_json", "fsync_append",
     "new_run_id", "valid_run_id", "runs_root", "open_run_store",
-    "Run", "RunStore", "NoSuchRun",
+    "Run", "RunStore", "RunHold", "NoSuchRun", "RunClosed",
 ]
 
 #: The variable a deployment moves or silences the run store with.  Named
@@ -111,6 +132,35 @@ DISABLE_WORDS = frozenset({"none", "off"})
 #: has gone away.  A follower blocked forever on a mission that is
 #: thinking is indistinguishable from one blocked on a mission that died.
 POLL_S = 1.0
+
+#: How often a process that is **holding** a run touches its metadata, in
+#: seconds.  Fifteen: short enough that four heartbeats fit inside
+#: :data:`~core.runtime.resume.ORPHAN_STALE_S`, long enough that a run
+#: thinking for an hour writes 240 tiny files rather than 3,600.
+#:
+#: The heartbeat exists for the machine that has no :func:`fcntl.flock` and
+#: therefore no lock to read.  Where there is one, liveness is the lock and
+#: this is belt and braces; where there is not, this is the only thing that
+#: tells a sibling process that a run standing at a gate for five minutes,
+#: or waiting on a cold model, is alive rather than dead.
+HEARTBEAT_S = 15.0
+
+#: Whether this platform can answer "is somebody running this?" by asking
+#: the kernel.  ``fcntl.flock`` on POSIX; ``False`` on Windows, where
+#: :class:`RunHold` still keeps the metadata warm and
+#: :func:`~core.runtime.resume.reconcile_orphans` falls back to the clock.
+#:
+#: ``flock`` and not ``lockf``: the lock belongs to the open file
+#: description and the kernel drops it when the process dies **however** it
+#: died — a crash, a ``SIGKILL``, a machine that went down — which is the
+#: only kind of liveness signal worth having here.  A stale lock file left
+#: on disk is not a held lock.
+LOCKS = fcntl is not None
+
+#: The file a :class:`RunHold` locks, inside the run's own directory.  A
+#: file and not the directory: a directory cannot be flocked portably, and
+#: the log must stay appendable by the process that holds the claim.
+LOCK_FILENAME = "lock"
 
 #: A run id that is safe as a path segment, checked as a **whitelist**
 #: rather than by escaping what is dangerous.  An id this harness did not
@@ -259,6 +309,130 @@ class NoSuchRun(KeyError):
     """
 
 
+class RunClosed(RuntimeError):
+    """Somebody else already wrote this run's ending.
+
+    Raised by :meth:`RunStore.append` when a process that **claimed** a run
+    (:meth:`RunStore.hold`) tries to append the terminal record and finds
+    that a terminal record has arrived since the claim was taken.  That is
+    one specific accident and it is worth its own exception: a sibling
+    process decided this run was an orphan and closed its log, and the run
+    is now about to append a *second* ending with a different outcome.  A
+    follower reading the log — or the SSE stream built from it — would see
+    two terminal records and have to guess which one the run meant.
+
+    The refusal is the store's rather than the loop's because the store is
+    the one thing that can see the whole log.  What the loop does about it
+    is the loop's business: its ``finally`` catches this and carries on, so
+    the transcript it returns and the stream it wrote are unchanged and
+    only the duplicate on disk is prevented.
+    """
+
+
+class RunHold:
+    """One process's claim on one run, for as long as it is running it.
+
+    **Liveness by lock, not by clock.**  A run's log with no terminal
+    record is either a mission that died or a mission that is running right
+    now, and until this object the only evidence available was how long ago
+    the metadata was written — so a live run standing at a gate for five
+    minutes, or waiting on a cold model, or inside a long sandboxed tool,
+    read as dead to any sibling process that started meanwhile and had its
+    log closed underneath it.  A held ``flock`` cannot be wrong about that:
+    the kernel releases it when the process ends, however it ended, and no
+    amount of silence releases it while the process lives.
+
+    Two things, then, for as long as the claim is held:
+
+    * the lock, taken non-blockingly on ``<run>/lock`` and kept for the
+      lifetime of this object.  :meth:`RunStore.held` asks the kernel about
+      it and gets a yes or a no rather than an estimate;
+    * a **heartbeat** — a daemon thread touching the run's ``updated_at``
+      every :data:`HEARTBEAT_S` — which is what a platform with no
+      ``flock`` has instead, and what makes the fallback clock honest about
+      a run that is thinking rather than merely quiet.
+
+    Also the **claim watermark**: the sequence number the log stood at when
+    the claim was taken.  A terminal record appearing after it is one this
+    process did not write, and :meth:`RunStore.append` refuses to add a
+    second one on top of it.  See :class:`RunClosed`.
+
+    Idempotent to release, and released on process exit whether or not
+    anybody remembered: the file descriptor goes when the process does.
+    Never raises on the way up — a filesystem that will not take a lock
+    (an NFS mount without ``flock``, a read-only bind) leaves
+    :attr:`locked` ``False`` and the run carries on, because a mission must
+    not fail to start because a claim could not be recorded.
+    """
+
+    def __init__(self, store: "RunStore", run_id: str, *,
+                 heartbeat_s: float = HEARTBEAT_S) -> None:
+        self.store = store
+        self.run_id = run_id
+        #: The log's last seq when this claim was taken.  See the class
+        #: docstring.
+        self.since_seq = 0
+        self._fd: Optional[int] = None
+        self._stop = threading.Event()
+        self._beat: Optional[threading.Thread] = None
+        try:
+            self.since_seq = int(store.meta(run_id).last_seq)
+        except Exception:                       # pragma: no cover - defensive
+            self.since_seq = 0
+        self._take()
+        if heartbeat_s > 0:
+            self._beat = threading.Thread(
+                target=self._pulse, args=(float(heartbeat_s),),
+                name=f"runhold-{run_id}", daemon=True)
+            self._beat.start()
+
+    @property
+    def locked(self) -> bool:
+        """Whether the kernel is holding this claim for us."""
+        return self._fd is not None
+
+    def _take(self) -> None:
+        if fcntl is None:                       # pragma: no cover - Windows
+            return
+        try:
+            path = self.store.lock_path(self.run_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:                         # pragma: no cover - defensive
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return
+        self._fd = fd
+
+    def _pulse(self, every: float) -> None:
+        """Keep ``updated_at`` warm until released.  Never raises."""
+        while not self._stop.wait(every):
+            try:
+                self.store.touch(self.run_id)
+            except Exception:                   # pragma: no cover - defensive
+                return
+
+    def release(self) -> None:
+        """Stop the heartbeat and let the lock go.  Idempotent."""
+        self._stop.set()
+        self.store.forget(self.run_id)
+        fd, self._fd = self._fd, None
+        if fd is not None:
+            try:
+                os.close(fd)                    # closing releases the flock
+            except OSError:                     # pragma: no cover - defensive
+                pass
+
+    def __enter__(self) -> "RunHold":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.release()
+
+
 @dataclass
 class Run:
     """One run's metadata: the store's half, then the caller's.
@@ -314,6 +488,10 @@ class RunStore:
         #: Woken on every append; followers wait on it rather than
         #: polling the filesystem to learn that something arrived.
         self._arrived = threading.Condition(self._lock)
+        #: ``run_id -> the log's last seq when this process claimed it``.
+        #: Empty for a store that has never been asked to :meth:`hold`
+        #: anything, and that is the store this class has always been.
+        self._claimed: Dict[str, int] = {}
 
     # ── layout ──────────────────────────────────────────────────────────
 
@@ -328,6 +506,96 @@ class RunStore:
 
     def log_path(self, run_id: str) -> Path:
         return self.directory(run_id) / "events.jsonl"
+
+    def lock_path(self, run_id: str) -> Path:
+        """The file a :class:`RunHold` flocks.  See :data:`LOCK_FILENAME`."""
+        return self.directory(run_id) / LOCK_FILENAME
+
+    # ── who is running this ─────────────────────────────────────────────
+
+    def hold(self, run_id: str,
+             heartbeat_s: float = HEARTBEAT_S) -> "RunHold":
+        """Claim *run_id* for this process until the claim is released.
+
+        Called by whoever is about to **run** the run — the CLI once per
+        mission, a library caller that opened a store of its own — and it
+        is what makes :meth:`held` able to answer.  A store that never
+        holds anything behaves exactly as it did before this existed.
+
+        The claim is also the watermark the terminal-record refusal is
+        measured from; see :class:`RunClosed` and :meth:`append`.
+        """
+        hold = RunHold(self, run_id, heartbeat_s=heartbeat_s)
+        with self._lock:
+            self._claimed[run_id] = hold.since_seq
+        return hold
+
+    def forget(self, run_id: str) -> None:
+        """Drop this process's claim watermark.  :meth:`RunHold.release`'s."""
+        with self._lock:
+            self._claimed.pop(run_id, None)
+
+    def held(self, run_id: str) -> bool:
+        """Whether **some** process is holding *run_id* right now.
+
+        Asked of the kernel, which is the only party that knows: the lock
+        goes when the process that took it goes, whatever it died of.  A
+        platform with no ``flock`` (:data:`LOCKS` ``False``) answers
+        ``False`` — there is nothing to read — and the caller falls back to
+        the clock, which is what :func:`~core.runtime.resume
+        .reconcile_orphans` documents itself as doing.
+
+        Probed by taking the lock and dropping it again, non-blockingly.
+        ``flock`` treats two descriptors on one file as two lockers even
+        inside one process, so this answers correctly about a run this
+        process is itself holding.
+        """
+        if fcntl is None:                       # pragma: no cover - Windows
+            return False
+        try:
+            path = self.lock_path(run_id)
+        except NoSuchRun:
+            return False
+        if not path.exists():
+            return False
+        try:
+            fd = os.open(str(path), os.O_RDWR)
+        except OSError:                         # pragma: no cover - defensive
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+
+    def claimed(self, run_id: str) -> bool:
+        """Whether this run has ever been claimed by a lock-aware process.
+
+        The lock file is created by :meth:`hold` and never removed, so its
+        presence says "a process that knows about locks ran this" and its
+        absence says "nobody who did".  That distinction is what lets
+        :func:`~core.runtime.resume.reconcile_orphans` trust a free lock:
+        a claimed run whose lock is free is a run whose process is gone,
+        while an unclaimed run's silence means only that whoever wrote it
+        never told us it was alive.
+        """
+        try:
+            return self.lock_path(run_id).exists()
+        except NoSuchRun:                       # pragma: no cover - defensive
+            return False
+
+    def touch(self, run_id: str) -> None:
+        """Say "still here" without saying anything else.
+
+        Rewrites the metadata as it is, which moves ``updated_at`` and
+        nothing else.  The heartbeat's one call; see :class:`RunHold`.
+        """
+        with self._arrived:
+            self._write_meta(self._read_meta(run_id))
 
     # ── the run ─────────────────────────────────────────────────────────
 
@@ -428,6 +696,19 @@ class RunStore:
 
     # ── the log ─────────────────────────────────────────────────────────
 
+    #: The one word this module knows out of the record vocabulary, and the
+    #: only place it is allowed to know one.
+    #:
+    #: The module docstring says nothing here knows what a mission is, and
+    #: that is still nearly true: this is not a mission, it is the shape of
+    #: a **log** — a log has at most one ending, and a store that cannot
+    #: say which record is the ending cannot enforce that.  The alternative
+    #: was every writer checking for itself, which is the second author the
+    #: rest of this module exists to avoid.  Overridable per store, so a
+    #: caller logging something else through this primitive names its own
+    #: terminal record (or ``""`` for a log that has no ending).
+    TERMINAL_EVENT: str = "mission_finished"
+
     def append(self, run_id: str, record: Mapping[str, Any]) -> Dict[str, Any]:
         """Number it, write it, then wake the followers.  In that order.
 
@@ -436,8 +717,22 @@ class RunStore:
         reads the file rather than the notification cannot observe a
         gap.  ``last_seq`` is stamped from the envelope that was just
         written and never from an object somebody was holding.
+
+        **One ending per claim.**  A process that :meth:`hold` s a run and
+        then tries to append :data:`TERMINAL_EVENT` after somebody else has
+        already appended one *since the claim was taken* is refused with
+        :class:`RunClosed` rather than allowed to write a second ending
+        with a different outcome.  Refusing and not silently dropping: the
+        caller is the only one who can decide what a run whose log was
+        closed underneath it should say, and a store that swallowed the
+        write would tell it nothing happened.  A run nobody claimed is
+        appended to exactly as it always was — including a ``--resume``,
+        which legitimately writes a second ending onto a log an earlier
+        stretch closed as ``incomplete``, because that ending was there
+        before this process claimed the run.
         """
         with self._arrived:
+            self._refuse_second_ending(run_id, record)
             run = self._read_meta(run_id)
             envelope = {"seq": run.last_seq + 1, "at": now(),
                         "record": dict(record)}
@@ -448,6 +743,30 @@ class RunStore:
             self._write_meta(run)
             self._arrived.notify_all()
             return envelope
+
+    def _refuse_second_ending(self, run_id: str,
+                              record: Mapping[str, Any]) -> None:
+        """Raise :class:`RunClosed` if this ending would be the second one.
+
+        Costs a read of the log only on the record that ends it, which
+        happens once per run.  Silent for an unclaimed run — see
+        :meth:`append`.
+        """
+        if not self.TERMINAL_EVENT:
+            return
+        if record.get("event") != self.TERMINAL_EVENT:
+            return
+        watermark = self._claimed.get(run_id)
+        if watermark is None:
+            return
+        for envelope in self.since(run_id, watermark):
+            other = dict(envelope.get("record") or {})
+            if other.get("event") == self.TERMINAL_EVENT:
+                raise RunClosed(
+                    f"{run_id}: another process already wrote this run's "
+                    f"`{self.TERMINAL_EVENT}` (outcome "
+                    f"{other.get('outcome', '?')!r}) while it was running. "
+                    f"This ending is refused rather than appended second.")
 
     def since(self, run_id: str, cursor: int = 0) -> List[Dict[str, Any]]:
         """Every envelope after *cursor*, oldest first.

@@ -104,6 +104,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import (
@@ -111,7 +112,7 @@ from typing import (
 )
 
 from core.bounding import MAX_RESULT_BYTES
-from core.durable import RunStore
+from core.durable import RunClosed, RunStore
 from core.budgets import BudgetExhausted, Deadline
 from core.runtime.approvals import ApprovalError, ApprovalStore, ApprovalTicket
 from core.runtime.context_window import MissionWindow
@@ -187,11 +188,22 @@ def persist_record(store: Optional[RunStore], run_id: str,
     One function rather than a copy in each runner's ``_emit``: the
     staged path hand-listing six of ten grounding fields is what a second
     copy of an emitter's decision looks like a month later.
+
+    :class:`~core.durable.RunClosed` is the one refusal that gets a
+    sentence.  It means somebody else wrote this run's ending while it was
+    running — a sibling process that mistook a live run for an orphan — and
+    the record is dropped on purpose so the log keeps one ending rather
+    than two.  The mission is unaffected: the record still reached the
+    stream and the transcript, and only the duplicate on disk is prevented.
+    Said on stderr, where every other thing a consumer needs to know about
+    a run that went sideways is said.
     """
     if store is None or not run_id:
         return
     try:
         store.append(run_id, record)
+    except RunClosed as exc:
+        print(f"[run] {exc}", file=sys.stderr)
     except Exception:                           # pragma: no cover - defensive
         pass
 

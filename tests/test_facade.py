@@ -199,6 +199,7 @@ class TestEveryPromisedNameIsItsOwners:
         "Deadline": "core.budgets",
         "Cancellation": "core.budgets",
         "Supervisor": "core.runtime.supervisor",
+        "NO_SUPERVISOR": "core.runtime.run",
         "MissionWindow": "core.runtime.context_window",
         "GOVERNED_PLANE": "core.runtime.prompts",
         "RunStore": "core.durable",

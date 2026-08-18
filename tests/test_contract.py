@@ -1356,10 +1356,56 @@ def sigterm_restored():
 
 
 class TestSigtermClosesTheStream:
-    def test_no_sink_installs_nothing(self, sigterm_restored):
+    def test_nothing_to_wind_up_installs_nothing(self, sigterm_restored):
         before = signal.getsignal(signal.SIGTERM)
         ms.close_on_sigterm(None)
         assert signal.getsignal(signal.SIGTERM) is before
+
+    def test_a_cancellation_alone_is_enough_to_install_it(
+            self, sigterm_restored):
+        """There are TWO ways to watch a mission — `--events` and the run
+        store — and only the first of them is a sink. Guarding on the sink
+        alone made the freeze clause ("the first SIGTERM still winds the run
+        up") true for a consumer reading a pipe and false for one following
+        a run directory: no handler, the default disposition, and a durable
+        log ending on whatever record happened to be last."""
+        before = signal.getsignal(signal.SIGTERM)
+        ms.close_on_sigterm(None, _Switch())
+        assert signal.getsignal(signal.SIGTERM) is not before
+
+    def test_and_the_first_signal_still_winds_the_run_up(
+            self, monkeypatch, sigterm_restored):
+        """With no sink to flush there is still a run to end: the switch is
+        thrown, the handler returns, and the loop writes its own
+        `mission_finished` into the store."""
+        import os
+
+        switch = _Switch()
+        ms.close_on_sigterm(None, switch)
+        killed = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(sig))
+
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+        assert switch.is_set() is True
+        assert switch.cause == ms.SIGTERM_CAUSE
+        assert killed == []
+
+    def test_a_second_signal_with_no_sink_still_dies_of_it(
+            self, monkeypatch, sigterm_restored):
+        """The second ask is not cooperative, sink or no sink."""
+        import os
+
+        switch = _Switch()
+        ms.close_on_sigterm(None, switch)
+        killed = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(sig))
+        handler = signal.getsignal(signal.SIGTERM)
+
+        handler(signal.SIGTERM, None)
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+        assert killed == [signal.SIGTERM]
 
     def test_the_sink_is_flushed_and_closed_and_the_signal_re_raised(
             self, monkeypatch, sigterm_restored):

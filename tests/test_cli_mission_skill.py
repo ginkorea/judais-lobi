@@ -1207,6 +1207,49 @@ class TestTheRunIsRecorded:
         assert "run_id" not in opening
 
 
+class TestMissionStepsZeroIsNoCeiling:
+    """`0` is this harness's word for *unbounded* everywhere it says a
+    number of steps — `DEFAULT_MISSION_STEPS`, `mission_started.max_steps`,
+    `mission_finished.max_steps` — and `--mission-steps`'s own help says
+    "UNSET MEANS NO CEILING, like --mission-seconds".
+
+    Clamped at 1, `--mission-steps 0` became the *tightest possible*
+    ceiling: one model turn and then `budget_exhausted`. An operator typing
+    the harness's own word for unbounded got a run that failed after one
+    step, which reads as a broken harness rather than as a flag.
+    """
+
+    def _stream(self, MockClass, tmp_path, *extra):
+        events = tmp_path / "events.ndjson"
+        run_cli(MockClass, "--events", str(events), *extra)
+        return [json.loads(line)
+                for line in events.read_text().strip().splitlines()]
+
+    def test_zero_runs_the_whole_mission(self, elf, tmp_path):
+        """The fixture's mission is two turns — one call, then the answer.
+        A ceiling of one ends it after the call."""
+        MockClass, _agent = elf
+        records = self._stream(MockClass, tmp_path, "--mission-steps", "0")
+        closing, = [r for r in records if r["event"] == "mission_finished"]
+        assert closing["outcome"] == "answered"
+
+    def test_and_says_so_on_the_wire(self, elf, tmp_path):
+        MockClass, _agent = elf
+        records = self._stream(MockClass, tmp_path, "--mission-steps", "0")
+        opening, = [r for r in records if r["event"] == "mission_started"]
+        closing, = [r for r in records if r["event"] == "mission_finished"]
+        assert (opening["max_steps"], closing["max_steps"]) == (0, 0)
+
+    def test_a_real_ceiling_is_still_a_ceiling(self, elf, tmp_path):
+        """The other direction, so this is not a test that passes because
+        nothing bounds anything: one step is one step."""
+        MockClass, _agent = elf
+        records = self._stream(MockClass, tmp_path, "--mission-steps", "1")
+        closing, = [r for r in records if r["event"] == "mission_finished"]
+        assert (closing["outcome"], closing["max_steps"]) == (
+            "budget_exhausted", 1)
+
+
 class TestTheUsageLineOnTheConsole:
     """One line, last, and only when a provider actually reported.
 
@@ -1752,14 +1795,17 @@ class TestResumingFromTheCommandLine:
         """A run with no `mission_finished`, untouched past the rule."""
         import datetime
 
-        from core.runtime.resume import ORPHAN_STALE_S
+        from core.runtime.resume import orphan_window
 
         store = self.runs(tmp_path)
         orphan = store.create(meta={"objective": "one that died"}).run_id
         record = json.loads(store.meta_path(orphan).read_text())
+        # Past the WIDE window: this run was never claimed — no lock file —
+        # so nothing can say whether it is alive and the clock is the whole
+        # rule. See `core.runtime.resume.orphan_window`.
         record["updated_at"] = (
             datetime.datetime.now(datetime.timezone.utc)
-            - datetime.timedelta(seconds=ORPHAN_STALE_S + 10)
+            - datetime.timedelta(seconds=orphan_window(locks=False) + 10)
         ).isoformat(timespec="seconds")
         store.meta_path(orphan).write_text(json.dumps(record))
         return orphan

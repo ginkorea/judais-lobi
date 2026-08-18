@@ -129,13 +129,13 @@ from core.runtime.results import (
 )
 from core.runtime.schema_check import check as check_arguments
 from core.runtime.supervisor import (
-    NUDGE, NUDGE_NOTE, STUCK, WIND_UP,
+    NUDGE, NUDGE_NOTE, STUCK, Supervisor, WIND_UP,
 )
 from core.runtime.usage import Ledger, Rate
 from core.tools.descriptors import same_tool, summarize_input_schema
 
-__all__ = ["Bounds", "Model", "Observer", "Personality", "Run", "Store",
-           "ToolPlane"]
+__all__ = ["Bounds", "Model", "NO_SUPERVISOR", "Observer", "Personality",
+           "Run", "Store", "ToolPlane"]
 
 
 # ── what the model is told, and what it is held to ──────────────────────────
@@ -578,10 +578,38 @@ class ToolPlane:
         the same reading :meth:`narrow` gives, for the same reason.  The
         plane still records what was asked for, so the opening frame says
         what an operator typed even where nothing enforced it.
+
+        **Checked here, and here is the one owner of the check.**  The two
+        refusals above — no ``*``, no scope no profile names — were written
+        into :func:`~core.policy.profiles.parse_grants`, which is the CLI's
+        door, and this method took whatever it was handed.  So a library
+        caller (and this repo's own :class:`~core.runtime.swarm.SwarmRunner`
+        is one) could ``grant(["*"])`` or ``grant(["shel.exec"])``, have the
+        engine grant a scope no tool has ever required, and have the name
+        advertised on ``mission_started.granted`` — a run announcing a
+        capability it does not have, which is how somebody comes to believe
+        a mission may do something it may not.  The check belongs on the
+        object that performs the widening; the CLI door still refuses first,
+        so an operator's typo is still answered before a server is dialled
+        and with the whole known set listed.
         """
         wanted = [str(scope).strip() for scope in scopes if str(scope).strip()]
         if not wanted:
             return self
+        # Imported here rather than at module scope, like `known_scopes`'s
+        # other caller: this module is the loop and the policy table is the
+        # policy package's.
+        from core.policy.profiles import WILDCARD, known_scopes
+
+        known = known_scopes()
+        unknown = [scope for scope in wanted if scope not in known]
+        if unknown:
+            raise ValueError(
+                "grant: no such scope "
+                + ", ".join(repr(scope) for scope in unknown)
+                + (" — '*' is not a grant; that is the god profile"
+                   if WILDCARD in unknown else "")
+                + ". Known scopes: " + ", ".join(known))
         engine = getattr(self.bus, "capability_engine", None)
         if engine is not None and hasattr(engine, "grant_scopes"):
             engine.grant_scopes(wanted)
@@ -591,19 +619,36 @@ class ToolPlane:
 # ── everything that can stop a run ──────────────────────────────────────────
 
 
+#: What :attr:`Bounds.supervisor` is set to for a run that is to have
+#: **no** supervisor.
+#:
+#: A sentinel and not ``None`` because ``None`` now means "the default one"
+#: — and the two have to be distinguishable, or the safe default could only
+#: be had by making the unsafe one unreachable.  Spelled as a word rather
+#: than as ``False`` so that the thing it says is legible at the call site:
+#: ``Bounds(supervisor=NO_SUPERVISOR)`` is a run that will repeat itself
+#: forever if the model does, and nothing but a clock, a person or an
+#: operator's ``max_steps`` will end it.
+#:
+#: :class:`Run` normalises it back to ``None`` on its own ``bounds``, so
+#: every reader downstream still asks ``if self.bounds.supervisor is None``
+#: and no second spelling of "unwatched" reaches the loop.
+NO_SUPERVISOR = "no_supervisor"
+
+
 @dataclass(frozen=True)
 class Bounds:
     """Every number and switch that can end a run, in one object.
 
-    **Nothing here is set by default.**  The framework imposes no budget of
-    its own: ``max_steps`` is ``0`` — no ceiling — and ``deadline`` is
+    **No budget is set by default.**  The framework imposes none of its
+    own: ``max_steps`` is ``0`` — no ceiling — and ``deadline`` is
     ``None``, because a cap of eight decided how much work a question was
     worth, which is not a decision a framework can make.  Both are things
     an operator asks for, and running out of either is a recorded outcome
     that names which one.
 
-    **The supervisor lives here**, and that is a decision worth the
-    sentence.  It is what *replaced* the step budget: it watches for
+    **The supervisor lives here, and it is the exception to the paragraph
+    above.**  It is what *replaced* the step budget: it watches for
     repetition and its ``stuck`` verdict is the one thing besides a clock
     and a person that ends a run, which is exactly what this object is a
     list of.  Putting it here also gets the sharing right for free — a
@@ -613,6 +658,15 @@ class Bounds:
     .Deadline`.  Five supervisors for one turn would be five budgets, and
     a plan that loops across its steps is precisely the pattern no single
     sub-mission can see.
+
+    And it is the one field here whose default is not *nothing*.
+    ``supervisor=None`` means "the default one", built once by
+    :meth:`Run.__init__` from :attr:`Model.reviewer` and shared with every
+    child of the run; :data:`NO_SUPERVISOR` is how a caller asks for a run
+    nothing can stop, out loud.  A watcher that only notices repetition is
+    not a budget and does not decide what a question is worth — it is the
+    endless-loop catch, and a bare ``Bounds()`` that switched it off was
+    fail-open on the one bound this harness has.
 
     ``started_at`` is the instant the *mission* began, which a staged run
     hands down so a sub-mission's ``elapsed_s`` counts from triage.
@@ -639,9 +693,15 @@ class Bounds:
     started_at: Optional[float] = None
     #: An operator's hard ceiling on model turns, or ``0`` for none.
     max_steps: int = 0
-    #: A :class:`~core.runtime.supervisor.Supervisor`, or ``None`` for a
-    #: run nobody is watching.  Duck-typed: what a run needs is ``look``,
+    #: A :class:`~core.runtime.supervisor.Supervisor`, ``None`` to let
+    #: :class:`Run` build the default one, or :data:`NO_SUPERVISOR` for a
+    #: run nothing can stop.  Duck-typed: what a run needs is ``look``,
     #: ``saw_call`` and ``saw_rejection``.
+    #:
+    #: ``None`` is not "unwatched": it made the documented example —
+    #: ``Run(personality, plane, Bounds(), …)`` — a run with no
+    #: endless-loop catch at all, which is fail-open on the only bound 1.0
+    #: has.  See the class docstring.
     supervisor: Any = None
 
     def __post_init__(self) -> None:
@@ -1308,6 +1368,37 @@ class Model:
         """Whether this model is being spoken to in function calls."""
         return self.protocol == NATIVE_PROTOCOL
 
+    @property
+    def reviewer(self) -> Optional[Callable[..., Any]]:
+        """The function a supervisor's review may be asked through, or
+        ``None``.
+
+        :attr:`plain` when there is one, because that is what it is for and
+        because the CLI, the router and the roles all ask their questions
+        through it.
+
+        :attr:`ask` when there is not **and this is not a native run**, and
+        that is the clause that makes the documented six-object example
+        watched.  A review is a question to be answered, and the thing that
+        must not happen is a model with a function namespace declared
+        answering a question with a tool call — which is a fact about the
+        *native* protocol, where the tools are functions and the decoder is
+        constrained to them.  Under the JSON protocol ``ask`` is already
+        plain chat: the catalogue lives in the system turn, and a review
+        replaces that turn with its own.  So a library caller who wrote
+        ``Model(ask=my_chat_fn)`` and never heard of ``plain`` gets the
+        endless-loop catch, and a native caller who did not supply ``plain``
+        gets no supervisor rather than a review answered with a tool call.
+
+        ``None`` is therefore exactly one thing: a native run whose caller
+        supplied no ``plain``.  Asking for no supervisor at all is a
+        different statement and has a different spelling —
+        :data:`NO_SUPERVISOR` on the :class:`Bounds`.
+        """
+        if self.plain is not None:
+            return self.plain
+        return None if self.native else self.ask
+
     def spend(self, ledger: Ledger,
               capture: Optional[SideChannels] = None) -> Dict[str, Any]:
         """Fold the last call into *ledger*; render its own field.
@@ -1465,6 +1556,17 @@ class Run:
                  bounds: Bounds, store: Store, observer: Observer,
                  model: Model):
         self.personality = personality
+        # THE DEFAULT SUPERVISOR, resolved once, here, and written onto the
+        # `Bounds` this run keeps — so `child()`, which hands children this
+        # object, hands them the same watcher and therefore ONE review
+        # budget for the turn, exactly as it hands them one clock. A child
+        # arrives with the parent's bounds and finds the supervisor already
+        # on it, so nothing is built twice.
+        #
+        # Through `Model.reviewer`, which owns which function a review may
+        # be asked through — see it for why a native run needs `plain` and
+        # a JSON one does not.
+        bounds = self._supervised(bounds, model)
         self.bounds = bounds
         self.store = store
         self.observer = observer
@@ -1531,6 +1633,37 @@ class Run:
         # a bus that does not name `deadline_s` gets no seconds.
         self._bus_takes_step = plane.takes_step()
 
+    @staticmethod
+    def _supervised(bounds: Bounds, model: Model) -> Bounds:
+        """*bounds* with :attr:`Bounds.supervisor` resolved.
+
+        Three cases and they are the three a caller can mean:
+
+        * :data:`NO_SUPERVISOR` — normalised to ``None``, which is what
+          every reader downstream tests for.  One spelling of "unwatched"
+          reaches the loop;
+        * an object — the caller's, untouched.  The CLI builds one with the
+          run's context window and usage meter and passes it in, and a
+          child arrives holding its parent's;
+        * ``None`` — the default, built from :meth:`Model.reviewer`.
+          ``None`` again when that is ``None``, because a supervisor with
+          nothing to ask is not a supervisor.
+
+        Frozen and shared, so it is written with :func:`~dataclasses
+        .replace` onto a copy; the caller's :class:`Bounds` is left as it
+        was.  The copy is what this run keeps and what its children are
+        handed, which is how the review budget stays one budget.
+        """
+        if bounds.supervisor is NO_SUPERVISOR:
+            return replace(bounds, supervisor=None)
+        if bounds.supervisor is not None:
+            return bounds
+        reviewer = model.reviewer
+        if reviewer is None:
+            return bounds
+        return replace(bounds, supervisor=Supervisor(
+            reviewer, window=model.window, usage_fn=model.usage_fn))
+
     def child(self, *, personality: Optional[Personality] = None,
               bounds: Optional[Bounds] = None, branch: str = "",
               stage: bool = False, start_index: int = 0,
@@ -1550,7 +1683,8 @@ class Run:
         (*personality*), and — rarely — a narrower set of bounds.  There
         is deliberately no step *portion*: the ceiling is an operator's
         and is not divided among children, and what watches a child going
-        nowhere is the supervisor they share.
+        nowhere is the supervisor they share — which a narrower *bounds*
+        does not take away, see :meth:`_child_bounds`.
 
         *branch* names the child, and it names it in **two** places at
         once, which is why it is one argument: every record this child
@@ -1602,7 +1736,7 @@ class Run:
         return Run(
             personality if personality is not None else self.personality,
             self.plane.lease(branch) if branch else self.plane,
-            bounds if bounds is not None else self.bounds,
+            self._child_bounds(bounds),
             self.store,
             self.observer.branch(branch, stage=stage,
                                  start_index=start_index)
@@ -1610,6 +1744,30 @@ class Run:
             self.model if ledger is None
             else replace(self.model, ledger=ledger),
         )
+
+    def _child_bounds(self, bounds: Optional[Bounds]) -> Bounds:
+        """*bounds* for a child of this run — the parent's when none.
+
+        The one thing added to a caller's own: **this turn's supervisor**.
+        A narrower :class:`Bounds` handed in is a caller saying "this child
+        has less clock" or "this child has fewer steps"; it is never a
+        caller asking for a second review budget, and left alone it would
+        be one — :meth:`__init__` would build the child a supervisor of its
+        own, and a plan that loops across its steps would be a pattern
+        neither half could see.  Stated here rather than left to every
+        caller of :meth:`child` to remember, which is what
+        :meth:`~core.runtime.swarm.SwarmRunner._child_bounds` does by
+        starting from the turn's object.
+
+        A caller that genuinely wants a child watched separately hands in a
+        supervisor; one that wants a child watched by nothing hands in
+        :data:`NO_SUPERVISOR`.  Both are untouched here.
+        """
+        if bounds is None:
+            return self.bounds
+        if bounds.supervisor is None and self.bounds.supervisor is not None:
+            return replace(bounds, supervisor=self.bounds.supervisor)
+        return bounds
 
     @property
     def run_id(self) -> str:
@@ -2587,6 +2745,12 @@ class Run:
         endpoint was slow", and a bank that recorded it would rank that
         above the work.
 
+        A run wound up ``stuck`` is that kind of run wearing a finished
+        outcome, so it is excluded by ``reason`` rather than by outcome:
+        the supervisor judged it to be repeating itself, it was asked for
+        its best answer with what it had, and it wrote one.  That is a
+        transcript worth keeping and not a lesson worth learning.
+
         It emits **no record**.  A reflection is not something the mission
         did — it is the harness reading the mission afterwards — and a
         consumer that had to learn a new event to keep rendering a stream
@@ -2604,6 +2768,18 @@ class Run:
         if bank is None or self.model.plain is None:
             return
         if transcript.outcome not in ("answered", "answered_with_caveat"):
+            return
+        if transcript.reason == STUCK:
+            # A wind-up answer is not an answer the run reached, it is the
+            # best thing it could write when the supervisor judged it to be
+            # going in circles — and the outcome is `answered` because the
+            # model wrote SOMETHING, not because the mission got anywhere.
+            # Distilled into the bank it becomes a lesson learned from a
+            # stall, ranked beside lessons learned from work, and offered
+            # back to the next run on the same subject. The same argument
+            # this method already makes about a cancelled or exhausted run,
+            # applied to the one unfinished ending that wears a finished
+            # outcome.
             return
         try:
             await asyncio.to_thread(

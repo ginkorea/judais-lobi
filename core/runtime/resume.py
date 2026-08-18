@@ -45,9 +45,14 @@ What cannot come back is written down rather than papered over — see
 
 **Reconciliation** (:func:`reconcile_orphans`).  A run directory with no
 ``mission_finished`` in it is either a mission that died or a mission that
-is still going, and from outside the two look identical.  The only evidence
-available is the metadata's ``updated_at``, so that is what is used, with a
-stated staleness rule (:data:`ORPHAN_STALE_S`) rather than an assumption.
+is still going, and the difference is asked of the **kernel**: a process
+running a run holds an ``flock`` on it (:meth:`core.durable.RunStore.hold`)
+for as long as it lives, so a free lock is a dead run and a held one is a
+live one, whatever either has been writing.  The metadata clock survives
+only as the fallback for a platform with no ``flock``, and there it is
+widened past the longest thing a live run legitimately does in silence —
+standing at a gate — because the old sixty-second rule closed live runs.
+See :data:`ORPHAN_STALE_S` and :data:`ORPHAN_FALLBACK_MARGIN_S`.
 
 Nothing here decides an approval.  A run that stopped at a gate is
 resumable — the gated set is applied on the resumed turn exactly as it was
@@ -63,7 +68,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from core.durable import NoSuchRun, Run, RunStore, now
+from core.durable import LOCKS, NoSuchRun, Run, RunStore, now
 from core.runtime.mission import (
     AWAITING_APPROVAL, JSON_PROTOCOL, NATIVE_PROTOCOL, MissionCall,
     MissionStep,
@@ -76,7 +81,8 @@ from core.runtime.messages import assistant_turn
 from core.runtime.results import MissionResultStore
 
 __all__ = [
-    "ORPHAN_OUTCOME", "ORPHAN_STALE_S", "RESUMABLE_OUTCOMES", "RESUMED",
+    "ORPHAN_OUTCOME", "ORPHAN_STALE_S", "ORPHAN_FALLBACK_MARGIN_S",
+    "orphan_window", "RESUMABLE_OUTCOMES", "RESUMED",
     "ResumeRefused", "Recorded", "Resumption", "StagedResumption",
     "open_for_resume", "rebuild", "reconcile_orphans", "recorded_outcome",
     "resumed_record",
@@ -84,7 +90,9 @@ __all__ = [
 
 
 #: How long a run's metadata has to have been untouched before this harness
-#: is willing to call it an orphan.
+#: is willing to *consider* it an orphan.  The second half of the question —
+#: is anybody running it? — is the lock, and the lock is the half that
+#: decides.  See :func:`reconcile_orphans`.
 #:
 #: The guard exists because "no ``mission_finished`` in the log" is not the
 #: question anybody actually wants answered.  A mission that has been
@@ -95,12 +103,64 @@ __all__ = [
 #: afterwards would go to nobody.
 #:
 #: ``updated_at`` moves on **every** append (see
-#: :meth:`core.durable.RunStore.append`), so a run doing anything at all is
-#: fresh.  Sixty seconds is chosen against the slowest thing a mission does
-#: between records — one call to a cold local model — and it is a constant
-#: rather than a literal because it is the number to raise on a deployment
-#: whose model is slower than that.
+#: :meth:`core.durable.RunStore.append`) and on every heartbeat of a
+#: :class:`~core.durable.RunHold`, so a run doing anything at all — and a
+#: held run doing nothing at all — is fresh.  Sixty seconds is chosen
+#: against the slowest thing a mission does between records, one call to a
+#: cold local model, and it is a constant rather than a literal because it
+#: is the number to raise on a deployment whose model is slower than that.
+#:
+#: **It was once the whole rule, and as the whole rule it was wrong.**  A
+#: live run legitimately says nothing for five minutes while it stands at a
+#: gate waiting for a decision (:data:`~core.runtime.control.GATE_WAIT_S`),
+#: and sixty seconds of that was enough for any sibling ``judais --mission``
+#: to close its log, abandon its pending approval, and leave it to append a
+#: second ``mission_finished`` with a different outcome when it finished.
 ORPHAN_STALE_S = 60.0
+
+#: How much longer than the gate window the **fallback** clock waits, on a
+#: platform that has no ``flock`` to read.
+#:
+#: :func:`orphan_window` is ``max(stale_s, GATE_WAIT_S + this)``: never
+#: below the longest silence a live run is entitled to, plus room for the
+#: turn that follows the decision to write its next record.  It is only ever
+#: the fallback — where :data:`core.durable.LOCKS` is true the lock answers
+#: and this number is not consulted — but where it is the only answer it has
+#: to be an answer that cannot close a run that is waiting for a person.
+ORPHAN_FALLBACK_MARGIN_S = 60.0
+
+
+def orphan_window(stale_s: Optional[float] = None,
+                  locks: Optional[bool] = None) -> float:
+    """How long a run must have been quiet before the clock may close it.
+
+    ``None`` — nobody stated a number — is :data:`ORPHAN_STALE_S` where the
+    kernel can be asked (:data:`core.durable.LOCKS`), because there the
+    clock is only a cheap first filter and the lock is what decides; and
+    where it cannot be asked the clock is the whole rule, so the default is
+    widened to ``GATE_WAIT_S + ORPHAN_FALLBACK_MARGIN_S``.  That floor is
+    the whole point: a **default** must not be able to close a run that is
+    standing at a gate waiting for a person.
+
+    **A stated number is the caller's and is used as given**, floor and
+    all.  An operator who passes ``stale_s=0`` to :func:`reconcile_orphans`
+    — ``core.server``'s ``--reconcile-stale`` is the one that does — is
+    saying "close what is quiet now", and a floor that quietly ignored them
+    would be an argument that does nothing.  The default is the one this
+    module is responsible for; a number somebody typed is theirs.
+
+    One function so the arithmetic is derived in one place and a test can
+    ask for it rather than restating it.
+    """
+    from core.runtime.control import GATE_WAIT_S
+
+    if stale_s is not None:
+        return max(0.0, float(stale_s))
+    readable = LOCKS if locks is None else bool(locks)
+    if readable:
+        return ORPHAN_STALE_S
+    return max(ORPHAN_STALE_S, float(GATE_WAIT_S) + ORPHAN_FALLBACK_MARGIN_S)
+
 
 #: The OPTIONAL field the first ``step_started`` of a resumed stretch
 #: carries.  See :data:`core.runtime.contract.OPTIONAL`.
@@ -274,11 +334,24 @@ class Recorded:
         which is how a ceiling is put on a run that had none.  Either way
         ``mission_finished`` reports ``steps`` and ``max_steps`` as totals
         for the run, so the two remain comparable across a resume.
+
+        **``0`` is no ceiling here too**, and that is the one word this
+        method may not read differently from the rest of the harness.
+        ``max_steps: 0`` is what ``mission_started`` and
+        ``mission_finished`` carry for an unbounded run, and
+        ``--mission-steps 0`` on a fresh mission means unbounded; read as
+        "nought further steps" a resume would end ``budget_exhausted``
+        before its first turn, which is the same flag meaning opposite
+        things on two command lines.  So a stated ``0`` takes the ceiling
+        **off** the run — an operator who types a number is restating the
+        bound on purpose, and this is the number that says there is none.
         """
         spent = self.spent_steps
         if more is None:
             return 0 if self.max_steps <= 0 else max(self.max_steps, spent)
-        return spent + max(0, int(more))
+        if int(more) <= 0:
+            return 0
+        return spent + int(more)
 
     @property
     def spent_steps(self) -> int:
@@ -998,7 +1071,7 @@ def _reply_for(record: Mapping[str, Any]) -> str:
 
 
 def reconcile_orphans(store: Optional[RunStore], *, live: str = "",
-                      stale_s: float = ORPHAN_STALE_S,
+                      stale_s: Optional[float] = None,
                       at: Optional[datetime] = None) -> List[str]:
     """Close the logs of runs nobody is going to close.  Returns their ids.
 
@@ -1010,11 +1083,42 @@ def reconcile_orphans(store: Optional[RunStore], *, live: str = "",
     which is exactly the spinner-forever state ``EXIT_CONTRACT["finished"]``
     exists to prevent.  The second must not be touched at all.
 
-    So the rule is stated rather than assumed: a run is an orphan when its
-    metadata has not been written for :data:`ORPHAN_STALE_S`.
-    ``updated_at`` moves on every append, so any run doing anything is
-    fresh, and *live* — the run this process is about to work on — is
-    excluded outright rather than left to the clock.
+    **The question is put to the kernel.**  A run being run is a run being
+    held (:meth:`core.durable.RunStore.hold`), and a held run is skipped
+    however long it has been quiet.  An orphan is a run whose lock is
+    **free** and whose log has no ending.  That is the whole rule where
+    ``flock`` exists, and it is the only formulation that cannot be wrong
+    about a run that is legitimately silent: a gate waiting up to
+    :data:`~core.runtime.control.GATE_WAIT_S` for a person, a cold model
+    on its first token, a sandboxed tool halfway through a build.
+
+    The clock stays for two jobs and neither of them is deciding.  Where a
+    run has been claimed (:meth:`core.durable.RunStore.claimed` — it has a
+    lock file, so whatever ran it takes locks) the clock is a cheap first
+    filter and :data:`ORPHAN_STALE_S` is enough: a free lock on such a run
+    settles it.  Where a run has **not** been claimed — an older release
+    wrote it, or a library caller holding its own store — there is nothing
+    to read, so the clock is the whole rule and :func:`orphan_window`
+    widens it past the longest silence a live run is entitled to.  Same on
+    a platform with no ``flock`` at all.  A :class:`~core.durable.RunHold`
+    also touches ``updated_at`` every :data:`~core.durable.HEARTBEAT_S`, so
+    even the wide window sees a held run as fresh.
+
+    *stale_s* ``None`` is that whole arrangement; a number is the caller's
+    own and is used as typed for both kinds of run — see
+    :func:`orphan_window`.
+
+    *live* — the run this process is about to work on — is excluded
+    outright rather than left to either mechanism.
+
+    **This was a live bug.**  Before the lock, liveness was "the metadata
+    moved in the last sixty seconds", and a run standing at a gate was
+    closed by the next ``judais --mission`` to start in the same runs root:
+    its pending approval was abandoned, and when the decision arrived it
+    appended a second ``mission_finished`` with a different outcome onto a
+    log a follower had already been told was over.  The second half of that
+    is prevented independently, by the store: see
+    :class:`~core.durable.RunClosed`.
 
     What is appended is a ``mission_finished`` with the transcript's own
     default outcome, :data:`ORPHAN_OUTCOME`, and the counts read off the
@@ -1033,13 +1137,29 @@ def reconcile_orphans(store: Optional[RunStore], *, live: str = "",
     """
     if store is None:
         return []
-    horizon = (at or datetime.now(timezone.utc)).timestamp() - max(0.0, stale_s)
+    stamp = (at or datetime.now(timezone.utc)).timestamp()
+    claimed_window = orphan_window(stale_s, locks=True)
+    unclaimed_window = orphan_window(stale_s, locks=False)
     closed: List[str] = []
     for run in store.list():
         if run.run_id == live:
             continue
         try:
-            if _updated_at(run) > horizon:
+            # Which clock this run is read by depends on whether anybody
+            # ever claimed it. A run with a lock file was run by a process
+            # that takes locks, so a FREE lock means that process is gone
+            # and the short window is enough. A run without one was written
+            # by somebody who never said whether it was alive — an older
+            # release, a library caller holding its own store — and it gets
+            # the wide window, which is never shorter than the longest
+            # silence a live run is entitled to.
+            claimed = LOCKS and store.claimed(run.run_id)
+            window = claimed_window if claimed else unclaimed_window
+            if _updated_at(run) > stamp - window:
+                continue
+            # The lock, last of the cheap checks and first in authority:
+            # a held run is being run, whatever its clock says.
+            if store.held(run.run_id):
                 continue
             records = store.records(run.run_id)
             if recorded_outcome(records):

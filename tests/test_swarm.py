@@ -15,7 +15,7 @@ from core.runtime.mission import (
     ANSWER_TOOL, AWAITING_APPROVAL, NATIVE_PROTOCOL, MissionRunner,
 )
 from core.runtime.supervisor import Supervisor
-from core.runtime.run import Observer as RunObserver
+from core.runtime.run import NO_SUPERVISOR, Observer as RunObserver
 from core.runtime.swarm import PlanStep, SwarmRunner
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
@@ -73,7 +73,19 @@ def bus(calls):
 
 
 def swarm(plain, executor, bus, **kw):
+    """A staged turn, with **nobody watching** unless a test asks.
+
+    `Bounds()` builds a supervisor now (`Run.__init__`, from the model the
+    run was given), so "no `supervisor=`" no longer means "no supervisor" —
+    :data:`~core.runtime.run.NO_SUPERVISOR` is what means that, and this
+    helper says it. It has to: on the staged path a supervisor changes what
+    a **failed gate** is, from a settled failure into a signal put to the
+    reviewer, and a reviewer that was never scripted would answer with its
+    safe default and quietly decide half the questions below. Every test
+    here that wants a verdict passes ``supervisor=reviewer(...)``.
+    """
     kw.setdefault("system_message", "You are Tai.")
+    kw.setdefault("supervisor", NO_SUPERVISOR)
     return SwarmRunner(executor, bus, ["catalog.search", "run_code"],
                        plain_chat_fn=plain, **kw)
 
@@ -89,8 +101,9 @@ def reviewer(*verdicts):
     A staged turn's retries and its redraws are the supervisor's decisions
     now: a failed gate is a signal put to the model, not a countdown. So a
     test that wants a step attempted twice says so with a `nudge` here,
-    and a swarm built without one of these does not retry at all — a gate
-    that says no settles the step and the plan carries on.
+    and a swarm built with `NO_SUPERVISOR` — which is what :func:`swarm`
+    defaults to, see it — does not retry at all: a gate that says no
+    settles the step and the plan carries on.
     """
     return Supervisor(ScriptedModel(*verdicts))
 
@@ -3170,6 +3183,10 @@ class TestTheProtocolReachesEverySubMission:
     """
 
     def _native(self, bus, executor, plain, **kw):
+        # `NO_SUPERVISOR` for the reason `swarm()` above states it: the
+        # question here is which protocol each sub-mission speaks, and an
+        # unscripted reviewer answering a failed gate is not it.
+        kw.setdefault("supervisor", NO_SUPERVISOR)
         return SwarmRunner(
             executor, bus, ["catalog.search", "run_code"],
             system_message="You are Tai.", plain_chat_fn=plain,

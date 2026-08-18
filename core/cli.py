@@ -964,8 +964,9 @@ def _reconcile_approvals(approvals, orphaned):
     would abandon live requests — a refusal nobody made.  This is the
     caller, and *orphaned* is the answer to the question it was waiting for:
     the ids :func:`~core.runtime.resume.reconcile_orphans` has just closed
-    by the one rule this harness states out loud (``ORPHAN_STALE_S``, no
-    ``mission_finished``, and not this process's own run).
+    by the rule this harness states out loud: no ``mission_finished``,
+    nobody holding the run's lock (:meth:`core.durable.RunStore.held`), and
+    not this process's own run.
 
     **Only those.**  Every other run stays in the live set, and that is not
     caution, it is the feature working: a run that stopped at
@@ -1023,7 +1024,7 @@ def _mission(elf, args, name, style):
         ReplayRefused, open_for_replay,
     )
     from core.runtime.resume import (
-        ORPHAN_STALE_S, ResumeRefused, open_for_resume, rebuild,
+        ResumeRefused, open_for_resume, orphan_window, rebuild,
         reconcile_orphans,
     )
     from core.runtime.campaign import (
@@ -1141,8 +1142,14 @@ def _mission(elf, args, name, style):
         except Exception as exc:
             raise SystemExit(f"--campaign-plan: {scrub(str(exc))}")
         objective = objective or planned.objective
+    # `max(0, ...)` and not `max(1, ...)`: **0 is no ceiling**, which is what
+    # `mission_started.max_steps` and `mission_finished.max_steps` mean by it
+    # and what `DEFAULT_MISSION_STEPS` is. Clamped at 1, `--mission-steps 0`
+    # became the tightest possible ceiling — one turn — which is the opposite
+    # of what an operator typing the harness's own word for "unbounded" asked
+    # for, and it read as a run that failed after one step.
     max_steps = (DEFAULT_MISSION_STEPS if args.mission_steps is None
-                 else max(1, int(args.mission_steps)))
+                 else max(0, int(args.mission_steps)))
     resume_id = (getattr(args, "resume", "") or "").strip()
     recorded = None
     replay = None
@@ -1292,19 +1299,33 @@ def _mission(elf, args, name, style):
             style=style,
         )
 
+    # THE CLAIM, taken before anything is reconciled and held for the life of
+    # this process. It is what makes "is anybody running this?" answerable by
+    # the kernel rather than guessed from a clock: a sibling `judais --mission`
+    # starting while this one stands at a gate for five minutes reads the lock
+    # and leaves the run alone. See `core.durable.RunHold`. Best effort — a
+    # filesystem that will not take a lock leaves the heartbeat, which is what
+    # keeps the fallback clock honest — and released in the `finally` below.
+    run_hold = None
+    if run_store is not None and run_id:
+        try:
+            run_hold = run_store.hold(run_id)
+        except Exception:                       # pragma: no cover - defensive
+            run_hold = None
+
     # Every mission closes the logs of the runs nobody else will. A run
     # directory with no `mission_finished` leaves a follower waiting on a
-    # stream that stopped mid-sentence, and the only evidence available for
-    # "died" versus "still going" is how long ago the metadata was written
-    # — so the rule is stated (ORPHAN_STALE_S) rather than assumed, and the
-    # run this process is about to work on is excluded outright.
+    # stream that stopped mid-sentence. Which runs those are is asked of the
+    # LOCK — a free lock is a dead run — with the staleness clock as a first
+    # filter and as the fallback where there is no flock to read; the run this
+    # process is about to work on is excluded outright besides.
     reconciled = reconcile_orphans(run_store, live=run_id)
     if reconciled:
         console.print(
             f"🧾 reconciled: {len(reconciled)} orphaned run(s) — no "
-            f"`mission_finished` and untouched for over "
-            f"{int(ORPHAN_STALE_S)}s, so each log is closed as `incomplete`: "
-            f"{', '.join(reconciled)}",
+            f"`mission_finished`, nobody holding them, and untouched for "
+            f"over {int(orphan_window())}s, so each log is closed as "
+            f"`incomplete`: {', '.join(reconciled)}",
             style="yellow",
         )
         # And the other half of an orphan: a gate it stopped at. The record
@@ -2152,8 +2173,21 @@ def _mission(elf, args, name, style):
         # Scrubbed like everything else a mission says about a failure: this
         # message names the transport, and a transport is a URL, a socket path
         # or a command line on this host.
+        #
+        # And a NON-ZERO status, which is the `silence` clause of
+        # EXIT_CONTRACT read the only way it can be honoured: a server that
+        # was never reached is a mission that emitted zero events, the clause
+        # says such a run has FAILED and a consumer must report it as one,
+        # and a consumer that spawned us reads the exit status. Returning 0
+        # here told it the turn finished, with an empty stream and prose on a
+        # channel it is told not to parse — the exact shape of a pane that
+        # renders a blank reply. The sentence goes to stderr, where the
+        # `diagnostic` clause says a consumer looks when there were no
+        # events; the console line above is the same fact for the person
+        # reading a terminal, which is the two-channel split the contract
+        # asks for and not a message printed twice by accident.
         console.print(f"❌ {scrub(str(exc))}", style="red")
-        return
+        raise SystemExit(scrub(str(exc)))
     finally:
         # In the `finally` for the reason `mission_finished` is: a replay
         # that ended badly is exactly the one whose divergence somebody
@@ -2164,6 +2198,13 @@ def _mission(elf, args, name, style):
             run_store.update_meta(run_id, drift=replay_model.as_record())
         if sink is not None:
             sink.close()
+        # And the claim, in the same `finally` and for the same reason the
+        # descriptor is: a run that ended badly is exactly the run whose
+        # lock somebody else needs released so they can reconcile it. The
+        # process exit would do it anyway; this makes the moment explicit
+        # and stops the heartbeat thread touching a finished run.
+        if run_hold is not None:
+            run_hold.release()
         # In the same `finally` and for the same reason: the descriptor
         # belongs to whoever spawned us, and a run that ended badly is
         # exactly the one that must still let go of it. The reader is a
