@@ -436,6 +436,44 @@ def audit_ref_of(bus: Any) -> Optional[str]:
     return str(ref) if ref else None
 
 
+def _dispatch_takes(bus: Any, keyword: str) -> bool:
+    """Whether *bus*'s ``dispatch`` names *keyword* as a parameter of its own.
+
+    The probe both :func:`_takes_deadline` and :func:`_takes_step` are, in
+    one place: they ask the same question of the same signature about two
+    different words, and two copies of an ``inspect.signature`` call with a
+    swallowed failure is two places to get the swallowing wrong.
+
+    ``getattr`` and a swallowed failure for the reason :func:`audit_ref_of`
+    uses one: a caller may hand this runner any object with ``dispatch``
+    and ``describe_tool``, and a fake bus whose signature cannot be read is
+    not a reason for a mission to fail to start.
+    """
+    dispatch = getattr(bus, "dispatch", None)
+    if dispatch is None:
+        return False
+    try:
+        return keyword in inspect.signature(dispatch).parameters
+    except (TypeError, ValueError):             # pragma: no cover - defensive
+        return False
+
+
+def _takes_step(bus: Any) -> bool:
+    """Whether *bus*'s ``dispatch`` accepts the mission's ``step`` ordinal.
+
+    The audit's step column, and the same argument :func:`_takes_deadline`
+    makes about ``deadline_s``: the keyword is the *bus's* own and is
+    consumed there, so a bus that does not name it is a bus this loop does
+    not hand a step to — rather than one that forwards a mission-shaped
+    argument to somebody else's server as a tool argument.
+
+    It replaces a mutation of ``bus.audit_context``, which was correct only
+    while one run dispatched at a time.  See
+    :meth:`core.tools.bus.ToolBus.dispatch`.
+    """
+    return _dispatch_takes(bus, "step")
+
+
 def _takes_deadline(bus: Any) -> bool:
     """Whether *bus*'s ``dispatch`` accepts a ``deadline_s`` ceiling.
 
@@ -453,15 +491,10 @@ def _takes_deadline(bus: Any) -> bool:
     ``getattr`` and a swallowed failure for the same reason
     :func:`audit_ref_of` uses one: a caller may hand this runner any object
     with ``dispatch`` and ``describe_tool``, and a fake bus whose signature
-    cannot be read is not a reason for a mission to fail to start.
+    cannot be read is not a reason for a mission to fail to start.  Both
+    live in :func:`_dispatch_takes`, which is this probe's one owner.
     """
-    dispatch = getattr(bus, "dispatch", None)
-    if dispatch is None:
-        return False
-    try:
-        return "deadline_s" in inspect.signature(dispatch).parameters
-    except (TypeError, ValueError):             # pragma: no cover - defensive
-        return False
+    return _dispatch_takes(bus, "deadline_s")
 
 
 def _grounding_record(report: "GroundingReport", *, repairs: int = 0,

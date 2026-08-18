@@ -17,7 +17,8 @@ So the seam is **this module**, and it is data:
 * :data:`EVENTS` — the closed vocabulary of record types;
 * :data:`FIELDS` — what each record type always carries, verified against the
   emitters rather than against the prose that describes them;
-* :data:`OPTIONAL` — fields a record may carry and a consumer must not require;
+* :data:`OPTIONAL` — fields a record may carry and a consumer must not require,
+  including :data:`COMMON_OPTIONAL`, the ones every event may carry;
 * :data:`OUTCOMES` — every word ``mission_finished`` can say;
 * :data:`CLI_FLAGS` and :data:`ENV_VARS` — the surface a consumer spawns us by;
 * :data:`EXIT_CONTRACT` — what "the mission is over" means, including when it
@@ -51,7 +52,8 @@ from types import MappingProxyType
 from typing import Any, Dict, List, Mapping
 
 __all__ = [
-    "SCHEMA_VERSION", "EVENTS", "FIELDS", "OPTIONAL", "OUTCOMES",
+    "SCHEMA_VERSION", "EVENTS", "FIELDS", "OPTIONAL", "COMMON_OPTIONAL",
+    "OUTCOMES",
     "CLI_FLAGS", "ENV_VARS", "EXIT_CONTRACT", "conforms",
     "MISSION_STARTED", "STEP_STARTED", "REPLY_REJECTED", "TOOL_CALL",
     "TOOL_RESULT", "GATE_REQUESTED", "ANSWER_DELTA", "ANSWER", "GROUNDING",
@@ -280,10 +282,37 @@ FIELDS: dict[str, tuple[str, ...]] = {
     MISSION_FINISHED: ("outcome", "steps", "max_steps"),
 }
 
-#: Fields an event may carry and a consumer must therefore reach for with a
-#: default.  Listed rather than left to be discovered, so that "optional" is a
-#: statement this repo made and not an accident of which path happened to run.
-OPTIONAL: dict[str, tuple[str, ...]] = {
+#: Fields **every** event may carry, whatever it is, merged into every entry
+#: of :data:`OPTIONAL` below.  One owner: a field that belongs to no single
+#: record type is declared once here rather than pasted into ten tuples, where
+#: the tenth is the one somebody forgets.
+#:
+#: ``branch`` — which child run emitted this record, when a child did:
+#: ``"direct"`` for the route a ``--swarm`` turn takes when its router says the
+#: question needs no plan, and the **plan step's own id** (``"s1"``, ``"s2"``)
+#: for each stage of a staged turn.  **Absent** on every record the mission
+#: itself emitted, which is every record of every run without ``--swarm``.
+#:
+#: It exists because children can now run at the same time.  ``index`` is
+#: allocated by the one observer under a lock and the durable log is appended
+#: under another, so the stream is a single correctly-ordered sequence
+#: whichever child spoke — and **a consumer that never heard of ``branch``
+#: reads exactly that sequence**, which is the whole reason this is an
+#: optional field rather than a schema bump.  A consumer that has heard of it
+#: can demultiplex: group the records of one plan step, show two steps
+#: progressing side by side, attribute a tool call to the stage that made it.
+#:
+#: Records with no ``branch`` are the turn's own — its opening, its
+#: ``answer``, its ``grounding``, its ``mission_finished`` — and that is a
+#: fact worth reading rather than a gap: the answer of a staged turn belongs
+#: to the turn and not to any step of it.
+COMMON_OPTIONAL: tuple[str, ...] = ("branch",)
+
+#: What each event may carry **of its own**, before :data:`COMMON_OPTIONAL` is
+#: merged in.  Read :data:`OPTIONAL`, which is the whole answer; this is the
+#: per-event half of it and is kept separate only so that the common half has
+#: one owner.
+_OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: ``sandbox`` — ``"bwrap"`` or ``"none"``, the isolation the tool
     #: subprocesses of this mission ran under.  ``"bwrap"`` is write
     #: isolation with the network denied unless a tool declared it and the
@@ -600,6 +629,19 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     #: explicit opt-out or a directory the harness could not write, and the
     #: second says so in ``reason``.
     GATE_REQUESTED: ("approval_id",),
+}
+
+#: Fields an event may carry and a consumer must therefore reach for with a
+#: default.  Listed rather than left to be discovered, so that "optional" is a
+#: statement this repo made and not an accident of which path happened to run.
+#:
+#: Every event is a key, because :data:`COMMON_OPTIONAL` is true of every
+#: event; an event with nothing of its own carries exactly the common half.
+#: Built rather than written out, so the day a second common field is added
+#: there is one line to change and no tuple to forget.
+OPTIONAL: dict[str, tuple[str, ...]] = {
+    event: _OWN_OPTIONAL.get(event, ()) + COMMON_OPTIONAL
+    for event in EVENTS
 }
 
 

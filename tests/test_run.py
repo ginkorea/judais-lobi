@@ -432,13 +432,22 @@ class TestThePlaneReadsTheBus:
         assert ToolPlane(bus=bus).takes_deadline() is True
         assert ToolPlane(bus=object()).takes_deadline() is False
 
-    def test_lease_is_still_only_declared(self, bus):
-        """``lease`` is the parallel-children lane's; until then it names the
-        roadmap section rather than pretending to namespace a store.
-        ``narrow`` used to sit beside it here — it is implemented now (Phase
-        11, lane E), so it is asserted below rather than as a refusal."""
-        with pytest.raises(NotImplementedError, match="ROADMAP"):
-            ToolPlane(bus=bus).lease("step-1")
+    def test_lease_names_the_branch_and_shares_everything_else(self, bus):
+        """``lease`` is implemented now (Phase 11, lane D) and it changes
+        exactly one thing.  ``narrow`` used to sit beside it here as the
+        second refusal; both are behaviour, so both are asserted as such.
+        What a lease is FOR — one ``mission_result`` in front of two
+        children's stores — is proved in ``tests/test_run_parallel.py``."""
+        plane = ToolPlane(bus=bus, offered=["catalog.search"])
+        leased = plane.lease("step-1")
+        assert leased is not plane
+        assert leased.store_branch == "step-1"
+        assert plane.store_branch == ""
+        # By identity, every one of them: a lease is the same plane.
+        assert leased.bus is plane.bus
+        assert leased.offered is plane.offered
+        assert leased.stores is plane.stores
+        assert leased.store_tool == plane.store_tool
 
     def test_narrow_is_implemented_and_returns_a_new_plane(self, bus):
         """``set_scope_constraints`` is ``narrow`` now — governance's one

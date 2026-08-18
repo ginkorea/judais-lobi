@@ -129,15 +129,23 @@ class TestABranchNumbersAChildUnderTheParent:
         stage.emit("gate_requested", approval_id="a-1", tool="x",
                    arguments={})
         assert seen[1] == {"event": "gate_requested", "approval_id": "a-1",
-                           "tool": "x", "arguments": {}}
+                           "tool": "x", "arguments": {}, "branch": "s1"}
 
-    def test_the_branch_name_still_does_not_reach_the_wire(self):
-        """An OPTIONAL ``branch`` field is the parallel-children lane's.
-        A record carrying one now would be a contract change in the lane
-        whose whole claim is that it makes none."""
+    def test_the_branch_name_reaches_the_wire(self):
+        """It did not, through lane C: the OPTIONAL ``branch`` field is
+        lane D's, and it is what a consumer demultiplexes a parallel turn
+        on.  ``tests/test_run_parallel.py`` holds the rest of the claim."""
         seen = []
         self.observer(seen).branch("s1", stage=True).emit(
             STEP_STARTED, index=0)
+        assert seen == [{"event": "step_started", "index": 0,
+                         "branch": "s1"}]
+
+    def test_a_branch_with_no_name_puts_no_field_on_the_wire(self):
+        """Absence is not a branch called ``""``: it means the mission
+        itself, and it is what every run without ``--swarm`` emits."""
+        seen = []
+        self.observer(seen).branch("", stage=True).emit(STEP_STARTED, index=0)
         assert seen == [{"event": "step_started", "index": 0}]
 
 
@@ -200,7 +208,8 @@ class TestTheCarriedFieldsRideTheNextStep:
         stage = parent.branch("s1", stage=True)
         stage.emit(STEP_STARTED, index=0)
         assert seen[0] == {"event": "step_started", "index": 0,
-                           "plan": [{"id": "s1"}], "resumed": {"from_seq": 4}}
+                           "plan": [{"id": "s1"}], "resumed": {"from_seq": 4},
+                           "branch": "s1"}
 
     def test_they_drain_and_do_not_arrive_again(self):
         """A field that arrived on every step would be a state restated
@@ -223,7 +232,7 @@ class TestTheCarriedFieldsRideTheNextStep:
         second.emit(STEP_STARTED, index=0)
         assert "review" not in seen[0]
         assert seen[1] == {"event": "step_started", "index": 1,
-                           "review": {"verdict": "nudge"}}
+                           "review": {"verdict": "nudge"}, "branch": "s1"}
 
     def test_a_redrawn_plan_replaces_the_one_it_abandoned(self):
         seen = []
@@ -237,7 +246,8 @@ class TestTheCarriedFieldsRideTheNextStep:
         seen = []
         Observer(seen.append).branch("s1", stage=True).emit(
             STEP_STARTED, index=0)
-        assert seen[0] == {"event": "step_started", "index": 0}
+        assert seen[0] == {"event": "step_started", "index": 0,
+                           "branch": "s1"}
 
 
 # ── a branch is a caller of the parent, not a filter beside it ──────────────
@@ -326,8 +336,30 @@ class TestTheSwarmsChildrenShareTheTurn:
         made = self.children(turn)
         assert len(made) == 2
         assert all(child.store is turn._run.store for child in made)
-        assert all(child.model is turn._run.model for child in made)
-        assert all(child.plane is turn._run.plane for child in made)
+        # The same model in every respect but the ledger: a stage spends
+        # into one of its own so that gathered children are not doing
+        # arithmetic on a shared accumulator, and it is folded back at the
+        # join through `Ledger.absorb`. Everything a stage ASKS with — the
+        # function, the protocol, the window — is the turn's, by identity.
+        assert all(child.model is not turn._run.model for child in made)
+        assert all(child.model.ask is turn._run.model.ask for child in made)
+        assert all(child.model.plain is turn._run.model.plain
+                   for child in made)
+        assert all(child.model.window is turn._run.model.window
+                   for child in made)
+        assert all(child.model.ledger is not turn._run.model.ledger
+                   for child in made)
+        # A LEASE of the one plane, which is the same plane in everything
+        # a mission can see — the same bus and the same live offered list,
+        # by identity — with the child's own result store behind the one
+        # registered `mission_result`. See `ToolPlane.lease`.
+        assert all(child.plane is not turn._run.plane for child in made)
+        assert all(child.plane.bus is turn._run.plane.bus for child in made)
+        assert all(child.plane.offered is turn._run.plane.offered
+                   for child in made)
+        assert all(child.plane.stores is turn._run.plane.stores
+                   for child in made)
+        assert [child.plane.store_branch for child in made] == ["s1", "s2"]
 
     def test_one_clock_and_one_supervisor_for_the_whole_turn(self, turn):
         """Shared by identity through the bounds a child is handed: five

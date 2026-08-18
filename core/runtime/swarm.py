@@ -89,6 +89,7 @@ rides the first ``step_started`` it produces.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field, replace
@@ -113,6 +114,7 @@ from core.runtime.mission_stream import (
 from core.runtime.results import RESULT_TOOL
 from core.runtime.run import (
     Bounds, Model, Observer as RunObserver, Personality, Run, Store, ToolPlane,
+    _to_completion,
 )
 from core.runtime.supervisor import NUDGE, PROGRESSING, REPLAN
 from core.runtime.usage import Ledger, Rate
@@ -137,13 +139,17 @@ MAX_PLAN_STEPS = 8
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
-#: What a child run's records are called, for the observer.  Neither name
-#: reaches the wire — an OPTIONAL ``branch`` field is the parallel-children
-#: lane's (``ROADMAP.md`` §2.6.2, item 5) — and they exist so that the two
-#: kinds of child are named where they are made: the direct route is the
-#: mission continued, a plan step is one stage of it.  A step's branch is
-#: named for the step, so the day the field does reach the wire a consumer
-#: can demultiplex by plan id without this file changing.
+#: What a child run's records are called, and — since 0.16 — what every one
+#: of those records carries on the wire as the OPTIONAL ``branch`` field.
+#: They exist so that the two kinds of child are named where they are made:
+#: the direct route is the mission continued, a plan step is one stage of it.
+#: A step's branch is named for the step, so a consumer demultiplexes a
+#: turn whose steps ran side by side by plan id and nothing else.
+#:
+#: One name does two jobs, and deliberately: it names the records for the
+#: observer and it names the child's result store for the plane, which is
+#: what lets two steps hold ``mission_result`` at once.  See
+#: :meth:`core.runtime.run.Run.child`.
 _DIRECT = "direct"
 
 #: Every rung this runner knows how to describe.  The vocabulary is the
@@ -600,6 +606,31 @@ class SwarmRunner:
         two store reads had four turns, exhausted them, failed its gate on
         ``budget_exhausted`` and had the plan redrawn around whatever had
         fitted.  One turn, one ceiling, one clock, one supervisor.
+    parallel:
+        How many of a plan's steps may run **at the same time**.  ``1`` —
+        the default — is a serial turn, step after step in the plan's own
+        order, which is what a staged turn has always been and is what
+        every stream this repo has recorded was recorded from.
+
+        Above one, the steps whose ``needs`` have all settled are gathered
+        (:meth:`_wave`), and what makes that safe is not this number: it is
+        that a child run's records take their ``index`` from the turn's one
+        observer at emit time under a lock and carry the OPTIONAL
+        ``branch`` field, that each child publishes its own result store
+        behind the one registered ``mission_result``
+        (:meth:`~core.runtime.run.ToolPlane.lease`), that the audit's step
+        rides the dispatch instead of a dict on a shared bus, and that each
+        child spends into a ledger of its own that is folded back at the
+        join.  Those are properties of the runtime; this is the policy that
+        uses them.
+
+        **The default stays 1 in the lane that built it**, and that is a
+        decision rather than caution: parallel steps are a change in what a
+        turn *costs* and how it *reads*, and the evidence for flipping the
+        default is a suite scored both ways — same score, less wall time —
+        which is the eval harness's to produce and not this class's to
+        assume.  Nothing on the command line sets it; a library caller
+        that wants it says so.
     cancel:
         The mission's stop switch, shared the same way and checked at the
         same points: before triage, before a redraw, before the
@@ -665,6 +696,7 @@ class SwarmRunner:
         control: Any = None,
         gate_wait_s: float = GATE_WAIT_S,
         memory: Any = None,
+        parallel: int = 1,
     ):
         # THE ADAPTER, and it is `MissionRunner.__init__`'s adapter with
         # the staging knobs beside it: the same thirty parameters find the
@@ -794,6 +826,10 @@ class SwarmRunner:
         #: resumed stretch's `next_index` when there is a log to continue.
         #: Handed to each stage's branch, which is what allocates.
         self._start_index = 0
+        #: How many plan steps may run at once. `1` is serial and is the
+        #: default; see the class docstring for why the default did not
+        #: move in the lane that made the other number possible.
+        self._parallel = max(1, int(parallel))
         # A cap on the LENGTH of a list the planner writes, and no longer
         # than an operator's ceiling could pay for when there is one. See
         # the class docstring for why this is not one of the numbers that
@@ -934,7 +970,27 @@ class SwarmRunner:
 
     def run(self, objective: str,
             resumption: Optional[Any] = None) -> MissionTranscript:
+        """:meth:`arun`, run to completion.  **This method is the wrapper.**
+
+        The same policy :meth:`core.runtime.run.Run.run` is, through the
+        same function, because there is one answer in this package to "a
+        synchronous caller of an asynchronous loop" and a second copy of it
+        would be a second answer.  It makes no decision about the turn,
+        emits no record and holds no state; the turn is :meth:`arun`.
+        """
+        return _to_completion(self.arun(objective, resumption))
+
+    async def arun(self, objective: str,
+                   resumption: Optional[Any] = None) -> MissionTranscript:
         """Announce, triage, then one path or the other.
+
+        **This is the turn**, and it is a coroutine for one reason: a plan's
+        independent steps are children of one :class:`~core.runtime.run.Run`
+        and :func:`asyncio.gather` is how two of them run at once.  Every
+        ``await`` below is at a point this method already stopped at — a
+        sub-mission, which was a blocking call into another loop and is now
+        an awaited child on this one.  The router, the planner, the gates
+        and the synthesizer are unchanged single round trips.
 
         The announcement is FIRST, before triage — because triage is itself
         a call to the model, and the contract's silence clause says
@@ -1001,8 +1057,8 @@ class SwarmRunner:
         mine = True
         try:
             if resumption is not None:
-                return self._staged(objective, plan, transcript,
-                                    resumption=resumption)
+                return await self._staged(objective, plan, transcript,
+                                          resumption=resumption)
             stop = self._bounds.stop()
             if stop is not None:
                 # Already over before the router was asked. It happens on a
@@ -1025,8 +1081,8 @@ class SwarmRunner:
                 # machinery failing the question the machinery exists to
                 # serve.
                 mine = False
-                return self._direct(objective)
-            return self._staged(objective, plan, transcript)
+                return await self._direct(objective)
+            return await self._staged(objective, plan, transcript)
         finally:
             # ONE call site, in a `finally`, and that is the whole of this
             # record in this file. There were three — the exception out of
@@ -1085,7 +1141,7 @@ class SwarmRunner:
 
     # ── DIRECT: the path that already worked, untouched ─────────────────
 
-    def _direct(self, objective: str) -> MissionTranscript:
+    async def _direct(self, objective: str) -> MissionTranscript:
         """One whole mission, inside this turn's stream.
 
         A child with **nothing overridden but the branch**, and that is the
@@ -1101,8 +1157,15 @@ class SwarmRunner:
         made, and a child with a ledger of its own would report a turn that
         cost one call less than it did.
         """
-        return self._run.child(branch=_DIRECT,
-                               bounds=self._child_bounds()).run(objective)
+        # Awaited, not run: a child that reached for the synchronous
+        # façade from inside this coroutine would answer correctly and
+        # answer on a loop of its own — records emitted from somewhere
+        # else, and a sibling that could not be gathered beside it. It
+        # keeps the turn's ledger by identity, because its
+        # `mission_finished` is the TURN's and carries the router call
+        # that chose this route.
+        return await self._run.child(
+            branch=_DIRECT, bounds=self._child_bounds()).arun(objective)
 
     # ── TRIAGE ──────────────────────────────────────────────────────────
 
@@ -1319,9 +1382,9 @@ class SwarmRunner:
                 "outcome": "ok" if outcome.ok else "failed",
                 "summary": outcome.summary if outcome.ok else outcome.why}
 
-    def _staged(self, objective: str, plan: List[PlanStep],
-                transcript: MissionTranscript,
-                resumption: Optional[Any] = None) -> MissionTranscript:
+    async def _staged(self, objective: str, plan: List[PlanStep],
+                      transcript: MissionTranscript,
+                      resumption: Optional[Any] = None) -> MissionTranscript:
         # `run` opened the stream before triage; the plan did not exist then.
         # It travels on the first `step_started` instead — carried by the
         # observer, which is what every stage's branch drains. On a resumed
@@ -1347,12 +1410,56 @@ class SwarmRunner:
         # No `finally` writing `mission_finished` here: `run` owns that
         # record on every path this turn can take, which is what makes it
         # one call site rather than three.
-        return self._work_through(objective, plan, transcript,
-                                  resumption=resumption)
+        return await self._work_through(objective, plan, transcript,
+                                        resumption=resumption)
 
-    def _work_through(self, objective: str, plan: List[PlanStep],
-                      transcript: MissionTranscript,
-                      resumption: Optional[Any] = None) -> MissionTranscript:
+    def _wave(self, queue: List[PlanStep],
+              results: Dict[str, "_StepOutcome"]) -> List[PlanStep]:
+        """Which of the queued steps run **next**, and whether together.
+
+        The parallel policy, in one function, so that "which steps may run
+        at the same time" is a question with one answer rather than a
+        condition threaded through the loop below.
+
+        **The default is one**, and the one is ``queue[0]``: not the first
+        *ready* step but the first step, exactly as this loop has always
+        popped it.  A turn with :attr:`_parallel` at 1 does what a turn did
+        before this method existed, including running a step whose ``needs``
+        nothing settled — which happens when a plan names a step that was
+        dropped, and which is a step the executor is told about in its own
+        prompt rather than one the harness silently skips.
+
+        Above one, a step joins the wave when **every id it needs has
+        settled**.  A step cannot name another member of the wave, because a
+        name it holds is either settled — and then not in the queue — or
+        unsettled, and then this step is not a candidate; the check is
+        written out anyway, because "they do not name each other" is the
+        property that makes the wave safe and a reader should not have to
+        derive it.
+
+        Queue order decides ties, so a plan's own order is the order its
+        steps start in and the wave is a prefix of what a serial turn would
+        have done.  An empty candidate set falls back to the head of the
+        queue, for the reason the default does.
+        """
+        if self._parallel <= 1 or len(queue) == 1:
+            return queue[:1]
+        wave: List[PlanStep] = []
+        for step in queue:
+            needs = [str(need) for need in step.needs if need]
+            if any(need not in results for need in needs):
+                continue
+            if any(need == other.id for need in needs for other in wave):
+                continue                        # pragma: no cover - see above
+            wave.append(step)
+            if len(wave) >= self._parallel:
+                break
+        return wave or queue[:1]
+
+    async def _work_through(self, objective: str, plan: List[PlanStep],
+                            transcript: MissionTranscript,
+                            resumption: Optional[Any] = None,
+                            ) -> MissionTranscript:
         # `None` is no ceiling — the default — and an int is what an
         # operator's ceiling has left for the whole turn. There is no
         # per-step slice of it any more: see `_execute_step`.
@@ -1396,95 +1503,81 @@ class SwarmRunner:
         # replan and the synthesis — both model round trips this method makes
         # itself — and those are where the checks are.
         while queue:
-            step = queue.pop(0)
-            outcome, attempts, gathered, spent = self._execute_step(
-                objective, step, results, left)
-            if left is not None:
-                left = max(0, left - spent)
-            # Every attempt is folded in, not only the one that stuck: the
-            # transcript is the record of what ran, and a failed attempt's
-            # tool output is still real evidence the grounding check may
-            # need to support the answer with.
-            sub = attempts[-1] if attempts else None
-            for attempt in attempts:
-                self._fold_in(transcript, attempt)
-            evidence.extend(gathered)
-
-            if sub is not None and sub.outcome == AWAITING_APPROVAL:
-                # A person has to decide. The whole turn stops holding the
-                # proposed call — staging changes nothing about who answers
-                # for a gated act.
-                transcript.outcome = AWAITING_APPROVAL
-                transcript.awaiting = sub.awaiting
-                # Checkpointed on the way out, like every other step: a
-                # turn stopped for a person is the one a restart is most
-                # likely to be looking at.
-                done.append({"id": step.id, "outcome": AWAITING_APPROVAL,
-                             "summary": "awaiting a person's decision"})
-                self._checkpoint(steps_done=list(done))
-                return transcript
-
-            results[step.id] = outcome
-            # Per step, not per plan: a checkpoint written when the plan
-            # finishes is a checkpoint that never exists for the run that
-            # needed it.
-            done.append(self._step_done(outcome))
-            self._checkpoint(steps_done=list(done))
-            if outcome.ok:
-                continue
-
-            # A redraw is one or two more model round trips, and the step
-            # that just failed may have failed BECAUSE the clock ran out
-            # inside it — in which case replanning is the harness spending
-            # a bound it has already exceeded on planning work it cannot
-            # then do.
-            stop = self._bounds.stop()
-            if stop is not None:
-                return Run._stopped(transcript, stop)
-
-            # The supervisor's verdict and not a counter. A redraw used to
-            # be "once per turn, on any failure", which meant a plan that
-            # was right and a step that was unlucky bought the same redraw
-            # as a plan that could never have worked — and meant the second
-            # genuinely wrong plan of a turn could not be fixed. Now the
-            # step's own review says which of those this is, and the review
-            # budget bounds how many times it may say so.
-            if outcome.replan and (left is None or left > 0):
-                # A redraw around the failure, carrying what succeeded.
-                replanned = True
-                carried = {sid: r.summary for sid, r in results.items()
-                           if r.ok}
-                fresh = self._plan(objective, carried=carried,
-                                   failure=f"step {step.id} "
-                                           f"({step.goal}): {outcome.why}")
-                if fresh:
-                    # A COPY into the queue: `plan` below and `queue` here
-                    # would otherwise be one list, and `queue.pop(0)` empties
-                    # the plan the answer is then written from — which is a
-                    # plan of nothing by the time the last step has run.
-                    queue = list(fresh)
-                    # The plan the answer is written from is the plan the
-                    # steps belong to. This method used to keep the plan as
-                    # DRAWN in `plan` and hand that to `_synthesize`, while
-                    # a resume handed it the plan as CHECKPOINTED — two
-                    # owners of one fact, each dropping the other's step
-                    # results out of the synthesis. `_settled_order` takes
-                    # the union of this plan and everything else that
-                    # settled, so nothing that ran is lost either way.
-                    plan = fresh
-                    # The plan as REDRAWN replaces the plan as drawn, on the
-                    # stream and on the checkpoint alike: what a watcher
-                    # holds, and what a restart reads, has to be the plan
-                    # the steps arriving next belong to rather than the one
-                    # that was abandoned. `carry` replaces for that reason.
-                    self._observer.carry(plan=_plan_record(fresh))
-                    self._checkpoint(plan=_plan_state(fresh),
-                                     replanned=True)
+            wave = self._wave(queue, results)
+            for member in wave:
+                queue.remove(member)
+            # ONE `gather` and no branch on the count: a wave of one is a
+            # gather of one, which is the serial turn this loop has always
+            # run, and a second code path for it would be the one that
+            # rots. Each child is given the ceiling the TURN has left
+            # rather than a share of it — the slice is what starved the
+            # live run of 16 August — so a wave may overshoot by at most
+            # the work its members were already doing when it ran out,
+            # which is what "the operator's ceiling, checked between
+            # steps" has always meant.
+            ran = await asyncio.gather(*(
+                self._execute_step(objective, member, results, left)
+                for member in wave))
+            # Everything that ran is folded in FIRST, in the wave's own
+            # order, before anything decides what the turn does next: a
+            # step's transcript and its tool output are the record of what
+            # happened, and a sibling failing must not lose them. The
+            # decisions come after, in the same order, so the checkpoint a
+            # crash leaves behind is the one a serial turn would have left.
+            for member, (outcome, attempts, gathered, spent) in zip(wave, ran):
+                if left is not None:
+                    left = max(0, left - spent)
+                # Every attempt is folded in, not only the one that stuck:
+                # the transcript is the record of what ran, and a failed
+                # attempt's tool output is still real evidence the
+                # grounding check may need to support the answer with.
+                for attempt in attempts:
+                    self._fold_in(transcript, attempt)
+                evidence.extend(gathered)
+            # EVERY member of the wave is written down before any of them
+            # decides what happens next. A wave of one settles and then
+            # decides, which is the order this loop has always had; a wave
+            # of two must not let the first member's failure throw away the
+            # second member's result, which ran and is evidence.
+            awaiting = None
+            for step, (outcome, attempts, _ev, _sp) in zip(wave, ran):
+                stopped = self._settle(
+                    objective, step, outcome,
+                    attempts[-1] if attempts else None,
+                    results, done, transcript)
+                if stopped is not None and awaiting is None:
+                    awaiting = stopped
+            if awaiting is not None:
+                # A person has to decide, and the whole turn holds. The
+                # rest of the wave is settled above, so a resume reads what
+                # ran rather than a hole beside the gated call.
+                return awaiting
+            for step, (outcome, _at, _ev, _sp) in zip(wave, ran):
+                if outcome.ok:
                     continue
-            # Out of moves for this step: the failure is now part of the
-            # answer.  The steps still queued are dropped rather than run
-            # against a hole — their `needs` may name the failed step.
-            break
+                # A redraw is one or two more model round trips, and the
+                # step that just failed may have failed BECAUSE the clock
+                # ran out inside it — in which case replanning is the
+                # harness spending a bound it has already exceeded on
+                # planning work it cannot then do.
+                stop = self._bounds.stop()
+                if stop is not None:
+                    return Run._stopped(transcript, stop)
+                fresh = self._redraw(objective, step, outcome, results, left)
+                if fresh:
+                    replanned = True
+                    # A COPY into the queue: `plan` and `queue` would
+                    # otherwise be one list, and popping from it empties the
+                    # plan the answer is then written from.
+                    queue = list(fresh)
+                    plan = fresh
+                else:
+                    # Out of moves for this step: the failure is part of the
+                    # answer now, and the steps still queued are dropped
+                    # rather than run against a hole — their `needs` may
+                    # name the step that failed.
+                    queue = []
+                break
 
         # Synthesis is one more round trip, and the last one. A turn whose
         # clock ran out on the final step must not spend a further model
@@ -1496,9 +1589,89 @@ class SwarmRunner:
         return self._synthesize(objective, plan, results, evidence,
                                 transcript)
 
-    def _execute_step(self, objective: str, step: PlanStep,
-                      results: Dict[str, _StepOutcome],
-                      left: Optional[int]):
+    def _settle(self, objective: str, step: PlanStep,
+                outcome: "_StepOutcome", sub: Optional[MissionTranscript],
+                results: Dict[str, "_StepOutcome"],
+                done: List[Dict[str, str]],
+                transcript: MissionTranscript) -> Optional[MissionTranscript]:
+        """Write one finished step down.  A transcript back ENDS the turn.
+
+        Lifted out of :meth:`_work_through` when a wave could hold more
+        than one finished step, and lifted rather than copied: what a
+        settled step does to the results, the checkpoint and an approval
+        that stopped the turn is one thing, and a second copy of it for
+        the parallel case is how this file once came to hold six of ten
+        grounding fields.
+        """
+        if sub is not None and sub.outcome == AWAITING_APPROVAL:
+            # A person has to decide. The whole turn stops holding the
+            # proposed call — staging changes nothing about who answers
+            # for a gated act.
+            transcript.outcome = AWAITING_APPROVAL
+            transcript.awaiting = sub.awaiting
+            # Checkpointed on the way out, like every other step: a
+            # turn stopped for a person is the one a restart is most
+            # likely to be looking at.
+            done.append({"id": step.id, "outcome": AWAITING_APPROVAL,
+                         "summary": "awaiting a person's decision"})
+            self._checkpoint(steps_done=list(done))
+            return transcript
+
+        results[step.id] = outcome
+        # Per step, not per plan: a checkpoint written when the plan
+        # finishes is a checkpoint that never exists for the run that
+        # needed it.
+        done.append(self._step_done(outcome))
+        self._checkpoint(steps_done=list(done))
+        return None
+
+    def _redraw(self, objective: str, step: PlanStep,
+                outcome: "_StepOutcome", results: Dict[str, "_StepOutcome"],
+                left: Optional[int]) -> List[PlanStep]:
+        """A plan to carry on with after *step* failed, or ``[]`` for none.
+
+        Empty is out of moves — the failure is part of the answer now —
+        and the caller is what does something about it.  The clock is the
+        caller's question too, asked before this: a redraw is a model round
+        trip, and the step may have failed because time ran out inside it.
+
+        The supervisor's verdict and not a counter. A redraw used to be
+        "once per turn, on any failure", which meant a plan that was right
+        and a step that was unlucky bought the same redraw as a plan that
+        could never have worked — and meant the second genuinely wrong
+        plan of a turn could not be fixed. Now the step's own review says
+        which of those this is, and the review budget bounds how many
+        times it may say so.
+        """
+        if not (outcome.replan and (left is None or left > 0)):
+            return []
+        # A redraw around the failure, carrying what succeeded.
+        carried = {sid: r.summary for sid, r in results.items() if r.ok}
+        fresh = self._plan(objective, carried=carried,
+                           failure=f"step {step.id} "
+                                   f"({step.goal}): {outcome.why}")
+        if not fresh:
+            return []
+        # The plan the answer is written from is the plan the steps belong
+        # to. This class used to keep the plan as DRAWN and hand that to
+        # `_synthesize`, while a resume handed it the plan as CHECKPOINTED
+        # — two owners of one fact, each dropping the other's step results
+        # out of the synthesis. `_settled_order` takes the union of the
+        # current plan and everything else that settled, so nothing that
+        # ran is lost either way.
+        #
+        # The plan as REDRAWN replaces the plan as drawn, on the stream and
+        # on the checkpoint alike: what a watcher holds, and what a restart
+        # reads, has to be the plan the steps arriving next belong to
+        # rather than the one that was abandoned. `carry` replaces for that
+        # reason.
+        self._observer.carry(plan=_plan_record(fresh))
+        self._checkpoint(plan=_plan_state(fresh), replanned=True)
+        return fresh
+
+    async def _execute_step(self, objective: str, step: PlanStep,
+                            results: Dict[str, _StepOutcome],
+                            left: Optional[int]):
         """Run one step, and let the supervisor say what a failed gate means.
 
         Returns ``(outcome, attempts, evidence, tool_turns_spent)`` —
@@ -1541,11 +1714,21 @@ class SwarmRunner:
             # ONE `Run.child` where there were two constructors, each
             # threading twenty collaborators by hand. What differs between
             # a stage and the turn is exactly what is named here: the
-            # prompt it is given, what an operator's ceiling has left, and
-            # that its records are one stage's rather than the mission's.
-            # Everything else — the plane, the store, the observer, the
-            # model and therefore the ledger, the clock, the switch, the
-            # channel and the supervisor — is the parent's, by identity.
+            # prompt it is given, what an operator's ceiling has left, the
+            # branch it is — which names its records AND its result store —
+            # and the ledger it spends into. Everything else — the plane,
+            # the store, the observer, the model, the clock, the switch,
+            # the channel and the supervisor — is the parent's, by
+            # identity.
+            #
+            # A ledger of its OWN, folded back below. Two children spending
+            # into one accumulator would be arithmetic under concurrency,
+            # and `ROADMAP.md` §2.6.2 item 2 says which of the two ways out
+            # this repo takes: not a lock around the fold, but a join that
+            # is single-threaded. The numbers are identical to a shared
+            # ledger's for a serial turn — the corpus is what says so —
+            # because a fold of a fold is the same sum.
+            attempt_ledger = Ledger()
             child = self._run.child(
                 personality=replace(
                     self._run.personality,
@@ -1570,9 +1753,21 @@ class SwarmRunner:
                     # whole agent answering the whole question.
                     history=(), grounding=None, critic=None, memory=None),
                 bounds=self._child_bounds(allowance),
-                branch=step.id, stage=True, start_index=self._start_index)
-            sub = child.run(
+                branch=step.id, stage=True, start_index=self._start_index,
+                ledger=attempt_ledger)
+            # AWAITED, not run. `child.run(...)` from inside this coroutine
+            # would open a loop of its own on a worker thread: correct, and
+            # a sibling that cannot be gathered beside it.
+            sub = await child.arun(
                 self._step_objective(objective, step, results, failure))
+            # THE JOIN, and it is here rather than after the gather because
+            # the supervisor is asked about a failed gate a few lines down
+            # and is handed the turn's ledger: a reviewer shown a total
+            # that does not yet include the step it is reviewing is being
+            # shown the wrong number. One statement, no awaits inside
+            # `absorb`, on the one loop these children share — which is
+            # what "single-threaded" means here.
+            self._ledger.absorb(attempt_ledger)
             attempts.append(sub)
             evidence.extend(child.results.evidence_texts())
             self._note_calls(child)
