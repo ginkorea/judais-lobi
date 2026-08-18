@@ -120,6 +120,7 @@ merges. Version bump every phase.
 | 11 | One runtime (0.12) | ⏳ property 5. Not started; §1.2's "two agent runtimes" is its whole case |
 | 12 | Providers and streaming (0.13) | ✅ properties 4 and 6 — constrained decoding (0.11.0), `answer_delta` + the AG-UI translator + the control channel (0.12.0), and the provider work — one HTTP policy owner and `--provider anthropic` (0.14.0) |
 | 13 | Embeddable (1.0) | ⏳ property 6. The control channel came out of its list early; the library API has not started |
+| 15 | First-party skills | ⏳ research / repo / knowledge / ops as manifests + eval missions (§2.6b); one ships before 1.0 |
 | 14 | The step budget is gone (0.15) | ✅ 0.15.0 — no framework step budget; operator ceilings only; `core/runtime/supervisor.py` catches repetition (§2.6a) |
 
 The release numbers in the second column are February's guesses at which
@@ -791,6 +792,31 @@ on a plainly broken tool. Open: a resumed run starts watching afresh (the
 nudge never travelled as a message — the gap operator injections have too).
 Phase 9's "bounded" now reads: bounded by the operator, supervised by the
 framework.
+
+### 2.6b Phase 15 — first-party skills (after the harness reaches 1.0)
+
+Owner, 17 Aug 2026: "one area where I think we are lacking … are the skills or
+missions that we had originally set out to build." Correct: the harness ate
+the roadmap. The tools exist (`core/tools/`: web search/research/fetch, the
+RAG crawler, repo map, patch, verify, git, sandboxed shell/python) and the
+kernel's workflows exist, but the only manifest in the repo is the eval stub;
+`http.read` is an OPS scope so web research is denied under `safe`/`dev`;
+`wip/web-research-fetcher` has been parked since February; February's
+`--task`/`--campaign`/`--search`/`--rag` surface (§5.6) was the promise of
+these skills.
+
+Plan: `core/skills/library/<name>/SKILL.md` as package data (the wheel's
+top-level set unchanged), loaded by the façade (`Skill.load("research")`) and
+by `--skill research`; `judais`/`lobi` mission-capable with zero flags. The
+set — each a manifest **plus eval missions in the in-repo suite** so
+`core.eval live` scores it, written against the finished `Run` and measured
+on the local model: `research` (with a `research` profile or scoped grant so
+`http.read` is reachable without OPS — closes the 0.9.0 residual), `repo`
+(the coding kernel's workflows as a mission skill on the one runtime, which
+lane E made possible), `knowledge` (RAG + memory), `ops` (sandboxed
+shell/python); specialised planes stay manifest choices under OPS/GOD. One of
+them (`research` or `repo`) ships as the default skill before 1.0 so §4's
+"zero flags" claim is a mission and not a chat.
 
 ### 2.7 Phase 12 — providers and streaming (0.13)
 
