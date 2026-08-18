@@ -462,7 +462,7 @@ self-report.
   clause, not a gate — a generic gate would withhold the rung from a bridged
   code tool).
 
-### 2.6 Phase 11 — one runtime (0.12→0.14)
+### 2.6 Phase 11 — one runtime (0.16) — approved and in progress, 17 Aug 2026
 
 Property 5. §1.2's "two agent runtimes" row is the whole case, and it has grown
 a third claimant since it was written: `MissionRunner` (2,858 lines),
@@ -511,16 +511,19 @@ class ToolPlane:                # the only way out, and who may say yes to it
     def narrow(self, scopes: Sequence[str]) -> "ToolPlane": ...
 
 @dataclass(frozen=True)
-class Bounds:                   # every number that can stop a run, in one place
-    max_steps: int = 8
+class Bounds:                   # everything that can stop a run, in one place
+    max_steps: int = 0                  # 0 = no ceiling; an OPERATOR's --mission-steps only (0.15.0)
     deadline: Optional[Deadline] = None
     cancel: Any = None
     control: Any = None
     gate_wait_s: float = GATE_WAIT_S
     max_result_bytes: int = MAX_RESULT_BYTES
     started_at: Optional[float] = None
+    supervisor: Optional[Supervisor] = None            # 0.15.0: what watches a run instead of a budget
     def stop(self) -> Optional[Stop]: ...              # mission._stop, once
-    def portion(self, steps: int) -> "Bounds": ...     # steps split, clock shared
+    # (0.15.0) there is no portion(): the step budget is gone, a child shares
+    # the same Bounds — one clock, one review budget — and the Supervisor is
+    # what a child inherits.
 
 @dataclass(frozen=True)
 class Store:                    # what survives the process
@@ -571,12 +574,10 @@ each fact:
 | a child's records | `Observer.branch()` | `_OpenedAlready` and `_StageObserver` collapse into it |
 | bounding a summary | `core.bounding.bound_result` | `SwarmRunner._bound_summary` |
 
-Two Phase 10 findings (§2.5) land here and nowhere else: the offered set is
-fixed at mission start although the bus can grow mid-run — `ToolPlane.lease()`
-is where a refresh becomes expressible (lane AF ships the first form of it on
-`MissionRunner`); and the manifest code gate fires on a bridged
-`mcp.run_shell_command` NAME, which is `ToolPlane`'s question now that there is
-an object to ask.
+Two Phase 10 findings (§2.5) were closed in 0.14.0 on `MissionRunner`
+(`_relearn_the_plane` + `admits`/`plane_changed`; the `tool_key` gate rule) and
+move into `ToolPlane` here: `lease()` is the refresh made data, and the gate
+rule is `ToolPlane`'s question now that there is an object to ask.
 
 #### 2.6.2 The four modes compose
 
@@ -592,8 +593,8 @@ They stop being four loops and become four ways of *withholding* a collaborator.
 * **mission** — tools + grounding. This is today's `MissionRunner`, unchanged
   on the wire.
 * **swarm** — a `PlannerRole` that spawns child `Run`s via `Run.child()`,
-  sharing **one** `Bounds` (clock shared, steps portioned — `Bounds.portion`,
-  which is swarm.py's "two budgets, two behaviours" made data), one `Store`,
+  sharing **one** `Bounds` (one clock, one supervisor review budget — the
+  per-step slice went in 0.15.0), one `Store`,
   one `Observer`, one `Model` (therefore one `Ledger`). `_direct` and `_runner`
   become one `child()`. The renumbering is the Observer's: `Observer.branch()`
   allocates the global `index` at emit time and carries the pending `plan` onto
@@ -667,9 +668,10 @@ recorded ones. Lane A ships when that diff is empty.
 
 **Lane B — the swarm becomes a `Run` client.** Delete the ten second emitters
 in the table above; `_StageObserver`/`_OpenedAlready` → `Observer.branch`;
-`_runner`/`_direct` → `Run.child`. Lane B owes the corpus a staged fixture —
-`run_corpusswarm-0001`, recorded against `master` *before* the lane's first
-edit (lane AH records it).
+`_runner`/`_direct` → `Run.child`. The staged corpus fixture
+`run_corpusswarm-0001` exists (0.14.0, lane AH) and is lane B's guard beside
+the other two. The supervisor's `review_gate`/`replan` (0.15.0) and the
+synthesizer over whole evidence (0.14.1) are swarm behaviours that stay.
 
 **Lane C — async core, sync façade.** `arun` is the loop, `run` is the wrapper,
 the corpus diff runs again unchanged.
