@@ -1,6 +1,6 @@
 # tests/test_run_corpus.py — the extraction's guard: yesterday's runs, again
 
-"""Three recorded runs and nineteen recorded streams, replayed on the new code.
+"""Four recorded runs and nineteen recorded streams, replayed on the new code.
 
 The usual rule — every new assertion must be shown to fail — is
 unsatisfiable for a refactor, because a correct extraction's assertions
@@ -11,9 +11,12 @@ emissions, skip the redactor, and the diff below turns red.  See
 
 Two halves, and they catch different things.
 
-The **run corpus** (``tests/fixtures/runs/``) is three complete recordings
-made against the real stub server — one under each protocol and one staged
-``--swarm`` turn — replayed here through ``--replay``'s own machinery, with
+The **run corpus** (``tests/fixtures/runs/``) is four complete recordings
+made against the real stub server — one under each protocol, one staged
+``--swarm`` turn, and one staged turn whose synthesized answer could not
+support itself (the caveat branch, which lane B moved to a new owner and
+which no fixture reached before) — replayed here through ``--replay``'s own
+machinery, with
 the backend wired to raise if anything asks it a question.  What is asserted
 is the whole stream, record for record, field for field, against the
 committed ``events.jsonl`` — and **no drift**, which is the other half of
@@ -50,8 +53,9 @@ from tests.test_eval_stub_suite import (
     FIXTURES, SCRIPTS, _fixture_path, drive, workdir,
 )
 from tests.test_record_replay import (
-    CORPUS, CORPUS_RUNS, MOVES, REPLAY_FLAGS, comparable, corpus, records,
-    replay_argv, replayed, run_cli, scripted_elf, write_skill,
+    CORPUS, CORPUS_RUNS, MOVES, REPLAY_FLAGS, REPLAY_SKILL, SKILL, comparable,
+    corpus, records, replay_argv, replayed, run_cli, scripted_elf,
+    write_skill,
 )
 
 #: The verdict columns a re-run of a committed eval stream may move, and
@@ -81,6 +85,19 @@ STALE = {
         "tokens",
     },
 }
+
+
+def skill(tmp_path, run_id):
+    """The manifest *run_id* was recorded under, written where the CLI can
+    read it.
+
+    Almost always the default one.  A replay rebuilds the loop's own
+    decisions rather than replaying them, so a run recorded under a
+    different grounding grammar has to be replayed under that grammar or
+    the diff below is comparing two different missions — see
+    ``REPLAY_SKILL``, which is the one owner of that mapping.
+    """
+    return write_skill(tmp_path, REPLAY_SKILL.get(run_id, SKILL))
 
 
 def committed_records(run_id):
@@ -131,13 +148,13 @@ class TestTheGuardIsNotQuietlyWidened:
 
 
 class TestTheRecordedRunsReplayUnchanged:
-    """The three committed runs, record for record, against the fixture."""
+    """Every committed run, record for record, against the fixture."""
 
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_replayed_stream_is_the_committed_stream(
             self, corpus, tmp_path, run_id):
         MockClass, _ = scripted_elf(refuse=True)
-        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path),
+        run_cli(MockClass, *replay_argv(run_id, skill(tmp_path, run_id),
                                         *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
         assert comparable(records(corpus, fresh.run_id)) == \
@@ -154,7 +171,7 @@ class TestTheRecordedRunsReplayUnchanged:
         like from outside.
         """
         MockClass, _ = scripted_elf(refuse=True)
-        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path),
+        run_cli(MockClass, *replay_argv(run_id, skill(tmp_path, run_id),
                                         *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
         assert [r["event"] for r in records(corpus, fresh.run_id)] == \
@@ -171,7 +188,7 @@ class TestTheRecordedRunsReplayUnchanged:
         taking a required field off the wire.
         """
         MockClass, _ = scripted_elf(refuse=True)
-        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path),
+        run_cli(MockClass, *replay_argv(run_id, skill(tmp_path, run_id),
                                         *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
         assert shapes(records(corpus, fresh.run_id)) == \
@@ -189,7 +206,7 @@ class TestTheRecordedRunsReplayUnchanged:
         questions.
         """
         MockClass, _ = scripted_elf(refuse=True)
-        run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path),
+        run_cli(MockClass, *replay_argv(run_id, skill(tmp_path, run_id),
                                         *REPLAY_FLAGS.get(run_id, ())))
         drift = replayed(corpus, run_id).meta["drift"]
         assert drift["first"] is None, drift

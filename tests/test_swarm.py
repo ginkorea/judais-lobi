@@ -14,7 +14,8 @@ from core.runtime.mission import (
     ANSWER_TOOL, AWAITING_APPROVAL, NATIVE_PROTOCOL, MissionRunner,
 )
 from core.runtime.supervisor import Supervisor
-from core.runtime.swarm import PlanStep, SwarmRunner, _StageObserver
+from core.runtime.run import Observer as RunObserver
+from core.runtime.swarm import PlanStep, SwarmRunner
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
 from core.tools.descriptors import ToolDescriptor
@@ -517,21 +518,28 @@ class TestThePlanWaitsForAStep:
     of the runner underneath, which is not this object's to promise.
     """
 
-    def _observer(self, emitted):
-        from core.runtime.swarm import _StageObserver
+    def _branch(self, emitted):
+        """One turn's observer, and a stage of it.
 
-        return _StageObserver(
-            lambda event, **fields: emitted.append((event, fields)))
+        ``_StageObserver`` was this filter and is now
+        :meth:`core.runtime.run.Observer.branch`'s object; what the swarm
+        carries onto the next step it carries on the PARENT, because the
+        child that will take it may not exist yet.
+        """
+        parent = RunObserver(lambda record: emitted.append(
+            (record["event"], {k: v for k, v in record.items()
+                               if k != "event"})))
+        return parent, parent.branch("s1", stage=True)
 
     def test_a_record_that_is_not_a_step_does_not_take_the_plan(self):
-        from core.runtime.swarm import PlanStep
+        from core.runtime.swarm import PlanStep, _plan_record
 
         emitted = []
-        stage = self._observer(emitted)
-        stage.announce([PlanStep(id="s1", goal="find it", rung="tool")])
-        stage({"event": "tool_call", "index": 0, "tool": "catalog.search",
-               "arguments": {}})
-        stage({"event": "step_started", "index": 1})
+        parent, stage = self._branch(emitted)
+        parent.carry(plan=_plan_record(
+            [PlanStep(id="s1", goal="find it", rung="tool")]))
+        stage.emit("tool_call", index=0, tool="catalog.search", arguments={})
+        stage.emit("step_started", index=1)
         assert [event for event, _ in emitted] == ["tool_call", "step_started"]
         assert "plan" not in emitted[0][1]
         assert [s["id"] for s in emitted[1][1]["plan"]] == ["s1"]
@@ -1161,9 +1169,18 @@ class TestContextIsBounded:
     def test_a_caller_who_asks_for_a_cut_gets_exactly_that_cut(self, bus):
         """`summary_chars` is still a knob, and it still says so in the
         text: a reader of the next step's prompt can tell a short result
-        from a shortened one."""
+        from a shortened one.
+
+        The cut is `core.bounding.bound_result`'s now, under the marker
+        every other bounded result in this harness wears. The swarm used
+        to make its own — head-only, in characters, under a marker of its
+        own — which was a fifth implementation of the rule that module
+        exists to be the one owner of, and the worst of them: a head-only
+        cut throws away the totals a governed view puts at the bottom.
+        """
         step2 = self._long_answer_run(bus, summary_chars=1_200)
-        assert "[cut at 1200 characters]" in step2
+        assert "[truncated: 720 head + 480 tail bytes of" in step2
+        assert "must not be guessed at" in step2
         assert len(step2) < 3_000
 
     def test_by_default_the_whole_of_a_steps_result_reaches_the_next_step(
@@ -1172,7 +1189,7 @@ class TestContextIsBounded:
         starved the run of 16 August. The bound is the window now: a step's
         result travels whole and `_fit` bounds the prompt it lands in."""
         step2 = self._long_answer_run(bus)
-        assert "[cut at" not in step2
+        assert "[truncated:" not in step2
         assert "corpus.abc123 " + "x" * 10_000 in step2
 
     def test_raw_tool_output_never_reaches_the_planner_or_an_executor(self, calls):
@@ -1383,15 +1400,15 @@ class TestAStepHasNoSliceOfAnything:
         derived per step would be a slice by another name."""
         built = []
         runner = swarm(ScriptedModel(), ScriptedModel(), bus)
-        original = runner._runner
+        original = runner._run.child
 
         def spy(**kw):
-            built.append(kw["max_steps"])
+            built.append(kw["bounds"].max_steps)
             return original(**kw)
 
-        runner._runner = spy
+        runner._run.child = spy
         runner._execute_step("go", PlanStep(id="s1", goal="g", rung="tool"),
-                             {}, _StageObserver(lambda *a, **k: None), None)
+                             {}, None)
         assert built == [0]
 
     def test_the_plan_cap_is_a_cap_on_a_list_and_not_on_work(self, bus):
@@ -1841,19 +1858,33 @@ class TestTheRunIsRecorded:
         swarm(plain, executor, bus, observer=sink).run("q")
         assert "run_id" not in sink.of("mission_started")[0]
 
-    def test_a_sub_mission_is_not_handed_the_store(self, bus, tmp_path):
-        """One writer per run. The sub-runner's records arrive here to be
-        renumbered; a store on the sub-runner would log the pre-renumbered
-        copy as well."""
+    def test_a_sub_mission_writes_nothing_of_its_own(self, bus, tmp_path):
+        """One writer per run, and the sub-mission is not it.
+
+        It used to be stated by withholding the store from the sub-runner
+        — it was handed the id and not the log. A child shares its
+        parent's :class:`~core.runtime.run.Store` now, which is the same
+        one object rather than half of one, and what makes it one writer
+        is that the child emits into a BRANCH: nothing reaches a sink or
+        the log except through the parent's own ``emit``. So the property
+        is asserted where it lives — the count of records on disk — rather
+        than by looking for an absence.
+        """
         store = self.store(tmp_path)
         run_id = store.create().run_id
         runner = swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "ok"}'),
                        bus, run_store=store, run_id=run_id)
-        built = runner._runner(system_message="x", max_steps=2)
-        assert built._run_store is None
-        # The id itself IS handed down: an approval request a sub-mission
-        # writes must name the run that asked, and there is one id per turn.
-        assert built.run_id == run_id
+        child = runner._run.child(branch="s1", stage=True)
+        assert child.store is runner._run.store
+        # The id IS the turn's: an approval request a sub-mission writes
+        # must name the run that asked, and there is one id per turn.
+        assert child.run_id == run_id
+        runner.run("q")
+        # Every step of the turn, once each: a second writer would put the
+        # sub-mission's own numbering in the log beside the global one.
+        indexes = [record["index"] for record in store.records(run_id)
+                   if "index" in record]
+        assert indexes == sorted(set(indexes))
 
     def test_the_id_is_readable_off_the_runner(self, bus, tmp_path):
         store = self.store(tmp_path)
@@ -3317,29 +3348,36 @@ class TestTheSwarmSharesOneControlChannel:
             time.sleep(0.002)
         return chan
 
+    def _handed(self, plain, executor, bus, **kw):
+        """The ``control`` every child of one turn was bounded by.
+
+        Read off the children rather than off a constructor's keyword: a
+        sub-mission is `Run.child` now, and what it is steered by is a
+        field of the `Bounds` it inherits.
+        """
+        runner = swarm(plain, executor, bus, **kw)
+        handed = []
+        original = runner._run.child
+
+        def watched(**kwargs):
+            child = original(**kwargs)
+            handed.append(child.bounds.control)
+            return child
+
+        runner._run.child = watched
+        runner.run("go")
+        return handed
+
     def test_every_sub_mission_is_handed_the_same_object(self, bus):
         """One object, not one apiece: the identity is the property, and a
         copy per stage would be five places an instruction could land."""
-        import core.runtime.swarm as swarm_module
-
         chan = self._channel()
-        handed = []
-        real = swarm_module.MissionRunner
-
-        def watched(*args, **kwargs):
-            handed.append(kwargs.get("control"))
-            return real(*args, **kwargs)
-
-        swarm_module.MissionRunner = watched
-        try:
-            plain = ScriptedModel(STAGED, TWO_STEPS, '{"pass": true}',
-                                  '{"pass": true}', "Final: corpus.abc123")
-            executor = ScriptedModel(
-                tool_call("catalog.search", q="a"), '{"answer": "a"}',
-                tool_call("catalog.search", q="b"), '{"answer": "b"}')
-            swarm(plain, executor, bus, control=chan).run("go")
-        finally:
-            swarm_module.MissionRunner = real
+        plain = ScriptedModel(STAGED, TWO_STEPS, '{"pass": true}',
+                              '{"pass": true}', "Final: corpus.abc123")
+        executor = ScriptedModel(
+            tool_call("catalog.search", q="a"), '{"answer": "a"}',
+            tool_call("catalog.search", q="b"), '{"answer": "b"}')
+        handed = self._handed(plain, executor, bus, control=chan)
         assert handed and all(one is chan for one in handed)
 
     def test_an_injection_reaches_the_sub_mission_that_is_running(self, bus):
@@ -3400,19 +3438,5 @@ class TestTheSwarmSharesOneControlChannel:
                                               "mission_finished"]
 
     def test_a_turn_with_no_channel_hands_none_down(self, bus):
-        import core.runtime.swarm as swarm_module
-
-        handed = []
-        real = swarm_module.MissionRunner
-
-        def watched(*args, **kwargs):
-            handed.append(kwargs.get("control"))
-            return real(*args, **kwargs)
-
-        swarm_module.MissionRunner = watched
-        try:
-            swarm(ScriptedModel(DIRECT), ScriptedModel('{"answer": "ok"}'),
-                  bus).run("go")
-        finally:
-            swarm_module.MissionRunner = real
-        assert handed == [None]
+        assert self._handed(ScriptedModel(DIRECT),
+                            ScriptedModel('{"answer": "ok"}'), bus) == [None]

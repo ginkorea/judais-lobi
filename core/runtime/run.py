@@ -359,6 +359,28 @@ class Bounds:
         object.__setattr__(self, "max_result_bytes",
                            max(0, int(self.max_result_bytes)))
 
+    def begin(self) -> float:
+        """Start the wall clock, and answer when the run it bounds began.
+
+        **The one owner of "a run's clock starts here".**  There were two:
+        :meth:`Run.run` wound the :class:`~core.budgets.Deadline` and the
+        staged path wound it again before triage, each with its own
+        ``if deadline is not None``.  The two agreed only because
+        :meth:`~core.budgets.Deadline.start` is first-start-wins — which
+        is the property that makes one caller safe and is not an argument
+        for two.
+
+        The instant that comes back is ``started_at`` when a parent handed
+        one down and *now* when nobody did, so a sub-mission's
+        ``elapsed_s`` counts from the turn's triage rather than from its
+        own first step.  Returned rather than written back: this object is
+        frozen and shared, and whoever is running is the one that resolves
+        it.
+        """
+        if self.deadline is not None:
+            self.deadline.start()
+        return time.monotonic() if self.started_at is None else self.started_at
+
     def stop(self) -> Optional[Tuple[str, Optional[BudgetExhausted], str]]:
         """``(outcome, budget, reason)`` when the run must stop, else ``None``.
 
@@ -462,6 +484,23 @@ class Observer:
         #: The durable log these records are written to.  See the class
         #: docstring; an empty :class:`Store` is "nothing is recorded".
         self.store = store if store is not None else Store()
+        #: The next ``index`` a child's record may take in this run's ONE
+        #: sequence.  Allocated by :meth:`branch`'s object at emit time and
+        #: kept here, on the parent, because the sequence is the *run's* and
+        #: not any one child's: a staged turn runs five sub-missions that
+        #: each count their own steps from zero, and what a watcher must
+        #: read is one mission with more steps.  Not a lock yet — the
+        #: allocation is a read and a write, and it is safe while the join
+        #: is single-threaded, which it is until the parallel-children lane
+        #: (``ROADMAP.md`` §2.6.2, item 5).
+        self._next_index = 0
+        #: Fields waiting for the next ``step_started`` **any** child emits
+        #: — see :meth:`carry`.  Here rather than on a branch because the
+        #: thing they are waiting for may not be the next record of the
+        #: child that is running: a staged plan is announced before the
+        #: first sub-mission exists, and a review of a failed gate happens
+        #: between two of them.
+        self._carried: Dict[str, Any] = {}
 
     def emit(self, event: str, **fields: Any) -> None:
         """One record to every watcher, or nothing.  Never raises.
@@ -498,18 +537,137 @@ class Observer:
         except Exception:                       # pragma: no cover - defensive
             pass
 
-    def branch(self, name: str) -> "Observer":
+    def carry(self, **fields: Any) -> None:
+        """Put *fields* on the next ``step_started`` a child of this
+        observer emits.
+
+        ``plan``, ``resumed`` and ``review`` are declared OPTIONAL on
+        ``step_started`` and on no other event, so a field an event does
+        not declare is a field a consumer meets with no sentence for.  Each
+        of the three becomes true *between* records: a staged plan is drawn
+        before the first sub-mission exists, a resumption is a fact about
+        the stretch that is starting, and a review of a failed gate happens
+        after one sub-mission ended and before the next begins.  So they
+        wait here for the next step to ride, which is the next thing a
+        watcher hears and the moment each of them starts being true.
+
+        Waiting on the *parent* and not on a branch, because the child that
+        will carry them may not exist yet — see :attr:`_carried`.  Called
+        again with the same key replaces it: a plan as redrawn is the plan
+        the steps arriving next belong to, not a second plan beside the one
+        that was abandoned.
+        """
+        self._carried.update(fields)
+
+    def _take(self) -> Dict[str, Any]:
+        """What :meth:`carry` left, once.  Draining is the point: a field
+        that arrived on every step would be a state restated rather than an
+        event announced."""
+        carried, self._carried = self._carried, {}
+        return carried
+
+    def branch(self, name: str = "", *, stage: bool = False,
+               start_index: int = 0) -> "Observer":
         """A second observer for a child run, on the same sinks and log.
 
         The sinks and the :class:`Store` are shared **by identity**: one
-        run, one log, one writer, whatever the records are called.  What a
-        branch will grow into is what ``_StageObserver`` does by hand today
-        — a global ``index`` allocated at emit time and a pending ``plan``
-        carried onto the next ``step_started`` — and that is the swarm
-        lane's (``ROADMAP.md`` §2.6.4, lane B).  Here it is the name and
-        nothing else, and the name does not reach the wire.
+        run, one log, one writer, whatever the records are called.  The
+        child emits into what comes back and never learns that it is a
+        child — which is the whole of what this is for, because a loop that
+        knew would be a loop with a staged branch in it.
+
+        *stage* is the one decision, and it is the difference between the
+        two things a child run can be:
+
+        * **the mission continued** (``False``) — the direct route of a
+          staged turn, which is a whole agent answering the whole question.
+          Its ``answer``, its ``grounding`` and its ``mission_finished``
+          are the turn's, and only its ``mission_started`` is not: the
+          parent announced the mission before triage, because triage is
+          itself a call to the model and the contract's silence clause
+          promises an opening ahead of the first one.  A second opening
+          would render as a second mission.
+        * **one stage of it** (``True``) — a plan step, whose bookkeeping
+          belongs to the turn and not to it.  Only the five step-level
+          records reach the stream, its ``index`` is renumbered into the
+          parent's one sequence, and its opening *and* its closing are
+          dropped — the turn's ``mission_finished`` is written where the
+          turn ends, which is after the synthesizer and not after step
+          three.
+
+        *start_index* is where the global numbering begins, and it is ``0``
+        everywhere except a resumed staged turn: those records go into the
+        log an earlier stretch wrote, and numbering that started again
+        would put two records with the same ``index`` in one run.
         """
-        return Observer(*self.sinks, branch=name, store=self.store)
+        return _Branch(self, name, stage=stage, start_index=start_index)
+
+
+class _Branch(Observer):
+    """A child run's records, spoken as the parent's.
+
+    What ``SwarmRunner._StageObserver`` and ``_OpenedAlready`` were, and
+    they were two objects because they were reached as *callbacks* — a
+    sub-runner was handed something record-shaped to call, and the two
+    filters were the two shapes of that call.  A child is handed an
+    :class:`Observer` now, so both are one subclass of one: the transform
+    happens in :meth:`emit`, and what it emits into is the parent's own
+    :meth:`Observer.emit` — the one choke point, where redaction happens
+    and where the durable log is written.  One scrub, one append, one
+    stream, whichever child spoke.
+
+    Not a filter *beside* the parent but a caller *of* it, and that is the
+    property that matters: there is no path from a child to a sink that
+    does not pass through the parent, so a record a consumer saw is a
+    record the transcript has.
+    """
+
+    #: What a **stage** contributes to the turn's stream: the records of
+    #: work, and none of the bookkeeping.  A sub-mission's own opening and
+    #: closing describe a mission a watcher must not be shown, and its
+    #: ``answer`` is a step's summary rather than the turn's answer.
+    _STAGE = frozenset({
+        STEP_STARTED, REPLY_REJECTED, TOOL_CALL, TOOL_RESULT, GATE_REQUESTED,
+    })
+
+    def __init__(self, parent: Observer, name: str = "", *,
+                 stage: bool = False, start_index: int = 0):
+        super().__init__(*parent.sinks, branch=name, store=parent.store)
+        self._parent = parent
+        self._stage = bool(stage)
+        # Taken at the door and not at the first record: the numbering of
+        # a stage is the parent's counter as it stood when the stage
+        # opened, which is what `_StageObserver.begin_stage` said by hand
+        # once per sub-mission.
+        parent._next_index = max(parent._next_index, max(0, int(start_index)))
+        self._offset = parent._next_index
+        self._seen_high = -1
+
+    def emit(self, event: str, **fields: Any) -> None:
+        """One of this child's records, renamed into the parent's stream."""
+        if self._stage:
+            if event not in self._STAGE:
+                return
+        elif event == MISSION_STARTED:
+            return
+        if self._stage and "index" in fields:
+            # Allocated at emit time, under the PARENT's numbering: the
+            # child counts its own steps from zero and cannot know what
+            # number they take in a turn that has already run four.
+            local = int(fields["index"])
+            self._seen_high = max(self._seen_high, local)
+            fields = dict(fields, index=self._offset + local)
+            self._parent._next_index = max(
+                self._parent._next_index, self._offset + self._seen_high + 1)
+        if event == STEP_STARTED:
+            carried = self._parent._take()
+            if carried:
+                # The record's own fields first and the carried ones after,
+                # and a carried key REPLACES: a review the turn is carrying
+                # is the review this step follows, whatever the child's own
+                # supervisor had to say about the step before it.
+                fields = {**fields, **carried}
+        self._parent.emit(event, **fields)
 
 
 # ── the client, the protocol, and the side channels ─────────────────────────
@@ -695,7 +853,8 @@ class Run:
         self._bus_takes_deadline = plane.takes_deadline()
 
     def child(self, *, personality: Optional[Personality] = None,
-              bounds: Optional[Bounds] = None, branch: str = "") -> "Run":
+              bounds: Optional[Bounds] = None, branch: str = "",
+              stage: bool = False, start_index: int = 0) -> "Run":
         """A sibling run: same store, same observer, same model, same plane.
 
         Shared **by identity**, which is the whole of what the object is
@@ -713,18 +872,35 @@ class Run:
         and is not divided among children, and what watches a child going
         nowhere is the supervisor they share.
 
-        *branch* names the child's records for the observer.  It does not
-        reach the wire in this lane; see :meth:`Observer.branch`.  The
-        caller that will use this is the staged path — ``ROADMAP.md``
-        §2.6.4, lane B — and it is here now so that lane inherits a
-        signature rather than inventing one.
+        *branch* names the child's records for the observer and *stage*
+        says what kind of child this is — the mission continued, or one
+        stage of it; see :meth:`Observer.branch`, which is where that
+        decision is spent and which documents both.  Neither name reaches
+        the wire: an OPTIONAL ``branch`` field is the parallel-children
+        lane's (``ROADMAP.md`` §2.6.2, item 5).  *start_index* is where a
+        resumed turn's numbering picks up.
+
+        A child with neither a name nor a stage shares the parent's
+        observer outright, which is the only shape in which a child's
+        ``mission_started`` still reaches a watcher.  Every caller in this
+        package names its children, because every one of them is a child
+        of a run that has already announced itself.
+
+        The **plane is shared, and its offered set with it**.  That is the
+        one thing a sub-mission did not get before: each built its own
+        plane from the manifest's list, so a tool that arrived mid-turn
+        was offered to the step that learned about it and to no later one.
+        One plane is one answer to "what may be called now" for the whole
+        turn, which is what a closed set is for.
         """
         return Run(
             personality if personality is not None else self.personality,
             self.plane,
             bounds if bounds is not None else self.bounds,
             self.store,
-            self.observer.branch(branch) if branch else self.observer,
+            self.observer.branch(branch, stage=stage,
+                                 start_index=start_index)
+            if (branch or stage) else self.observer,
             self.model,
         )
 
@@ -946,6 +1122,56 @@ class Run:
             if arguments:
                 lines.append(f"    arguments: {arguments}")
         return "\n".join(lines) if lines else "(no tools available)"
+
+    def opening(self, objective: str) -> Dict[str, Any]:
+        """The ``mission_started`` fields for this run.
+
+        **One builder, and there are two emitters.**  This loop emits it
+        from :meth:`run`; the staged path emits it before triage, because
+        triage is itself a call to the model and the contract's silence
+        clause promises an opening ahead of the first one.  Those were two
+        hand-written dicts, and the second one's own comment admitted it —
+        which is the arrangement that let ``grounding`` ship six of the ten
+        fields its contract requires.  A consumer must not be able to read
+        an internal decision of this harness (*which route did the router
+        take*) off a record that promises it one vocabulary, and the only
+        way to promise that is for there to be one place the record is
+        built.
+
+        Every field comes off an owner and none is restated here:
+        :attr:`offered` is the plane's live set plus the store tool,
+        :attr:`gated` is that set narrowed by the plane's gated names (a
+        ticket having already been spent at construction),
+        ``sandbox``/``audit_ref``/``profile`` are the three facts read off
+        the bus, and ``schema_version`` is first and on the FIRST record so
+        a consumer that is going to refuse this stream refuses it before it
+        has rendered anything from it.
+
+        ``history`` is a count and not the turns: a watcher needs to tell a
+        seeded conversation from a cold start, and the turns themselves
+        already travelled once.
+        """
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "objective": objective,
+            "catalogue": self.offered,
+            "gated": self.gated,
+            "max_steps": self.bounds.max_steps,
+            "history": len(self.personality.history),
+            # The word the bus's actual runner answers to — `bwrap` or
+            # `none` — so a consumer learns from the opening frame whether
+            # this mission's tool subprocesses are isolated, without
+            # inferring it from the host.
+            "sandbox": self.plane.sandbox,
+            # The file every dispatch below is written to, and `None` says
+            # there is no such file because somebody turned auditing off in
+            # as many words. A consumer that finds no audit log and no
+            # field cannot tell that from a harness that failed to open one.
+            "audit_ref": self.plane.audit_ref,
+            **_run_field(self.store.run_id),
+            **_protocol_field(self.model.protocol),
+            **self.plane.profile_field,
+        }
 
     def seed(self, objective: str) -> List[Dict[str, str]]:
         """The PLAN-phase messages: persona, protocol, catalogue, history, objective.
@@ -1248,12 +1474,14 @@ class Run:
         stated — see :meth:`Resumption.as_record
         <core.runtime.resume.Resumption.as_record>`.
         """
-        # The first start wins, so a sub-mission of a staged run does not
-        # rewind the clock its parent already wound. See `Deadline.start`.
-        if self.bounds.deadline is not None:
-            self.bounds.deadline.start()
+        # Through `Bounds.begin`, which is the one owner of "a run's clock
+        # starts here" — the first start wins, so a sub-mission of a staged
+        # run does not rewind the clock its parent already wound. What comes
+        # back is the instant the MISSION began, which is a parent's when a
+        # parent handed one down.
+        started = self.bounds.begin()
         if self._started_at is None:
-            self._started_at = time.monotonic()
+            self._started_at = started
         # Per run and not per runner: a runner used twice must not open its
         # second run already winding up from the first one's verdict.
         self._winding_up = False
@@ -1303,15 +1531,7 @@ class Run:
         # and no field cannot tell that from a harness that failed to open
         # one.
         if resumption is None:
-            self.observer.emit(MISSION_STARTED, schema_version=SCHEMA_VERSION,
-                       objective=objective, catalogue=list(offered),
-                       gated=self.gated, max_steps=self.bounds.max_steps,
-                       history=len(self.personality.history),
-                       sandbox=self.plane.sandbox,
-                       audit_ref=self.plane.audit_ref,
-                       **_run_field(self.store.run_id),
-                       **_protocol_field(self.model.protocol),
-                       **self.plane.profile_field)
+            self.observer.emit(MISSION_STARTED, **self.opening(objective))
         try:
             return self._loop(objective, transcript, resumption)
         finally:
@@ -1748,15 +1968,9 @@ class Run:
         if report is not None and report.ran and not report.grounded:
             if repairs < self.personality.grounding.max_repairs:
                 repairs += 1
-                problem = self.personality.grounding.repair_prompt(report)
+                problem = self._repairing_turn(report, repairs)
                 step.error = problem
                 transcript.steps.append(step)
-                # A repair turn is a whole extra round-trip to the
-                # model and, from outside, looks exactly like a stall.
-                # Said out loud so a watcher can show WHY the answer
-                # is taking longer — the check caught something.
-                self.observer.emit(GROUNDING, **_grounding_record(
-                    report, repairs=repairs, repairing=True))
                 self._say(messages, problem, call_id)
                 # The one continuation that is not another attempt at the
                 # mission: the model answered and is being asked to say the
@@ -1768,41 +1982,23 @@ class Run:
             # One repair turn was spent and the claim is still
             # unsupported. The answer is kept — deleting it would
             # hide a finding — and says so about itself.
-            caveat = self.personality.grounding.caveat(report)
-            marked = GroundingReport(
-                results=report.results, repairs=repairs, caveat=caveat,
-            )
+            marked = self._caveated(report, repairs)
             transcript.grounding = marked
-            transcript.answer = answer + caveat
+            transcript.answer = answer + marked.caveat
             transcript.outcome = "answered_with_caveat"
             transcript.steps.append(step)
-            # The verdict BEFORE the answer, so a consumer building a
-            # frame around the prose already knows what to mark it
-            # with. A caveat that arrives after the text it qualifies
-            # is a caveat that can be rendered separately from it.
-            self.observer.emit(GROUNDING, **_grounding_record(
-                marked, repairs=repairs, caveat=caveat,
-                opinions=self._second_opinion(
-                    transcript.objective, answer, marked,
-                    answered_with_caveat=True)))
+            self._verdict(transcript.objective, answer, marked,
+                          repairs=repairs, caveat=marked.caveat)
             self.observer.emit(ANSWER, text=transcript.answer,
                        outcome=transcript.outcome, **spent)
             return transcript, repairs
 
         if report is not None:
-            transcript.grounding = GroundingReport(
-                results=report.results, repairs=repairs,
-            )
-            self.observer.emit(GROUNDING, **_grounding_record(
-                transcript.grounding, repairs=repairs,
-                # Asked here too, and on this path it declines: no rule in
-                # `core.critic.triggers` fires on a clean answer, and the
-                # call is made anyway so that the decision has ONE owner.
-                # A branch that skipped asking would be a second copy of
-                # the trigger policy, written in `if`s.
-                opinions=self._second_opinion(
-                    transcript.objective, answer, transcript.grounding,
-                    answered_with_caveat=False)))
+            # `report` and not a copy of it: `_ground` already put this
+            # run's repair count on what it returned, which is the one
+            # place that arithmetic happens.
+            self._verdict(transcript.objective, answer, report,
+                          repairs=repairs)
         transcript.answer = answer
         transcript.outcome = "answered"
         transcript.steps.append(step)
@@ -1810,16 +2006,87 @@ class Run:
                            outcome=transcript.outcome, **spent)
         return transcript, repairs
 
+    # ── what an answer is worth: four owners, and TWO callers ───────────
+    #
+    # The staged path's synthesizer writes an answer too, over the whole
+    # turn's evidence, and it used to check that answer with a loop of its
+    # own — a second reading of "a report that could not run", a second
+    # caveat, a second `grounding` record built by hand.  It calls these
+    # four now.  What it cannot share is the *asking*: this loop's repair
+    # is another turn of the loop and the synthesizer's is one more call
+    # to a model with no tools, which are genuinely two things and not one
+    # thing written twice.  Everything either of them decides ABOUT an
+    # answer is here.
+
+    def _repairing_turn(self, report: GroundingReport, repairs: int) -> str:
+        """Announce a repair turn; return what to ask the model for.
+
+        A repair turn is a whole extra round-trip to the model and, from
+        outside, looks exactly like a stall.  Said out loud so a watcher
+        can show WHY the answer is taking longer — the check caught
+        something — and the record that follows it is the verdict.
+
+        The prompt comes back rather than being written twice: the
+        announcement and the question are one act, and the staged path
+        spent its repair turns silently for as long as they were two.
+        """
+        self.observer.emit(GROUNDING, **_grounding_record(
+            report, repairs=repairs, repairing=True))
+        return self.personality.grounding.repair_prompt(report)
+
+    def _caveated(self, report: GroundingReport,
+                  repairs: int) -> GroundingReport:
+        """The report an answer that stayed unsupported wears.
+
+        The answer is kept — deleting it would hide a finding — and says
+        so about itself, in the validator's own sentence.  The report is
+        rebuilt rather than edited because what is carried forward is
+        exactly ``results``: a caveat is a fact about the run and not a
+        check that ran.
+        """
+        return GroundingReport(
+            results=report.results, repairs=repairs,
+            caveat=self.personality.grounding.caveat(report))
+
+    def _verdict(self, objective: str, draft: str, report: GroundingReport,
+                 *, repairs: int, caveat: str = "",
+                 evidence: Optional[Sequence[str]] = None) -> None:
+        """The ``grounding`` record, critic row included — the ONE emitter.
+
+        Emitted BEFORE the ``answer`` it is about, always, so a consumer
+        building a frame around the prose already knows what to mark it
+        with.  A caveat that arrives after the text it qualifies is a
+        caveat that can be rendered separately from it.
+
+        *draft* is what the model wrote and not what the run will return:
+        the critic is asked about the model's words, and the caveat is
+        this harness's own sentence about them — a critic shown its own
+        harness's caveat is being asked to review the grader.
+
+        The second opinion is asked on the clean path too, where it
+        declines: no rule in :mod:`core.critic.triggers` fires on a
+        grounded answer, and the call is made anyway so that the decision
+        has ONE owner.  A branch that skipped asking would be a second
+        copy of the trigger policy, written in ``if``s.
+        """
+        self.observer.emit(GROUNDING, **_grounding_record(
+            report, repairs=repairs, caveat=caveat,
+            opinions=self._second_opinion(
+                objective, draft, report,
+                answered_with_caveat=bool(caveat), evidence=evidence)))
+
     def _second_opinion(self, objective: str, answer: str,
                         report: GroundingReport, *,
                         answered_with_caveat: bool,
+                        evidence: Optional[Sequence[str]] = None,
                         ) -> List[Dict[str, Any]]:
         """This run's evidence, put to :func:`second_opinion`.
 
         A thin call and deliberately thin: what a critic row looks like is
-        the module function's, shared with the staged path, and what THIS
-        object contributes is the only thing the staged path cannot — the
-        evidence its own result store holds.
+        the module function's, and what THIS object contributes is the
+        evidence its own result store holds — unless a caller names other
+        evidence, which the staged path does because a turn's evidence is
+        the union of five sub-missions' stores and no one of them.
 
         It runs **before** the ``answer`` record, like the grounding verdict
         it sits beside, so a consumer framing the prose has the whole
@@ -1830,7 +2097,7 @@ class Run:
         """
         return second_opinion(
             self.personality.critic, objective, answer,
-            self.results.evidence_texts(),
+            self.results.evidence_texts() if evidence is None else evidence,
             unsupported=report.unsupported,
             answered_with_caveat=answered_with_caveat)
 
@@ -2407,22 +2674,44 @@ class Run:
             return {}
         return {"deadline_s": max(0.0, remaining)}
 
-    def _ground(self, answer: str, repairs: int) -> Optional[GroundingReport]:
-        """Validate the answer, or ``None`` when nothing is configured."""
+    def _ground(self, answer: str, repairs: int, *,
+                evidence: Optional[Sequence[str]] = None,
+                called: Optional[Sequence[str]] = None,
+                ) -> Optional[GroundingReport]:
+        """Validate the answer, or ``None`` when nothing is configured.
+
+        *evidence* and *called* default to this run's own result store,
+        which is every direct mission.  A staged turn names its own: its
+        answer is written over what five sub-missions read, and a claim to
+        have used a tool is true if *any* step used it, so neither fact is
+        in one store.  The DECISIONS are the same either way — a check that
+        could not run is a report with no opinion, and it must not be read
+        as a pass — and that is what this method is the owner of.
+        """
         if self.personality.grounding is None:
             return None
         report = self.personality.grounding.validate(
-            answer, self.results.evidence_texts(),
+            answer,
+            self.results.evidence_texts() if evidence is None else evidence,
             # Which tools this run dispatched, from the store that recorded
             # them — the plane-claim check's evidence, and the one place
             # that fact lives. See `MissionResultStore.called_tools`.
-            called=self.results.called_tools())
-        if not report.ran:
-            # Every check said it could not run. That is a report with no
-            # opinion, and it must not be read as a pass — it is kept on
-            # the transcript for exactly that reason.
-            return GroundingReport(results=report.results, repairs=repairs)
-        return report
+            called=(self.results.called_tools() if called is None
+                    else called))
+        # Reshaped, always, and with the run's own repair count on it. Two
+        # facts ride out of here: what the checks said, which is
+        # `results`, and how many repair turns this answer has already
+        # cost, which the validator has no way to know. A report that says
+        # `repairs: 0` after a repair turn is a `grounding` record that
+        # understates the work — and a caller that fixed that itself was
+        # the second owner of it. `caveat` is deliberately dropped: it is a
+        # fact about the RUN, written by `_caveated` at the one moment it
+        # becomes true.
+        #
+        # A report where every check said it could not run comes back the
+        # same way, and it must not be read as a pass — `ran` is False on
+        # it, and it is kept on the transcript for exactly that reason.
+        return GroundingReport(results=report.results, repairs=repairs)
 
     # ── parsing ─────────────────────────────────────────────────────────
 
