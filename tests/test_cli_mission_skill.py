@@ -1048,7 +1048,10 @@ class TestTheAuditIsAnnounced:
         MockClass, agent = elf
         self._audit(agent, tmp_path / "audit.jsonl")
         run_cli(MockClass)
-        assert str(tmp_path / "audit.jsonl") in capsys.readouterr().out
+        # Rich wraps a long path at the console width, so compare with the
+        # line breaks folded out: the path is printed, in one piece or two.
+        out = capsys.readouterr().out.replace("\n", "")
+        assert str(tmp_path / "audit.jsonl") in out
 
     def test_the_stream_carries_the_same_path(self, elf, tmp_path):
         MockClass, agent = elf
