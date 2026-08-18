@@ -279,15 +279,20 @@ class TestTheSuiteIsDeclaredWell:
         the adapter goes away, this reads as the reason rather than as a
         test nobody can explain.
         """
+        # That day came (lane T, 0.16.0): the suite DECLARES the eight it
+        # claims, and `core.eval`'s own check grades it unscoped. The three
+        # it does not claim are named in missions.yaml with the reason.
         check_pack_suite(SUITE, pack.pack())          # the pack's own check
-
+        check_the_suite_is_gradeable(SUITE)           # and core.eval's, unaided
+        assert set(SUITE.claims) == {
+            "orientation", "chaining", "absence", "disambiguation",
+            "synthesis", "routing", "state", "boundary"}
+        # A suite that claimed everything would still be refused for the
+        # three it cannot capture honestly — the rule survives, declared.
+        from dataclasses import replace
         with pytest.raises(MissionMisdeclared) as raised:
-            check_the_suite_is_gradeable(SUITE)
-        problems = [line.strip() for line in str(raised.value).splitlines()[1:]
-                    if line.strip()]
-        assert len(problems) == 1, problems
-        assert "captured by no mission" in problems[0]
-        assert "partial_synthesis" in problems[0]
+            check_the_suite_is_gradeable(replace(SUITE, flags=()))
+        assert "partial_synthesis" in str(raised.value)
 
     def test_every_tool_its_missions_name_is_in_the_closed_set(self):
         """The rule only a pack can make, and the one that would have let

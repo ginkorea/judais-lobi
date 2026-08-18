@@ -21,6 +21,22 @@
 # tests/test_pack_coding.py. See the pack README, "Limits".
 
 name: coding
+# What this suite claims to measure, out of `core.eval.suite.FLAGS` (a
+# suite-level declaration since 0.16.0). Three of the eleven are absent on
+# purpose: `partial_synthesis` and `protocol_shape` are what the analyst and
+# research packs already grade on planes built for them, and `submission` (a
+# stored-result handle read) has no honest coding mission — a test log is
+# re-read from the file, not paged from the store. A suite that claimed them
+# would need three missions written to satisfy a checker.
+flags:
+  - orientation
+  - chaining
+  - absence
+  - disambiguation
+  - synthesis
+  - routing
+  - state
+  - boundary
 
 # The plane these missions are written against: the coding pack's closed
 # set, exactly as ../SKILL.md declares it.
