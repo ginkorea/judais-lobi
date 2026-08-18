@@ -2925,7 +2925,8 @@ class TestTheRunnerCannotAnswerItsOwnGate:
     answering code whatsoever.
     """
 
-    SOURCES = ("core/runtime/mission.py", "core/runtime/swarm.py")
+    SOURCES = ("core/runtime/mission.py", "core/runtime/run.py",
+               "core/runtime/swarm.py")
 
     def _source(self, name):
         from pathlib import Path

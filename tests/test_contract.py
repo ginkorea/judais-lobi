@@ -846,6 +846,7 @@ class TestTheContractIsWhole:
         the loop and missing here is a word a consumer will meet and have no
         sentence for."""
         source = (REPO / "core" / "runtime" / "mission.py").read_text()
+        source += (REPO / "core" / "runtime" / "run.py").read_text()
         source += (REPO / "core" / "runtime" / "swarm.py").read_text()
         assigned = set(re.findall(r'\.outcome = "([a-z_]+)"', source))
         assigned |= set(re.findall(r'outcome: str = "([a-z_]+)"', source))
