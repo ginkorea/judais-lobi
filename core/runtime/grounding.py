@@ -74,7 +74,8 @@ from typing import (
 )
 
 from core.runtime.reading import ReadingCheck, ReadingReport
-from core.runtime.results import walk_path
+from core.runtime.results import SourcedEvidence, walk_path
+from core.runtime.skills import code_plane_tools
 from core.tools.descriptors import same_tool, tool_key
 
 
@@ -215,6 +216,32 @@ def typographic_plain(text: str) -> str:
     exactly the direction that flatters the check.
     """
     return str(text or "").translate(_TYPOGRAPHIC)
+
+
+def _flattened(text: Any) -> str:
+    """One evidence text, typography flattened, provenance kept.
+
+    :func:`typographic_plain` returns a plain ``str`` — every ``str``
+    method does — so the one line in :meth:`GroundingCheck.check` that
+    normalises the evidence is also the line where a
+    :class:`~core.runtime.results.SourcedEvidence` would quietly become an
+    ordinary string and a check would stop being able to ask which call
+    produced it.  Rebuilding it here keeps the normalisation exactly where
+    the class docstring says it happens — once, before extraction, on both
+    sides — and costs every other check nothing: what they receive is
+    still a ``str`` with the same characters in it.
+
+    Evidence with no provenance stays a plain ``str``, which is what a
+    library caller hands in and what the staged path unions together.
+    """
+    plain = typographic_plain(str(text or ""))
+    tool = getattr(text, "tool", "")
+    arguments = getattr(text, "arguments", "")
+    if not (tool or arguments or getattr(text, "sent", False)):
+        return plain
+    return SourcedEvidence(plain, tool=tool,
+                           sent=bool(getattr(text, "sent", False)),
+                           arguments=typographic_plain(str(arguments)))
 
 
 @dataclass(frozen=True)
@@ -863,7 +890,7 @@ class GroundingCheck(ABC):
         # BOTH SIDES, and here rather than in a subclass, so no check can be
         # comparing typography instead of content. See `typographic_plain`.
         answer = typographic_plain(answer or "")
-        evidence = [typographic_plain(str(text or "")) for text in evidence]
+        evidence = [_flattened(text) for text in evidence]
 
         considered: List[str] = []
         for token in self.extract(self.text(answer)):
@@ -1006,13 +1033,96 @@ class IdentifierGroundingCheck(GroundingCheck):
 
 
 class NumericGroundingCheck(GroundingCheck):
-    """Every figure must have come back from a tool.
+    """Every figure must have come back from a tool — and not by echo.
 
     Off unless a manifest sets ``number_pattern``, and deliberately so:
     an answer legitimately contains numbers it computed — "3 assets",
     "two of the four" — and a check that flagged those would train
     whoever reads the report to ignore it.  A platform that wants
     figures checked writes a pattern narrow enough to mean it.
+
+    **The echo hazard, and the rule that closes it.**  A model told a
+    figure is unsupported has an obvious way out that is not the one the
+    repair turn intends: run ``print('30,000')`` and submit the same
+    answer again.  The stdout of that call is a tool result like any
+    other, the figure is now "in the evidence", and the record says
+    ``grounded: true``.  Nothing about the *shape* of the evidence
+    distinguishes a computed figure from an echoed one — it is a tool's
+    output either way — so a skill telling the model not to do it is
+    skill content standing in for a harness property, which is to say it
+    holds for exactly as long as the model cooperates.
+
+    The rule is mechanical and narrow: **a code-plane call whose output
+    holds no figure it was not already given grounds nothing.**  The
+    model wrote the arguments; a call that printed back only numbers that
+    were already in them round-tripped them, and round-tripping is not
+    computing.  A call that produced even one figure its arguments did
+    not hold did compute, and its whole output grounds as any tool's
+    does.  Four things the rule deliberately does NOT do:
+
+    * it does not touch a figure the script *derived*.  ``df[df.amount >
+      30000]`` prints rows containing ``48750``, and the call grounds
+      every figure it printed.  A computed result is unaffected, which is
+      the overwhelming majority of real analysis;
+    * **it does not dock a literal that merely collides with a computed
+      result.**  The narrower "credit only figures absent from the
+      arguments" was written first and the committed corpus refused it:
+      the analyst pack's ``errors_by_hour`` mission increments a counter
+      with ``+ 1`` and its program then computes that one hour has
+      exactly ``1`` error — the same digit, one a step and one a result.
+      Per-figure exclusion took that correct answer apart, spent the
+      run's repair turn on it and ended ``answered_with_caveat``.  Small
+      integers collide constantly: loop bounds, slice indices, rounding
+      places.  A check that flags working code is a check its reader
+      learns to skip, which un-catches the fabrications it exists for
+      (see ``tests/test_grounding_code_is_not_a_claim.py``).  Asking
+      whether the call computed keeps the hazard closed and the collision
+      harmless;
+    * it judges each RESULT against its own call's arguments, not the
+      evidence pile against all of them.  The same figure echoed by one
+      call and legitimately produced by another — or by any non-code tool
+      — is supported by that other call.  Evidence is a union, and only
+      the echoing result is dropped from it;
+    * it applies to code-plane tools ONLY.  Every other tool's arguments
+      legitimately reappear in its output: a ``run_id`` handed to a
+      lookup comes back in the record it fetches, and docking that would
+      make the check unusable on the submit-and-poll platforms it was
+      written for.
+
+    What it does not close, stated rather than left to be discovered: a
+    model that prints its echo **beside** something it really computed
+    gets the echo credited.  That is deliberate.  The alternative flags
+    every script whose loop bound or slice index happens to equal a
+    result, and the tier for an answer that computed something real and
+    smuggled a figure in next to it is the reading check, not a grammar.
+
+    Which tools are code-plane is read off the descriptors, through
+    :func:`~core.runtime.skills.code_plane_tools` — the same one owner
+    the sandbox gate uses — so a tool registered tomorrow asking for
+    ``python.exec`` or ``shell.exec`` is covered without anybody
+    remembering to add it here.  Matched with
+    :func:`~core.tools.descriptors.same_tool`, unlike that gate: the
+    sandbox question is *who runs the subprocess* and a bridged shell is
+    the server's, but the echo question is *who wrote the code*, and that
+    is the model whichever end executes it.  A server tool this install
+    has no descriptor for is not covered — the harness cannot know that a
+    name it has never seen takes a program as an argument, and inventing
+    that would be the name-matching this repository keeps removing.
+
+    **The clock is the second way a figure arrives without being
+    measured**, and it needs no cooperation from the model at all: a
+    timestamped tool result donates its minute and its second to the
+    evidence set.  See :data:`CLOCK`, which masks timestamp-shaped spans
+    on both sides.
+
+    **What the model SENT is never a result.**  A failed call contributes
+    its arguments to the evidence set — see
+    :meth:`~core.runtime.results.MissionResultStore.evidence_texts`, and
+    the reason is that "I tried that page and it answered 404" is a claim
+    about the run — but those texts are marked
+    :attr:`~core.runtime.results.SourcedEvidence.sent` and this check
+    skips them, or an answer would support its own arithmetic by typing
+    it into a call that fails.
     """
 
     name = "figures"
@@ -1053,6 +1163,10 @@ class NumericGroundingCheck(GroundingCheck):
         version yielded, so no answer becomes grounded that was not.
         """
         pattern = re.compile(self._config.number_pattern)
+        # The answer side of :data:`CLOCK`. A model that quotes the
+        # timestamp it read is not claiming a quantity, and a mask applied
+        # only to the evidence would make it one.
+        answer = self._declocked(answer)
         for match in pattern.finditer(answer):
             # A capturing group means the author narrowed what the token
             # actually is; honour it rather than the whole match, exactly
@@ -1091,8 +1205,53 @@ class NumericGroundingCheck(GroundingCheck):
     #: group — ``12,481`` is one figure and ``3, 127`` is two.
     FIGURE = re.compile(r"(?<![\w.])[+-]?\d(?:[\d,_]*\d)?(?:\.\d+)?(?![\w])")
 
+    #: A clock is not a figure, on either side of the comparison.
+    #:
+    #: Measured 18 August 2026 on the research pack: a tool result stamped
+    #: ``2026-08-18T01:52:07+00:00`` donates ``2026``, ``08``, ``18``,
+    #: ``01``, ``52``, ``07`` and ``00`` to the evidence set, because
+    #: :data:`FIGURE`'s boundaries are satisfied by a two-digit run after a
+    #: colon.  An answer that invented "52 hours" was then reported
+    #: grounded roughly one run in six — not by any tool having produced
+    #: 52, but by the clock on an unrelated record.  The pack worked round
+    #: it by writing ISO **basic** (``20260818T015207Z``), which is content
+    #: standing in for a harness property: the next tool to stamp a result
+    #: reopens it.
+    #:
+    #: Masked on BOTH sides — the answer's figures and the evidence's — for
+    #: the reason :func:`typographic_plain` is applied to both: masking one
+    #: side turns "the answer quoted a timestamp" into an unsupported
+    #: claim, which is a false positive invented by the fix.  A time is not
+    #: a quantity anywhere, so it is not extracted anywhere.
+    #:
+    #: **Epoch seconds are deliberately NOT masked.**  A ten-digit epoch is
+    #: a SINGLE token under :data:`FIGURE`, so it can only launder an
+    #: answer claiming that exact number, and masking it would hide a
+    #: genuine claim to buy nothing.  What makes a timestamp dangerous is
+    #: its separators: they cut it into small figures that collide with
+    #: real ones.
+    CLOCK = re.compile(
+        r"(?<![\w])(?:"
+        r"\d{4}-\d{2}-\d{2}"                     # a date, ISO extended
+        r"(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?"
+        r"(?:Z|[+-]\d{2}:?\d{2})?)?"               # with a time, and a zone
+        r"|\d{8}T\d{6}(?:\.\d+)?Z?"               # ISO basic, no separators
+        r"|\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?"    # a bare clock
+        r")(?![\w])"
+    )
+
+    @classmethod
+    def _declocked(cls, text: Any) -> str:
+        """*text* with every timestamp-shaped span blanked.
+
+        Replaced by a space rather than removed, so that two figures which
+        merely sat either side of a timestamp do not run together into a
+        third that was never written.  See :data:`CLOCK`.
+        """
+        return cls.CLOCK.sub(" ", str(text or ""))
+
     def prepare(self, evidence: Sequence[str]) -> Sequence[Any]:
-        """Every figure in the evidence, as an exact decimal.
+        """Every figure in the evidence, as an exact decimal, minus echoes.
 
         Extracted **structurally** and compared **numerically**, which is
         the whole substance of this check.  The obvious implementation —
@@ -1102,14 +1261,70 @@ class NumericGroundingCheck(GroundingCheck):
         has to be a substring of a real one somewhere in a governed view
         to be laundered into a grounded answer, and the bigger the payload
         the likelier it is.
+
+        Per evidence text, and each one is asked two questions before its
+        figures count.
+
+        **Is it a result at all?**  What the model SENT is not.  A failed
+        call contributes its arguments to the evidence set so that "I
+        tried that page and it answered 404" can ground the page — see
+        :meth:`~core.runtime.results.MissionResultStore.evidence_texts` —
+        and those texts are marked ``sent``.  A figure typed into a call
+        that fails grounds nothing, or an answer would support its own
+        arithmetic by making a call it knew would break.
+
+        **Did the call that produced it compute anything?**  A code-plane
+        call whose output holds no figure its own arguments did not
+        already hold printed back what it was told.  Text with no
+        provenance — a library caller's list of strings, the staged path's
+        union of five stores — has ``arguments`` of ``None``, which means
+        *nothing known*, and nothing known is never read as nothing
+        echoed.
+
+        The surviving texts are unioned, so a figure one call echoed is
+        still supported where another call produced it.
         """
+        code_plane = tuple(code_plane_tools())
         figures = set()
         for text in evidence:
-            for match in self.FIGURE.finditer(str(text or "")):
-                value = _as_decimal(self._plain(match.group(0)))
-                if value is not None:
-                    figures.add(value)
+            if getattr(text, "sent", False):
+                continue
+            found = self._figures_in(text)
+            arguments = getattr(text, "arguments", None)
+            if (found and arguments is not None
+                    and self._runs_composed_code(text, code_plane)
+                    and not (found - self._figures_in(arguments))):
+                continue
+            figures |= found
         return sorted(figures)
+
+    @classmethod
+    def _figures_in(cls, text: Any) -> set:
+        """Every figure in *text*, as exact decimals.  :data:`FIGURE`'s
+        grammar and :meth:`_plain`'s separators, stated once so the
+        output side and the arguments side cannot drift apart — a rule
+        that read ``30000`` out of a script but looked for ``30,000`` in
+        the output would exclude nothing at all."""
+        found = set()
+        for match in cls.FIGURE.finditer(cls._declocked(text)):
+            value = _as_decimal(cls._plain(match.group(0)))
+            if value is not None:
+                found.add(value)
+        return found
+
+    @staticmethod
+    def _runs_composed_code(text: Any, code_plane: Sequence[str]) -> bool:
+        """Whether *text* came back from a tool that runs a program the
+        MODEL wrote.
+
+        *code_plane* is :func:`~core.runtime.skills.code_plane_tools`,
+        read once per check and passed in: it walks every registered
+        descriptor, and doing that once per evidence text would be a
+        per-token cost on the largest thing in reach.
+        """
+        tool = str(getattr(text, "tool", "") or "")
+        return bool(tool) and any(
+            same_tool(tool, entry) for entry in code_plane)
 
     def supported(self, token: str, evidence: Sequence[Any]) -> bool:
         """Whether some figure in the evidence *is* this figure.

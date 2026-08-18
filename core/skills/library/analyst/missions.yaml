@@ -12,14 +12,30 @@
 # verbatim to every run and a path out of somebody's site-packages is not
 # a question a person would ask.
 #
-# `python -m core.eval` runs core.eval's own gradeability check, which
-# today requires every flag in FLAGS to be captured by some mission — a
-# rule that is right for the suite grading the whole harness and wrong for
-# a pack grading one capability. Until `core/eval/` takes a suite-level
-# declaration of the flags a suite claims, `Pack.suite()` scopes the check
-# to the nine flags below; see `core.skills.library.check_pack_suite`.
+# `python -m core.eval check --suite <this file>` runs core.eval's own
+# gradeability check against the `flags:` block below: the nine
+# capabilities this pack claims to measure. A pack grades one capability,
+# not the whole harness, so it says which — and is then held to it, one
+# mission per claimed flag. Adding a tenth flag here without a mission for
+# it is a refusal; so is dropping the mission for one already claimed.
 
 name: analyst
+
+# The capabilities this suite claims to measure, out of `core.eval.suite
+# .FLAGS`. Two of that table's eleven are deliberately absent: `state` is
+# a plane that changes mid-run and `submission` is a stored-result handle,
+# and neither is a thing a local analyst plane does. A suite that claimed
+# them would need two missions written to satisfy a checker.
+flags:
+  - orientation
+  - chaining
+  - absence
+  - disambiguation
+  - synthesis
+  - routing
+  - partial_synthesis
+  - boundary
+  - protocol_shape
 
 # The plane, as the mission runner names it. `mission_result` is the
 # mission's own result store, added to every run by the runner and never

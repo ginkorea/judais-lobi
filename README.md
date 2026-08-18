@@ -747,6 +747,30 @@ satisfied by silence. `report.grounded` now means *nothing unsupported*;
 `report.verified` means *and something was actually checked*, and the CLI prints
 `NOTHING CHECKED` for the gap between them.
 
+**A figure is credited only where something measured it.** Three ways one used
+to arrive without that, all closed in `NumericGroundingCheck` and all
+mechanical, because a rule that lives in skill prose holds for exactly as long
+as the model cooperates:
+
+* **the echo** — told a figure is unsupported, a model can run
+  `print('30,000')` and re-submit, and its stdout is a tool result like any
+  other. So a **code-plane call whose output holds no figure it was not already
+  given grounds nothing**: it printed back what it was told. A call that
+  produced even one figure its arguments did not hold computed something, and
+  its whole output grounds normally — a script whose slice bound happens to
+  equal a computed result is not a fabrication, and flagging it would teach the
+  reader to skip the report. Which tools run model-written code is read off the
+  descriptors (`python.exec`/`shell.exec`), never off a list of names;
+* **the clock** — a result stamped `2026-08-18T01:52:07+00:00` donated `52` and
+  `07` to the evidence set, and an invented "52 hours" came back grounded.
+  Timestamp-shaped spans are masked on **both** sides, so an answer that quotes
+  the time it read is not claiming a quantity either;
+* **what the model sent** — a failed call now contributes its typed error
+  payload and its arguments, so *"I could not read that page — it answered
+  404"* grounds the page and the status. The arguments are marked as *sent*
+  and the figure check skips them, or an answer would support its own
+  arithmetic by typing it into a call that fails.
+
 **A claim table, where the figures matter.** `claim_table: true` turns on a
 third check. The skill's `output_format` asks for every figure a second time
 beside the prose, as a path into what a tool returned:

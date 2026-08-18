@@ -167,17 +167,18 @@ class TestEveryPackCarriesAGradeableSuite:
         assert {m.flag for m in suite.missions} <= set(FLAGS)
 
 
-class TestThePackScopedCheckIsCoreEvalsOwn:
-    """``check_pack_suite`` narrows the flag-coverage rule and nothing
-    else.  What makes that safe is that it hands the narrowed suite back
-    to ``core.eval``'s own function — so these are the tests that the
-    narrowing is a narrowing and not a second checker."""
+class TestThePackCheckIsCoreEvalsOwn:
+    """``check_pack_suite`` adds the pack's one rule and nothing else.
+
+    The flag-coverage scope used to live here, as a rebinding of
+    ``core.eval.suite.FLAGS`` around the call; it is now the suite file's
+    own ``flags:`` declaration, so these are the tests that this adapter
+    is an adapter and not a second checker.
+    """
 
     def test_a_flag_no_one_defines_is_refused(self, tmp_path):
-        """Scoping coverage to the captured set must not turn an invented
-        flag into a legal one: the captured set is validated against
-        ``FLAGS`` BEFORE it becomes the scope, and a mutation that drops
-        that validation makes this test red."""
+        """A pack may not invent a capability. The per-mission rule is
+        core.eval's, and a mutation that drops it makes this red."""
         from core.eval.suite import Suite
 
         suite = skills.load(LANE_O_PACK).suite()
@@ -187,32 +188,46 @@ class TestThePackScopedCheckIsCoreEvalsOwn:
                 mission if index else type(mission)(
                     **{**mission.to_mapping(), "flag": "not_a_flag"})
                 for index, mission in enumerate(suite.missions)),
-            tools=suite.tools, assets=suite.assets,
+            tools=suite.tools, assets=suite.assets, flags=suite.flags,
             identifier_pattern=suite.identifier_pattern)
         with pytest.raises(MissionMisdeclared) as caught:
             library.check_pack_suite(broken)
         assert "not_a_flag" in str(caught.value)
 
-    def test_the_global_flag_table_is_put_back_afterwards(self):
-        """It is rebound around the call.  A `finally` that ever went
-        missing would leave every later suite in the process — the stub
-        suite included — graded against nine flags instead of eleven."""
+    def test_the_check_is_handed_the_whole_flag_table(self, monkeypatch):
+        """Not "the global is put back afterwards" — it is never narrowed
+        in the first place.  Asserting equality *after* the call could not
+        tell a rebinding with a correct `finally` from no rebinding at
+        all, so what is asserted is what ``core.eval`` SEES while it runs:
+        all eleven flags, with the scoping carried by the suite's own
+        ``flags:`` instead."""
         from core.eval import suite as suite_module
 
-        before = dict(suite_module.FLAGS)
+        seen = []
+        real = suite_module.check_the_suite_is_gradeable
+
+        def spy(suite):
+            seen.append(dict(suite_module.FLAGS))
+            return real(suite)
+
+        monkeypatch.setattr(suite_module, "check_the_suite_is_gradeable", spy)
         library.check_pack_suite(skills.load(LANE_O_PACK).suite(check=False))
-        assert suite_module.FLAGS == before
-        assert suite_module.FLAGS is not None
+        assert seen == [dict(FLAGS)]
 
-    def test_it_is_put_back_even_when_the_check_refuses(self, tmp_path):
-        from core.eval import suite as suite_module
-        from core.eval.suite import Suite
+    def test_a_claimed_flag_no_mission_captures_is_refused(self):
+        """The rule the old scoping could not state.  Coverage derived
+        from the missions themselves can never fail; coverage against what
+        the FILE claims can, and a pack that loses a mission is a pack
+        measuring one capability fewer while still saying it measures
+        nine."""
+        from dataclasses import replace
 
-        before = dict(suite_module.FLAGS)
-        empty = Suite(name="empty", missions=(), tools=())
-        with pytest.raises(MissionMisdeclared):
-            library.check_pack_suite(empty)
-        assert suite_module.FLAGS == before
+        suite = skills.load(LANE_O_PACK).suite()
+        dropped = replace(suite, missions=tuple(
+            m for m in suite.missions if m.flag != "absence"))
+        with pytest.raises(MissionMisdeclared) as caught:
+            library.check_pack_suite(dropped)
+        assert "absence" in str(caught.value)
 
     def test_the_rest_of_the_rules_still_bite(self):
         """The split band is core.eval's, and scoping the flags must not
@@ -226,7 +241,7 @@ class TestThePackScopedCheckIsCoreEvalsOwn:
         all_train = Suite(
             name=suite.name,
             missions=tuple(replace(m, split="train") for m in suite.missions),
-            tools=suite.tools, assets=suite.assets,
+            tools=suite.tools, assets=suite.assets, flags=suite.flags,
             identifier_pattern=suite.identifier_pattern)
         with pytest.raises(MissionMisdeclared) as caught:
             library.check_pack_suite(all_train)
@@ -257,7 +272,7 @@ class TestThePackScopedCheckIsCoreEvalsOwn:
                 for index, m in enumerate(suite.missions)),
             # Declared by the suite, so core.eval's own check passes it.
             tools=(*suite.tools, "perform_web_search"),
-            assets=suite.assets,
+            assets=suite.assets, flags=suite.flags,
             identifier_pattern=suite.identifier_pattern)
         library.check_pack_suite(widened)          # gradeable on its own
         with pytest.raises(MissionMisdeclared) as caught:

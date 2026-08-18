@@ -151,10 +151,9 @@ class Pack:
         """This pack's eval suite, through :func:`core.eval.suite.load_suite`.
 
         *check* runs :func:`check_pack_suite` — core.eval's own
-        gradeability check, scoped to the flags this pack's missions
-        capture, plus the one rule that is the pack's own (every tool a
-        mission names is in the pack's closed set).  See that function for
-        why the scoping is here and not in ``core/eval/``.
+        gradeability check, against the flags the suite file itself
+        claims, plus the one rule that is the pack's own (every tool a
+        mission names is in the pack's closed set).
         """
         from core.eval.suite import load_suite
 
@@ -286,35 +285,31 @@ def resolve(arg) -> SkillManifest:
 # ── the pack's suite, checked ────────────────────────────────────────────
 
 def check_pack_suite(suite: Any, pack: Optional[Pack] = None) -> None:
-    """:func:`~core.eval.suite.check_the_suite_is_gradeable`, for a pack.
+    """:func:`~core.eval.suite.check_the_suite_is_gradeable`, plus the one
+    rule that is the pack's own.
 
-    Two differences from calling that function directly, and the first is
-    the reason this adapter exists at all.
+    **Flag coverage is the suite's own declaration and no longer this
+    function's business.**  A pack measures a *capability*, not the whole
+    harness, and the coverage rule — every flag captured by some mission —
+    is right for the one suite that grades everything and wrong for a pack:
+    demanding that an analyst suite also capture ``state`` and
+    ``submission`` produces two missions written to satisfy a checker.
+    That used to be handled here, by rebinding ``core.eval.suite.FLAGS``
+    around the call to the set the missions happened to capture — a module
+    global written from an adapter, and a coverage rule a suite could
+    never fail because it was derived from the same missions it graded.
+    ``core/eval/`` now takes the declaration itself: a suite names the
+    flags it claims (``flags:``, defaulting to all of ``FLAGS``) and is
+    held to those, so a pack that drops a mission is refused rather than
+    quietly measuring one capability fewer.
 
-    **Flag coverage is scoped to the flags this suite captures.**  The
-    in-repo check requires every entry of :data:`core.eval.suite.FLAGS` to
-    be captured by some mission, which is right for the one suite that
-    grades the harness against everything it can do and wrong for a pack:
-    a pack measures a *capability*, and demanding that an analyst suite
-    also capture ``state`` and ``submission`` would produce two missions
-    written to satisfy a checker.  Three packs each inventing eleven
-    missions is not more measurement, it is less.  So the captured set is
-    validated against ``FLAGS`` first — an unknown flag is still a refusal
-    — and the check then runs with ``FLAGS`` narrowed to it, so **every
-    other rule is core.eval's own code**: the split band, the held-out
-    floor, no prompt naming a tool, no prompt naming data the plane does
-    not hold, ``expects_outcome`` a word ``contract.OUTCOMES`` can say,
-    every extra flag published in ``contract.CLI_FLAGS``, the rubric
-    ledger.  A second copy of those rules living here is exactly the
-    "second emitter drifts" failure this repository keeps paying for.
-
-    The narrowing is done by rebinding ``core.eval.suite.FLAGS`` around the
-    call, and it is a **temporary adapter with a named replacement**: what
-    ``core/eval/`` needs is a suite-level declaration of the flags a suite
-    claims to capture (a ``flags:`` key, defaulting to all of ``FLAGS``),
-    after which this function is three lines shorter and touches no module
-    global.  Lane O does not own ``core/eval/``; this is the seam until the
-    lane that does adds it.
+    What is left is **every rule being core.eval's own code**: the split
+    band, the held-out floor, no prompt naming a tool, no prompt naming
+    data the plane does not hold, ``expects_outcome`` a word
+    ``contract.OUTCOMES`` can say, every extra flag published in
+    ``contract.CLI_FLAGS``, the rubric ledger.  A second copy of those
+    rules living here is exactly the "second emitter drifts" failure this
+    repository keeps paying for.
 
     **The pack's own rule**: every tool a mission names, and every tool the
     suite declares it serves, is in the pack's closed set.  That is the
@@ -322,25 +317,9 @@ def check_pack_suite(suite: Any, pack: Optional[Pack] = None) -> None:
     skill is allowed to call — and a mission expecting a tool the manifest
     withholds is a mission that can never pass.
     """
-    from core.eval import suite as suite_module
+    from core.eval.suite import check_the_suite_is_gradeable
 
-    captured = {mission.flag for mission in suite.missions}
-    unknown = sorted(flag for flag in captured if flag not in suite_module.FLAGS)
-    if unknown:
-        raise suite_module.MissionMisdeclared(
-            f"the suite {suite.name!r} names flag(s) {unknown} that "
-            f"core.eval does not define. A mission that captures nothing "
-            f"named cannot be reported against the others; the flags are "
-            f"{sorted(suite_module.FLAGS)}"
-        )
-
-    original = suite_module.FLAGS
-    scoped = {flag: original[flag] for flag in sorted(captured)}
-    try:
-        suite_module.FLAGS = scoped
-        suite_module.check_the_suite_is_gradeable(suite)
-    finally:
-        suite_module.FLAGS = original
+    check_the_suite_is_gradeable(suite)
 
     if pack is not None:
         _check_the_missions_stay_inside_the_closed_set(suite, pack)

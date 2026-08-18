@@ -83,6 +83,23 @@ The first eight came from the reference deployment's bake-off. `routing` and
 `protocol_shape` is the column that decides the `json`-versus-`native` default
 (ROADMAP §2.7: *"Default stays json until Phase 10's harness scores the two"*).
 
+**A suite says which of these it claims.** `flags:` is an optional top-level
+key listing the capabilities a suite measures. Leave it out and the suite
+claims all eleven — the in-repo suite does, deliberately, because it is the one
+suite that grades the whole harness and a flag added to the table tomorrow
+should demand a mission there the same day. The coverage rule is then *every
+**claimed** flag captured by at least one mission*, which is what lets a pack
+grade one capability without inventing missions to satisfy a checker:
+`core/skills/library/analyst/missions.yaml` claims nine and is held to exactly
+those nine. Claiming a flag no mission captures is a refusal; so is claiming a
+flag this table does not define; and a mission may still only name a flag this
+table defines, claimed or not.
+
+> Two different keys are spelled `flags:` in a suite file and they are not
+> related. At the **top level** it is the list of capabilities above. Inside a
+> **mission** it is the extra CLI flags that mission is spawned with (§9), and
+> every one of those must be published in `contract.CLI_FLAGS`.
+
 ---
 
 ## 3. The split, and why it is mechanical
@@ -338,6 +355,7 @@ id or a deployment.
 ```yaml
 name: my_platform
 tools: [mcp.catalog_search, mcp.catalog_get, mcp.runs_get]   # the plane it is written against
+flags: [chaining, absence, synthesis]                        # what this suite claims to measure
 identifier_pattern: '\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b'   # what an id looks like here
 assets:                                                       # ids a prompt may name
   corpus.example: a corpus, and the only one with a label set
@@ -367,6 +385,13 @@ missions:
     answer_must_match: ['\bcorpus\.[a-z0-9_]+\b']
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
+
+`flags` is what makes a *narrow* suite checkable. Omit it and the suite claims
+every capability in §2 and must capture all of them; name a subset and it is
+held to that subset, which is how a suite about three capabilities is graded
+without two missions written to satisfy a checker. (The `flags:` beside
+`expects_grounded` below is the other key of that name: a mission's extra CLI
+flags. See the note in §2.)
 
 `tools` is what makes the suite checkable: without it "the prompt must not name
 a tool" is unenforceable and "the mission expects a tool that exists" is a
