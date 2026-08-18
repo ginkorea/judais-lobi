@@ -376,18 +376,12 @@ class MissionResultStore:
     def descriptor(self, name: str = RESULT_TOOL) -> ToolDescriptor:
         """The ``ToolDescriptor`` for reading this store.
 
-        **It does not yet advertise the paging arguments, and that is a
-        sequencing decision rather than an oversight.**  This description
-        and this schema are rendered into the SYSTEM TURN by
-        :meth:`core.runtime.run.Run.catalogue`, the committed corpus is
+        This description and this schema are rendered into the SYSTEM TURN
+        by :meth:`core.runtime.run.Run.catalogue`, the committed corpus is
         recorded against those bytes, and a served endpoint's prefix cache
-        is keyed on them — so the sentence that teaches a model to page
-        lands with the re-recording, in the one lane that moves prompt
-        bytes, and not from four lanes at once.  :meth:`read` accepts
-        ``offset``/``limit``/``lines``/``grep`` NOW; nothing tells the
-        model about them until this descriptor does.
-
-        What is to be added, verbatim, when the corpus is re-recorded: the
+        is keyed on them — which is why the paging arguments were taught to
+        the model in the one re-record that moved prompt bytes (18 Aug 2026)
+        and not from four lanes at once.  What that re-record rendered: the
         sentence ``A text-only result is read by page: offset/limit in
         characters, lines="12-40", or grep="<regex>" for matching lines
         with their numbers.`` after "…named in the truncation marker.",
@@ -406,8 +400,11 @@ class MissionResultStore:
                 "Read one field of a full tool result this mission already "
                 "received. Large results are shown truncated in the "
                 "transcript; the whole result is kept under a handle "
-                "(r1, r2, ...) named in the truncation marker. Reaches "
-                "nothing new — only what this mission was already given."
+                "(r1, r2, ...) named in the truncation marker. A text-only "
+                "result is read by page: offset/limit in characters, "
+                'lines="12-40", or grep="<regex>" for matching lines with '
+                "their numbers. Reaches nothing new — only what this "
+                "mission was already given."
             ),
             input_schema={
                 "type": "object",
@@ -422,6 +419,29 @@ class MissionResultStore:
                         "description": "Field path into the structured "
                                        "payload, e.g. actors[0].score. Omit "
                                        "for a summary of what is there.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Start of a page of the result's "
+                                       "TEXT, in characters.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "How much of the text to return, in "
+                                       "characters; with `grep`, how many "
+                                       "matching lines.",
+                    },
+                    "lines": {
+                        "type": "string",
+                        "description": "A 1-based inclusive line range of "
+                                       "the text, e.g. 12-40, or 12- to the "
+                                       "end.",
+                    },
+                    "grep": {
+                        "type": "string",
+                        "description": "Return the lines of the text "
+                                       "matching this regular expression, "
+                                       "with their line numbers.",
                     },
                 },
                 "required": [],

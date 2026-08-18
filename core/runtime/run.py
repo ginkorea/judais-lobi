@@ -3944,7 +3944,9 @@ class Run:
         where = (
             f" The whole result is stored as {handle}: call "
             f'{self.plane.store_tool}(handle="{handle}", path="...") '
-            "for one field."
+            f'for one field, or {self.plane.store_tool}(handle="{handle}", '
+            'lines="120-140") — also offset/limit, or grep — for part of '
+            "the text."
             if handle and self.plane.store_tool else
             " The rest is not retrievable in this mission."
         )
