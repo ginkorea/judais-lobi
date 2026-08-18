@@ -12,9 +12,13 @@ from core.runtime.backends.base import (
     Usage,
     tool_calls_from,
 )
+from core.runtime.backends import state
 
 
 class OpenAIBackend(Backend):
+    #: The word :class:`core.unified_client.UnifiedClient` routes on.
+    provider_name = "openai"
+
     def __init__(self, openai_client=None):
         if openai_client is not None:
             self.client = openai_client
@@ -39,25 +43,43 @@ class OpenAIBackend(Backend):
         Native tool calls come back on :attr:`last_tool_calls` rather than
         in the return value, which stays a ``str`` (or an iterator) for
         every caller that has ever read it.
+
+        What the model itself is doing goes out on the third side
+        channel — :meth:`~core.runtime.backends.base.Backend.report_state`
+        — and for a hosted provider that is a short story: ``asking``,
+        then ``loaded``, unless the SDK raises, in which case the status
+        it carries is read through
+        :func:`~core.runtime.backends.policy.state_for_status` so that a
+        429 says ``queued`` rather than ``failed``.  No first-byte alarm
+        here, unlike the local backend: a hosted endpoint does not load
+        weights while you wait, and the wait this repo could not explain
+        was never theirs.
         """
         # Cleared FIRST: a call that raises must not leave the previous
         # call's numbers — or its decisions — standing, or a ledger counts
         # them twice and a runner dispatches a tool nobody asked for.
         self.last_usage = None
         self.last_tool_calls = []
-        if stream:
-            return self._track(self.client.chat.completions.create(
-                model=model, messages=messages, stream=True, **extra
-            ))
-        result = self.client.chat.completions.create(
-            model=model, messages=messages, **extra)
+        self.report_state(state.ASKING, model=model)
+        try:
+            if stream:
+                return self._track(self.client.chat.completions.create(
+                    model=model, messages=messages, stream=True, **extra
+                ), model)
+            result = self.client.chat.completions.create(
+                model=model, messages=messages, **extra)
+        except Exception as exc:
+            self.report_failure(exc, model=model)
+            raise
+        self.report_state(state.LOADED,
+                          model=str(getattr(result, "model", "") or model))
         self.last_usage = Usage.from_payload(getattr(result, "usage", None))
         message = result.choices[0].message
         self.last_tool_calls = tool_calls_from(
             getattr(message, "tool_calls", None))
         return message.content
 
-    def _track(self, chunks: Any) -> Iterator[Any]:
+    def _track(self, chunks: Any, model: str = "") -> Iterator[Any]:
         """Pass every chunk through, keeping the last usage any of them carried.
 
         The SDK's own iterator is what a caller has always received, so
@@ -84,8 +106,17 @@ class OpenAIBackend(Backend):
         """
         seen = None
         calls = ToolCallAccumulator()
+        arrived = False
         try:
             for chunk in chunks:
+                if not arrived:
+                    # The first frame is the provider answering. Said here
+                    # rather than where the stream was opened, because the
+                    # SDK returns its iterator before the first token.
+                    arrived = True
+                    self.report_state(
+                        state.LOADED,
+                        model=str(getattr(chunk, "model", "") or model))
                 found = Usage.from_payload(getattr(chunk, "usage", None))
                 if found is not None:
                     seen = found
@@ -93,6 +124,9 @@ class OpenAIBackend(Backend):
                     delta = getattr(choice, "delta", None)
                     calls.add(getattr(delta, "tool_calls", None))
                 yield chunk
+        except Exception as exc:
+            self.report_failure(exc, model=model)
+            raise
         finally:
             self.last_usage = seen
             self.last_tool_calls = calls.result()

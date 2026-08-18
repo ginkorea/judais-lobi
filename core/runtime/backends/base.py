@@ -32,6 +32,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from core.runtime.backends import policy, state as model_state
+
 #: The three counts an OpenAI-shaped ``usage`` object always names, and the
 #: three this dataclass gives fields to.  Everything else the provider sent
 #: — ``prompt_tokens_details`` with its cached-token breakdown, a queue
@@ -309,6 +311,18 @@ class BackendCapabilities:
 
 
 class Backend(ABC):
+    #: The word this backend is asked for by, and the word that reaches
+    #: ``model_state.provider`` on the wire.  The same vocabulary
+    #: :class:`core.unified_client.UnifiedClient` routes on — ``openai``,
+    #: ``anthropic``, ``mistral``, ``local`` — because a consumer reading
+    #: "which provider is this" off a record and an operator reading it
+    #: off ``--provider`` must be reading the same word.
+    #:
+    #: Empty on a backend that never said, which is what an injected stub
+    #: or a platform's own adapter is: a required field on the record, and
+    #: the empty string is an honest answer where a guess would not be.
+    provider_name: str = ""
+
     #: What the provider said the **last** completion through this backend
     #: cost, or ``None`` when it said nothing.  A side channel and not a
     #: return value, because ``chat`` returns a ``str`` or an iterator and
@@ -348,3 +362,83 @@ class Backend(ABC):
     def chat(self, model: str, messages: List[Dict], stream: bool = False):
         """Returns str (non-streaming) or iterator of SimpleNamespace (streaming)."""
         ...
+
+    # ── the third side channel: what the MODEL is doing ──────────────────
+
+    def report_state(self, state: str, *, model: str = "", detail: str = "",
+                     retry_after_s: Optional[float] = None) -> None:
+        """Say what the thing on the other end of the socket is doing.
+
+        The third side channel, beside :attr:`last_usage` and
+        :attr:`last_tool_calls`, and the only one that is reported *while*
+        a call is in flight rather than read after it — which is the whole
+        point of it.  A cost is worth knowing afterwards; that the server
+        is loading weights is worth knowing at second twelve of ninety.
+
+        A **push** rather than an attribute for exactly that reason, and
+        it pushes into :mod:`core.runtime.backends.state`, which drops
+        every word when nobody installed a sink.  So a backend reports
+        from each of the four or five places it actually learns something
+        and never asks whether it is inside a mission: a chat session, a
+        capability probe and a library caller with no observer all cost
+        one context lookup each.
+
+        *state* is one of :data:`core.runtime.backends.state.STATES` and
+        anything else raises.  *model* is what this call is about — the
+        name that was sent, or on ``loaded`` the id the server itself
+        reported, which are not always the same string and where they
+        differ the server's is the true one.
+        """
+        model_state.report(state, provider=self.provider_name, model=model,
+                           detail=detail, retry_after_s=retry_after_s)
+
+    def report_connect_error(self, exc: BaseException, *,
+                             model: str = "") -> None:
+        """Report a connect that never happened as ``absent``.
+
+        The one translation from "this exception" to that word, so the
+        backends that share
+        :func:`core.runtime.backends.policy.retry_on_connect` cannot come
+        to two views of what a refused socket means.  The word itself is
+        :data:`~core.runtime.backends.policy.ERROR_POLICY`'s ``connect``
+        row and is read off it rather than written here again.
+
+        The exception's type is in the detail because the three that
+        arrive here — refused, reset, unresolved — read very differently
+        to whoever has to fix one, and the sentence is scrubbed by the
+        observer like every other free-text field on the stream.
+        """
+        self.report_state(policy.ERROR_POLICY["connect"].state, model=model,
+                          detail=f"{type(exc).__name__}: {exc}")
+
+    def report_failure(self, exc: BaseException, *, model: str = "") -> None:
+        """Report an SDK exception as whatever its status code means.
+
+        For the two backends whose transport belongs to a vendor's SDK
+        rather than to this repo.  They do not get to read a response
+        object at the point of failure — they get an exception — so the
+        status is taken off it (``status_code``, or the one on a
+        ``response`` it carries) and put through
+        :func:`~core.runtime.backends.policy.state_for_status`, which is
+        the same table the raw-HTTP backends read.  A provider's 429 is
+        therefore ``queued`` here exactly as it is there, and an
+        exception carrying no status at all is ``failed``, which is the
+        honest answer for "the SDK raised and did not say why".
+
+        A connect failure that reaches an SDK caller as a vendor
+        exception is not special-cased into ``absent``: this repo cannot
+        tell one from a proxy's 502 without reading somebody else's
+        exception hierarchy, and a wrong word is worse than a general
+        one.  See :meth:`report_connect_error` for the case where this
+        repo owns the socket and does know.
+        """
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+        word = policy.state_for_status(status) if status is not None \
+            else policy.ERROR_POLICY["5xx"].state
+        self.report_state(
+            word or policy.ERROR_POLICY["5xx"].state, model=model,
+            detail=f"{type(exc).__name__}: {exc}",
+            retry_after_s=model_state.retry_after_seconds(
+                getattr(getattr(exc, "response", None), "headers", None)))

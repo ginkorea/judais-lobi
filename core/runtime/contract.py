@@ -57,7 +57,7 @@ __all__ = [
     "CLI_FLAGS", "ENV_VARS", "EXIT_CONTRACT", "conforms",
     "MISSION_STARTED", "STEP_STARTED", "REPLY_REJECTED", "TOOL_CALL",
     "TOOL_RESULT", "GATE_REQUESTED", "ANSWER_DELTA", "ANSWER", "GROUNDING",
-    "MISSION_FINISHED",
+    "MISSION_FINISHED", "MODEL_STATE", "MODEL_STATES",
 ]
 
 
@@ -251,10 +251,67 @@ GROUNDING = "grounding"
 #: :data:`OPTIONAL`.
 MISSION_FINISHED = "mission_finished"
 
+#: Something is wrong with the **model**, and it is why nothing is
+#: happening.  ``state`` — one of :data:`MODEL_STATES` — plus ``provider``
+#: and ``model``, the two names for what was being asked.
+#:
+#: **A healthy call emits nothing.**  This event does not narrate a model
+#: call; it explains a wait.  The steady pair — the request went out, the
+#: reply came back — is already on the stream as ``step_started`` and then
+#: ``tool_call`` or ``answer``, so a run against a model that answers
+#: emits not one of these, and every stream ever recorded is the stream it
+#: was.  What reaches a consumer is the five words of
+#: :data:`core.runtime.backends.state.WAITING` — ``cold``, ``queued``,
+#: ``loading``, ``failed``, ``absent`` — and then ``loaded`` when whatever
+#: they described is over.  ``asking`` is a word the backends report and
+#: this stream never carries.
+#:
+#: It exists because a pane showing nothing for ninety seconds is showing
+#: at least four different situations and an operator can act on none of
+#: them.  ``ROADMAP.md`` §5.9: *queued is not loading, and a browser must
+#: be able to say which*.  So the two are separated **by construction**
+#: rather than by guess — ``loading`` is only ever the server's own answer
+#: (a 503, with its body and its ``Retry-After``), and ``queued`` is only
+#: ever said after the harness asked ``GET /models`` and was told the
+#: model is there.  A silence with nothing loaded is ``cold``; a silence
+#: with nothing listening is ``absent``.
+#:
+#: **De-duplicated, and a transition rather than a poll.**  The same word
+#: twice running is one record — three refused connects inside one retry
+#: budget say ``absent`` once — unless the server changed its
+#: ``retry_after_s``, which is new information about the same state.  A
+#: consumer therefore holds the last one it saw as current and clears it
+#: on the ``loaded`` that follows.
+#:
+#: ``index`` — the step it happened in — is OPTIONAL and not required,
+#: because a report is a fact about a **call** and not every call this
+#: harness makes belongs to a numbered step.  Today the mission loop
+#: watches its own calls and so the field is always there; the staged
+#: path's router and synthesizer are calls that could report tomorrow
+#: without a step to name.  See :data:`OPTIONAL` for the rest.
+MODEL_STATE = "model_state"
+
 #: The closed vocabulary, so a consumer can assert it knows all of them.
 EVENTS: tuple[str, ...] = (
     MISSION_STARTED, STEP_STARTED, REPLY_REJECTED, TOOL_CALL, TOOL_RESULT,
     GATE_REQUESTED, ANSWER_DELTA, ANSWER, GROUNDING, MISSION_FINISHED,
+    MODEL_STATE,
+)
+
+#: Every value ``model_state.state`` can carry — the seven words of
+#: :data:`core.runtime.backends.state.STATES`, restated here as data for
+#: the same reason :data:`OUTCOMES` is: a consumer vendoring this one file
+#: gets the whole seam and must not have to import a backend package to
+#: learn what a field can say.
+#:
+#: Seven declared, six emitted.  ``asking`` is reported by the backends
+#: and dropped by the emitter — see :data:`MODEL_STATE` — and it is
+#: declared anyway because a closed set a consumer asserts should be the
+#: set the harness *has*, not the subset today's emitter happens to use.
+#: A test holds this equal to the backends' own tuple, so the two cannot
+#: drift.
+MODEL_STATES: tuple[str, ...] = (
+    "cold", "asking", "queued", "loading", "loaded", "failed", "absent",
 )
 
 
@@ -280,6 +337,7 @@ FIELDS: dict[str, tuple[str, ...]] = {
     GROUNDING: ("ran", "grounded", "verified", "repairs", "repairing",
                 "caveat", "unsupported", "silent", "uncited", "checks"),
     MISSION_FINISHED: ("outcome", "steps", "max_steps"),
+    MODEL_STATE: ("state", "provider", "model"),
 }
 
 #: Fields **every** event may carry, whatever it is, merged into every entry
@@ -629,6 +687,33 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: explicit opt-out or a directory the harness could not write, and the
     #: second says so in ``reason``.
     GATE_REQUESTED: ("approval_id",),
+    #: ``index`` — the step whose model call this is about.  Present on
+    #: every report the mission loop's own calls produce, which is every
+    #: report this harness emits today; OPTIONAL because the fact is
+    #: about a call and a call need not belong to a numbered step.
+    #:
+    #: ``detail`` — what the **server** said, scrubbed like every other
+    #: free-text field on this stream: the body of its 503, the sentence
+    #: under a 4xx, the exception behind an ``absent``, or — where
+    #: nothing was said by anyone — this harness's own account of what it
+    #: observed.  Prose for a person and never a machine channel: branch
+    #: on ``state``, show ``detail``.
+    #:
+    #: ``since_s`` — how long this run had been waiting on the model when
+    #: the state was reported, in seconds, measured from the start of the
+    #: model call the report belongs to.  On the ``loaded`` that ends a
+    #: wait it is therefore how long the wait lasted, and on a ``queued``
+    #: it is how late the first byte is.  A number for a person to read
+    #: rather than a clock to compute with, on the harness's own
+    #: monotonic clock, and unrelated to ``elapsed_s`` on
+    #: ``mission_finished``, which counts the whole mission.
+    #:
+    #: ``retry_after_s`` — the server's own ``Retry-After``, in seconds,
+    #: on the states where a server sent one (a 429's, a 503's).  Absent
+    #: when it asked for nothing, which is most of the time, and it is
+    #: the one field that makes the same state worth emitting twice: a
+    #: queue that has gone from ten seconds to sixty is news.
+    MODEL_STATE: ("index", "detail", "since_s", "retry_after_s"),
 }
 
 #: Fields an event may carry and a consumer must therefore reach for with a

@@ -46,7 +46,7 @@ from core.runtime.backends.base import (
     Usage,
     tool_calls_from,
 )
-from core.runtime.backends import policy
+from core.runtime.backends import policy, state
 from core.runtime.backends.policy import CHAT_TIMEOUT
 
 CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -72,6 +72,9 @@ class MistralBackend(Backend):
         injected. Mirrors ``LocalBackend(session=…)``: constructing a
         backend must not open a socket, and a test must not need one.
     """
+
+    #: The word :class:`core.unified_client.UnifiedClient` routes on.
+    provider_name = "mistral"
 
     def __init__(self, client: Any = None):
         self.api_key = os.getenv("MISTRAL_API_KEY")
@@ -116,6 +119,11 @@ class MistralBackend(Backend):
         }
         body.update(extra)
 
+        # The request exists and has not been sent. Never on the wire —
+        # see `core.runtime.backends.state.WAITING` — and a hosted
+        # provider mostly goes straight from here to `loaded`.
+        self.report_state(state.ASKING, model=str(body["model"]))
+
         if stream:
             return self._stream(body)
         return self._complete(body)
@@ -137,6 +145,8 @@ class MistralBackend(Backend):
                 timeout=CHAT_TIMEOUT,
             ),
             retries=CONNECT_RETRIES,
+            on_connect_error=lambda exc: self.report_connect_error(
+                exc, model=str(body.get("model") or "")),
         )
 
     def _open_stream(self, body: Dict[str, Any]):
@@ -158,7 +168,10 @@ class MistralBackend(Backend):
             )
             return ctx, ctx.__enter__()
 
-        return policy.retry_on_connect(enter, retries=CONNECT_RETRIES)
+        return policy.retry_on_connect(
+            enter, retries=CONNECT_RETRIES,
+            on_connect_error=lambda exc: self.report_connect_error(
+                exc, model=str(body.get("model") or "")))
 
     # ── responses ────────────────────────────────────────────────────────
 
@@ -193,6 +206,19 @@ class MistralBackend(Backend):
         # A streamed response has not read its body yet; a read one is a
         # no-op. Either way the diagnosis needs this first.
         res.read()
+        # What the number says about the MODEL, before the exception goes
+        # to a caller that will end the turn with it: a hosted 429 is a
+        # queue and not a broken request, and
+        # `policy.STATUS_STATES` is where that is decided.
+        word = policy.state_for_status(res.status_code)
+        if word:
+            self.report_state(
+                word,
+                detail=policy.status_message(
+                    res, CHAT_URL, detail_chars=ERROR_DETAIL_CHARS,
+                    subject="the provider"),
+                retry_after_s=state.retry_after_seconds(
+                    getattr(res, "headers", None)))
         policy.raise_for_status(
             res, CHAT_URL, detail_chars=ERROR_DETAIL_CHARS,
             subject="the provider", error=self._error,
@@ -202,6 +228,12 @@ class MistralBackend(Backend):
         res = self._post(body)
         self._raise_for_status(res)
         payload = res.json() or {}
+        # The provider answered: whatever was waited for is over. The id
+        # is the provider's own, which is not always the one that was
+        # sent — an alias resolves to a dated model.
+        self.report_state(state.LOADED,
+                          model=str(payload.get("model")
+                                    or body.get("model") or ""))
         # Before the empty-choices return, not after it: a completion that
         # produced no content still cost tokens, and a reply nobody could
         # use is exactly the call an operator wants to find billed.
@@ -232,6 +264,7 @@ class MistralBackend(Backend):
         ctx, res = self._open_stream(body)
         seen: Optional[Usage] = None
         calls = ToolCallAccumulator()
+        arrived = False
         try:
             self._raise_for_status(res)
             for line in res.iter_lines():
@@ -262,6 +295,12 @@ class MistralBackend(Backend):
                         "tool_calls"))
                 content = self._delta_content(chunk)
                 if content:
+                    if not arrived:
+                        arrived = True
+                        self.report_state(
+                            state.LOADED,
+                            model=str(chunk.get("model")
+                                      or body.get("model") or ""))
                     yield self._as_delta(content)
         finally:
             # In the same `finally` that releases the connection, for the

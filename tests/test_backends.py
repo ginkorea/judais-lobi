@@ -1,6 +1,7 @@
 # tests/test_backends.py — Tests for backend implementations
 
 import ast
+import contextlib
 import pathlib
 
 import pytest
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from core.runtime.backends import policy
+from core.runtime.backends import state as model_state
 from core.runtime.backends.base import (
     BackendCapabilities,
     ToolCallAccumulator,
@@ -357,11 +359,15 @@ class _StubResponse:
     closes is the leak this stub exists to catch.
     """
 
-    def __init__(self, status_code=200, payload=None, lines=(), text=""):
+    def __init__(self, status_code=200, payload=None, lines=(), text="",
+                 headers=None):
         self.status_code = status_code
         self._payload = payload
         self._lines = list(lines)
         self.text = text
+        #: What the provider asked for, when it asked: a `Retry-After` is
+        #: the one header a state report reads.
+        self.headers = dict(headers or {})
         self.closed = False
         self.reads = 0
         self.request = None
@@ -1011,11 +1017,61 @@ class TestTheHTTPPolicyHasOneOwner:
         assert not [m for m in self._imports("core/runtime/backends/mistral_backend.py")
                     if m.endswith("local_backend")]
 
-    def test_the_policy_imports_nothing_from_core(self):
+    #: The one module under `core/` that `policy` may read, and it is
+    #: beside it at the bottom of the stack: the seven model-state words,
+    #: which `ERROR_POLICY` rows name because "and the model is therefore
+    #: absent" is the same sentence as "a connect that never happened is
+    #: safe to re-send" and belongs in the same row.
+    POLICY_MAY_IMPORT = {"core.runtime.backends.state"}
+
+    def _from_core(self, rel):
+        """Every module under `core/` a file imports, named in full.
+
+        Submodule-qualified — `from core.runtime.backends import state`
+        counts as `core.runtime.backends.state` and not as the package —
+        because the allowance below is for one leaf module and would be
+        worth nothing if it were read as permission to reach the package
+        that holds every backend.
+        """
+        tree = ast.parse((REPO / rel).read_text(encoding="utf-8"))
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                found |= {f"{node.module}.{a.name}" for a in node.names}
+            elif isinstance(node, ast.Import):
+                found |= {a.name for a in node.names}
+        return {m for m in found if m.split(".")[0] == "core"}
+
+    def test_the_policy_imports_nothing_from_core_but_the_vocabulary(self):
         """The bottom of the stack. A policy that can reach up into the
         runtime is not a policy, it is a second opinion about it."""
-        assert not [m for m in self._imports("core/runtime/backends/policy.py")
-                    if m.split(".")[0] == "core"]
+        assert self._from_core("core/runtime/backends/policy.py") \
+            <= self.POLICY_MAY_IMPORT
+
+    def test_and_the_one_it_may_read_imports_nothing_at_all(self):
+        """Which is what keeps the property the test above was written
+        for: an exception that let `policy` reach a module that could
+        itself reach the runtime would be no exception at all."""
+        assert self._from_core("core/runtime/backends/state.py") == set()
+
+    def test_every_error_class_names_the_state_it_implies(self):
+        """One owner for "what does this failure mean", so that four
+        backends' `except` blocks cannot reach three conclusions about a
+        refused socket."""
+        assert policy.ERROR_POLICY["connect"].state == model_state.ABSENT
+        assert all(row.state in model_state.STATES
+                   for row in policy.ERROR_POLICY.values())
+
+    def test_two_status_codes_are_read_more_precisely_than_their_class(self):
+        """A 503 and a 429 are the server telling you it is coming up and
+        that you are behind somebody else — the two facts an operator most
+        needs told apart, and both would be `failed` if their class
+        decided."""
+        assert policy.state_for_status(503) == model_state.LOADING
+        assert policy.state_for_status(429) == model_state.QUEUED
+        assert policy.state_for_status(500) == model_state.FAILED
+        assert policy.state_for_status(404) == model_state.FAILED
+        assert policy.state_for_status(200) == ""
 
     def test_the_error_class_table_is_data(self):
         """Four classes, one retried. Stated so a reader cannot mistake an
@@ -1592,3 +1648,199 @@ class TestAnthropicBackend:
         backend = self._backend(_StubAnthropic(events=events))
         list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
         assert backend.last_usage is None
+
+
+# ── the third side channel: what the MODEL is doing ─────────────────────────
+
+
+@contextlib.contextmanager
+def reported():
+    """Collect the state reports made inside the block.
+
+    The sink a run installs is `Model.watching`'s, which turns these into
+    `model_state` records and de-duplicates them; what is asserted here is
+    the layer below that — what each backend actually SAYS, before any
+    run has an opinion about which of it is worth a record. See
+    `tests/test_model_state.py` for the other half.
+    """
+    seen = []
+    with model_state.watching(seen.append):
+        yield seen
+
+
+def words(seen):
+    return [report.state for report in seen]
+
+
+class _Refused(Exception):
+    """An SDK exception in the shape both vendors' are: a status, and a
+    response carrying the headers."""
+
+    def __init__(self, status_code, retry_after=None):
+        super().__init__(f"{status_code} from the provider")
+        self.status_code = status_code
+        self.response = SimpleNamespace(
+            status_code=status_code,
+            headers={"Retry-After": retry_after} if retry_after else {})
+
+
+class TestEveryBackendSaysWhatTheModelIsDoing:
+    """One vocabulary, four backends, and a hosted story much shorter than
+    a local one.
+
+    A hosted provider does not load weights while you wait, so what these
+    three have to say is `asking`, then `loaded`, and the status code when
+    it goes wrong — read through `policy.state_for_status`, so that a 429
+    is a queue here exactly as it is in the local backend rather than
+    three `except` blocks reaching three conclusions.
+    """
+
+    def test_the_provider_names_are_the_words_the_client_routes_on(self):
+        """A consumer reading "which provider is this" off a record and an
+        operator reading it off `--provider` must read the same word."""
+        assert [b.provider_name for b in (OpenAIBackend, AnthropicBackend,
+                                          MistralBackend, LocalBackend)] == [
+            "openai", "anthropic", "mistral", "local"]
+
+    def test_a_backend_that_never_said_claims_nothing(self):
+        """An injected stub or a platform's own adapter: the empty string
+        is honest where a guess would not be."""
+        from core.runtime.backends.base import Backend
+
+        assert Backend.provider_name == ""
+
+    # ── OpenAI ───────────────────────────────────────────────────────────
+
+    def test_openai_asks_and_then_loads(self):
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            model="gpt-4o-mini-2024-07-18",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])
+        with reported() as seen:
+            OpenAIBackend(openai_client=mock).chat("gpt-4o-mini", [])
+        assert words(seen) == [model_state.ASKING, model_state.LOADED]
+        assert seen[-1].model == "gpt-4o-mini-2024-07-18"
+        assert seen[-1].provider == "openai"
+
+    def test_openai_reports_the_first_streamed_frame_as_loaded(self):
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = iter([
+            SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="a"))]),
+            SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="b"))]),
+        ])
+        with reported() as seen:
+            list(OpenAIBackend(openai_client=mock).chat(
+                "gpt-4o-mini", [], stream=True))
+        assert words(seen) == [model_state.ASKING, model_state.LOADED]
+
+    def test_openai_reads_a_429_as_a_queue_and_keeps_the_retry_after(self):
+        mock = MagicMock()
+        mock.chat.completions.create.side_effect = _Refused(429, "12")
+        with reported() as seen:
+            with pytest.raises(_Refused):
+                OpenAIBackend(openai_client=mock).chat("gpt-4o-mini", [])
+        assert words(seen) == [model_state.ASKING, model_state.QUEUED]
+        assert seen[-1].retry_after_s == 12.0
+
+    def test_openai_reads_anything_else_as_failed(self):
+        mock = MagicMock()
+        mock.chat.completions.create.side_effect = _Refused(500)
+        with reported() as seen:
+            with pytest.raises(_Refused):
+                OpenAIBackend(openai_client=mock).chat("gpt-4o-mini", [])
+        assert words(seen) == [model_state.ASKING, model_state.FAILED]
+
+    def test_an_exception_carrying_no_status_is_still_failed(self):
+        """"The SDK raised and did not say why" is a real answer and the
+        honest word for it."""
+        mock = MagicMock()
+        mock.chat.completions.create.side_effect = RuntimeError("boom")
+        with reported() as seen:
+            with pytest.raises(RuntimeError):
+                OpenAIBackend(openai_client=mock).chat("gpt-4o-mini", [])
+        assert words(seen) == [model_state.ASKING, model_state.FAILED]
+
+    # ── Anthropic ────────────────────────────────────────────────────────
+
+    def test_anthropic_asks_and_then_loads(self):
+        client = _StubAnthropic(result=_reply([_text("hi")]))
+        with reported() as seen:
+            AnthropicBackend(client=client).chat("claude-x", [])
+        assert words(seen) == [model_state.ASKING, model_state.LOADED]
+        assert seen[0].provider == "anthropic"
+
+    def test_anthropic_reports_the_first_stream_event_as_loaded(self):
+        client = _StubAnthropic(events=[
+            {"type": "message_start", "message": {"usage": {}}},
+            {"type": "content_block_delta",
+             "delta": {"type": "text_delta", "text": "hi"}}])
+        with reported() as seen:
+            list(AnthropicBackend(client=client).chat("claude-x", [],
+                                                      stream=True))
+        assert words(seen) == [model_state.ASKING, model_state.LOADED]
+
+    def test_anthropic_reads_the_status_through_the_same_table(self):
+        client = _StubAnthropic()
+        client.messages = SimpleNamespace(
+            create=MagicMock(side_effect=_Refused(429, "30")))
+        with reported() as seen:
+            with pytest.raises(_Refused):
+                AnthropicBackend(client=client).chat("claude-x", [])
+        assert words(seen) == [model_state.ASKING, model_state.QUEUED]
+        assert seen[-1].retry_after_s == 30.0
+
+    # ── Mistral ──────────────────────────────────────────────────────────
+
+    def _mistral(self, monkeypatch, client):
+        monkeypatch.setenv("MISTRAL_API_KEY", "k")
+        return MistralBackend(client=client)
+
+    def test_mistral_asks_and_then_loads(self, monkeypatch):
+        client = _RecordingClient(_StubResponse(payload={
+            "model": "mistral-small-2409",
+            "choices": [{"message": {"content": "hi"}}]}))
+        with reported() as seen:
+            self._mistral(monkeypatch, client).chat("mistral-small", [])
+        assert words(seen) == [model_state.ASKING, model_state.LOADED]
+        assert seen[-1].model == "mistral-small-2409"
+
+    def test_mistral_reads_a_429_as_a_queue(self, monkeypatch):
+        client = _RecordingClient(_StubResponse(
+            status_code=429, text="slow down",
+            headers={"Retry-After": "4"}))
+        with reported() as seen:
+            with pytest.raises(Exception):
+                self._mistral(monkeypatch, client).chat("mistral-small", [])
+        assert words(seen) == [model_state.ASKING, model_state.QUEUED]
+        assert seen[-1].retry_after_s == 4.0
+        assert "slow down" in seen[-1].detail
+
+    def test_mistral_reads_a_refused_connect_as_absent(self, monkeypatch):
+        """The one case a raw-HTTP backend can be sure about: the request
+        never left this host.
+
+        The retry budget is shortened to two attempts with no wait: what
+        is asserted is that every attempt reports, not that seventeen
+        seconds pass while it does.
+        """
+        import httpx
+        from core.runtime.backends import mistral_backend
+
+        class _Down:
+            def post(self, *a, **kw):
+                raise httpx.ConnectError("refused")
+
+        monkeypatch.setattr(mistral_backend, "CONNECT_RETRIES", (0.0,))
+        backend = self._mistral(monkeypatch, _Down())
+        with reported() as seen:
+            with pytest.raises(httpx.ConnectError):
+                backend.chat("mistral-small", [])
+        assert words(seen) == [model_state.ASKING] + [model_state.ABSENT] * 2
+
+    def test_which_is_the_word_the_error_policy_names(self):
+        """Reported four times because it was refused four times; one
+        record, because de-duplication is the run's business — see
+        `core.runtime.run._ModelStates`."""
+        assert policy.ERROR_POLICY["connect"].state == model_state.ABSENT
