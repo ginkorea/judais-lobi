@@ -200,7 +200,8 @@ class TestTheHappyPath:
             json.dumps({"answer": "asset.5f21 is all I could establish."}),
         ]
         run_cli(MockClass, "--skill", str(skill_file))
-        out = capsys.readouterr().out
+        # Folded so Rich's wrap at a narrow console cannot split the phrase.
+        out = capsys.readouterr().out.replace("\n", "")
         assert "judged this run stuck" in out
         assert "read what follows as partial" in out
         assert out.index("judged this run stuck") < \
