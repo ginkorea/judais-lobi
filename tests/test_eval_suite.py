@@ -313,6 +313,78 @@ class TestASuiteFromAFile:
         assert written["key"] and written["flag"] and written["prompt"]
 
 
+class TestWhatASuiteClaimsToMeasure:
+    """The optional `flags:` key: which capabilities this suite is FOR.
+
+    Coverage is checked against what a suite claims, not against every
+    flag the harness knows.  The in-repo suite claims nothing and so
+    claims all eleven — the strict reading, and the right one for the one
+    suite that grades the whole harness.  A pack's suite grades one
+    capability and says which; see `core/skills/library/analyst/
+    missions.yaml`.
+    """
+
+    def test_a_suite_that_declares_nothing_claims_every_flag(self):
+        assert SUITE.flags == ()
+        assert SUITE.claims == tuple(FLAGS)
+
+    def test_the_in_repo_suite_is_deliberately_silent(self):
+        """No file change, and that is the argument: a flag added to
+        `FLAGS` tomorrow demands a mission here the same day, which is the
+        rule this suite exists to enforce.  An explicit list would have to
+        be edited in lockstep and could be edited instead of writing the
+        mission."""
+        assert "flags" not in SUITE.to_mapping()
+        assert len(SUITE.claims) == len(FLAGS)
+
+    def test_a_suite_smaller_than_the_flag_table_is_gradeable(self):
+        """The case the whole key exists for: eight missions, eight flags
+        claimed, and the three the suite never mentions are not its
+        business.  Before `flags:` this suite could not load at all."""
+        train = [m for m in SUITE.missions if m.split == "train"]
+        held = [m for m in SUITE.missions if m.split == "test"]
+        kept = tuple(train[:5] + held[:3])
+        narrow = rebuilt(flags=tuple(m.flag for m in kept), missions=kept)
+        assert set(narrow.claims) == {m.flag for m in kept}
+        assert len(narrow.claims) < len(FLAGS)
+        check_the_suite_is_gradeable(narrow)
+
+    def test_a_claimed_flag_no_mission_captures_is_refused(self):
+        thinner = rebuilt(
+            flags=("absence", "synthesis"),
+            missions=tuple(m for m in SUITE.missions if m.flag != "absence"))
+        problem = refused(thinner)
+        assert "absence" in problem
+        assert "captured by no mission" in problem
+
+    def test_a_claim_on_a_flag_that_is_not_in_the_table_is_refused(self):
+        """By name.  A typo in `flags:` would otherwise narrow the
+        coverage rule to nothing and read as a suite that passes."""
+        assert "hunch" in refused(rebuilt(flags=("absence", "hunch")))
+
+    def test_claiming_less_does_not_switch_the_other_rules_off(self):
+        """The split band is not the coverage rule and must still bite."""
+        import dataclasses as _dc
+
+        narrow = rebuilt(
+            flags=("absence",),
+            missions=tuple(_dc.replace(m, split="train")
+                           for m in SUITE.missions))
+        assert "test mission" in refused(narrow)
+
+    def test_the_claim_survives_a_round_trip(self, tmp_path):
+        narrow = rebuilt(flags=("absence", "synthesis"))
+        path = tmp_path / "narrow.json"
+        path.write_text(json.dumps(narrow.to_mapping()), encoding="utf-8")
+        assert load_suite(path, check=False).flags == ("absence", "synthesis")
+
+    def test_a_string_where_the_claim_belongs_is_refused(self):
+        with pytest.raises(MissionMisdeclared) as exc:
+            Suite.from_mapping({"name": "x", "missions": [],
+                                "flags": "absence"})
+        assert "flags" in str(exc.value)
+
+
 class TestTheFlagTable:
     def test_every_flag_has_a_sentence(self):
         for name, description in FLAGS.items():

@@ -362,7 +362,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         share = len(held) / len(suite.missions) if suite.missions else 0.0
         print(f"suite {suite.name!r} is gradeable: {len(suite.missions)} "
               f"mission(s), {len(held)} held out ({share:.0%}), "
-              f"{len({m.flag for m in suite.missions})} flag(s) captured.")
+              f"{len({m.flag for m in suite.missions})} flag(s) captured "
+              f"of {len(suite.claims)} claimed.")
         return 0
 
     if args.command == "run":

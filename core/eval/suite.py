@@ -379,11 +379,43 @@ class Suite:
     #: default: the harness supplies no grammar, for the same reason
     #: :class:`~core.runtime.grounding.GroundingConfig` supplies none.
     identifier_pattern: str = ""
+    #: The capabilities this suite CLAIMS to measure, out of :data:`FLAGS`.
+    #: Empty means *all of them*, and the default is the strict reading —
+    #: see :attr:`claims`.
+    flags: Tuple[str, ...] = ()
     #: This suite's dated ledger; see :class:`RubricChange`.
     rubric_changes: Tuple[RubricChange, ...] = ()
     #: Where it was loaded from, for the report's header.  ``""`` for a suite
     #: written in Python.
     source: str = ""
+
+    @property
+    def claims(self) -> Tuple[str, ...]:
+        """The flags this suite says it measures, in :data:`FLAGS` order.
+
+        A suite that names none claims **all** of them, and that default is
+        the reason the key can be left out of every suite already written:
+        the coverage rule it feeds — every claimed flag captured by at
+        least one mission — is unchanged for a suite that declares nothing.
+
+        The key exists because that rule is right for exactly one kind of
+        suite and wrong for the other.  The in-repo suite grades the whole
+        harness against everything it can do, so a flag with no mission
+        there is a capability nobody is measuring.  A **pack**'s suite
+        grades one capability, and demanding that an analyst suite also
+        capture ``state`` and ``submission`` produces two missions written
+        to satisfy a checker — three packs each inventing eleven missions
+        is not more measurement, it is less.  So a pack declares its nine
+        and is held to those nine, by this module's own code rather than
+        by an adapter that rebinds :data:`FLAGS` around the call.
+        """
+        if not self.flags:
+            return tuple(FLAGS)
+        # In `FLAGS` order, and only the flags `FLAGS` knows: a value it
+        # does not know is refused by name in the check, and letting it
+        # through here as well would report the same typo twice under two
+        # different rules.
+        return tuple(flag for flag in FLAGS if flag in self.flags)
 
     def mission(self, key: str) -> Mission:
         """One mission by key, or a :class:`KeyError` naming what there is."""
@@ -407,6 +439,8 @@ class Suite:
     def to_mapping(self) -> Dict[str, Any]:
         """The suite as the file it could have been loaded from."""
         out: Dict[str, Any] = {"name": self.name, "tools": list(self.tools)}
+        if self.flags:
+            out["flags"] = list(self.flags)
         if self.identifier_pattern:
             out["identifier_pattern"] = self.identifier_pattern
         if self.assets:
@@ -426,7 +460,8 @@ class Suite:
                 f"{type(raw).__name__}; a suite file is a mapping with "
                 f"`name:` and `missions:`")
         unknown = sorted(set(raw) - {"name", "tools", "assets", "missions",
-                                     "identifier_pattern", "rubric_changes"})
+                                     "identifier_pattern", "flags",
+                                     "rubric_changes"})
         if unknown:
             raise MissionMisdeclared(
                 f"{source or 'the suite'}: unknown key(s) {unknown}")
@@ -437,6 +472,12 @@ class Suite:
         assets = raw.get("assets") or {}
         if not isinstance(assets, Mapping):
             assets = {str(item): "" for item in assets}
+        claimed = raw.get("flags") or ()
+        if isinstance(claimed, str) or not isinstance(claimed, Sequence):
+            raise MissionMisdeclared(
+                f"{source or 'the suite'}: `flags:` is a list of the "
+                f"capabilities this suite claims to measure, out of "
+                f"{sorted(FLAGS)}")
         return cls(
             name=str(raw.get("name") or Path(source).stem or "suite"),
             missions=tuple(
@@ -445,6 +486,7 @@ class Suite:
             tools=tuple(str(t) for t in (raw.get("tools") or ())),
             assets={str(k): str(v) for k, v in assets.items()},
             identifier_pattern=str(raw.get("identifier_pattern") or ""),
+            flags=tuple(str(flag) for flag in claimed),
             rubric_changes=tuple(
                 _rubric_change(entry, index)
                 for index, entry in enumerate(raw.get("rubric_changes") or ())),
@@ -659,12 +701,26 @@ def check_the_suite_is_gradeable(suite: Optional[Suite] = None) -> None:
                     f"contract.CLI_FLAGS, so nothing promises it will still "
                     f"be there next release")
 
+    # -- what the suite claims, against what it captures ---------------------
+    #
+    # Two rules and they are not the same one. A mission may only name a
+    # flag `FLAGS` defines (checked per mission, above); a suite may only
+    # CLAIM a flag `FLAGS` defines; and every flag it claims has to be
+    # captured by some mission. A suite that claims nothing claims all of
+    # them — see `Suite.claims` for why the default is the strict reading.
+    for flag in suite.flags:
+        if flag not in FLAGS:
+            problems.append(
+                f"{suite.name}: `flags:` claims {flag!r}, which core.eval "
+                f"does not define. The flags are {sorted(FLAGS)}")
+
     covered = {m.flag for m in suite.missions}
-    uncaptured = sorted(set(FLAGS) - covered)
+    uncaptured = sorted(set(suite.claims) - covered)
     if uncaptured:
         problems.append(
-            f"{sorted(uncaptured)} named in FLAGS and captured by no mission. "
-            f"A flag with no mission is a capability nobody is measuring")
+            f"{sorted(uncaptured)} claimed by the suite and captured by no "
+            f"mission. A flag with no mission is a capability nobody is "
+            f"measuring")
 
     # -- the split, enforced rather than intended ----------------------------
     #

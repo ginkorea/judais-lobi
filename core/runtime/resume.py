@@ -746,10 +746,12 @@ def _rebuild_staged(recorded: Recorded) -> StagedResumption:
     same as it is on a live turn.
 
     The store is re-recorded rather than the evidence being collected into
-    a list here, and that is not ceremony: ``evidence_texts`` skips failed
-    results and ``called_tools`` does not, and a second reading of the log
-    beside them would be a second answer to the two questions the live path
-    already has one answer each for.
+    a list here, and that is not ceremony: ``evidence_texts`` reads a
+    failed result differently from a successful one — its typed error
+    payload and its arguments, never its free text — and ``called_tools``
+    does not read it differently at all, and a second reading of the log
+    beside them would be a second answer to the two questions the live
+    path already has one answer each for.
     """
     store = MissionResultStore()
     for record in recorded.records:

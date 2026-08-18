@@ -52,6 +52,51 @@ class ResultStoreConflict(RuntimeError):
     """Something is already registered under the store's tool name."""
 
 
+class SourcedEvidence(str):
+    """One evidence text, with the call that produced it still attached.
+
+    A ``str`` first and above all.  Every consumer of
+    :meth:`MissionResultStore.evidence_texts` reads evidence as text, a
+    library caller hands a validator plain strings, and neither may have
+    to learn a new type — so this adds an attribute and changes nothing
+    else about how an evidence text behaves.
+
+    What it adds is the one fact a plain string throws away: **which call
+    wrote this, and what that call was given**.  A grounding check needs
+    both halves of a code-plane call to tell a computed figure from an
+    echoed one — a model told a figure is unsupported can run
+    ``print('30,000')`` and re-submit, and its stdout is a tool result
+    like any other.  See
+    :class:`~core.runtime.grounding.NumericGroundingCheck`, which is the
+    one reader of these two attributes.
+
+    Class-level defaults so that ``getattr(text, "arguments", "")`` reads
+    the same on a plain ``str`` and on one of these: a caller who built
+    the evidence list by hand is not carrying provenance, and the check
+    must treat that as "nothing known", never as "nothing echoed".
+    """
+
+    #: The wire name of the tool whose result this is.
+    tool: str = ""
+    #: That call's arguments as text — what the MODEL wrote, not what the
+    #: tool returned.  See :attr:`StoredResult.arguments_text`.
+    arguments: str = ""
+    #: True where this text is what the model **sent**, not what the plane
+    #: returned.  Only a failed call contributes one; see
+    #: :meth:`MissionResultStore.evidence_texts`.  A check that grades
+    #: whether a figure came out of a tool must skip these, or the model
+    #: grounds its own arithmetic by typing it into a call that fails.
+    sent: bool = False
+
+    def __new__(cls, text: Any, *, tool: str = "", arguments: str = "",
+                sent: bool = False) -> "SourcedEvidence":
+        self = super().__new__(cls, text)
+        self.tool = str(tool or "")
+        self.arguments = str(arguments or "")
+        self.sent = bool(sent)
+        return self
+
+
 @dataclass(frozen=True)
 class StoredResult:
     """One tool call, kept whole."""
@@ -78,6 +123,23 @@ class StoredResult:
     @property
     def succeeded(self) -> bool:
         return self.exit_code == 0
+
+    @property
+    def arguments_text(self) -> str:
+        """This call's arguments as one string, for searching.
+
+        JSON with sorted keys, so the same call renders the same way
+        twice and a reader comparing two of them is comparing the calls.
+        ``default=str`` because an argument that is not JSON-serialisable
+        is still an argument the model wrote, and a rendering that raised
+        here would take a whole grounding check down with it.
+        """
+        if not self.arguments:
+            return ""
+        try:
+            return json.dumps(self.arguments, sort_keys=True, default=str)
+        except (TypeError, ValueError):       # pragma: no cover - defensive
+            return str(self.arguments)
 
 
 class MissionResultStore:
@@ -176,22 +238,54 @@ class MissionResultStore:
         return None
 
     def evidence_texts(self) -> List[str]:
-        """Every successful result's text and typed payload.
+        """What this run established, for a grounding validator.
 
-        This is what "appeared in a tool output *of this run*" means to
-        a grounding validator: the full text, not the bounded rendering
-        the model saw, and the typed payload as well — an identifier the
-        model correctly read out of a structured field is grounded even
-        though the text block never spelled it.
+        A **successful** result contributes its full text — not the
+        bounded rendering the model saw — and its typed payload as well:
+        an identifier the model correctly read out of a structured field
+        is grounded even though the text block never spelled it.
+
+        A **failed** result contributes its typed error payload and the
+        arguments it was called with, and nothing else.  A refusal is
+        still something this run did: *"I could not read that page — it
+        answered 404"* is a claim about the run, and before this the URL
+        and the status could not be grounded by the very call that
+        demonstrates them.  It is the same reasoning :meth:`called_tools`
+        already applies — the plane WAS used, and whether it worked is a
+        different question.
+
+        Two things a failure deliberately does NOT contribute, and each
+        closes a way in:
+
+        * its **free text**.  An error message is prose written by
+          whatever was on the other end, and an identifier that appears
+          only inside one has not been established by anything;
+        * its arguments as an ordinary result.  They are marked
+          :attr:`SourcedEvidence.sent`, because they are what the MODEL
+          wrote, and a check grading whether a figure came out of a tool
+          must skip them — otherwise a figure grounds itself by being
+          typed into a call that fails.
+
+        Each entry is a :class:`SourcedEvidence` — a ``str``, so nothing
+        that reads this list has to know — carrying the tool that wrote it
+        and the arguments it was called with.  **The pairing is made here
+        and only here.**  A check that re-derived "which call produced
+        this text" by matching strings back against the store would be a
+        second owner of a fact this loop already has in hand, and the one
+        that goes wrong the day two calls return the same bytes.
         """
         texts: List[str] = []
         for stored in self._results:
-            if not stored.succeeded:
-                continue
-            if stored.text:
-                texts.append(stored.text)
-            if stored.evidence:
-                texts.append(stored.evidence)
+            arguments = stored.arguments_text
+            if stored.succeeded:
+                returned = ((stored.text, False), (stored.evidence, False))
+            else:
+                returned = ((stored.evidence, False), (arguments, True))
+            for text, sent in returned:
+                if text:
+                    texts.append(SourcedEvidence(
+                        text, tool=stored.tool, arguments=arguments,
+                        sent=sent))
         return texts
 
     def called_tools(self) -> List[str]:
