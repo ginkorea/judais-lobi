@@ -178,6 +178,17 @@ class Pack:
         Returns *destination*, which is created if it does not exist.  A
         pack with no fixtures stages nothing and still returns it, so a
         caller does not branch on which kind of pack it holds.
+
+        **A fixture may be a directory**, and one pack's are nothing else:
+        ``analyst``'s fixtures are files (``sales.csv``) and ``coding``'s
+        are whole small repositories (``pkg_two_modules/`` — two modules,
+        a suite and a ``.judais-lobi.yml``), because the thing its
+        missions run against IS a tree.  Copied with
+        :func:`shutil.copytree` rather than skipped: a loader that staged
+        only the top-level files would hand the coding pack four empty
+        directory names and its missions would fail on a fixture that is
+        present in the wheel and absent on disk.  ``dirs_exist_ok`` so a
+        caller may stage into a directory it has already put something in.
         """
         target = Path(destination)
         target.mkdir(parents=True, exist_ok=True)
@@ -189,6 +200,9 @@ class Pack:
             for child in sorted(Path(directory).iterdir()):
                 if child.is_file():
                     shutil.copy2(child, target / child.name)
+                elif child.is_dir():
+                    shutil.copytree(child, target / child.name,
+                                    dirs_exist_ok=True)
         return target
 
 

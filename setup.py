@@ -33,12 +33,24 @@ setup(
     # the floor this package supports, and a pattern that silently matches
     # nothing is the same missing file with no error.
     # `tests/test_packaging.py` holds every installed pack to this list.
+    #
+    # The three `fixtures/` levels are not belt-and-braces. `analyst`'s
+    # fixtures are files (`sales.csv`); `coding`'s are whole small
+    # REPOSITORIES — `fixtures/pkg_two_modules/tests/test_api.py` is four
+    # segments deep — and setuptools matches these patterns per path
+    # SEGMENT, so `fixtures/*` ships the directory's name and none of its
+    # contents. `tests/test_packaging.py` cannot catch that on its own:
+    # it checks with `fnmatch`, whose `*` crosses `/` happily, so a
+    # too-shallow pattern passes there and ships an empty directory. The
+    # depth is stated here instead, with the reason.
     package_data={
         "core.skills": [
             "library/*/SKILL.md",
             "library/*/missions.yaml",
             "library/*/README.md",
             "library/*/fixtures/*",
+            "library/*/fixtures/*/*",
+            "library/*/fixtures/*/*/*",
             "library/*/templates/*",
         ],
     },

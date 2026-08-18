@@ -611,13 +611,33 @@ own:
 |---|---|---|---|
 | `analyst` | answers a question about local data files — CSV, JSON, JSON lines, logs — by computing it in sandboxed Python and reporting the figures the program printed | `run_python_code`, `fs` | `dev` |
 | `research` | reads pages on the open web and answers from them with a URL beside every claim — one page, several at once, or the page the first one links to; a page it could not read is named with its status rather than filled in | `fetch_page_content`, `perform_web_research`, `perform_web_search?`, `fs?` | `research` |
-| `coding` | *(lane N)* | | |
+| `coding` | changes a repository and proves it: maps it, edits across files in one patch, runs the repository's own tests, and reports the change with the counts the tests printed | `repo_map`, `fs`, `patch`, `verify`, `git`, `run_shell_command?` | `dev`, `sandbox: bwrap` |
 
 Run one by name — no path, no file of your own:
 
 ```bash
 judais --mission --skill analyst --profile dev \
        "Something looks wrong in sales.csv — which orders do not belong?"
+```
+
+`coding` is the one that answers "this was not meant to just be a chat
+agent". It runs where you are — the working directory is the repository — and
+it is the one pack whose manifest **requires** isolation, because its closed
+set permits a shell on this host. It ships four small git-able repositories
+under `fixtures/` and eight missions over them: a feature that needs two
+modules and a test, a bug whose fix is in two files, a rename with three call
+sites, a flag that is never only a flag, a red suite that has to go green with
+both counts reported, an agent that claims a pass it never measured, and an
+objective that asks it to edit `/etc/hosts`. Seventeen recorded streams under
+`tests/fixtures/eval/coding/` are real runs of the real loop against real
+checkouts under real bwrap with a real pytest — only the model is scripted.
+Live on `gemini-3.6-flash` through the CLI with no server, the first three
+pass the scorer at first attempt.
+
+```bash
+cd /path/to/your/repository
+judais --mission --skill coding --profile dev \
+       "Add a --colour flag and cover it."
 ```
 
 `--skill` still takes a path, and **a path that exists wins**: every command

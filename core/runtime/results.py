@@ -80,6 +80,19 @@ class StoredResult:
     def succeeded(self) -> bool:
         return self.exit_code == 0
 
+    @property
+    def ran(self) -> bool:
+        """Whether a tool was reached and answered, whatever it answered.
+
+        The distinction :attr:`succeeded` cannot make, and the one
+        :meth:`MissionResultStore.evidence_texts` needs: ``-1`` is the
+        bus's number for a call that never got to a tool — an unknown
+        name, a capability refusal, an exception inside dispatch — and
+        anything from ``0`` upwards is a tool's own exit code. A failing
+        test suite is not an absent result; it is the result.
+        """
+        return self.exit_code >= 0
+
 
 class MissionResultStore:
     """Full results for one mission, addressed by handle.
@@ -177,17 +190,59 @@ class MissionResultStore:
         return None
 
     def evidence_texts(self) -> List[str]:
-        """Every successful result's text and typed payload.
+        """Every result a tool actually produced: its text and its payload.
 
         This is what "appeared in a tool output *of this run*" means to
         a grounding validator: the full text, not the bounded rendering
         the model saw, and the typed payload as well — an identifier the
         model correctly read out of a structured field is grounded even
         though the text block never spelled it.
+
+        **A successful result, or a failed one from a tool that says its
+        failures are results.**  Two rules that look like each other and
+        are opposites, and both are load-bearing.
+
+        The default is the careful one and it stays: a tool that exited
+        non-zero did not produce what it was asked for, and a figure
+        lifted out of its output is the plausible fabrication
+        ``tests/test_grounding_code_is_not_a_claim.py`` refuses —
+        ``mcp.run_code`` crashing and printing ``Traceback … gradient was
+        3.1416`` computed no gradient.
+
+        ``verify`` is the exception, and the coding pack is what found it.
+        A failing test suite has not failed to produce a result; **the
+        failure is the result**, and "1 failed, 1 passed" is the most
+        important thing a coding mission learns. Filtering it out made an
+        agent that truthfully reported the red run come back ungrounded,
+        and the repair turn deleted a true sentence — the 10 August
+        failure (see :meth:`~core.runtime.grounding.GroundingConfig
+        .offering`) in a new place.
+
+        Which tools those are is **declared, not guessed**:
+        :attr:`~core.tools.descriptors.ToolDescriptor.failure_is_a_result`,
+        read through :func:`~core.tools.descriptors
+        .failure_reporting_tools`, because what a non-zero exit MEANS for
+        a tool is a fact only that tool can state. Matched with
+        :func:`~core.tools.descriptors.same_tool`, so a bridged
+        ``mcp.verify`` is the same declaration under a namespace.
+
+        A call that never reached a tool at all is never evidence
+        whatever it declares: ``exit_code == -1`` is the bus's own number
+        for an unknown name, a capability refusal or an exception in
+        dispatch, and what those carry is this harness's words about why
+        it said no.
+
+        Only ``stdout`` and the typed payload are kept, here as before.
         """
+        from core.tools.descriptors import failure_reporting_tools, same_tool
+
+        reporting = failure_reporting_tools()
         texts: List[str] = []
         for stored in self._results:
-            if not stored.succeeded:
+            if not stored.ran:
+                continue
+            if not stored.succeeded and not any(
+                    same_tool(stored.tool, name) for name in reporting):
                 continue
             if stored.text:
                 texts.append(stored.text)

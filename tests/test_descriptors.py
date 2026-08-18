@@ -188,3 +188,76 @@ class TestWhichToolsGetTheNetwork:
         """The one whose scopes (``pip.install``) read like a filesystem
         effect and whose implementation is an HTTP client."""
         assert INSTALL_DESCRIPTOR.sandbox_profile.allow_network is True
+
+
+class TestTheMultiActionToolsPublishTheirArguments:
+    """The five tools a coding mission runs on, and what they declare.
+
+    Until Phase 15 not one of them carried an ``input_schema``, so the
+    catalogue a mission is handed said ``patch: validate, apply, diff,
+    rollback, merge, status`` and nothing about ``patch_set_json`` — the
+    argument a model cannot possibly guess, being a JSON *string* holding a
+    list of search/replace blocks. What the schema buys is stated in
+    ``core.runtime.schema_check``: a wrong argument refused here costs one
+    turn, and discovered at the far end it costs three.
+    """
+
+    #: The tools whose dispatch is ``{"action": ..., ...}``. Written out
+    #: rather than derived from ``action_scopes``, for the reason the
+    #: network list above is: a test derived from the thing under test
+    #: agrees with whatever it says.
+    MULTI_ACTION = ("fs", "git", "verify", "repo_map", "patch")
+
+    def descriptor(self, name):
+        found = [d for d in ALL_DESCRIPTORS if d.tool_name == name]
+        assert found, f"{name} is not registered"
+        return found[0]
+
+    @pytest.mark.parametrize("name", MULTI_ACTION)
+    def test_it_declares_a_schema_that_requires_an_action(self, name):
+        schema = self.descriptor(name).input_schema
+        assert schema, f"{name} publishes no input_schema"
+        assert "action" in schema.get("required", ())
+
+    @pytest.mark.parametrize("name", MULTI_ACTION)
+    def test_the_action_enum_is_exactly_the_actions_the_bus_can_dispatch(
+        self, name,
+    ):
+        """The one drift this can have, caught where it happens.
+
+        An action added to ``action_scopes`` and not to the enum is an
+        action the schema check refuses; one added to the enum and not to
+        ``action_scopes`` is an action the bus resolves to the tool's whole
+        scope set, which is the widest grant it has.
+        """
+        descriptor = self.descriptor(name)
+        declared = set(descriptor.input_schema["properties"]["action"]["enum"])
+        assert declared == set(descriptor.action_scopes)
+
+    @pytest.mark.parametrize("name", MULTI_ACTION)
+    def test_every_declared_property_says_what_it_is_for(self, name):
+        """A description is not decoration here: under ``--protocol
+        native`` the whole schema is what the request declares, so a
+        property with no description is an argument the model is offered
+        and never told the shape of."""
+        properties = self.descriptor(name).input_schema["properties"]
+        undescribed = [key for key, spec in properties.items()
+                       if not str(spec.get("description", "")).strip()]
+        assert not undescribed, f"{name}: {undescribed}"
+
+    def test_the_patch_schema_states_the_shape_of_a_patch_set(self):
+        """The one argument nothing else in the prompt could teach."""
+        properties = self.descriptor("patch").input_schema["properties"]
+        described = properties["patch_set_json"]["description"]
+        for word in ("file_path", "search_block", "replace_block",
+                     "task_id", "modify", "create"):
+            assert word in described, word
+
+    def test_fs_requires_a_path_because_every_one_of_its_actions_does(self):
+        assert "path" in self.descriptor("fs").input_schema["required"]
+
+    def test_verify_takes_nothing_but_the_action(self):
+        """The command belongs to the repository, and the schema is where
+        a model finds that out: no path, no flags, no command line."""
+        schema = self.descriptor("verify").input_schema
+        assert list(schema["properties"]) == ["action"]

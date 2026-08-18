@@ -306,6 +306,26 @@ class TestTheAnthropicExtraIsTheOneTheRefusalNames:
                 if item.startswith("anthropic")] == extras["anthropic"]
 
 
+def _is_build_droppings(path) -> bool:
+    """Whether a file under a pack is something a *tool* left there.
+
+    The `coding` pack's fixtures are small Python repositories, so the
+    first `python -m compileall core` — which `CLAUDE.local.md` asks for
+    before every lane finishes, on the 3.10 floor — writes
+    `fixtures/<repo>/__pycache__/*.pyc` inside the library. Those are
+    gitignored, correctly, and they are not pack files: nothing ships
+    them and nothing loads them.
+
+    Written as an exclusion here rather than as a `.gitignore` negation,
+    which is how the analyst pack's `service.log` was fixed, because the
+    two cases are opposite. `service.log` is a *fixture* that `.gitignore`
+    was swallowing and had to be rescued; a `.pyc` is a build artefact
+    that must stay ignored, and a rule that tracked it would put this
+    host's bytecode magic number in the repository.
+    """
+    return "__pycache__" in path.parts or path.suffix in (".pyc", ".pyo")
+
+
 class TestTheWheelShipsTheMissionPacks:
     """`core/skills/library/<name>/` is DATA — no `__init__.py` anywhere
     under it, so `find_packages()` never sees it and the wheel's top-level
@@ -355,7 +375,7 @@ class TestTheWheelShipsTheMissionPacks:
         patterns = self._patterns()
         for name in self._installed():
             for path in sorted((self.LIBRARY / name).rglob("*")):
-                if not path.is_file():
+                if not path.is_file() or _is_build_droppings(path):
                     continue
                 relative = path.relative_to(self.LIBRARY.parent).as_posix()
                 assert any(fnmatch.fnmatch(relative, pattern)
@@ -403,8 +423,9 @@ class TestTheWheelShipsTheMissionPacks:
                  if line.strip()}
         for name in self._installed():
             for path in sorted((self.LIBRARY / name).rglob("*")):
-                if path.is_file():
-                    relative = path.relative_to(REPO).as_posix()
-                    assert relative in known, (
-                        f"{relative} is not tracked by git — check "
-                        f".gitignore")
+                if not path.is_file() or _is_build_droppings(path):
+                    continue
+                relative = path.relative_to(REPO).as_posix()
+                assert relative in known, (
+                    f"{relative} is not tracked by git — check "
+                    f".gitignore")
