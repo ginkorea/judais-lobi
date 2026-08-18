@@ -48,6 +48,7 @@ direct loop and from `--swarm` alike. Index them without a default.
 | `answer` | `text`, `outcome` |
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` |
 | `mission_finished` | `outcome`, `steps`, `max_steps` |
+| `model_state` | `state`, `provider`, `model` |
 
 ### Optional fields
 
@@ -68,6 +69,7 @@ required fields and nothing else.
 | **`gate_requested`** | `approval_id` | the name of the durable record this request was written to, which is what a decision is addressed to afterwards |
 | **`answer`** | `usage` | what the call that wrote this text cost — the repair turn's, on a repaired answer |
 | **`mission_finished`** | `usage`, `budget`, `reason`, `elapsed_s` | the run's ledger; which budget ran out and by how much; why it ended when the outcome word does not say; and the wall clock |
+| **`model_state`** | `index`, `detail`, `since_s`, `retry_after_s` | the step the wait happened in; what the server said about it; how long the run had been waiting when it was reported; and the `Retry-After` the server asked for |
 
 `plan` rode `mission_started` until 0.8.x: that record is now emitted before
 triage — which is itself a call to the model — so at the time it is written
@@ -311,7 +313,7 @@ somebody priced it.
 A **field and not an event**, which was a decision rather than an oversight. A
 ledger is exactly the kind of thing that wants a record type of its own, and a
 new record type is the one additive change a consumer cannot absorb quietly:
-TAIPAN's `bridge.READS` is asserted *equal* to `contract.EVENTS`, so a tenth
+TAIPAN's `bridge.READS` is asserted *equal* to `contract.EVENTS`, so a new
 event is a lockstep release on both sides for a number that fits in frames that
 already exist. An optional field is read with a default by a consumer that
 wants it and ignored by one that does not — the same route `compacted` and
@@ -510,6 +512,64 @@ concatenation is the only operation defined on them.
 A staged (`--swarm`) turn emits none of these for its sub-missions, exactly as
 it emits none of their `answer` records: a sub-mission's answer is not the
 mission's. The synthesized answer arrives whole, as one `answer`.
+
+### `model_state` — why you are waiting
+
+`model_state` says what the thing on the other end of the socket is doing:
+`state` is one word, `provider` and `model` are the two names for what was
+being asked. It is the eleventh record type and the second one added since
+schema version 1 was declared — additive, and it does **not** bump
+`SCHEMA_VERSION`. A consumer that has never heard of it drops the records and
+renders exactly the stream it always rendered.
+
+**A healthy call emits nothing.** This is not a narration of every model call.
+The steady pair — the request went out, the reply came back — is already on the
+stream as `step_started` and then `tool_call` or `answer`, so a run against a
+model that answers produces not one of these and every stream recorded before
+this event existed is byte-identical to the stream it would produce today. What
+you receive is the five words that mean *a person is waiting and does not know
+why*, and then the `loaded` that ends the wait:
+
+| the harness observed | `state` |
+| --- | --- |
+| nothing answered on the socket — a refused, reset or unresolved connect, on `GET /models` or on the completion itself | `absent` |
+| the endpoint answered and does not list the model this run asks for (or lists none) | `cold` |
+| the server answered **503** | `loading` — with its body in `detail` and its `Retry-After` in `retry_after_s` |
+| the server answered **429** | `queued` |
+| the request was accepted and nothing came back for 20s, and `GET /models` lists the model | `queued` |
+| the request was accepted and nothing came back for 20s, and `GET /models` does not list it, or does not answer | `cold` / `absent` — the row above it, asked again |
+| any other 4xx or 5xx, or a read timeout | `failed` |
+| a reply, or a first token, arrived — after any of the above | `loaded`, carrying the model id **the server** reported |
+
+`queued` and `loading` are separated **by construction and not by guess**,
+because two weeks of watching a local endpoint proved they are the two facts an
+operator most needs told apart. `loading` is only ever the server's own answer;
+`queued` is only ever said after the harness asked `GET /models` and was told
+the model is there. A silence over nothing loaded is `cold`, and a silence over
+nothing listening is `absent`. The 20s is
+`core.runtime.backends.state.FIRST_BYTE_QUEUED_S` and a constructor argument on
+the backend: a local endpoint at 59 tok/s is healthy while it spends tens of
+seconds on one answer, so the threshold is a judgement about a person's
+patience rather than about a model's speed.
+
+The seventh word, `asking`, is reported inside the harness and **never reaches
+this stream**: it is the steady state, and the record exists to explain a wait.
+`contract.MODEL_STATES` declares all seven anyway, because a closed set a
+consumer asserts should be the set the harness has rather than the subset
+today's emitter uses.
+
+**It is a transition, de-duplicated.** The same word twice running is one
+record — three refused connects inside one retry budget say `absent` once —
+unless `retry_after_s` changed, which is new information about the same state.
+Hold the last one you saw as the current state of the model; clear it on the
+`loaded` that follows. `loaded` is emitted **only** after one of the other five:
+on a run where nothing went wrong there is nothing to say it about.
+
+`since_s` is how long the run had been waiting on the model when the state was
+reported, from the start of that model call — so on `loaded` it is how long the
+wait lasted, and on `queued` it is how late the first byte is. `detail` is what
+the server said, scrubbed like every other free-text field here: prose for a
+person, never a machine channel. Branch on `state`; show `detail`.
 
 ## Outcomes
 

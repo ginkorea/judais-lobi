@@ -679,14 +679,14 @@ class TestTheTwoAdditiveFields:
 # ── the contract is internally whole ─────────────────────────────────────────
 
 
-class TestTheLedgerIsAFieldAndNotATenthEvent:
+class TestTheLedgerIsAFieldAndNotAnEvent:
     """The decision, written where the decision is enforced.
 
     A run's token spend wants a record type of its own — it is a fact
     about the run rather than about any one step — and it does not get
     one. A new event is the single additive change a consumer cannot
     absorb quietly: the reference consumer asserts its read-set EQUALS
-    `EVENTS`, so a tenth name is a lockstep release on both sides for a
+    `EVENTS`, so another name is a lockstep release on both sides for a
     number that fits in frames that already exist. An optional field is
     read with a default by a consumer that meters and ignored by one that
     does not, which is the route `compacted` and `plan` took.
@@ -699,18 +699,19 @@ class TestTheLedgerIsAFieldAndNotATenthEvent:
                              total_tokens=prompt + completion)
 
     def test_the_ledger_is_still_not_one_of_them(self):
-        """The count is stated so that a tenth name is a decision somebody
+        """The count is stated so that another name is a decision somebody
         made rather than a line somebody added.
 
-        It went from nine to ten once, for `answer_delta`, and that is the
-        shape of the argument this class exists to record: a new event is
-        the additive change a consumer cannot absorb quietly, so it is
-        paid for when there is something to say that no existing frame can
-        carry — a fragment of an answer that has not been written yet —
-        and not when there is a number that fits in frames that already
-        exist.
+        Nine, then ten for `answer_delta`, then eleven for `model_state`,
+        and both of those are the shape of the argument this class exists
+        to record: a new event is the additive change a consumer cannot
+        absorb quietly, so it is paid for when there is something to say
+        that no existing frame can carry — a fragment of an answer that
+        has not been written yet, or the reason a pane has shown nothing
+        for ninety seconds — and not when there is a number that fits in
+        frames that already exist.
         """
-        assert len(c.EVENTS) == 10
+        assert len(c.EVENTS) == 11
         assert not any("usage" in event or "ledger" in event
                        for event in c.EVENTS)
 
@@ -821,6 +822,83 @@ class TestTheTenthEventIsSafeToNotKnowAbout:
 
     def test_the_event_sits_beside_the_answer_it_precedes(self):
         assert c.EVENTS.index(c.ANSWER_DELTA) == c.EVENTS.index(c.ANSWER) - 1
+
+
+class TestTheEleventhEventIsSafeToNotKnowAbout:
+    """`model_state` is the second additive change since version 1, and it
+    is declared to cost a consumer that ignores it exactly nothing.
+
+    The reference consumer asserts its read-set EQUALS `EVENTS`, so an
+    eleventh name is a lockstep release on both sides and was paid for
+    only because no existing frame can carry the reason a pane has shown
+    nothing for ninety seconds. What it must not cost is the rest of the
+    stream — and it does not, because a mission whose model answers emits
+    none of these at all. That claim is here as an assertion, and again
+    byte for byte in `tests/test_run_corpus.py`.
+    """
+
+    def test_a_run_against_a_model_that_answers_emits_none_of_them(self):
+        _, seen = _run([json.dumps({"answer": "done"})])
+        assert not [r for r in seen if r["event"] == ms.MODEL_STATE]
+        assert _faults(seen) == []
+
+    def test_it_is_the_eleventh_and_the_last(self):
+        assert c.EVENTS[-1] == c.MODEL_STATE
+        assert c.EVENTS.index(c.MODEL_STATE) == 10
+
+    def test_the_three_required_fields_are_the_word_and_the_two_names(self):
+        assert c.FIELDS[c.MODEL_STATE] == ("state", "provider", "model")
+
+    def test_the_step_is_optional_and_not_required(self):
+        """A report is a fact about a CALL, and not every call this
+        harness makes belongs to a numbered step."""
+        assert "index" in c.OPTIONAL[c.MODEL_STATE]
+        assert "index" not in c.FIELDS[c.MODEL_STATE]
+
+    def test_what_it_may_add_is_declared(self):
+        assert set(c.OPTIONAL[c.MODEL_STATE]) == {
+            "index", "detail", "since_s", "retry_after_s"}
+
+    def test_the_seven_words_are_data_like_the_outcomes(self):
+        """A consumer vendoring `contract.py` gets the whole seam and must
+        not have to import a backend package to learn what a field can
+        say."""
+        assert c.MODEL_STATES == (
+            "cold", "asking", "queued", "loading", "loaded", "failed",
+            "absent")
+
+    def test_and_they_are_the_words_the_backends_actually_report(self):
+        """Two copies of a vocabulary is its own defect. This one is a
+        copy on purpose — the contract imports nothing this repo owns —
+        so the test is what keeps them equal."""
+        from core.runtime.backends import state
+
+        assert c.MODEL_STATES == state.STATES
+
+    def test_the_five_a_consumer_renders_are_a_subset_of_the_seven(self):
+        from core.runtime.backends import state
+
+        assert state.WAITING < set(c.MODEL_STATES)
+        assert "asking" not in state.WAITING
+        assert "loaded" not in state.WAITING
+
+    def test_a_record_the_emitter_writes_conforms(self):
+        assert c.conforms({"event": c.MODEL_STATE, "state": "queued",
+                           "provider": "local", "model": "gpt-oss-20b",
+                           "index": 3, "since_s": 21.4}) == []
+
+    def test_one_without_the_two_names_does_not(self):
+        """`provider` and `model` are required and the empty string is the
+        honest answer where a backend never said: a consumer branching on
+        which endpoint is in trouble must not meet a missing key."""
+        assert c.conforms({"event": c.MODEL_STATE, "state": "queued"}) == [
+            "model_state: missing required field 'provider'",
+            "model_state: missing required field 'model'"]
+
+    def test_it_does_not_bump_the_schema_version(self):
+        """Adding an event is a minor change by the rule at the top of the
+        module: a consumer drops record types it does not know."""
+        assert c.SCHEMA_VERSION == 1
 
 
 class TestTheContractIsWhole:

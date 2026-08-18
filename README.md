@@ -739,8 +739,8 @@ run and the model is writing prose. So that model call **streams** wherever the
 backend can, and the answer goes out in pieces as it is written. That is the
 tenth record type, and the rules for it are below the table.
 
-The vocabulary is ten record types, in the order a run tends to produce them
-(`contract.EVENTS`):
+The vocabulary is eleven record types, in the order a run tends to produce
+them (`contract.EVENTS`):
 
 | event | when |
 | --- | --- |
@@ -754,6 +754,7 @@ The vocabulary is ten record types, in the order a run tends to produce them
 | `answer` | the finished answer and its outcome |
 | `grounding` | the validator's report, twice when a repair happened |
 | `mission_finished` | terminal, out of a `finally`, with the outcome, the counts, the run's `usage` and `elapsed_s` |
+| `model_state` | why nothing is happening: the model is `cold`, `queued`, `loading`, `failed` or `absent` — and `loaded` when the wait is over. A healthy call emits none of these |
 
 `answer_delta` is the one to read the rules for before rendering it. It carries
 `index` (the step whose model call is producing it), `part` (a 0-based ordinal
@@ -767,8 +768,22 @@ turn that called a tool, a library caller whose `chat_fn` returns a string. Each
 fragment is scrubbed on its own, so a credential split across two of them is not
 recognisable in either half — display the fragments, keep the `answer`.
 
-Those ten, their required and optional fields, the five outcome words, the exit
-contract and the rule for what counts as a breaking change are
+`model_state` is the one to read the rules for before rendering a spinner. It
+explains a **wait** rather than narrating a call: a healthy call emits nothing —
+`step_started` and `answer` already say the request went out and came back — so
+this record appears only when something is keeping the model from answering, and
+`loaded` appears only to close one of those. The two words a deployment could
+never tell apart are separated by construction: `loading` is only ever the
+server's own answer (a 503, with its body in `detail` and its `Retry-After` in
+`retry_after_s`), and `queued` is only ever said after the harness asked `GET
+/models` and was told the model is there — a silence over nothing loaded is
+`cold`, and a silence over nothing listening is `absent`. Records are
+transitions and are de-duplicated: hold the last one as the model's current
+state, clear it on `loaded`. `since_s` is how long the run had been waiting when
+it was reported.
+
+Those eleven, their required and optional fields, the five outcome words, the
+exit contract and the rule for what counts as a breaking change are
 **[`CONTRACT.md`](CONTRACT.md)**, whose authority is
 `core/runtime/contract.py`. A consumer pins it:
 

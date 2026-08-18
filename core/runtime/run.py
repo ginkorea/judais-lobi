@@ -82,9 +82,11 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from typing import (
     Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple,
 )
@@ -95,6 +97,7 @@ from core.durable import RunStore
 from core.redact import scrub_record
 from core.runtime.answer_stream import adrain as adrain_answer
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
+from core.runtime.backends import state as model_state
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
 )
@@ -114,7 +117,8 @@ from core.runtime.mission import (
 )
 from core.runtime.mission_stream import (
     ANSWER, ANSWER_DELTA, GATE_REQUESTED, GROUNDING, MISSION_FINISHED,
-    MISSION_STARTED, REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
+    MISSION_STARTED, MODEL_STATE, REPLY_REJECTED, STEP_STARTED, TOOL_CALL,
+    TOOL_RESULT,
 )
 from core.runtime.mission_stream import Observer as Sink
 from core.runtime.results import RESULT_TOOL, MissionResultStore
@@ -741,6 +745,95 @@ class _Branch(Observer):
 # ── the client, the protocol, and the side channels ─────────────────────────
 
 
+class _ModelStates:
+    """One run's model-state reports, turned into records.
+
+    The rule that keeps every recorded stream byte-identical lives here
+    and nowhere else, and it is two sentences.  **A healthy call emits
+    nothing**: ``asking`` and ``loaded`` are the two halves of a call
+    that worked, ``step_started`` and ``answer`` already say so, and a
+    scripted model that answers immediately therefore produces not one
+    ``model_state`` record.  **A wait is announced once and closed
+    once**: the five words of
+    :data:`~core.runtime.backends.state.WAITING` go out on the
+    transition into them, and the ``loaded`` that follows goes out
+    because it is the end of something a consumer is rendering.
+
+    De-duplication is a run's business and not a backend's — three
+    refused connects inside one retry budget are one fact — so it is
+    held here, on the object a run shares with its children, rather
+    than in four backends that would each have to remember what they
+    last said.  Which is also why the lock: reports arrive from the
+    worker thread a model call runs on and from the timer thread that
+    notices a late first byte, and two children of one run may have two
+    calls in flight.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        #: The last state EMITTED, and the ``retry_after_s`` it carried.
+        self._last = ""
+        self._retry: Optional[float] = None
+        #: Whether a wait is outstanding — that is, whether a ``loaded``
+        #: would be the end of something rather than the unremarkable
+        #: second half of a call that worked.
+        self._waiting = False
+
+    def take(self, report: Any, observer: "Observer", *,
+             index: Optional[int], started: List[float]) -> None:
+        """One report, emitted or dropped.  Never raises into a call.
+
+        *started* is the call's clock, and it is a mutable list rather
+        than a number for two reasons.  It is **empty until the first
+        report**, so a call nobody says anything about — every call in
+        this repository's fixtures, every call to a library caller's
+        ``chat_fn`` — does not so much as read
+        :func:`time.monotonic`; and ``asking`` **rewrites** it, because
+        the clock ``since_s`` is measured against should start when the
+        request goes out and not when the loop began assembling it.
+        """
+        now = time.monotonic()
+        if not started:
+            started.append(now)
+        if report.state == model_state.ASKING:
+            started[0] = now
+            return
+        with self._lock:
+            if report.state == model_state.LOADED:
+                if not self._waiting:
+                    # Nothing was ever wrong. This is the boring half of
+                    # a healthy call, and dropping it is what keeps every
+                    # stream recorded before this event existed
+                    # byte-identical to the stream it produces today.
+                    return
+                self._waiting = False
+            elif (report.state == self._last
+                    and report.retry_after_s == self._retry):
+                # The same word about the same wait. A changed
+                # `retry_after_s` is not the same wait: a queue that went
+                # from ten seconds to sixty is news.
+                return
+            else:
+                self._waiting = True
+            self._last, self._retry = report.state, report.retry_after_s
+            fields: Dict[str, Any] = {}
+            if index is not None:
+                fields["index"] = index
+            fields["state"] = report.state
+            fields["provider"] = report.provider
+            fields["model"] = report.model
+            if report.detail:
+                fields["detail"] = report.detail
+            fields["since_s"] = round(max(0.0, now - started[0]), 3)
+            if report.retry_after_s is not None:
+                fields["retry_after_s"] = float(report.retry_after_s)
+            # Inside the lock: `emit` writes a line to a durable log and
+            # to whatever sinks a caller installed, and two threads
+            # interleaving there is a corrupt transcript rather than a
+            # racy counter.
+            observer.emit(MODEL_STATE, **fields)
+
+
 @dataclass
 class Model:
     """What a run asks, how it reads the answer, and what the call cost.
@@ -800,6 +893,16 @@ class Model:
     #: is how a staged turn keeps ONE ledger across its sub-missions.
     ledger: Optional[Ledger] = None
 
+    #: What this model has already been heard to say about itself, so it
+    #: is not said twice.  Built on first use rather than declared,
+    #: because it is machinery and not a parameter: a caller constructing
+    #: a :class:`Model` is describing what to ask and how, and has no
+    #: opinion about de-duplication.  Not compared and not printed — two
+    #: models are the same model on what they ask, not on what the
+    #: endpoint has been up to.
+    _states: Optional[_ModelStates] = field(
+        default=None, init=False, repr=False, compare=False)
+
     def __post_init__(self) -> None:
         if self.protocol not in PROTOCOLS:
             raise ValueError(
@@ -835,6 +938,51 @@ class Model:
             usage = None
         recorded = ledger.add(usage)
         return {"usage": recorded.as_record()} if recorded is not None else {}
+
+    @contextmanager
+    def watching(self, observer: "Observer", *, index: Optional[int] = None):
+        """Turn this call's backend state reports into ``model_state``.
+
+        **The one emitter.**  Before Phase 11 these words would have had
+        to be emitted from ``chat_fn``, ``plain_chat_fn``, the critic and
+        the reading tier — four places, which is four places to disagree
+        about what ``queued`` means.  A run touches a backend in exactly
+        one place now (:meth:`Run._model_reply`, through :attr:`ask`), so
+        this wraps that place and nothing else has to know the vocabulary
+        exists.
+
+        What a backend reports is
+        :mod:`core.runtime.backends.state`'s business and what reaches
+        the wire is :class:`_ModelStates`'s: a healthy call says nothing,
+        a wait is announced once, and the ``loaded`` that ends it is the
+        only ``loaded`` a consumer sees.  The sink is installed in a
+        :class:`~contextvars.ContextVar`, so it follows the call onto the
+        worker thread :func:`asyncio.to_thread` puts it on and onto the
+        timer thread that notices a late first byte, and it is taken down
+        on the way out even when the call raised.
+
+        *index* is the step the call belongs to, and ``None`` is honest
+        for a call that belongs to no numbered step — the field is
+        OPTIONAL on the record for exactly that reason.  A call made
+        through :attr:`plain` outside this context — the staged path's
+        router, planner and synthesizer, today — reports into nothing,
+        which is the same silence those calls have always kept.  Wrapping
+        one is this context manager, one line, whenever somebody decides
+        a watcher should hear about it.
+        """
+        if self._states is None:
+            self._states = _ModelStates()
+        states = self._states
+        # Empty, and filled by the first report — a call nobody says
+        # anything about does not read the clock at all. See
+        # :meth:`_ModelStates.take`.
+        started: List[float] = []
+
+        def sink(report: Any) -> None:
+            states.take(report, observer, index=index, started=started)
+
+        with model_state.watching(sink):
+            yield
 
 
 # ── running a coroutine from code that is not one ───────────────────────────
@@ -1214,23 +1362,35 @@ class Run:
         asynchronous is iterated as one; no backend here is yet, and
         refusing one would be this loop having an opinion about a shape
         it does not need to hold.
+
+        **The whole of it happens under :meth:`Model.watching`**, which
+        is why ``model_state`` has one emitter: this is the only place a
+        run touches a backend, and the watch covers the call *and* the
+        drain, because a streamed reply's frames are decoded lazily and a
+        server that stalls between the headers and the first token stalls
+        inside the ``for`` loop rather than inside ``ask``.  A call
+        nobody's backend says anything about costs a
+        :class:`~contextvars.ContextVar` set and nothing else.
         """
-        got = await asyncio.to_thread(self.model.ask, messages)
-        if isinstance(got, str):
-            return got
-        if got is None or not (hasattr(got, "__iter__")
-                               or hasattr(got, "__aiter__")):
-            return str(got or "")
+        with self.model.watching(self.observer, index=index):
+            got = await asyncio.to_thread(self.model.ask, messages)
+            if isinstance(got, str):
+                return got
+            if got is None or not (hasattr(got, "__iter__")
+                                   or hasattr(got, "__aiter__")):
+                return str(got or "")
 
-        part = 0
+            part = 0
 
-        def on_delta(text: str) -> None:
-            nonlocal part
-            self.observer.emit(ANSWER_DELTA, index=index, part=part, text=text)
-            part += 1
+            def on_delta(text: str) -> None:
+                nonlocal part
+                self.observer.emit(ANSWER_DELTA, index=index, part=part,
+                                   text=text)
+                part += 1
 
-        return await adrain_answer(got, on_delta, native=self.model.native,
-                                   answer_tool=ANSWER_TOOL)
+            return await adrain_answer(got, on_delta,
+                                       native=self.model.native,
+                                       answer_tool=ANSWER_TOOL)
 
     # ── the catalogue ───────────────────────────────────────────────────
 

@@ -10,9 +10,15 @@ much to pay for one refused connect" is about a vLLM endpoint on this
 host, and a hosted provider should not have to import a local one to
 learn it.  So the rule moved here, to a module that knows about neither.
 
-It imports nothing from ``core`` on purpose: this is the bottom of the
-stack, and a policy that can reach back up into the runtime stops being a
-policy and becomes a second opinion about what the runtime is doing.
+It reaches up into ``core`` for exactly one thing — the seven words of
+:mod:`core.runtime.backends.state`, which is beside it at the bottom of
+the stack and imports nothing at all.  Everything else about the runtime
+stays out on purpose: a policy that can reach back up into the loop stops
+being a policy and becomes a second opinion about what the loop is doing.
+The words are here because :data:`ERROR_POLICY` is where this repo already
+says what a class of failure *means*, and "and the model is therefore
+``absent``" is the same sentence — stated once, in the row, rather than
+re-derived by each backend's ``except``.
 
 **One HTTP client per hosted provider, one policy module for the ones
 that speak HTTP by hand.**  That is this repo's reading of "one HTTP
@@ -46,6 +52,8 @@ from typing import (
 
 import httpx
 import requests
+
+from core.runtime.backends import state
 
 #: Seconds to wait on a chat completion.  Long: a cold vLLM server loads
 #: weights for ~100s before it answers the first request, and a hosted
@@ -85,10 +93,18 @@ CONNECT_ERRORS: Tuple[type, ...] = (
 
 @dataclass(frozen=True)
 class ErrorPolicy:
-    """What to do about one class of failure, and why."""
+    """What to do about one class of failure, why, and what it says.
+
+    :attr:`state` is the word from :mod:`core.runtime.backends.state` this
+    class of failure means about the *model*, as opposed to about the
+    request.  Only two of the four say anything but ``failed``, and the
+    one that does is the interesting one: a connect that never happened
+    is not a model that failed, it is a model that is not there.
+    """
 
     retry: bool
     why: str
+    state: str
 
 
 #: One row per error class.  Read it before writing a fourth retry loop.
@@ -97,27 +113,63 @@ ERROR_POLICY: Dict[str, ErrorPolicy] = {
         retry=True,
         why="The request never left this host, so nothing can have been "
             "billed or half-decoded. Re-sending has no consequences and "
-            "buys back a turn an endpoint blip would otherwise cost."),
+            "buys back a turn an endpoint blip would otherwise cost.",
+        state=state.ABSENT),
     "timeout": ErrorPolicy(
         retry=False,
         why="A read or write timeout means the request IS in flight — the "
             "server may be decoding it right now. Re-sending would run the "
             "completion twice, bill it twice, and possibly dispatch its "
-            "tool call twice."),
+            "tool call twice.",
+        state=state.FAILED),
     "4xx": ErrorPolicy(
         retry=False,
         why="The server answered, and it answered that the request is "
             "wrong. The same request will be wrong again. The body is the "
             "diagnosis and belongs in front of the operator — see "
-            "`raise_for_status`."),
+            "`raise_for_status`.",
+        state=state.FAILED),
     "5xx": ErrorPolicy(
         retry=False,
         why="No retry today. A hosted 5xx mid-mission is a turn to lose, "
             "not a completion to double-bill: the provider may well have "
             "decoded the reply before failing to hand it back, and this "
             "repo has no idempotency key to say otherwise. Revisit when "
-            "there is one."),
+            "there is one.",
+        state=state.FAILED),
 }
+
+#: The two status codes read more precisely than their class.
+#:
+#: A 503 and a 429 are not "the server is broken" and "the request is
+#: wrong": they are the server telling you, in the only vocabulary HTTP
+#: gives it, that it is coming up and that you are behind somebody else.
+#: Those are the two facts a person staring at a stalled pane is trying to
+#: tell apart, so they are read as :data:`~core.runtime.backends.state.LOADING`
+#: and :data:`~core.runtime.backends.state.QUEUED` rather than folded into
+#: their class's ``failed``.  Everything else falls through to the class.
+STATUS_STATES: Dict[int, str] = {
+    429: state.QUEUED,
+    503: state.LOADING,
+}
+
+
+def state_for_status(status: int) -> str:
+    """What a status code says about the model, or ``""`` for a success.
+
+    The one translation from *the server answered N* to one of the seven
+    words, so that four backends' ``except`` blocks cannot come to three
+    different conclusions about a 503.
+    """
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        return ERROR_POLICY["5xx"].state
+    if code < 400:
+        return ""
+    if code in STATUS_STATES:
+        return STATUS_STATES[code]
+    return ERROR_POLICY["5xx" if code >= 500 else "4xx"].state
 
 _T = TypeVar("_T")
 
@@ -128,6 +180,7 @@ def retry_on_connect(
     retries: Sequence[float] = CONNECT_RETRIES,
     sleep: Optional[Callable[[float], None]] = None,
     connect_errors: Tuple[type, ...] = CONNECT_ERRORS,
+    on_connect_error: Optional[Callable[[BaseException], None]] = None,
 ) -> _T:
     """Call *fn*, retrying only a connect that never happened.
 
@@ -145,6 +198,18 @@ def retry_on_connect(
     *sleep* defaults to ``time.sleep`` **resolved at call time**, not
     bound at import, so a test that patches ``time.sleep`` is obeyed and
     a unit test never actually waits 17 seconds.
+
+    *on_connect_error* is called with each refused connect as it happens
+    — **before** the wait, not after the last one — because seventeen
+    seconds of silence is exactly the stretch somebody is staring at a
+    pane through, and a report that arrived only once the retries were
+    spent would be a report about a wait that is already over.  It is
+    where a backend says ``absent``; see
+    :meth:`core.runtime.backends.base.Backend.report_connect_error`, and
+    :data:`ERROR_POLICY` for the row that names the word.  Raising out of
+    it would turn a retryable blip into a crash, so it is called for its
+    effect and its exceptions are not this function's business — the one
+    caller swallows its own.
     """
     waiter = sleep if sleep is not None else time.sleep
     last: Optional[BaseException] = None
@@ -155,6 +220,8 @@ def retry_on_connect(
             return fn()
         except connect_errors as exc:
             last = exc
+            if on_connect_error is not None:
+                on_connect_error(exc)
     raise last  # type: ignore[misc]
 
 

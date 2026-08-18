@@ -69,6 +69,7 @@ from core.runtime.backends.base import (
     attr_or_key,
     tool_calls_from,
 )
+from core.runtime.backends import state
 
 try:  # pragma: no cover - exercised by the install that lacks it
     from anthropic import Anthropic as _Anthropic
@@ -498,6 +499,9 @@ class AnthropicBackend(Backend):
         :data:`DEFAULT_MAX_TOKENS`; the API has no "unset".
     """
 
+    #: The word :class:`core.unified_client.UnifiedClient` routes on.
+    provider_name = "anthropic"
+
     def __init__(
         self,
         client: Any = None,
@@ -584,12 +588,27 @@ class AnthropicBackend(Backend):
         # caller beats the one derived above.
         body.update(extra)
 
+        # The third side channel: what the MODEL is doing, as opposed to
+        # what it cost or decided. `asking` never reaches the wire — see
+        # `core.runtime.backends.state.WAITING` — and a hosted provider
+        # mostly goes straight from it to `loaded`.
+        self.report_state(state.ASKING, model=str(body["model"]))
+
         if stream:
             return self._stream(body)
         return self._complete(body)
 
     def _complete(self, body: Dict[str, Any]) -> str:
-        result = self.client.messages.create(**body)
+        try:
+            result = self.client.messages.create(**body)
+        except Exception as exc:
+            # The status the SDK's exception carries, read through the
+            # one table — a 429 is a queue and not a broken request.
+            self.report_failure(exc, model=str(body.get("model") or ""))
+            raise
+        self.report_state(state.LOADED,
+                          model=str(attr_or_key(result, "model")
+                                    or body.get("model") or ""))
         # Before anything is returned: a reply that produced no text still
         # spent the prompt, and a call nobody could use is exactly the one
         # worth finding in the ledger.
@@ -628,12 +647,28 @@ class AnthropicBackend(Backend):
         what had fully arrived — a half-arrived tool call is a fragment of
         a JSON string, not a decision.
         """
-        events = self.client.messages.create(stream=True, **body)
+        try:
+            events = self.client.messages.create(stream=True, **body)
+        except Exception as exc:
+            self.report_failure(exc, model=str(body.get("model") or ""))
+            raise
         seen: Dict[str, Any] = {}
         calls = ToolCallAccumulator()
+        arrived = False
         try:
             for event in events:
                 kind = attr_or_key(event, "type")
+                if not arrived:
+                    # The first event of the stream is the provider
+                    # answering, whichever event type it happens to be:
+                    # `message_start` arrives before any text and is
+                    # already proof that the wait is over.
+                    arrived = True
+                    self.report_state(
+                        state.LOADED,
+                        model=str(attr_or_key(attr_or_key(event, "message"),
+                                              "model")
+                                  or body.get("model") or ""))
 
                 if kind == "message_start":
                     self._merge_usage(

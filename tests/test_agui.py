@@ -638,6 +638,73 @@ class TestAGate:
 
 
 # ---------------------------------------------------------------------------
+# Why the pane is showing nothing
+# ---------------------------------------------------------------------------
+
+class TestAModelState:
+    """`model_state` becomes one `CUSTOM`, and deliberately nothing else.
+
+    The protocol was read before that was decided: it is not a step (a
+    model that is loading has not begun one), not a message (nothing was
+    said to the analyst), not a tool call, and above all not a
+    `RUN_ERROR` — which is terminal, and a server that is loading is the
+    opposite of terminal.
+    """
+
+    WAITING = {"event": "model_state", "index": 2, "state": "loading",
+               "provider": "local", "model": "gpt-oss-20b",
+               "detail": "503: still loading weights", "since_s": 21.4,
+               "retry_after_s": 5.0}
+
+    def test_it_is_one_custom_carrying_the_record_whole(self):
+        frames = Translator(thread_id="t").feed(self.WAITING)
+        assert types_of(frames) == [agui.RUN_STARTED, agui.CUSTOM]
+        assert frames[-1]["name"] == agui.CUSTOM_MODEL_STATE
+        assert frames[-1]["value"] == {
+            "index": 2, "state": "loading", "provider": "local",
+            "model": "gpt-oss-20b", "detail": "503: still loading weights",
+            "since_s": 21.4, "retry_after_s": 5.0}
+
+    def test_it_is_never_a_run_error(self):
+        """A stalled run is not a finished one, and a consumer renders
+        `RUN_ERROR` as the end."""
+        frames = Translator().feed(self.WAITING)
+        assert not [f for f in frames if f["type"] == agui.RUN_ERROR]
+
+    def test_it_opens_the_run_when_nothing_else_has(self):
+        """The first thing a mission against an unreachable endpoint may
+        ever produce is this record, and a frame before `RUN_STARTED` is
+        one a conforming consumer discards."""
+        frames = Translator(thread_id="t", run_id="r").feed(self.WAITING)
+        assert frames[0] == {"type": agui.RUN_STARTED, "threadId": "t",
+                             "runId": "r"}
+
+    def test_it_touches_neither_the_step_nor_the_message(self):
+        """Nothing about the agent's own progress has changed, which is
+        the whole content of the record."""
+        translator = Translator()
+        translator.feed(conforming(contract.STEP_STARTED))
+        before = (translator._step, translator._step_open, translator._message)
+        frames = translator.feed(self.WAITING)
+        assert types_of(frames) == [agui.CUSTOM]
+        assert (translator._step, translator._step_open,
+                translator._message) == before
+
+    def test_a_recovery_arrives_as_the_same_frame(self):
+        """`loaded` is a state like the others: a frontend clears its
+        badge on it rather than waiting for a different event."""
+        frames = Translator().feed({"event": "model_state", "state": "loaded",
+                                    "provider": "local", "model": "m",
+                                    "since_s": 43.1})
+        assert frames[-1]["value"]["state"] == "loaded"
+
+    def test_a_field_a_later_release_adds_reaches_the_browser(self):
+        """Read off the record and not off a list here."""
+        frames = Translator().feed({**self.WAITING, "branch": "leg-2"})
+        assert frames[-1]["value"]["branch"] == "leg-2"
+
+
+# ---------------------------------------------------------------------------
 # How a run ends
 # ---------------------------------------------------------------------------
 

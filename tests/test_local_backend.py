@@ -184,6 +184,7 @@ class TestProbe:
         probed = backend.probe()
         assert probed == ServedModel(
             model_id="gpt-oss-20b", max_model_len=131072, reachable=True,
+            served=("gpt-oss-20b",),
         )
 
     def test_unreachable_is_a_fact_not_an_exception(self):

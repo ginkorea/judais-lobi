@@ -27,7 +27,7 @@ import os
 import re
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import requests
 
@@ -38,7 +38,7 @@ from core.runtime.backends.base import (
     Usage,
     tool_calls_from,
 )
-from core.runtime.backends import policy
+from core.runtime.backends import policy, state
 from core.runtime.backends.policy import CHAT_TIMEOUT
 
 DEFAULT_LOCAL_API_BASE = "http://127.0.0.1:8000/v1"
@@ -64,12 +64,20 @@ class ServedModel:
     ``ServedModel`` with ``reachable=False`` and ``max_model_len=None``
     — never a guessed context length, because a guessed context window
     is how a request gets truncated silently.
+
+    ``served`` is every id the endpoint listed, in its order, and it is
+    kept rather than collapsed into :attr:`model_id` because *the model
+    we asked for is not among them* is a different fact to *the server
+    said nothing*: the first is ``cold`` and the second is ``absent``,
+    and a browser has to be able to say which.  See
+    :meth:`LocalBackend.lists`.
     """
 
     model_id: str
     max_model_len: Optional[int] = None
     reachable: bool = False
     error: str = ""
+    served: Tuple[str, ...] = ()
 
 
 class LocalBackend(Backend):
@@ -89,7 +97,16 @@ class LocalBackend(Backend):
         want no key; some are started with ``--api-key``.
     supports_tool_calls:
         Declared, not probed — see :attr:`capabilities`.
+    first_byte_queued_s:
+        How long an accepted request may stay silent before the wait is
+        reported as a state.  See
+        :data:`core.runtime.backends.state.FIRST_BYTE_QUEUED_S`, which
+        owns the number and the reasoning; a constructor argument
+        because it is a property of the endpoint a deployment points at.
     """
+
+    #: The word :class:`core.unified_client.UnifiedClient` routes on.
+    provider_name = "local"
 
     def __init__(
         self,
@@ -100,6 +117,7 @@ class LocalBackend(Backend):
         api_key: Optional[str] = None,
         supports_tool_calls: bool = True,
         session: Any = None,
+        first_byte_queued_s: float = state.FIRST_BYTE_QUEUED_S,
     ):
         raw = endpoint or os.getenv("LOCAL_API_BASE") or DEFAULT_LOCAL_API_BASE
         self.endpoint = self._normalize_base(raw)
@@ -110,6 +128,7 @@ class LocalBackend(Backend):
         self._supports_tool_calls = supports_tool_calls
         self._session = session if session is not None else requests
         self._probed: Optional[ServedModel] = None
+        self.first_byte_queued_s = first_byte_queued_s
         self.last_usage = None
         self.last_tool_calls = []
 
@@ -146,6 +165,24 @@ class LocalBackend(Backend):
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
+    def _named_model(self) -> str:
+        """The model name to put on a state report, without asking anyone.
+
+        :attr:`model` probes when nothing was configured, and a report is
+        the one caller that must never do that: it is made from inside a
+        call that is already in trouble, sometimes from a timer thread,
+        and a network round trip to fill in a label would be this
+        harness making its own diagnosis slower.
+        """
+        return self._model or (self._probed.model_id if self._probed else "")
+
+    def _report(self, word: str, *, model: Optional[str] = None,
+                detail: str = "", retry_after_s: Optional[float] = None) -> None:
+        """One state report, with this backend's names filled in."""
+        self.report_state(
+            word, model=self._named_model() if model is None else model,
+            detail=detail, retry_after_s=retry_after_s)
+
     # ── probe ────────────────────────────────────────────────────────────
 
     def probe(self, refresh: bool = False) -> ServedModel:
@@ -154,6 +191,14 @@ class LocalBackend(Backend):
         Never raises: an unreachable server is a fact about the server,
         and a backend that explodes when asked what it can do is useless
         for exactly the case you asked.
+
+        It is also the one place two of the seven model states can be
+        told apart, so it **reports** what it found: nothing on the
+        socket is ``absent``, and a server that answers without listing
+        the model this backend asks for is ``cold``.  Reported, not
+        returned as well — a report goes nowhere unless somebody
+        installed a sink, and the two callers that want the answer as a
+        value already get the :class:`ServedModel`.
         """
         if self._probed is not None and not refresh:
             return self._probed
@@ -171,9 +216,14 @@ class LocalBackend(Backend):
             self._probed = ServedModel(
                 model_id=fallback, reachable=False, error=f"{type(exc).__name__}: {exc}",
             )
+            self._report(state.ABSENT, model=fallback,
+                         detail=f"{self.endpoint}/models: "
+                                f"{type(exc).__name__}: {exc}")
             return self._probed
 
         entries = payload.get("data") or []
+        served = tuple(str(e.get("id")) for e in entries
+                       if isinstance(e, dict) and e.get("id"))
         entry: Dict[str, Any] = {}
         if self._model:
             entry = next(
@@ -187,8 +237,30 @@ class LocalBackend(Backend):
             model_id=str(entry.get("id") or fallback),
             max_model_len=self._as_int(entry.get("max_model_len")),
             reachable=True,
+            served=served,
         )
+        if not self.lists(self._probed):
+            self._report(
+                state.COLD, model=fallback,
+                detail=(f"{self.endpoint} is up and serves "
+                        + (", ".join(served) if served else "no model")))
         return self._probed
+
+    def lists(self, probed: Optional[ServedModel] = None) -> bool:
+        """Whether the endpoint listed the model this backend will ask for.
+
+        The signal that separates ``queued`` from ``cold`` when a request
+        has been accepted and nothing has come back: the server having
+        the model is what makes a silence a queue rather than an empty
+        GPU.  A backend that named no model asks for whatever is served,
+        so *anything at all* on the list satisfies it.
+        """
+        probed = self.probe() if probed is None else probed
+        if not probed.reachable:
+            return False
+        if not self._model:
+            return bool(probed.served)
+        return self._model in probed.served
 
     @staticmethod
     def _as_int(value: Any) -> Optional[int]:
@@ -292,6 +364,11 @@ class LocalBackend(Backend):
             body["max_tokens"] = limit
         body.update(extra)
 
+        # The request exists; nothing has been sent yet. `asking` never
+        # reaches the wire — see `state.WAITING` — and what it does here
+        # is start the clock the later words are measured against.
+        self._report(state.ASKING, model=str(body["model"]))
+
         if stream:
             body["stream"] = True
             # ASK for the counts. An OpenAI-compatible server streaming a
@@ -321,6 +398,14 @@ class LocalBackend(Backend):
         status code or a mid-body timeout is the server ANSWERING and
         re-sending it would double a completion that may already be
         decoding.
+
+        Each refused attempt is *reported* as ``absent`` as it happens
+        and not once the budget is spent: three retries span seventeen
+        seconds, which is seventeen seconds of a person watching a pane
+        that could have said "nothing is listening on that port" in the
+        first one.  The same word four times over is one record — the
+        de-duplication is the run's, not this method's; see
+        :meth:`core.runtime.run.Model.watching`.
         """
         return policy.retry_on_connect(
             lambda: self._session.post(
@@ -331,6 +416,8 @@ class LocalBackend(Backend):
                 stream=stream,
             ),
             retries=self.CONNECT_RETRIES,
+            on_connect_error=lambda exc: self.report_connect_error(
+                exc, model=str(body.get("model") or self._named_model())),
         )
 
     #: How much of a server's error body to put in front of a caller — an
@@ -387,9 +474,30 @@ class LocalBackend(Backend):
         see :meth:`_locate_suspect_text`. It is appended by the error
         factory rather than by a second copy of the formatting, so the
         two raw-HTTP backends cannot drift on what a failure reads like.
+
+        It is also where the server's own account of itself is turned
+        into a state.  A **503** is the one answer that means *loading*,
+        and it means it because the server said so rather than because
+        this harness guessed from a silence; a **429** is *queued* for
+        the same reason.  Which code says which is
+        :data:`core.runtime.backends.policy.STATUS_STATES`, and anything
+        else falls through to its :data:`~core.runtime.backends.policy.ERROR_POLICY`
+        class.  The report goes out **before** the raise, because the
+        exception is on its way to a caller that will end the turn with
+        it and the state is what a watcher needed while the turn was
+        still alive.
         """
         where = (self._locate_suspect_text(body or {})
                  if res.status_code >= 400 else "")
+        word = policy.state_for_status(res.status_code)
+        if word:
+            self._report(
+                word, model=str((body or {}).get("model") or self._named_model()),
+                detail=policy.status_message(
+                    res, f"{self.endpoint}/chat/completions",
+                    detail_chars=self.ERROR_DETAIL_CHARS),
+                retry_after_s=state.retry_after_seconds(
+                    getattr(res, "headers", None)))
 
         def error(message: str, response) -> Exception:
             if where:
@@ -401,10 +509,45 @@ class LocalBackend(Backend):
             res, f"{self.endpoint}/chat/completions",
             detail_chars=self.ERROR_DETAIL_CHARS, error=error)
 
+    def _late_first_byte(self, body: Dict[str, Any]) -> None:
+        """Queued, cold or absent — asked of ``/models``, not guessed.
+
+        Runs on a timer thread when an accepted request has produced
+        nothing for :attr:`first_byte_queued_s` seconds, which is the
+        exact moment a deployment spent two weeks unable to explain.  The
+        silence alone says nothing, so this **asks**: the endpoint
+        listing the model means it is loaded and somebody else is in
+        front of us (``queued``); the endpoint listing something else, or
+        nothing, means the wait is for a model that is not there
+        (``cold``); an endpoint that does not answer at all means the
+        server went away mid-request (``absent``).  The last two are
+        :meth:`probe`'s own words and are reported by it, so only the
+        first is said here.
+
+        A second round trip during a stalled call is a cheap thing to
+        spend on the difference between *wait* and *fix it*, and it is
+        bounded by :data:`PROBE_TIMEOUT`.
+        """
+        probed = self.probe(refresh=True)
+        if not self.lists(probed):
+            return
+        self._report(
+            state.QUEUED, model=str(body.get("model") or self._named_model()),
+            detail=(f"the server accepted the request and has sent nothing "
+                    f"for {self.first_byte_queued_s:g}s; {self.endpoint} "
+                    f"lists the model, so it is loaded and this is a queue"))
+
     def _complete(self, body: Dict[str, Any]) -> str:
-        res = self._post(body, stream=False)
+        with state.first_byte_within(self.first_byte_queued_s,
+                                     lambda: self._late_first_byte(body)):
+            res = self._post(body, stream=False)
         self._raise_for_status(res, body)
         payload = res.json() or {}
+        # What actually answered, said as the SERVER names it: a request
+        # for `local-model` served by `gpt-oss-20b` is a fact worth having
+        # on the record, and it is the one moment this backend learns it.
+        self._report(state.LOADED,
+                     model=str(payload.get("model") or body.get("model") or ""))
         # Before the empty-choices return, not after it: a completion that
         # produced no content still spent the prompt, and a reply nobody
         # could use is exactly the call worth finding in the ledger.
@@ -529,43 +672,62 @@ class LocalBackend(Backend):
         for one speaking native, which reads
         :attr:`last_tool_calls` itself.
         """
-        res = self._post(body, stream=True)
-        self._raise_for_status(res, body)
         seen: Optional[Usage] = None
         calls = ToolCallAccumulator()
         spoke = False
+        arrived = False
         try:
-            for line in res.iter_lines():
-                if not line:
-                    continue
-                if isinstance(line, bytes):
-                    line = line.decode("utf-8", errors="replace")
-                if not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if not data or data == "[DONE]":
-                    if data == "[DONE]":
-                        break
-                    continue
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                found = Usage.from_payload(chunk.get("usage"))
-                if found is not None:
-                    seen = found
-                for choice in chunk.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    calls.add(delta.get("tool_calls"))
-                    if delta.get("content"):
-                        spoke = True
-                if not chunk.get("choices"):
-                    continue
-                yield self._as_delta(chunk)
-            if not spoke and not self._speaking_native(body):
-                rendered = self._as_mission_json(calls.result())
-                if rendered:
-                    yield self._content_frame(rendered)
+            # The alarm covers the request AND the wait for the first
+            # frame, because on a streamed call those are the same wait
+            # from outside: the POST returns as soon as the headers do
+            # and the server may then think for a minute before the
+            # first token. Disarmed by the first frame, and by the
+            # `finally` for a consumer that walked away.
+            with state.first_byte_within(
+                    self.first_byte_queued_s,
+                    lambda: self._late_first_byte(body)) as watch:
+                res = self._post(body, stream=True)
+                self._raise_for_status(res, body)
+                for line in res.iter_lines():
+                    if not line:
+                        continue
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8", errors="replace")
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if not data or data == "[DONE]":
+                        if data == "[DONE]":
+                            break
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    found = Usage.from_payload(chunk.get("usage"))
+                    if found is not None:
+                        seen = found
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        calls.add(delta.get("tool_calls"))
+                        if delta.get("content"):
+                            spoke = True
+                    if not chunk.get("choices"):
+                        continue
+                    if not arrived:
+                        # The first frame IS the model answering, so this
+                        # is where a wait that was reported ends. The id
+                        # is the server's own — see `_complete`.
+                        arrived = True
+                        watch.arrived()
+                        self._report(state.LOADED,
+                                     model=str(chunk.get("model")
+                                               or body.get("model") or ""))
+                    yield self._as_delta(chunk)
+                if not spoke and not self._speaking_native(body):
+                    rendered = self._as_mission_json(calls.result())
+                    if rendered:
+                        yield self._content_frame(rendered)
         finally:
             # In a `finally` so that a consumer that walks away mid-stream
             # still leaves behind whatever had been reported by then —

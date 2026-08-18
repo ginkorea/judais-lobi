@@ -100,7 +100,7 @@ harness streams tokens nothing downstream changes.
 * **The vocabulary is read, not copied.**  The events and their required
   fields come from :mod:`core.runtime.contract` at import; :data:`HANDLED` is
   every event this module has a mapping for, and ``tests/test_agui.py`` fails
-  when the contract declares one it does not.  A tenth event is a decision
+  when the contract declares one it does not.  A new event is a decision
   somebody makes rather than a frame nobody noticed.
 * **A record type this module does not know is dropped**, which is the
   contract's own rule for consumers.
@@ -136,7 +136,7 @@ __all__ = [
     "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT",
     "CUSTOM",
     "CUSTOM_PREFIX", "CUSTOM_OPENING", "CUSTOM_ANSWER", "CUSTOM_GROUNDING",
-    "CUSTOM_REPLY_REJECTED", "CUSTOM_GATE_REQUESTED",
+    "CUSTOM_REPLY_REJECTED", "CUSTOM_GATE_REQUESTED", "CUSTOM_MODEL_STATE",
     "ANSWER_DELTA_LIMIT", "answer_deltas",
     "HANDLED", "SILENCE", "UNFINISHED", "VERDICT_OMITS",
     "Translator", "translate",
@@ -225,6 +225,28 @@ CUSTOM_REPLY_REJECTED = CUSTOM_PREFIX + "reply_rejected"
 
 #: A tool the deployment gates: proposed, not called, waiting on a person.
 CUSTOM_GATE_REQUESTED = CUSTOM_PREFIX + "gate_requested"
+
+#: Why nothing is happening: the model is loading, queued, cold or gone.
+#:
+#: A ``CUSTOM`` and not one of AG-UI's own event types, and the protocol
+#: was read before that was decided.  It is not a step
+#: (``STEP_STARTED``/``STEP_FINISHED`` bracket a *turn of the loop*, and a
+#: model that is loading has not begun one — a pair of them per stall
+#: would put phantom steps in a consumer's step list); it is not a
+#: message, because nothing was said to the analyst; it is not a tool
+#: call; and it is not ``RUN_ERROR``, which is terminal and which a
+#: consumer renders as *this run is over* — a server that is loading is
+#: the opposite of that.  What AG-UI has for "a fact about the run that
+#: the protocol does not model" is ``CUSTOM``, so the record travels
+#: whole under this name, and a frontend that has an opinion about
+#: ``state`` branches on one field.
+#:
+#: The whole record and not a rendering of it: ``state`` is the word,
+#: ``detail`` is prose for a person, ``since_s`` is how long the wait has
+#: lasted and ``retry_after_s`` is what the server asked for — and a
+#: field a later release adds reaches the browser without this file
+#: changing.
+CUSTOM_MODEL_STATE = CUSTOM_PREFIX + "model_state"
 
 
 # ── how an unfinished stream ends ────────────────────────────────────────────
@@ -686,6 +708,27 @@ class Translator:
                              if name not in VERDICT_OMITS}
         return self._open() + [
             self._custom(CUSTOM_GROUNDING, {**report, "messageId": message})]
+
+    def _on_model_state(self, record: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        """Why the pane has been showing nothing.
+
+        One ``CUSTOM`` carrying the record as the harness wrote it — see
+        :data:`CUSTOM_MODEL_STATE` for why none of AG-UI's own event
+        types is the right one, and in particular why this is not a
+        ``RUN_ERROR``: a model that is loading is a run that has not
+        failed.
+
+        It opens the run if nothing has yet, which is the case worth
+        having: the first thing a mission with an unreachable endpoint
+        may ever produce is this record, and a frame arriving before
+        ``RUN_STARTED`` is one a conforming consumer discards.  It does
+        **not** close a step, open a message, or touch any of the
+        correlation this class keeps — nothing about the agent's own
+        progress has changed, and the whole point of the record is that
+        nothing has.
+        """
+        return self._open() + [self._custom(CUSTOM_MODEL_STATE,
+                                            _said(record))]
 
     def _on_answer_delta(self, record: Mapping[str, Any]) -> List[Dict[str, Any]]:
         """A provisional piece of the answer, as the model writes it.
