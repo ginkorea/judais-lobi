@@ -34,6 +34,7 @@ from core.tools.descriptors import (
 )
 from core.tools.fs_tools import FsTool
 from core.tools.git_tools import GitTool
+from core.tools.root import MissionRoot
 from core.tools.verify_tools import VerifyTool
 from core.tools.repo_map_tool import RepoMapTool
 from core.tools.patch_tool import PatchTool
@@ -65,9 +66,22 @@ class Tools:
         sandbox_request: Optional[str] = None,
         profile: Optional[ProfileMode] = None,
         audit: Any = _AUDIT_DEFAULT,
+        root: Any = None,
     ):
         self.elfenv = elfenv
         self.registry: dict[str, Union[Tool, Callable[[], Tool]]] = {}
+
+        # The directory this run's IN-PROCESS tools may touch, or `None`.
+        #
+        # `bwrap` isolates a subprocess; `FsTool` and `PatchTool` are
+        # pathlib in this interpreter, so under a profile that grants
+        # `fs.write` an unrooted bus can write anywhere the user can. A
+        # MISSION is a governed run with a working directory, and that
+        # directory is the root the CLI hands down here (see
+        # `core.cli._build_agent`); chat passes nothing and behaves as it
+        # always has. `core.tools.root` owns what "inside" means.
+        if root is not None and not isinstance(root, MissionRoot):
+            root = MissionRoot(root)
 
         if capability_engine is None:
             # Deny-by-default (Phase 1): no more allow-everything bus. With
@@ -141,8 +155,8 @@ class Tools:
         self._bus.register(WEB_RESEARCH_DESCRIPTOR, research_tool)
 
         # Phase 4a: Consolidated multi-action tools
-        fs_tool = FsTool()
-        git_tool = GitTool()
+        fs_tool = FsTool(root=root)
+        git_tool = GitTool(root=root)
         project_config = load_project_config()
         verify_tool = VerifyTool(config=project_config)
 
@@ -151,11 +165,11 @@ class Tools:
         self._bus.register(VERIFY_DESCRIPTOR, verify_tool)
 
         # Phase 5: Repo map tool
-        repo_map_tool = RepoMapTool()
+        repo_map_tool = RepoMapTool(root=root)
         self._bus.register(REPO_MAP_DESCRIPTOR, repo_map_tool)
 
         # Phase 6: Patch engine tool
-        patch_tool = PatchTool()
+        patch_tool = PatchTool(root=root)
         self._bus.register(PATCH_DESCRIPTOR, patch_tool)
 
         if memory:

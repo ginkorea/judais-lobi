@@ -6,18 +6,40 @@ import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
+from core.tools.root import MissionRoot, rooted
+
 
 class FsTool:
     """Consolidated filesystem tool. Action-based dispatch.
 
     Each action returns (exit_code, stdout, stderr).
     Pure Python pathlib I/O — no subprocess calls.
+
+    *root* confines every action to one directory tree.  It is ``None`` in
+    chat, where a person asking for a file means the file they named, and
+    it is the mission's working directory on the mission path — because
+    this tool is in-process and bwrap, which isolates subprocesses, never
+    sees it.  See :mod:`core.tools.root`; the guard is one line here and
+    the rule is stated once there.
     """
+
+    def __init__(self, root: Optional[MissionRoot] = None):
+        self._root = root
 
     def __call__(self, action: str, path: str, **kwargs) -> Tuple[int, str, str]:
         handler = getattr(self, f"_do_{action}", None)
         if handler is None:
             return (1, "", f"Unknown fs action: {action}")
+        # Before the handler and not inside each of them: every action this
+        # tool has takes a path as its first argument, and a confinement
+        # written five times is a confinement with four places to forget
+        # it. Resolved against the WORKING DIRECTORY, because that is what
+        # the handlers below resolve a relative path against — asking the
+        # question about a different base than the one the write will use
+        # is how a confinement passes a path it does not confine.
+        outside = rooted(self._root, path, os.getcwd())
+        if outside:
+            return (1, "", f"fs {action}: {outside}")
         try:
             return handler(path, **kwargs)
         except Exception as exc:

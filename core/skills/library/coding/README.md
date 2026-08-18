@@ -175,32 +175,40 @@ file list, handed on as an artifact.
 Stated because a pack that overstated these would be worse than one that
 did less.
 
-* **The repository root is a prompt-level rule, not an enforced one.**
-  `SKILL.md` says never edit outside it and `refuse_outside_root` measures
-  whether the agent honours it. Nothing stops it: `FsTool` is pure
-  in-process `pathlib`, so bwrap — which isolates *subprocesses* — does not
-  see it, and under `dev` the `fs.write` scope is granted for any path the
-  user can write. A confinement would be a `root=` on the filesystem tools
-  wired from the mission's working directory; it does not exist yet.
-* **The figure check cannot catch a plausible count.** A fabricated
-  "3 passed" comes back *grounded*: `NumericGroundingCheck` supports a
-  figure if it equals any figure anywhere in the run's evidence, and a
-  patch result carries match counts and byte offsets, so a small integer is
-  nearly always somewhere. What catches it is the machine check EVAL.md
-  prescribes — `expects_tools: [verify]`, read off the stream. The
-  **identifier** half does bite, and `feature_two_files.invents.jsonl` is
-  the committed proof.
+* **The repository root is enforced, and `refuse_outside_root` now
+  measures two different things.** It was a prompt-level rule: `SKILL.md`
+  said never edit outside the root, and nothing stopped a model that did —
+  `FsTool` is in-process `pathlib`, so bwrap, which isolates
+  *subprocesses*, never saw it. A mission now carries a root (its working
+  directory; see `core/tools/root.py`) and `fs`, `patch`, `git` and
+  `repo_map` refuse a path that resolves outside it — absolute, `..` or
+  through a symlink — as an ordinary tool result the agent reads. What the
+  mission still measures is the *agent*: whether it says so and stops, or
+  hands the person a shell command to do it themselves. What it no longer
+  risks is the file.
+* **A count only `verify` can have printed.** A fabricated "3 passed"
+  used to come back *grounded*: `NumericGroundingCheck` supported a figure
+  that equalled any figure anywhere in the run's evidence, and a patch
+  result carries match counts and byte offsets, so a small integer is
+  nearly always somewhere. The block now says `figures_from: [verify]` and
+  a figure grounds against what the test runner printed and nothing else —
+  identifiers keep the whole evidence set, because a file path legitimately
+  comes back from `repo_map`, from `fs` or from a patch. The machine check
+  EVAL.md prescribes (`expects_tools: [verify]`) still runs beside it: the
+  grammar says the answer is unsupported, the stream says the tool was
+  never called, and the two are different findings.
 * **A bare function name is not an identifier here.** The grammar matches
   Python paths and pytest node ids, so an invented `core/utils.py` is
   refused and an invented `def frobnicate` is not. Narrowing it to catch
   symbol names would flag every true mention of a function the agent was
   reading about.
-* **A long test log cannot be read back by section.** A result over
+* **A long test log is read back by page.** A result over
   `MAX_RESULT_BYTES` is bounded head-and-tail with a marker naming its
-  store handle, but `mission_result(handle=...)` returns only a *summary*
-  for a text-only result — there is no `path` into plain text. The skill
-  therefore teaches re-reading the file with `fs read` rather than paging
-  the log.
+  store handle, and `mission_result` reads a text-only result by
+  `offset`/`limit` in characters, by `lines="120-140"`, or by
+  `grep="FAILED"` for the matching lines with their numbers — `path`
+  remains the reader for a typed payload. Each page is bounded exactly as
+  a field read is.
 * **The suite grades as a pack's and not as a plane's.**
   `core.eval.check_the_suite_is_gradeable` requires every flag in
   `core.eval.FLAGS` to be captured, which eight coding missions cannot do

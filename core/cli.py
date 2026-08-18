@@ -107,10 +107,23 @@ def _build_agent(AgentClass, args):
     except ValueError as exc:
         raise SystemExit(f"--profile: {exc}")
 
+    # THE MISSION ROOT, and the only place it is decided. A mission is a
+    # governed run: it was given an objective, a closed set and a working
+    # directory, and the working directory is the whole of what it works
+    # on — so the in-process tools (`fs`, `patch`, `git`, `repo_map`) are
+    # confined to it, because bwrap isolates subprocesses and never sees
+    # them. There is no flag: the root IS the directory the mission was
+    # started in, which is already the fact `PatchTool`, `RepoMapTool` and
+    # `load_project_config` are built against, and a mission that needs
+    # another root is run from there. A chat turn gets `None` and behaves
+    # exactly as it always has. See `core.tools.root`.
+    root = Path.cwd() if getattr(args, "mission", False) else None
+
     if not getattr(args, "personality", None):
         return (
             AgentClass(model=args.model, provider=args.provider,
-                       sandbox_request=sandbox_request, profile=profile),
+                       sandbox_request=sandbox_request, profile=profile,
+                       root=root),
             AgentClass.__name__,
         )
 
@@ -130,6 +143,7 @@ def _build_agent(AgentClass, args):
         provider=args.provider or config.default_provider,
         sandbox_request=sandbox_request,
         profile=profile,
+        root=root,
     )
     return agent, config.name
 

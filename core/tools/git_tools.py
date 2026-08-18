@@ -1,9 +1,11 @@
 # core/tools/git_tools.py — Consolidated git tool
 
+import os
 import shlex
 from typing import List, Optional, Tuple
 
 from core.tools.executor import run_subprocess
+from core.tools.root import MissionRoot, rooted
 
 
 class GitTool:
@@ -11,15 +13,31 @@ class GitTool:
 
     Every action returns (exit_code, stdout, stderr).
     repo_path sets the working directory for the git command.
+
+    *root* confines **which repository** this tool operates on: with one
+    set, a ``repo_path`` outside the mission's root is refused.  It does
+    not confine the paths inside that repository — git does, and a
+    ``git add`` of something outside the work tree is git's own refusal
+    rather than a rule this harness has to restate.  See
+    :mod:`core.tools.root`; ``None`` is chat's behaviour and the default.
     """
 
-    def __init__(self, subprocess_runner=None):
+    def __init__(self, subprocess_runner=None,
+                 root: Optional[MissionRoot] = None):
         self._subprocess_runner = subprocess_runner
+        self._root = root
 
     def __call__(self, action: str, **kwargs) -> Tuple[int, str, str]:
         handler = getattr(self, f"_do_{action}", None)
         if handler is None:
             return (1, "", f"Unknown git action: {action}")
+        # `repo_path` is the one path a model writes to this tool, and
+        # every action takes it by that name — so the guard is here rather
+        # than in fourteen handlers. An action that names none runs where
+        # the process is, which under a mission IS the root.
+        outside = rooted(self._root, kwargs.get("repo_path"), os.getcwd())
+        if outside:
+            return (1, "", f"git {action}: {outside}")
         try:
             return handler(**kwargs)
         except Exception as exc:

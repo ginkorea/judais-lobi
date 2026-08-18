@@ -338,6 +338,29 @@ class GroundingConfig:
     #: Named tool families and the phrases that claim them.  Empty means no
     #: plane-claim check, like every other grammar here.
     planes: Tuple[Plane, ...] = ()
+    #: Which tools' results may ground a **figure**.  Empty — the default —
+    #: means every result in the run does, which is what every manifest
+    #: written before this key said and still means.
+    #:
+    #: Set, it is the answer to a defect measured on the coding pack (lane
+    #: N, 18 August 2026): a plane whose tools emit diagnostics grounds
+    #: almost any small integer.  ``patch apply`` returns a ``match_count``,
+    #: byte offsets and a hash, so ``feature_two_files.bad`` — which writes
+    #: "3 passed" having never run the tests — came back ``grounded: true``.
+    #: The figure was *in the evidence*; it had simply never been measured
+    #: by anything that measures test counts.
+    #:
+    #: ``figures_from: [verify]`` says which tool measures the quantity this
+    #: skill's ``number_pattern`` describes, and a figure grounds against
+    #: that tool's results and nothing else.  It applies to figures ONLY:
+    #: identifiers keep the whole evidence set, because a file path
+    #: legitimately arrives from ``repo_map``, from ``fs`` or from a patch
+    #: result, and scoping those would flag true tokens — the 10 August
+    #: lesson on :meth:`offering`.
+    #:
+    #: Matched with :func:`~core.tools.descriptors.same_tool`, so a bridged
+    #: spelling (``mcp.verify``) of a named tool is the named tool.
+    figures_from: Tuple[str, ...] = ()
 
     def offering(self, tools: Sequence[str]) -> "GroundingConfig":
         """This config, told which tools the mission put on the table.
@@ -406,7 +429,7 @@ class GroundingConfig:
 
         known = {"identifier_pattern", "number_pattern", "ignore",
                  "max_repairs", "must_cite", "claim_table", "reading",
-                 "critic", "planes"}
+                 "critic", "planes", "figures_from"}
         problems: List[str] = []
         unknown = sorted(set(raw) - known)
         if unknown:
@@ -428,6 +451,24 @@ class GroundingConfig:
         if isinstance(ignore, str) or not isinstance(ignore, Sequence):
             problems.append("`ignore` is a list of literal strings")
             ignore = ()
+
+        figures_from = raw.get("figures_from") or ()
+        if isinstance(figures_from, str) or not isinstance(figures_from, Sequence):
+            problems.append(
+                "`figures_from` is a list of tool names — the tools whose "
+                "results may ground a figure under this skill"
+            )
+            figures_from = ()
+        elif figures_from and not raw.get("number_pattern"):
+            # The same rule `_read_planes` enforces one field down: a
+            # declaration that can never bind is a typo and not leniency.
+            # Scoping a check that is switched off reads, in a report, as
+            # a skill that narrowed its figures — and narrows nothing.
+            problems.append(
+                "`figures_from` without a `number_pattern`: figures are not "
+                "checked at all unless a manifest asks for them, so this "
+                "scope can never bind"
+            )
 
         repairs = raw.get("max_repairs", 1)
         if isinstance(repairs, bool) or not isinstance(repairs, int) or repairs < 0:
@@ -494,6 +535,7 @@ class GroundingConfig:
             reading=reading,
             critic=critic,
             planes=planes,
+            figures_from=_string_list(figures_from),
         )
 
     @staticmethod
@@ -1123,6 +1165,33 @@ class NumericGroundingCheck(GroundingCheck):
     :attr:`~core.runtime.results.SourcedEvidence.sent` and this check
     skips them, or an answer would support its own arithmetic by typing
     it into a call that fails.
+
+    **The fourth way a figure arrives unmeasured is a tool-rich plane**, and
+    it needs neither an echo, a clock nor a failed call: on the coding pack a ``patch
+    apply`` result carries a ``match_count``, byte offsets and a hash, so
+    a small integer is nearly always *somewhere* in the evidence.
+    Measured 18 August 2026: ``feature_two_files.bad`` writes "3 passed"
+    having never called ``verify``, and the run came back ``grounded:
+    true``.  Nothing about that answer was checkable by asking whether the
+    figure existed in the pile; what was wrong is that it had never been
+    **measured by the thing that measures test counts**.
+
+    :attr:`GroundingConfig.figures_from` is the manifest's answer — a list
+    of tool names, and a figure grounds against those tools' results and
+    nothing else.  Unset, every result grounds, which is what every
+    manifest written before the key said.  Two properties of the scope,
+    both deliberate:
+
+    * **evidence with no provenance is out of scope**, not exempt from it.
+      A plain ``str`` — a library caller's list, a hand-built evidence set
+      — cannot say which call produced it, and "unknown" is not "verify".
+      A deployment that scopes its figures is asking for exactly that
+      strictness; one that hands in bare strings should not scope them;
+    * **it applies to this check only.**  Identifiers keep the whole
+      evidence set: a file path legitimately comes back from ``repo_map``,
+      from ``fs`` or from a patch result, and a scope there would flag
+      true tokens — which is the 10 August lesson recorded on
+      :meth:`GroundingConfig.offering`.
     """
 
     name = "figures"
@@ -1281,6 +1350,12 @@ class NumericGroundingCheck(GroundingCheck):
         *nothing known*, and nothing known is never read as nothing
         echoed.
 
+        **Is it in scope?**  Where the manifest set
+        :attr:`GroundingConfig.figures_from`, only the named tools' results
+        are asked at all — see the class docstring, and the fabricated
+        "3 passed" that a patch result grounded.  Unset, every result is in
+        scope and this question is not asked.
+
         The surviving texts are unioned, so a figure one call echoed is
         still supported where another call produced it.
         """
@@ -1288,6 +1363,8 @@ class NumericGroundingCheck(GroundingCheck):
         figures = set()
         for text in evidence:
             if getattr(text, "sent", False):
+                continue
+            if not self._in_scope(text):
                 continue
             found = self._figures_in(text)
             arguments = getattr(text, "arguments", None)
@@ -1297,6 +1374,75 @@ class NumericGroundingCheck(GroundingCheck):
                 continue
             figures |= found
         return sorted(figures)
+
+    def repair_words(self, failed: Sequence[str]) -> str:
+        """Own words under a scope, because the generic ones become false.
+
+        "appears in your answer and in no tool output you received" is
+        exactly right with no scope and wrong with one: the fabricated
+        "3 passed" **is** in a patch result.  What is true is that no
+        ``verify`` result printed it, and a repair turn that says so sends
+        the model to run the tests rather than to hunt for a transcription
+        slip that is not there.  See :attr:`CheckResult.repair`.
+        """
+        scope = self._scope_words()
+        if not (failed and scope):
+            return ""
+        listed = ", ".join(repr(t) for t in failed)
+        return (
+            f"These figures are in no {scope} result from this mission: "
+            f"{listed}. Under this skill a figure is supported by what "
+            f"{scope} printed and by nothing else — a count that appears "
+            f"somewhere else in the run was not measured. Call {scope} and "
+            f"quote what it prints, or say the figure is not established."
+        )
+
+    def caveat_words(self, failed: Sequence[str]) -> str:
+        """The same distinction, in the abstention.  See :meth:`repair_words`."""
+        scope = self._scope_words()
+        if not (failed and scope):
+            return ""
+        listed = ", ".join(failed)
+        return (
+            f"⚠️ Ungrounded: these figures were printed by no {scope} result "
+            f"in this mission: {listed}. They may appear elsewhere in the "
+            f"run — that is not a measurement of them — and must not be "
+            f"relied on or cited onward."
+        )
+
+    def _scope_words(self) -> str:
+        """The scoped tools as one phrase, or ``""`` where none was set."""
+        return " or ".join(self._config.figures_from)
+
+    def _in_scope(self, text: Any) -> bool:
+        """Whether *text* is a result this skill lets a figure ground on.
+
+        True for everything where no scope was declared, which is the
+        default and every manifest written before the key.  Where one was,
+        the text has to name a tool and that tool has to be one of them —
+        :func:`~core.tools.descriptors.same_tool`, so ``mcp.verify`` is
+        ``verify``.  Text with no provenance is out: see the class
+        docstring for why "unknown" is not read as "in scope".
+        """
+        scope = self._config.figures_from
+        if not scope:
+            return True
+        tool = str(getattr(text, "tool", "") or "")
+        return bool(tool) and any(same_tool(tool, name) for name in scope)
+
+    def _detail(self, stated: int, failed: int) -> str:
+        """The base's line, plus the scope when there is one.
+
+        Said in the record row rather than left to whoever remembers the
+        manifest: ``2/3 supported`` and ``2/3 supported, figures scoped to
+        verify`` are different findings, and the second one tells a reader
+        that the third figure may well be *somewhere* in the run and was
+        not measured by the tool that measures it.
+        """
+        detail = super()._detail(stated, failed)
+        if self._config.figures_from:
+            detail += f"; scope: [{', '.join(self._config.figures_from)}]"
+        return detail
 
     @classmethod
     def _figures_in(cls, text: Any) -> set:

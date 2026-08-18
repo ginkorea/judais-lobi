@@ -428,10 +428,16 @@ class TestCliWiring:
         built = {}
 
         class Lobi:
+            # `root` is the mission root and it reaches every personality
+            # the same way `profile` does — `None` for a chat turn, which
+            # is what this Namespace is. The real JudAIs and Lobi take it
+            # through their `**kwargs`; a double that did not name it
+            # would pass while the wiring was broken.
             def __init__(self, model=None, provider=None, sandbox_request=None,
-                         profile=None):
+                         profile=None, root=None):
                 built["model"], built["provider"] = model, provider
                 built["profile"] = profile
+                built["root"] = root
 
         # No --profile and no env: deny-by-default resolves to SAFE, and it
         # reaches the agent as the `profile` kwarg.
@@ -442,7 +448,7 @@ class TestCliWiring:
         assert name == "Lobi"
         assert isinstance(agent, Lobi)
         assert built == {"model": "m", "provider": "openai",
-                         "profile": ProfileMode.SAFE}
+                         "profile": ProfileMode.SAFE, "root": None}
 
     def test_the_flag_swaps_only_the_config(self, toml_file, monkeypatch):
         from argparse import Namespace
@@ -455,9 +461,9 @@ class TestCliWiring:
 
         class FakeAgent:
             def __init__(self, config, model=None, provider=None,
-                         sandbox_request=None, profile=None):
+                         sandbox_request=None, profile=None, root=None):
                 seen.update(config=config, model=model, provider=provider,
-                            profile=profile)
+                            profile=profile, root=root)
 
         monkeypatch.setattr(agent_module, "Agent", FakeAgent)
 
@@ -491,8 +497,9 @@ class TestCliWiring:
 
         class FakeAgent:
             def __init__(self, config, model=None, provider=None,
-                         sandbox_request=None, profile=None):
-                seen.update(model=model, provider=provider, profile=profile)
+                         sandbox_request=None, profile=None, root=None):
+                seen.update(model=model, provider=provider, profile=profile,
+                            root=root)
 
         monkeypatch.setattr(agent_module, "Agent", FakeAgent)
         # --profile dev opts up, and beats the (unset) env; it reaches Agent.
@@ -502,4 +509,4 @@ class TestCliWiring:
                       profile="dev"),
         )
         assert seen == {"model": "other", "provider": "openai",
-                        "profile": ProfileMode.DEV}
+                        "profile": ProfileMode.DEV, "root": None}

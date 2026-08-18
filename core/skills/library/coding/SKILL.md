@@ -71,6 +71,12 @@ grounding:
   # model's own arithmetic and a check that flagged them would train
   # whoever reads the report to ignore it.
   number_pattern: '(?<![\w.])(\d+)\s+(?:tests?\s+)?(?:passed|passing|pass|failed|failing|fail|errors?|skipped|deselected|xfailed)\b'
+  # And only `verify` can have printed them. Without this scope a
+  # fabricated "3 passed" comes back grounded: a patch result carries a
+  # match count, byte offsets and a hash, so a small integer is nearly
+  # always somewhere in the run's evidence. A test count is measured by
+  # the test runner or it is not measured.
+  figures_from: [verify]
   max_repairs: 1
 
 output_format: >

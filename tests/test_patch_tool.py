@@ -164,6 +164,44 @@ class TestPatchToolActions:
         assert rc == 1  # No active worktree → RuntimeError caught
 
 
+class TestThePatchToolTakesAMissionRoot:
+    """One question, asked before the engine is reached.
+
+    `core.patch.applicator.jail_path` already refuses an absolute path, a
+    `..` component and a symlink escape — against `repo_path`, the
+    directory this tool was CONSTRUCTED with. A mission's root is the
+    directory it was GIVEN, and the two are the same on the mission path
+    and not in a library caller's hands. The whole of the confinement,
+    across all four in-process tools, is `tests/test_fs_root.py`.
+    """
+
+    def one_file(self, path):
+        return json.dumps({"task_id": "t1", "patches": [{
+            "file_path": path, "search_block": "",
+            "replace_block": "planted\n", "action": "create"}]})
+
+    def test_a_file_outside_the_root_is_refused_in_the_missions_words(
+            self, tmp_path):
+        from core.tools.root import MissionRoot
+
+        repo, root = tmp_path / "repo", tmp_path / "root"
+        repo.mkdir()
+        root.mkdir()
+        tool = PatchTool(repo_path=str(repo), root=MissionRoot(root))
+        rc, _out, err = tool("apply", patch_set_json=self.one_file("new.py"))
+        assert rc == 1
+        assert "outside the mission root" in err
+        assert not (repo / "new.py").exists()
+
+    def test_with_no_root_the_engine_is_still_the_only_jail(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        rc, _out, _err = PatchTool(repo_path=str(repo))(
+            "apply", patch_set_json=self.one_file("new.py"))
+        assert rc == 0
+        assert (repo / "new.py").read_text() == "planted\n"
+
+
 class TestPatchDescriptor:
     def test_descriptor_in_all(self):
         names = [d.tool_name for d in ALL_DESCRIPTORS]

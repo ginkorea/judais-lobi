@@ -175,12 +175,24 @@ client of it: `_mission` in `core/cli.py` is argparse building these objects.
 from judais_lobi import (Bounds, Model, Observer, Personality, Run, Store,
                          ToolPlane, Tools)
 
-bus = Tools().bus                                # SAFE, sandboxed, audited
+bus = Tools(root=".").bus                        # SAFE, sandboxed, audited
 run = Run(Personality(system_message="You are the agent."),
           ToolPlane(bus=bus, offered=["read_file"]),
           Bounds(), Store(), Observer(), Model(ask=my_chat_fn))
 print(run.run("what does this repository build?").answer)
 ```
+
+**`root=` confines the in-process tools**, and a platform building a plane by
+hand has to decide it. bwrap isolates a *subprocess*; `fs` and `patch` are
+`pathlib` in the interpreter that asked, so an unrooted bus under a profile
+granting `fs.write` writes anywhere the user can. `Tools(root=path)` gives
+`fs`, `patch`, `git` and `repo_map` one directory tree and refuses anything
+resolving outside it — absolute, `..`, or through a symlink — as an ordinary
+tool result, exit code 1, on the stream where the model reads it. The CLI
+passes the working directory for `--mission` and nothing for a chat turn
+(`core/cli.py::_build_agent`); `core/tools/root.py` owns what "inside" means.
+There is no flag and no environment variable: the root IS the directory the
+mission runs in, and a mission that needs another one is run from there.
 
 `my_chat_fn` is `messages -> str` and nothing else: the loop is confined to one
 injected callable and cannot ask a backend anything the caller did not offer.
@@ -940,10 +952,10 @@ mapping, interpreted by `core/runtime/grounding.py` and never by the loader.
 Absent means no validator is built and the transcript's grounding report stays
 `None` rather than claiming a clean check: a check that could not run reports
 *no opinion* and never a pass, because a fabricated "grounded" is a governance
-claim. The keys are `identifier_pattern`, `number_pattern`, `ignore`,
-`max_repairs`, `must_cite`, `claim_table`, `reading`, `critic` and `planes`;
-anything else is refused by name. `reading`, `critic` and `planes` are **off by
-default** and are the ones a platform has to decide about:
+claim. The keys are `identifier_pattern`, `number_pattern`, `figures_from`,
+`ignore`, `max_repairs`, `must_cite`, `claim_table`, `reading`, `critic` and
+`planes`; anything else is refused by name. `reading`, `critic` and `planes`
+are **off by default** and are the ones a platform has to decide about:
 
 ```yaml
 grounding:
@@ -956,6 +968,25 @@ grounding:
     code: {tools: [run_shell_command], claims: ['I ran']}
 ```
 
+* **`figures_from:` says which tool MEASURES the quantity your
+  `number_pattern` describes.** Unset — the default, and what every manifest
+  written before it means — a figure is supported if it equals any figure
+  anywhere in the run's evidence. On a plane whose tools emit diagnostics
+  that is nearly every small integer: measured on the `coding` pack, a
+  `patch apply` result carries a match count, byte offsets and a hash, and an
+  agent that never ran the tests came back `grounded` having written
+  "3 passed". `figures_from: [verify]` grounds a figure against those tools'
+  results and nothing else, matched with `same_tool` so a bridged spelling
+  counts; the check's row then reads `scope: [verify]`, and the repair turn
+  says "in no verify result" rather than the generic "in no tool output",
+  which under a scope would be false. It narrows **figures only** —
+  identifiers keep the whole evidence set, because an identifier legitimately
+  arrives from any tool that names one. Evidence with no provenance (a
+  library caller's plain strings) is out of a scope rather than exempt from
+  it, so scope figures only where the evidence comes from a mission's own
+  result store. It is refused without a `number_pattern`: a scope over a
+  check that is switched off narrows nothing and reads in a report as though
+  it did.
 * **`planes:` is how a platform declares its tool families — the framework
   never learns their names.** A plane is a set of tools and the phrases an
   answer uses when it claims them, and the check fails an answer that claims
