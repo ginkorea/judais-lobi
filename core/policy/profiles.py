@@ -47,11 +47,40 @@ PROFILE_SCOPES: Dict[ProfileMode, List[str]] = {
         "python.exec",
         "shell.exec",
     ],
+    # `research` is a level and not a flag, and that is the whole argument
+    # for it.
+    #
+    # `http.read` sat in OPS until 0.16, beside `git.push` and
+    # `pip.install`. So an agent asked to read three public pages and write
+    # a summary had to be handed the profile that can also force-push a
+    # branch and install a package from an index — and the honest reading of
+    # `mission_started.profile: "ops"` on that run was "this agent may
+    # deploy", which was not true of the mission and not what the operator
+    # meant. ROADMAP §2.6b calls that out as a 0.9.0 residual: web research
+    # is denied under `safe`/`dev` and only reachable by over-granting.
+    #
+    # Two ways to fix it were on the table. The other one was to SPLIT the
+    # scope — a narrow `http.read` (GET only, no auth headers, bounded) at
+    # DEV and a broad one kept at OPS. It was not taken: a scope is a name a
+    # tool asks for, one word, and two scopes spelled the same way with
+    # different powers is the kind of near-miss this framework spends
+    # refusals to avoid. It would also have put the open network inside the
+    # profile a developer runs all day, where the decision "this agent may
+    # read the internet" would never again be visible as a decision.
+    #
+    # A profile is what an OPERATOR NAMES, it is what rides
+    # `mission_started.profile`, and `--profile research` reads honestly on
+    # a watcher's pane: read the web, write nothing, run nothing beyond DEV.
+    # The scope stays one word and moves down one rung; nothing that was
+    # reachable under `ops` stopped being reachable, because the levels
+    # accumulate.
+    ProfileMode.RESEARCH: [
+        "http.read",
+    ],
     ProfileMode.OPS: [
         "git.push",
         "git.fetch",
         "pip.install",
-        "http.read",
         "fs.delete",
         "audio.output",
     ],

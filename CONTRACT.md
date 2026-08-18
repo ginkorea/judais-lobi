@@ -124,10 +124,15 @@ and `gate_requested.reason` says how many were dropped with it.
 ### `profile`, `audit_ref` and `run_id` — where the run's records are
 
 `profile` is the capability profile the run is governed by — one of `safe`,
-`dev`, `ops`, `god`. Deny-by-default means `safe` unless `--profile` (or
-`JUDAIS_LOBI_PROFILE`) opted up, and a watcher reading the opening frame can
-tell a read-only mission from one that can write, execute or reach the open
-network. Absent, rather than `null`, when the bus was built from a raw
+`dev`, `research`, `ops`, `god`. Deny-by-default means `safe` unless
+`--profile` (or `JUDAIS_LOBI_PROFILE`) opted up, and a watcher reading the
+opening frame can tell a read-only mission from one that can write, execute or
+reach the open network. The list grows: `research` was added in Phase 15 as
+`dev` plus `http.read`, so that reading the web stops costing the profile that
+can also push and install. A new **value** on this OPTIONAL field is a
+documentation line and not a schema change — a consumer already reads it with
+a default and is expected to treat a name it does not know as a profile it has
+not heard of, never as an error. Absent, rather than `null`, when the bus was built from a raw
 capability engine that never recorded a profile name.
 
 `audit_ref` is a **string or `null`**: the path of the append-only JSONL file
@@ -555,7 +560,7 @@ person's surface and may move.
   `budget_exhausted` with `budget.which == "seconds"`.
 - `--provider` — which backend.
 - `--model` — which model on it.
-- `--profile` — the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. Arrives back as `profile`.
+- `--profile` — the capability profile: deny-by-default `safe`, then `dev`, `research`, `ops`, `god`. Arrives back as `profile`.
 - `--unsandboxed` — run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists. Arrives back as `sandbox`.
 - `--skill` — the skill manifest: tool subset, prompt, grounding grammar.
 - `--swarm` — triage first, then stage the mission if it needs staging.

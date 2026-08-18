@@ -57,7 +57,7 @@ Frontier models are expensive, rate-limited, and increasingly censored. If you w
 4. Use tools explicitly. Tools are deny-by-default: the `safe` profile can read
    the filesystem and git but not run a shell, so running a command needs the
    `dev` profile —
-   `lobi --profile dev --shell "ls -la"` (`--profile safe|dev|ops|god`, or
+   `lobi --profile dev --shell "ls -la"` (`--profile safe|dev|research|ops|god`, or
    `JUDAIS_LOBI_PROFILE`; without it, `lobi --shell` refuses and names
    `shell.exec` and the profile that grants it). Tool subprocesses run under
    `bwrap` wherever bubblewrap is installed; `--unsandboxed` opts out.
@@ -151,7 +151,7 @@ program that spawns this harness may rely on them. The table below is in
 | `--mission-seconds` | `MISSION_SECONDS` | wall-clock cap on the whole run, in seconds. **Unset means unbounded** — steps bound the work, seconds bound the waiting, and a default nobody chose would kill a slow local model mid-answer. Checked between steps and before each model call; one clock for the whole of a `--swarm` turn. A call already in flight is not interrupted, so the real bound is this plus one round trip |
 | `--provider` | — | `openai`, `mistral`, `anthropic` or `local`. `anthropic` needs `pip install 'judais-lobi[anthropic]'` and `ANTHROPIC_API_KEY`; its default model is `claude-opus-5` (`core/runtime/provider_config.py`), overridden with `--model` |
 | `--model` | — | which model on it |
-| `--profile` | `JUDAIS_LOBI_PROFILE` | the capability profile: deny-by-default `safe`, then `dev`, `ops`, `god`. A refusal names the scope and the profile that grants it. Arrives back as `mission_started.profile` |
+| `--profile` | `JUDAIS_LOBI_PROFILE` | the capability profile: deny-by-default `safe`, then `dev`, `research`, `ops`, `god`. `research` is `dev` plus `http.read` and nothing else — read the web, write nothing, run nothing beyond `dev` — and it exists because reading three public pages used to cost `ops`, which also grants `git push` and `pip install`. A refusal names the scope and the **lowest** profile that grants it. Arrives back as `mission_started.profile` |
 | `--unsandboxed` | `JUDAIS_LOBI_SANDBOX=none` | run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists; `JUDAIS_LOBI_SANDBOX=bwrap` forces it and refuses on a host without it. Arrives back as `mission_started.sandbox` |
 | `--skill` | `MISSION_SKILL` | a `SKILL.md` manifest, or a directory holding one |
 | `--swarm` | `MISSION_SWARM` | stage the mission when it needs staging |
@@ -190,6 +190,21 @@ environment form of `--protocol`, `MISSION_CONTROL` of
 `--control`, `MISSION_GATE_WAIT` of `--gate-wait`, and `MISSION_STREAM` of `--no-stream` the other way round: `off`,
 `0`, `false`, `no` or `none` turn the streamed answer off and anything else
 leaves it on.
+
+Four more belong to the web tools rather than to the mission seam, so they are
+not in `contract.ENV_VARS` and nothing on the wire reports them; they are read
+at call time and every one of them is optional. `RESEARCH_ALLOWED_HOSTS` is a
+comma-separated allow-list of hosts a run may fetch — **unset means no
+restriction**, a leading dot covers subdomains, and a host outside it is
+refused by name before a socket is opened, with the refusal saying it is an
+operator's decision and not to retry. `RESEARCH_MAX_PAGE_BYTES` (default 4
+MiB) is how much of a response body is read before the fetch is refused as
+`too_large`, and `RESEARCH_TIMEOUT_S` (default 20) is when it gives up.
+`SEARCH_PROVIDER` chooses which backend answers `perform_web_search` —
+`duckduckgo` (the keyless default, a scrape of an endpoint nobody promised),
+`searxng` (with `SEARXNG_URL`), or one a platform registered with
+`core.tools.web_search.register_provider`. A provider that cannot answer
+refuses **by name**, which is a different fact from an empty web.
 
 #### No step budget — the supervisor
 
@@ -492,7 +507,7 @@ own:
 | pack | what it does | closed set | profile |
 |---|---|---|---|
 | `analyst` | answers a question about local data files — CSV, JSON, JSON lines, logs — by computing it in sandboxed Python and reporting the figures the program printed | `run_python_code`, `fs` | `dev` |
-| `research` | *(lane M)* | | |
+| `research` | reads pages on the open web and answers from them with a URL beside every claim — one page, several at once, or the page the first one links to; a page it could not read is named with its status rather than filled in | `fetch_page_content`, `perform_web_research`, `perform_web_search?`, `fs?` | `research` |
 | `coding` | *(lane N)* | | |
 
 Run one by name — no path, no file of your own:
@@ -533,6 +548,20 @@ suite = core.skills.load("analyst").suite()      # loaded, and checked
 print(score_suite({"the_outliers_in_the_sales_file": "/tmp/eval/outliers"},
                   suite, "train").to_markdown())
 ```
+
+**`research` needs nothing configured.** No MCP server (its closed set is
+built-in tools), no API key, and no search engine: the base path is *here is
+a URL, read it*, and a search provider only changes where the first URL comes
+from — which is why `perform_web_search?` is optional in the closed set and
+refuses **by name** when no provider can answer, rather than reporting an
+empty web. `fetch_page_content` returns a typed page (`url`, `final_url`,
+`status`, `title`, `fetched_at`, `sections[]` in document order, `links[]`
+absolute) that the result store keeps whole, so a 138 kB register arrives
+bounded in the transcript and is read a section at a time through
+`mission_result` instead of refetched. The pack's twelve missions are graded
+against a fixture archive it ships (`fixtures/`, served on localhost), and
+`--profile research` — `dev` plus `http.read` — is what makes any of it
+reachable without `ops`.
 
 `python -m core.eval --suite <a pack's missions.yaml>` refuses it for one
 reason today, and it is `core/eval/`'s to fix rather than a pack's: the
@@ -1252,7 +1281,7 @@ Tools are dumb executors behind a capability-gated bus. The kernel decides every
 * **`core/tools/verify_tools.py`** — Config-driven `VerifyTool` (lint, test, typecheck, format). Reads `.judais-lobi.yml` for project-specific commands, falls back to sensible defaults.
 * **`core/tools/descriptors.py`** — 11 tool descriptors, 13 named scopes + wildcard. Per-action scope resolution via `action_scopes` map.
 * **`core/tools/capability.py`** — Deny-by-default `CapabilityEngine` with wildcard `"*"` support, profile switching, and grant revocation.
-* **`core/policy/profiles.py`** — Four cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `OPS` (+ deploy/network) → `GOD` (wildcard). `SAFE` is the default and `--profile`/`JUDAIS_LOBI_PROFILE` is how a run opts up; the profile it got rides `mission_started.profile`. `core/policy/god_mode.py` was **deleted in 0.13.0** — `GodModeSession` was constructed nowhere, and `--profile god` is the reachable form of everything it offered.
+* **`core/policy/profiles.py`** — Five cumulative profiles: `SAFE` (read-only) → `DEV` (+ write) → `RESEARCH` (+ `http.read`) → `OPS` (+ deploy) → `GOD` (wildcard). `RESEARCH` was carved out of `OPS` in Phase 15: `http.read` sat beside `git.push` and `pip.install`, so an agent asked to read the web was handed a deploy right and `mission_started.profile: "ops"` said something about the run that was not true. `SAFE` is the default and `--profile`/`JUDAIS_LOBI_PROFILE` is how a run opts up; the profile it got rides `mission_started.profile`. `core/policy/god_mode.py` was **deleted in 0.13.0** — `GodModeSession` was constructed nowhere, and `--profile god` is the reachable form of everything it offered.
 * **`core/policy/audit.py`** — Append-only JSONL `AuditLogger`, **attached to every `Tools()` bus by default**: one file per run at `.judais-lobi/audit/<run-id>.jsonl` under the working directory, named on the mission stream as `mission_started.audit_ref`, moved or silenced by `JUDAIS_LOBI_AUDIT=<path>|none|off` (silencing is announced, and travels as `audit_ref: null`). Every dispatch is a line — `allowed`, `denied`, `unknown_tool` or `error` — with the redacted arguments, the decision and its reason, exit code, duration and bytes out. Redaction covers shapes (OpenAI, GitHub, AWS, Slack, `Bearer …`, `*_KEY`/`*_TOKEN`/`*_SECRET` assignments) *and* the values of the credential-named environment variables this process was given, because a token handed to a tool as an argument has no shape to match.
 * **`core/runtime/resume.py`** — Picking a recorded mission back up, and closing the ones nobody will. Three separate things: the **door** (`open_for_resume` — an unknown id, a run that already finished, an objective that is not the recorded one, a staged run whose plan is checkpointed; every refusal answered before a server is dialled), the **replay** (`rebuild` — the recorded stream read back into the transcript's steps, the mission result store and the model's message list, rendering each replayed result through the runner's own `_render_result` so there is one owner of what a result reads like), and **reconciliation** (`reconcile_orphans` — a run with no `mission_finished` whose metadata has been untouched for `ORPHAN_STALE_S` gets one appended, so a follower's stream closes; the staleness rule is stated rather than assumed, because a mission that is merely thinking has no `mission_finished` either). What a replay cannot give back is written down as sentences (`LOST_*`) and shown, not swallowed.
 * **`core/durable.py`** — The durability primitive, importing nothing else in this tree: `atomic_write_text`/`atomic_write_json` (tempfile in the same directory → flush → fsync → `os.replace`), `fsync_append`, and `RunStore` — one directory per run under `.judais-lobi/runs/<run-id>/` holding an fsync'd append-only `events.jsonl` of `{seq, at, record}` envelopes and a `meta.json` replaced atomically. Every record a mission emits is appended there before it reaches the `--events` sink, so the sink is a client of the log rather than a second copy; `since(cursor)` and `follow(cursor, stop=…)` are what a replay and a live subscriber read it back with. `seq` is monotonic per run and is persisted, and `RunStore.CALLER_OWNED` is why: writing a whole stale record back over a live one is how a reference platform came to reuse sequence numbers and show a blank transcript for a run whose records were on disk the whole time. `SessionManager` and `AuditLogger` are clients of this module, not second implementations of it.
@@ -1307,7 +1336,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/cli.py`  — CLI interface layer
 * `core/memory/memory.py`  — FAISS-backed long-term memory (numpy fallback if FAISS unavailable)
 * `core/tools/` — ToolBus, capability engine, sandbox, the MCP bridge, consolidated tools (fs, git, verify, repo_map, patch)
-* `core/policy/` — `profiles.py` (the four cumulative profiles and `select_profile`), `audit.py` (the append-only log on every default bus). Two files, since `god_mode.py` was deleted in 0.13.0
+* `core/policy/` — `profiles.py` (the five cumulative profiles and `select_profile`), `audit.py` (the append-only log on every default bus). Two files, since `god_mode.py` was deleted in 0.13.0
 * `core/context/` — repo map extraction, dependency graph, symbol extractors (Python ast + tree-sitter + regex), formatting, caching, visualization
 * `core/patch/` — patch engine: parser, matcher, applicator, worktree manager, engine orchestrator
 * `core/judge/`, `core/critic/`, `core/campaign/` — composite judge and candidate sampling; the external critic (`mission.py` for the mission tier, `orchestrator.py` for the coding tier); the campaign orchestrator
@@ -1473,9 +1502,9 @@ scope and the profile that grants it.
 lobi "explain this function"                      # safe
 lobi --profile dev  --shell  "list files"         # shell.exec  → dev
 lobi --profile dev  --python "plot sine wave"     # python.exec → dev
-lobi --profile ops  --search "latest linux kernel"            # http.read → ops
-lobi --profile ops  --research "linux kernel LTS release timeline"
-lobi --profile ops  --research --academic "transformer sparsity survey 2023"
+lobi --profile research --search "latest linux kernel"        # http.read → research
+lobi --profile research --research "linux kernel LTS release timeline"
+lobi --profile research --research --academic "transformer sparsity survey 2023"
 lobi --profile ops  --install-project             # pip.install → ops
 ```
 

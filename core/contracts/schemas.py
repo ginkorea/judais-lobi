@@ -272,10 +272,24 @@ class FinalReport(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ProfileMode(str, Enum):
-    """Permission profile levels. Each level includes all scopes from lower levels."""
+    """Permission profile levels. Each level includes all scopes from lower levels.
+
+    **Declaration order is the ladder.**
+    :func:`~core.policy.profiles.policy_for_profile` accumulates
+    :data:`~core.policy.profiles.PROFILE_SCOPES` in iteration order and stops
+    at the level asked for, and
+    :func:`~core.policy.profiles.lowest_profile_for_scope` walks the same
+    order to name the cheapest grant in a refusal.  Reordering these members
+    therefore changes what every profile grants, which is why ``research``
+    sits where it does rather than at the end of the list.
+    """
     SAFE = "safe"       # read-only: fs.read, git.read, verify.run
     DEV = "dev"         # safe + write: fs.write, git.write, python.exec, shell.exec
-    OPS = "ops"         # dev + deploy: git.push, git.fetch, pip.install, http.read, fs.delete
+    #: dev + read the open web: ``http.read``.  Between DEV and OPS because
+    #: reading a page is not a deploy right and should not cost one — see
+    #: :data:`~core.policy.profiles.PROFILE_SCOPES` for the argument.
+    RESEARCH = "research"
+    OPS = "ops"         # research + deploy: git.push, git.fetch, pip.install, fs.delete
     GOD = "god"         # all scopes (wildcard "*")
 
 

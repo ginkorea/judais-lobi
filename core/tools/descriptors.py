@@ -254,13 +254,50 @@ INSTALL_DESCRIPTOR = ToolDescriptor(
     description="Installs a Python project via pip.",
 )
 
+#: The three research tools, and the one scope they share.
+#:
+#: ``http.read`` is unchanged here and moved *underneath* them: it used to
+#: be an OPS scope, so reading three public pages cost an agent the
+#: profile that can also ``git push`` and ``pip install``, and web
+#: research was simply denied under ``safe`` and ``dev``. It now sits in
+#: the ``research`` profile — DEV plus this one scope — which closes the
+#: 0.9.0 residual ROADMAP §2.6b names. The descriptors did not have to
+#: change for that, and the fact that they did not is the property
+#: :data:`~core.policy.profiles.PROFILE_SCOPES` exists to have: a tool
+#: says what it needs, a profile says who may have it, and neither
+#: repeats the other.
+#:
+#: ``input_schema`` is declared here rather than on the tool classes
+#: because a descriptor is the one definition of a tool
+#: (:class:`ToolDescriptor`) and these rows are what a first-party MCP
+#: server would advertise. Without one, a mission's catalogue gives the
+#: model a name and a sentence, and a model that guesses ``page=`` for
+#: ``url=`` spends a turn on a schema error.
 WEB_SEARCH_DESCRIPTOR = ToolDescriptor(
     tool_name="perform_web_search",
     required_scopes=["http.read"],
     requires_network=True,
     network_scopes=["http.read"],
     sandbox_profile=SandboxProfile(allow_network=True),
-    description="Performs a DuckDuckGo web search.",
+    description=(
+        "Searches the web through the configured provider (SEARCH_PROVIDER: "
+        "duckduckgo, searxng, or one a platform registered) and returns "
+        "ranked title/url/snippet results. A provider that cannot answer "
+        "refuses BY NAME, which is not the same as an empty web."),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for."},
+            "max_results": {"type": "integer",
+                            "description": "How many results to return."},
+            "deep_dive": {
+                "type": "boolean",
+                "description": "Also fetch the top results' pages. Prefer "
+                               "fetch_page_content on the URL you chose.",
+            },
+        },
+        "required": ["query"],
+    },
 )
 
 WEB_RESEARCH_DESCRIPTOR = ToolDescriptor(
@@ -269,7 +306,32 @@ WEB_RESEARCH_DESCRIPTOR = ToolDescriptor(
     requires_network=True,
     network_scopes=["http.read"],
     sandbox_profile=SandboxProfile(allow_network=True),
-    description="Searches the web and fetches top pages into a research pack.",
+    description=(
+        "Reads several pages into one research pack: sources[] (each a typed "
+        "page with url, title, sections[] and links[]) and failed[] with the "
+        "reason each unread URL was not read. Give `urls` to read pages you "
+        "already know of — that needs no search provider; give `query` to "
+        "search first; `mode=academic` searches arXiv/Semantic Scholar/"
+        "OpenAlex, which need no key."),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string",
+                      "description": "What to research. Used to search when "
+                                     "no urls are given."},
+            "urls": {"type": "array", "items": {"type": "string"},
+                     "description": "Pages to read. Needs no search provider."},
+            "max_pages": {"type": "integer",
+                          "description": "How many pages to read at most."},
+            "follow_links": {
+                "type": "integer",
+                "description": "Also read up to this many links found on the "
+                               "pages above. 0 (default) follows nothing.",
+            },
+            "mode": {"type": "string", "enum": ["web", "academic"],
+                     "description": "`academic` searches the paper indexes."},
+        },
+    },
 )
 
 FETCH_PAGE_DESCRIPTOR = ToolDescriptor(
@@ -278,7 +340,27 @@ FETCH_PAGE_DESCRIPTOR = ToolDescriptor(
     requires_network=True,
     network_scopes=["http.read"],
     sandbox_profile=SandboxProfile(allow_network=True),
-    description="Fetches and extracts text from a URL.",
+    description=(
+        "Fetches one http(s) URL and returns its readable text as a typed "
+        "page: url, final_url, status, title, fetched_at, sections[] "
+        "(heading + text, in document order) and links[]. Read one section "
+        "of a long page back through mission_result rather than refetching."),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string",
+                    "description": "The http(s) URL to read."},
+            "max_chars": {
+                "type": "integer",
+                "description": "Bound the returned `text` field. 0 (the "
+                               "default) returns it whole; the transcript is "
+                               "bounded anyway and the store keeps all of it.",
+            },
+            "timeout": {"type": "number",
+                        "description": "Seconds before giving up."},
+        },
+        "required": ["url"],
+    },
 )
 
 #: The crawl reads local files; the *indexing* half of it calls an
