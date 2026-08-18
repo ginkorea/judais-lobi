@@ -384,3 +384,43 @@ class TestTheSlotIsTheCallsAndNobodyElses:
         one, two = Quiet(), Quiet()
         one.last_tool_calls = [{"id": "1", "name": "a", "arguments": {}}]
         assert two.last_tool_calls == []
+
+
+class TestTheRecorderPrefersTheSlotToo:
+    """`Recorder.model_call` reads the same per-call slot `Model.spend`
+    reads: a recording made under two gathered children bills each call
+    to the child that made it, so its replay is the run that happened."""
+
+    def _usage(self, n):
+        from types import SimpleNamespace
+        return SimpleNamespace(as_record=lambda: {
+            "prompt_tokens": n, "completion_tokens": 0, "total_tokens": n})
+
+    def test_a_filled_slot_beats_the_shared_side_channel(self, tmp_path):
+        from core.durable import RunStore
+        from core.runtime.backends.base import capturing
+        from core.runtime.replay import Recorder
+        store = RunStore(tmp_path / "store"); run = store.create()
+        seen = {"side": 0}
+        def side():
+            seen["side"] += 1
+            return self._usage(999), []
+        rec = Recorder(store, run.run_id, side=side)
+        with capturing() as slot:
+            slot.usage = self._usage(7)
+            slot.tool_calls = [{"name": "t"}]
+            slot.filled = True
+            record = rec.model_call("mission", {"messages": []}, "hi")
+        assert record["reply"]["usage"]["prompt_tokens"] == 7
+        assert record["reply"]["tool_calls"] == [{"name": "t"}]
+        assert seen["side"] == 0
+
+    def test_an_unfilled_slot_falls_back_to_side(self, tmp_path):
+        from core.durable import RunStore
+        from core.runtime.backends.base import capturing
+        from core.runtime.replay import Recorder
+        store = RunStore(tmp_path / "store"); run = store.create()
+        rec = Recorder(store, run.run_id, side=lambda: (self._usage(3), []))
+        with capturing():
+            record = rec.model_call("mission", {"messages": []}, "hi")
+        assert record["reply"]["usage"]["prompt_tokens"] == 3

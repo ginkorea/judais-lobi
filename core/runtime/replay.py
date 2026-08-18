@@ -405,11 +405,29 @@ class Recorder:
         The side channels are read **here**, after the call and before the
         record, which is the same moment and the same order the loop reads
         them in.  Reading them earlier would record the previous call's.
+
+        Preferred over the ``side()`` callable is the per-call slot
+        :func:`core.runtime.backends.base.capturing` opens around the call
+        that is running on this context — the same slot ``Model.spend``
+        prefers, for the same reason: under two gathered children sharing
+        one client the shared ``last_usage`` can already be the sibling's by
+        the time this line runs, and a recording that bills one child for
+        the other's call replays as the wrong run.  A slot nobody filled
+        (a scripted client, a replayed run) falls back to ``side()``, which
+        is what every serial recording always read.
         """
         try:
-            usage, tool_calls = self._side()
+            from core.runtime.backends.base import _capture
+            slot = _capture.get()
         except Exception:                       # pragma: no cover - defensive
-            usage, tool_calls = None, []
+            slot = None
+        if slot is not None and slot.filled:
+            usage, tool_calls = slot.usage, list(slot.tool_calls)
+        else:
+            try:
+                usage, tool_calls = self._side()
+            except Exception:                   # pragma: no cover - defensive
+                usage, tool_calls = None, []
         with self._lock:
             self._calls += 1
             record = {
