@@ -17,8 +17,6 @@ from core.kernel.budgets import (
     BudgetConfig,
     BudgetExhausted,
     PhaseRetriesExhausted,
-    TotalIterationsExhausted,
-    PhaseTimeoutExhausted,
     check_phase_retries,
     check_total_iterations,
     check_phase_time,
@@ -130,17 +128,22 @@ class TestCheckTotalIterations:
         state = SessionState(task_description="test")
         state.total_iterations = 30
         config = BudgetConfig(max_total_iterations=30)
-        with pytest.raises(TotalIterationsExhausted):
+        with pytest.raises(BudgetExhausted):
             check_total_iterations(state, config)
 
-    def test_exception_attributes(self):
+    def test_exception_names_the_steps_budget(self):
+        """Folded into `Bounds`' vocabulary: the kernel no longer raises a
+        `TotalIterationsExhausted` of its own, it raises the shared
+        `BudgetExhausted` naming `steps` — the word a mission stream carries
+        for the same fact. `limit`/`spent` are the cap and what was spent."""
         state = SessionState(task_description="test")
         state.total_iterations = 30
         config = BudgetConfig(max_total_iterations=30)
-        with pytest.raises(TotalIterationsExhausted) as exc_info:
+        with pytest.raises(BudgetExhausted) as exc_info:
             check_total_iterations(state, config)
-        assert exc_info.value.iterations == 30
-        assert exc_info.value.max_iterations == 30
+        assert exc_info.value.which == "steps"
+        assert exc_info.value.limit == 30
+        assert exc_info.value.spent == 30
 
 
 class TestCheckPhaseTime:
@@ -152,11 +155,15 @@ class TestCheckPhaseTime:
 
     def test_over_limit_raises(self):
         state = SessionState(task_description="test")
+        state.enter_phase(Phase.CONTRACT)
         # Simulate phase started 400 seconds ago
         state.phase_start_time = time.monotonic() - 400.0
         config = BudgetConfig(max_time_per_phase_seconds=300.0)
-        with pytest.raises(PhaseTimeoutExhausted):
+        with pytest.raises(BudgetExhausted) as exc_info:
             check_phase_time(state, config)
+        # Folded into `Bounds`' vocabulary: `seconds`, not a kernel subclass.
+        assert exc_info.value.which == "seconds"
+        assert exc_info.value.limit == 300.0
 
     def test_no_start_time_no_raise(self):
         state = SessionState(task_description="test")
@@ -172,28 +179,34 @@ class TestCheckAllBudgets:
         check_all_budgets(state, config)  # Should not raise
 
     def test_iterations_checked_first(self):
-        """When both iterations and retries are exceeded, TotalIterationsExhausted fires."""
+        """When both iterations and retries are exceeded, the `steps`
+        exhaustion fires first — and it is the shared `BudgetExhausted`, not
+        a retries one, so `which` tells them apart."""
         state = SessionState(task_description="test")
         state.enter_phase(Phase.CONTRACT)
         state.total_iterations = 30
         state.phase_retries[Phase.CONTRACT] = 5
         config = BudgetConfig(max_total_iterations=30, max_phase_retries=3)
-        with pytest.raises(TotalIterationsExhausted):
+        with pytest.raises(BudgetExhausted) as exc_info:
             check_all_budgets(state, config)
+        assert exc_info.value.which == "steps"
 
 
 class TestExceptionHierarchy:
-    def test_all_subclass_budget_exhausted(self):
+    def test_the_one_kernel_subclass_still_subclasses_budget_exhausted(self):
+        """`retries` is the only budget the kernel has that a mission does
+        not, so `PhaseRetriesExhausted` is the only subclass this module
+        keeps. `steps` and `seconds` are raised as the shared
+        `BudgetExhausted` itself — folded into `Bounds`' vocabulary."""
         assert issubclass(PhaseRetriesExhausted, BudgetExhausted)
-        assert issubclass(TotalIterationsExhausted, BudgetExhausted)
-        assert issubclass(PhaseTimeoutExhausted, BudgetExhausted)
 
     def test_catch_base_catches_all(self):
-        """except BudgetExhausted catches all specific exception types."""
+        """except BudgetExhausted catches the retries subclass and the
+        shared steps/seconds exceptions alike."""
         exceptions = [
             PhaseRetriesExhausted(Phase.INTAKE, 3, 3),
-            TotalIterationsExhausted(30, 30),
-            PhaseTimeoutExhausted(Phase.INTAKE, 400.0, 300.0),
+            BudgetExhausted("steps", 30, 30),
+            BudgetExhausted("seconds", 300.0, 400.0),
         ]
         for exc in exceptions:
             try:
@@ -222,16 +235,17 @@ class TestThereIsOneBudgetExhausted:
 
     @pytest.mark.parametrize("exc,which,limit,spent", [
         (PhaseRetriesExhausted(Phase.INTAKE, 3, 3), "retries", 3, 3),
-        (TotalIterationsExhausted(30, 30), "steps", 30, 30),
-        (PhaseTimeoutExhausted(Phase.INTAKE, 400.0, 300.0), "seconds",
-         300.0, 400.0),
+        (BudgetExhausted("steps", 30, 30), "steps", 30, 30),
+        (BudgetExhausted("seconds", 300.0, 400.0), "seconds", 300.0, 400.0),
     ])
     def test_every_kernel_violation_names_its_budget(
             self, exc, which, limit, spent):
         """`which`/`limit`/`spent` read the same off either runtime's
         exception. An iteration and a step are the same thing under two
         names, and only one of the two names is the one a consumer of the
-        mission stream was told to expect."""
+        mission stream was told to expect — so the kernel now raises that
+        one directly for `steps` and `seconds`, keeping only `retries` as
+        its own."""
         assert (exc.which, exc.limit, exc.spent) == (which, limit, spent)
 
     def test_the_kernel_keeps_its_own_attributes_too(self):

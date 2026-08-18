@@ -1048,6 +1048,33 @@ platform already has. The whole guide is **`EVAL.md`**; §9 is the suite format.
 
 ---
 
+### Running the coding kernel as a library
+
+The single-task entry point `Agent.run_task` was removed in 0.16.x: nothing in
+the package or its CLI called it, and a library caller drives the coding kernel
+through its own objects instead. Six lines, and the same `_make_task_dispatcher`
+the campaign path uses — so the dispatcher is bounded against the endpoint's real
+window without asking:
+
+```python
+from core.agent import Agent
+from core.kernel import Orchestrator
+from core.kernel.workflows import get_coding_workflow
+
+agent = Agent(config=my_personality)            # your PersonalityConfig
+workflow = get_coding_workflow()
+state = Orchestrator(dispatcher=agent._make_task_dispatcher(workflow=workflow),
+                     tool_bus=agent.tools.bus, workflow=workflow).run("add pagination")
+```
+
+`state` is the final `SessionState` — `COMPLETED` or `HALTED`, the halt naming the
+phase that stopped it. Pass `budget=BudgetConfig(...)` to `_make_task_dispatcher`
+and to `Orchestrator` (the same object, so the dispatcher's per-phase and the
+orchestrator's per-session budgets agree), and `session_manager=` to
+`Orchestrator` for durable artifacts. For a multi-step campaign rather than one
+task, `agent.run_campaign(plan)` / `agent.run_campaign_from_description(mission)`
+is the higher-level path and needs none of this.
+
 ---
 
 ## Releasing and pinning

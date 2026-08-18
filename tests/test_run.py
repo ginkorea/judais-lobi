@@ -432,14 +432,23 @@ class TestThePlaneReadsTheBus:
         assert ToolPlane(bus=bus).takes_deadline() is True
         assert ToolPlane(bus=object()).takes_deadline() is False
 
-    @pytest.mark.parametrize("call", [
-        lambda plane: plane.lease("step-1"),
-        lambda plane: plane.narrow(["read"]),
-    ])
-    def test_the_two_signatures_this_lane_only_declares_say_so(self, bus,
-                                                               call):
+    def test_lease_is_still_only_declared(self, bus):
+        """``lease`` is the parallel-children lane's; until then it names the
+        roadmap section rather than pretending to namespace a store.
+        ``narrow`` used to sit beside it here — it is implemented now (Phase
+        11, lane E), so it is asserted below rather than as a refusal."""
         with pytest.raises(NotImplementedError, match="ROADMAP"):
-            call(ToolPlane(bus=bus))
+            ToolPlane(bus=bus).lease("step-1")
+
+    def test_narrow_is_implemented_and_returns_a_new_plane(self, bus):
+        """``set_scope_constraints`` is ``narrow`` now — governance's one
+        surface. It returns a new plane and leaves the original; the denial
+        semantics it applies to the bus's engine are proved in
+        ``tests/test_run_roles.py``."""
+        plane = ToolPlane(bus=bus)
+        narrowed = plane.narrow(["read"])
+        assert narrowed is not plane
+        assert isinstance(narrowed, ToolPlane)
 
 
 # ── a child run ─────────────────────────────────────────────────────────────

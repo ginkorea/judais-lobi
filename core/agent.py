@@ -13,10 +13,9 @@ from core.memory import UnifiedMemory
 from core.tools import Tools
 from core.tools.run_shell import RunShellTool
 from core.tools.run_python import RunPythonTool
-from core.tools.capability import CapabilityEngine
 from core.runtime.provider_config import DEFAULT_MODELS, resolve_provider
 from core.runtime.messages import build_system_prompt, build_chat_context
-from core.runtime.context_window import ContextWindowManager
+from core.runtime.context_window import ContextConfig, MissionWindow
 
 
 class Agent:
@@ -67,7 +66,19 @@ class Agent:
             profile=profile,
         )
 
-        self._context_manager = ContextWindowManager(project_root=Path.cwd())
+        # One window owner. `chat` used to bound its prompt with a
+        # `ContextWindowManager` of its own — the second window owner in the
+        # tree, beside the `MissionWindow` every agentic path already used.
+        # Phase 11 makes it one: chat is a `Run` with no tools (see `chat`),
+        # and it fits its prompt through the same `MissionWindow` class, built
+        # from the same three inputs the CLI's mission path uses — provider,
+        # model, client — and read lazily, so constructing an Agent still
+        # costs no `GET /models`. The project's context config is carried in
+        # so a deployment that set `max_context_tokens` keeps it.
+        self._window = MissionWindow(
+            provider=self.provider, model=self.model, client=self.client,
+            config=ContextConfig.from_project(Path.cwd()),
+        )
 
         # Build initial history
         self.history = self._load_history()
@@ -201,21 +212,79 @@ class Agent:
         stream: bool = False,
         invoked_tools: Optional[List[str]] = None
     ):
+        """One chat turn, run as a `Run` with no tools.
+
+        Chat is the degenerate run: ``Run(personality, ToolPlane.none(),
+        Bounds(max_steps=1), Store.none(), Observer.none(), model)`` — no
+        tools, no grounding, no observer and no store, so it emits exactly
+        the nothing it emits today and returns exactly what it returned
+        today (a string when ``stream=False``, the backend's chunk iterator
+        when ``stream=True``).  The six objects are built in
+        :meth:`_chat_run`; the ``.none()`` forms are constructed inline
+        (``ToolPlane(bus=None, offered=(), store_tool="")``, ``Store()`` and
+        ``Observer()``) rather than through classmethods, to leave
+        `core.runtime.run` to the lane that owns those objects.
+
+        **What is different from a mission is the messages, and that is
+        correct.**  A mission's ``Run.seed`` stacks persona, protocol and a
+        tool catalogue most-constant-first, then history, then an objective.
+        Chat has no protocol and no tool catalogue, and its *whole*
+        conversation — including the turn just appended — is the history
+        with no separate objective; so its messages are its own
+        :func:`~core.runtime.messages.build_chat_context`, not ``seed``.
+        Routing them through ``stacked`` would strip the trailing newline
+        the ``invoked_tools`` annotation ends with — a byte a served
+        endpoint's prefix cache is keyed on.  What chat DOES take from
+        ``Run`` is the model and its window: the messages are fitted through
+        the run's ``Model.window`` — one :class:`MissionWindow`, not the
+        second window owner ``chat`` used to build — and asked through the
+        run's ``Model.ask``.  ``tests/test_run_roles.py`` pins the messages
+        byte-for-byte against what this method sent before Phase 11.
+
+        The model call stays here rather than inside ``Run.arun``: streaming
+        a chat turn through the loop is lane C's (``ROADMAP.md`` §2.6.3), and
+        ``Model.ask`` is the seam it folds into.
+        """
         self.history.append({"role": "user", "content": message})
         sys_prompt = self._system_with_examples()
-        if self._context_manager is not None:
-            backend_caps = getattr(self.client, "capabilities", None)
-            context, _stats = self._context_manager.build_messages(
-                system_prompt=sys_prompt,
-                history=self.history,
-                invoked_tools=invoked_tools,
-                provider=self.provider,
-                model=self.model,
-                backend_caps=backend_caps,
-            )
-        else:
-            context = build_chat_context(sys_prompt, self.history, invoked_tools)
-        return self.client.chat(model=self.model, messages=context, stream=stream)
+        run = self._chat_run(sys_prompt)
+        context = build_chat_context(sys_prompt, self.history, invoked_tools)
+        window = run.model.window
+        if window is not None:
+            # Pin only the system turn: everything after it is conversation
+            # the window may drop oldest-first if the turn overflows. No
+            # overflow leaves the list byte-identical, which is every chat
+            # turn short enough to fit — the case the cache-key test covers.
+            context, _compaction = window.fit(context, pinned=1)
+        return run.model.ask(context, stream=stream)
+
+    def _chat_run(self, system_message: str):
+        """The six objects a chat turn is, built once per turn.
+
+        ``ToolPlane(bus=None, offered=(), store_tool="")`` is the plane with
+        no way out, ``Store()`` records nothing, ``Observer()`` has no sinks
+        and no run store so ``emit`` returns at its first line, and
+        ``Bounds(max_steps=1)`` is a single turn.  ``Model.ask`` wraps the
+        client so the caller's ``stream`` flag reaches the backend; its
+        ``window`` is the agent's one :class:`MissionWindow`, so the run and
+        chat share a single opinion of how big the endpoint's window is.
+        """
+        from core.runtime.run import (
+            Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
+        )
+
+        def ask(messages, stream=False):
+            return self.client.chat(model=self.model, messages=messages,
+                                    stream=stream)
+
+        return Run(
+            Personality(system_message=system_message),
+            ToolPlane(bus=None, offered=(), store_tool=""),
+            Bounds(max_steps=1),
+            Store(),
+            Observer(),
+            Model(ask=ask, window=self._window),
+        )
 
     # =======================
     # Code helpers
@@ -284,40 +353,11 @@ class Agent:
     # =======================
     # Agentic task execution
     # =======================
-    def run_task(self, task_description: str, budget=None, session_manager=None,
-                 policy=None, workflow=None):
-        """Delegate an agentic task to the kernel orchestrator.
-
-        Creates a CapabilityEngine from the policy and passes the ToolBus
-        to the orchestrator for capability-gated dispatch.
-
-        The workflow is resolved **here** and given to both the
-        orchestrator and the dispatcher. They used to default
-        independently, which was harmless only because the dispatcher had
-        no opinion about phases; a dispatcher that maps phases to roles
-        and an orchestrator that walks a different phase list would
-        refuse every phase for a reason neither could explain.
-        """
-        from core.kernel import Orchestrator
-        from core.kernel.workflows import get_coding_workflow
-
-        # Set up capability engine for agentic mode
-        if policy is not None:
-            cap_engine = CapabilityEngine(policy)
-            self.tools.bus._capability = cap_engine
-
-        workflow = workflow or get_coding_workflow()
-        dispatcher = self._make_task_dispatcher(workflow=workflow, budget=budget)
-        kwargs = {
-            "dispatcher": dispatcher,
-            "budget": budget,
-            "tool_bus": self.tools.bus,
-            "workflow": workflow,
-        }
-        if session_manager is not None:
-            kwargs["session_manager"] = session_manager
-        orchestrator = Orchestrator(**kwargs)
-        return orchestrator.run(task_description)
+    # `run_task` is gone (Phase 11, lane E). It had no caller in `core/` or
+    # `main.py` — the coding kernel is driven through `run_campaign` and its
+    # `_make_task_dispatcher`, which stays — so a library caller that wants
+    # the single-task path builds the six lines directly; PLATFORMS.md,
+    # "Running the coding kernel as a library", is where they are.
 
     def run_campaign(self, plan, base_dir: Optional[Path] = None,
                      auto_approve: bool = False, editor: Optional[str] = None):
