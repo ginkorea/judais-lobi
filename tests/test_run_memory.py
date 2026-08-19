@@ -99,8 +99,8 @@ class TestWithNoBankNothingMoved:
         """Persona, protocol, conduct, catalogue — and no memory section.
 
         Three sections until Phase 13 lane I put the framework's conduct
-        (:data:`~core.runtime.prompts.GOVERNED_PLANE`) between the protocol
-        and the catalogue.  The claim this test makes is unchanged and it
+        (:data:`~core.runtime.prompts.GOVERNED_PLANE`) between the catalogue
+        and core memory.  The claim this test makes is unchanged and it
         is the one the file is named for: with no bank, the turn is the
         sections a run has ALWAYS had and nothing memory contributed.  The
         four are spelled out rather than summed, so a fifth arriving from
@@ -108,8 +108,8 @@ class TestWithNoBankNothingMoved:
         """
         run = a_run(bus)
         assert run.system_turn() == {"role": "system", "content": stacked(
-            "You are Tai.", PROTOCOL.strip(), GOVERNED_PLANE.strip(),
-            "Tool catalogue:\n" + run.catalogue())}
+            "You are Tai.", PROTOCOL.strip(),
+            "Tool catalogue:\n" + run.catalogue(), GOVERNED_PLANE.strip())}
 
     def test_the_objective_turn_is_the_objective(self, bus):
         assert a_run(bus).seed("find things")[-1] == {

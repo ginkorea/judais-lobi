@@ -154,7 +154,10 @@ step: see :meth:`core.runtime.run.Run.seed` for what that prefix is worth.
 __all__ = ["GOVERNED_PLANE"]
 
 
-#: The conduct every run is given, between the protocol and the catalogue.
+#: The conduct every run is given, between the catalogue and core memory
+#: — after the list of tools it governs, for recency: the reference
+#: deployment measured a small model following mid-prompt conduct roughly
+#: half the time.
 #:
 #: Eight paragraphs, 291 words, and each one earns its tokens: this is
 #: re-sent on every step of every mission, so a sentence that only sounds

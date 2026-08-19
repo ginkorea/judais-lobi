@@ -161,7 +161,7 @@ class Personality:
     #: Persona and skill prompt, already joined by the caller.
     system_message: str = ""
     #: The conduct section — how to work a governed tool plane — stacked
-    #: between the protocol and the catalogue by :meth:`Run.system_turn`.
+    #: between the catalogue and core memory by :meth:`Run.system_turn`.
     #:
     #: Three states, and the third is the only reason this is a field at
     #: all.  ``None``, the default, is the framework's own
@@ -2126,7 +2126,7 @@ class Run:
         }
 
     def seed(self, objective: str) -> List[Dict[str, str]]:
-        """The PLAN-phase messages: persona, protocol, conduct, catalogue,
+        """The PLAN-phase messages: persona, protocol, catalogue, conduct,
         history, objective.
 
         The prior turns sit between the system prompt and the current
@@ -2153,16 +2153,17 @@ class Run:
            executor's extra paragraph is appended, not prepended, by
            :meth:`~core.runtime.swarm.SwarmRunner._execute_step`);
         2. the **protocol** — a module constant, the same for every run of
-           every version of this package;
-        3. the **conduct** — :data:`~core.runtime.prompts.GOVERNED_PLANE`,
-           another module constant, and beside the protocol because the
-           two move together: the protocol is the syntax of a reply and
-           the conduct is how to work the plane;
-        4. the **catalogue** — the same for every step of one mission, and
-           different the moment a mission is offered a different tool set,
-           which is why it is last of the four.  It also has to follow the
-           protocol, whose text says "the catalogue below", and the
-           conduct, which talks about the plane the catalogue lists;
+           every version of this package, and its text says "the
+           catalogue below";
+        3. the **catalogue** — the same for every step of one mission, and
+           different the moment a mission is offered a different tool set;
+        4. the **conduct** — :data:`~core.runtime.prompts.GOVERNED_PLANE`,
+           a module constant, and BELOW the catalogue on purpose: see the
+           position paragraph below.  Within one mission the catalogue is
+           as constant as the conduct, so every step still re-renders the
+           same bytes; across missions with different planes the shared
+           prefix is one section shorter, a cost that was measured and
+           paid (the position paragraph says for what);
         5. the seeded ``--history`` turns, then the objective, which is
            where this turn stops being like the last one.
 
@@ -2230,26 +2231,29 @@ class Run:
         nothing.  Every other step re-renders to the same bytes, because
         every input to this method is the same as it was.
 
-        **The conduct is the third section, between the protocol and the
-        catalogue, and the position is an argument.**  The protocol is the
-        *syntax* — how a reply is shaped — and the conduct is how to
-        *work*: they belong adjacent, most-constant-first, because both are
-        module constants that change only with a release.  It goes above
-        the catalogue for the same reason the protocol does: it talks about
-        the plane in general ("the catalogue is all there is", "results
-        arrive bounded") and the catalogue is the particular list it is
-        talking about, which reads in that order and not the other.  See
+        **The conduct is the fourth section, between the catalogue and
+        core memory, and the position is a measurement.**  It sat between
+        the protocol and the catalogue until 18 Aug 2026, on the argument
+        that two module constants belong adjacent.  The reference
+        deployment then measured adherence on a 20b model at server
+        sampling: the look-it-up and name-both-candidates sentences were
+        followed roughly half the time from the middle of the prompt.
+        Recency is the one prompt-shaped lever a framework has, so the
+        conduct now lands *after* the list of tools it governs — the last
+        constant thing the model reads before the history and the
+        objective — and it reads as well in this order, because "the
+        catalogue is all there is" can point up at the list as easily as
+        down.  The cache cost is real and small: within one mission the
+        catalogue does not change between steps, so every step still
+        re-renders identical bytes; only the prefix *shared across
+        missions with different planes* shortens, by one section.  See
         :mod:`core.runtime.prompts` for what it says and which production
         lesson each sentence is.
 
-        **Core memory is the fourth section and it is last of the four.**
-        It follows the catalogue for the same most-constant-first reason
-        the catalogue follows the protocol: the persona is one string for
-        the deployment, the protocol is one string for the package, the
-        catalogue changes when the plane does, and core memory changes when
-        the model or an operator edits it — which is rarer than a step and
-        commoner than a release.  It is also the section that has to be
-        able to *mention* the tools, so it must come after the list of
+        **Core memory is the fifth section and it is last.**
+        It changes when the model or an operator edits it — rarer than a
+        step and commoner than a release — and it is the section that has
+        to be able to *mention* the tools, so it comes after the list of
         them.  With no bank the section is ``""`` and
         :func:`~core.runtime.mission.stacked` drops it, which is why a run
         without memory produces the same bytes it produced before this
@@ -2258,8 +2262,8 @@ class Run:
         return {"role": "system", "content": stacked(
             self.personality.system_message,
             self._protocol_text(),
-            self._conduct_text(),
             "Tool catalogue:\n" + self.catalogue(),
+            self._conduct_text(),
             self._core_memory(),
         )}
 

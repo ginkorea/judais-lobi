@@ -751,7 +751,7 @@ state anything the platform does not actually enforce.
 Every deployment of this framework wrote the same paragraph for itself, and it
 is now a module constant that every run carries:
 `core/runtime/prompts.py`, `GOVERNED_PLANE`, stacked into the system turn
-between the protocol and the catalogue. In ~290 words it says the plane is
+between the catalogue and core memory — after the list of tools it governs, for recency, which the reference deployment measured to matter on a small model. In ~290 words it says the plane is
 closed and governed and a refusal names its scope; that a refused call is not
 re-sent unchanged; that results are bounded and the whole is in the run's store,
 to be read on by handle, field or section; that a failed call — a 404, a

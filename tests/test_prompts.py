@@ -169,29 +169,38 @@ class TestTheTextItself:
 
 
 class TestThePositionInTheSystemTurn:
-    """Persona, protocol, conduct, catalogue — and the order is the claim."""
+    """Persona, protocol, catalogue, conduct — and the order is the claim.
+
+    The conduct moved BELOW the catalogue on 18 Aug 2026, on data rather
+    than argument: the reference deployment measured a 20b model at server
+    sampling following the mid-prompt conduct roughly half the time
+    (gate_respected 1/3, label_set_choice 1/2 across rc2/rc3).  Recency is
+    the one prompt-shaped lever a framework has, so the conduct is the
+    last constant section before history and objective.  Within one
+    mission the catalogue is step-constant, so the pinned prefix still
+    re-renders to identical bytes every step."""
 
     def test_the_turn_is_exactly_those_four_sections(self, bus):
         run = a_run(bus)
         assert run.system_turn() == {"role": "system", "content": stacked(
-            "You are Tai.", PROTOCOL.strip(), GOVERNED_PLANE.strip(),
-            "Tool catalogue:\n" + run.catalogue())}
+            "You are Tai.", PROTOCOL.strip(),
+            "Tool catalogue:\n" + run.catalogue(), GOVERNED_PLANE.strip())}
 
     def test_and_the_five_with_a_bank(self, bus, tmp_path):
-        """Core memory stays LAST.  The conduct went in above the
-        catalogue, which is a section the memory block is allowed to
-        mention; a conduct that had landed below it would have put a
-        module constant after a string an operator edits."""
+        """Core memory stays LAST: it is the one section an operator
+        edits, and it is allowed to mention the tools, so it follows
+        both the catalogue and the conduct."""
         from core.memory.bank import MemoryBank
 
         bank = MemoryBank(tmp_path / "bank", principal="alice")
         bank.write("a fact", label="ops")
         run = a_run(bus, memory=bank)
         assert run.system_turn() == {"role": "system", "content": stacked(
-            "You are Tai.", PROTOCOL.strip(), GOVERNED_PLANE.strip(),
-            "Tool catalogue:\n" + run.catalogue(), bank.core())}
+            "You are Tai.", PROTOCOL.strip(),
+            "Tool catalogue:\n" + run.catalogue(), GOVERNED_PLANE.strip(),
+            bank.core())}
 
-    def test_the_conduct_sits_between_the_protocol_and_the_catalogue(
+    def test_the_conduct_sits_between_the_catalogue_and_the_history(
             self, bus):
         """Stated as three indices as well as as bytes, because an
         equality that fails prints two long strings and this prints the
@@ -199,8 +208,8 @@ class TestThePositionInTheSystemTurn:
         content = a_run(bus).system_turn()["content"]
         assert (content.index("You are Tai.")
                 < content.index("Reply with exactly one JSON object")
-                < content.index("If a number is not in the view")
-                < content.index("Tool catalogue:"))
+                < content.index("Tool catalogue:")
+                < content.index("If a number is not in the view"))
 
     def test_it_is_the_same_bytes_under_the_native_protocol(self, bus):
         """The protocol is the syntax and the conduct is the conduct: a
@@ -259,8 +268,8 @@ class TestTheOverride:
     def test_a_string_replaces_it_in_the_same_position(self, bus):
         run = a_run(bus, conduct="Work the plane my way.")
         assert run.system_turn() == {"role": "system", "content": stacked(
-            "You are Tai.", PROTOCOL.strip(), "Work the plane my way.",
-            "Tool catalogue:\n" + run.catalogue())}
+            "You are Tai.", PROTOCOL.strip(),
+            "Tool catalogue:\n" + run.catalogue(), "Work the plane my way.")}
 
     def test_an_overrides_stray_whitespace_does_not_make_a_new_prefix(
             self, bus):

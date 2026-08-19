@@ -1,7 +1,0 @@
-{"seq": 1, "at": "2026-08-19T09:25:52+00:00", "record": {"event": "mission_started", "schema_version": 1, "objective": "what are the totals?", "catalogue": ["mcp.governed_view", "mission_result"], "gated": [], "max_steps": 0, "history": 0, "sandbox": "bwrap", "audit_ref": "/home/gompert/data/tmp/pytest-of-gompert/pytest-173/test_the_corpus_replays_with_e0/audit/default.jsonl", "run_id": "run_20260818T232552-79594e66", "profile": "safe"}}
-{"seq": 2, "at": "2026-08-19T09:25:52+00:00", "record": {"event": "step_started", "index": 0}}
-{"seq": 3, "at": "2026-08-19T09:25:52+00:00", "record": {"event": "tool_call", "index": 0, "tool": "mcp.governed_view", "arguments": {"run_id": "asset.5f21", "section": "totals"}}}
-{"seq": 4, "at": "2026-08-19T09:25:52+00:00", "record": {"event": "tool_result", "index": 0, "tool": "mcp.governed_view", "arguments": {"run_id": "asset.5f21", "section": "totals"}, "ok": true, "exit_code": 0, "output": "{\n  \"run_id\": \"asset.5f21\",\n  \"totals\": {\n    \"records\": 12481,\n    \"blocks\": 7\n  }\n}", "error": "", "handle": "r1", "truncated": false}}
-{"seq": 5, "at": "2026-08-19T09:25:52+00:00", "record": {"event": "step_started", "index": 1}}
-{"seq": 6, "at": "2026-08-19T09:25:52+00:00", "record": {"event": "answer", "text": "Totals for asset.5f21: 12481 records.", "outcome": "answered"}}
-{"seq": 7, "at": "2026-08-19T09:25:52+00:00", "record": {"event": "mission_finished", "outcome": "answered", "steps": 2, "max_steps": 0, "elapsed_s": 0.129}}
