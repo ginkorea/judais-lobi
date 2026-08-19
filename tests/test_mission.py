@@ -810,13 +810,24 @@ class TestTheWallClock:
         harness's own monotonic clock — and OUTSIDE `usage`, whose absence
         is a statement about the provider that elapsed time must not
         disturb."""
-        import itertools
+        # A clock the TEST advances — by 2.5 s exactly once, when the
+        # answer lands — rather than one that ticks on every read: the
+        # loop's own machinery (asyncio's event loop, the model-state
+        # watch) reads `time.monotonic` too, a different number of times
+        # per Python version, and a count of reads is not the fact under
+        # test. The fact is: `elapsed_s` is the clock at the ending minus
+        # the clock at the beginning, on the harness's own monotonic clock.
         import core.runtime.mission as mission_module
-        ticks = itertools.count(100.0, 2.5)          # 100.0, 102.5, 105.0 …
-        monkeypatch.setattr(mission_module.time, "monotonic", lambda: next(ticks))
+        clock = {"now": 100.0}
+        monkeypatch.setattr(mission_module.time, "monotonic",
+                            lambda: clock["now"])
         seen = []
+        def watch(record):
+            seen.append(record)
+            if record.get("event") == "answer":
+                clock["now"] = 102.5
         MissionRunner(ScriptedModel('{"answer": "done"}'), bus,
-                      ["catalog.search"], observer=seen.append).run("go")
+                      ["catalog.search"], observer=watch).run("go")
         finished = seen[-1]
         assert finished["event"] == "mission_finished"
         assert finished["elapsed_s"] == 2.5

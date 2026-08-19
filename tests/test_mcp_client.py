@@ -503,3 +503,29 @@ class TestWithdrawal:
         bridge.sync()
         bridge.withdraw()
         assert bridge.withdraw() == []
+
+
+class TestATooldescriptionIsTheSameOnEveryPython:
+    """Python 3.13 dedents docstrings at compile time; a FastMCP tool's
+    description IS a docstring; the description is in the model's request
+    and in the system turn's catalogue. So the bridge renders it the 3.13
+    way on every interpreter — the same bytes on 3.10 and 3.14 — or the
+    recorded corpus, the cache key and the conformance kit's replay all
+    depend on which Python recorded them (CI on 3.10 found it)."""
+
+    def test_the_pre_313_shape_becomes_the_313_shape(self):
+        from core.tools.mcp_client import docstring_dedent
+        old = ("A large, typed result.\n\n    Three things a mission needs\n"
+               "    never produces.\n    ")
+        new = "A large, typed result.\n\nThree things a mission needs\nnever produces.\n"
+        assert docstring_dedent(old) == new
+
+    def test_it_is_idempotent_on_what_313_already_stripped(self):
+        from core.tools.mcp_client import docstring_dedent
+        text = "A large, typed result.\n\nThree things a mission needs\nnever produces.\n"
+        assert docstring_dedent(text) == text
+
+    def test_a_hand_written_description_passes_through(self):
+        from core.tools.mcp_client import docstring_dedent
+        for text in ("one line", "", "two\nlines with no indent", "  led\n  even"):
+            assert docstring_dedent(text) == (text if text != "  led\n  even" else "  led\neven")

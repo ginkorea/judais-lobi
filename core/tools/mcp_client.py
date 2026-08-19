@@ -393,6 +393,45 @@ class StreamableHttpTransport(McpTransport):
 # What a server told us
 # ---------------------------------------------------------------------------
 
+def docstring_dedent(text: str) -> str:
+    """A tool description as every Python renders it, not as this one does.
+
+    A server written with FastMCP takes a tool's description from the
+    function's docstring, and **Python 3.13 changed what a docstring is**:
+    the compiler now strips the common indentation from every line after
+    the first (an older interpreter keeps it).  So one server, one function,
+    two interpreters produced two descriptions — ``\n\n    Three things…``
+    on 3.10 and ``\n\nThree things…`` on 3.14 — and the description is in
+    the model's request (the ``tools`` list and the catalogue rendered into
+    the system turn), which is a served endpoint's prefix-cache key and the
+    thing this repository's recorded corpus is compared against byte for
+    byte.  CI on 3.10 found it: the same recording, "different" requests.
+
+    This is exactly the 3.13 rule and nothing more — the first line kept
+    as written, the smallest indentation shared by the non-blank lines
+    after it removed — so it is idempotent on text a 3.13+ interpreter has
+    already stripped, and a description a server wrote by hand (no
+    indentation to remove) passes through unchanged.  Not
+    :func:`inspect.cleandoc`, which also trims leading and trailing blank
+    lines and would move bytes on every recording made on 3.14.
+    """
+    if not text or "\n" not in text:
+        return text
+    first, rest = text.split("\n", 1)
+    lines = rest.split("\n")
+    indents = [len(line) - len(line.lstrip(" \t"))
+               for line in lines if line.strip()]
+    if not indents:
+        return text
+    cut = min(indents)
+    if cut == 0:
+        return text
+    # A whitespace-only line — the indentation before the closing quotes,
+    # usually — becomes empty, as 3.13 leaves it.
+    return "\n".join([first] + [line[cut:] if line.strip() else ""
+                                for line in lines])
+
+
 @dataclass(frozen=True)
 class McpToolSpec:
     """One entry of ``tools/list``."""
@@ -585,7 +624,7 @@ class McpClient:
             specs.append(
                 McpToolSpec(
                     name=tool.name,
-                    description=tool.description or "",
+                    description=docstring_dedent(tool.description or ""),
                     input_schema=dict(schema),
                 )
             )
