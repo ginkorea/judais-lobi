@@ -1764,9 +1764,15 @@ def _paging_model(rounds, answer='{"answer": "ok"}'):
 
 
 def _small_window(**kwargs):
-    """A window a handful of 800-byte results does not fit inside."""
+    """A window a handful of 800-byte results does not fit inside.
+
+    1400 since 18 Aug 2026 (was 1200): the framework's conduct grew by
+    three sentences and the pinned system turn with it — see
+    :func:`tests.test_swarm._tiny_window` for the arithmetic, which is the
+    same here.  Still a window three 800-byte results overflow.
+    """
     return MissionWindow(
-        config=ContextConfig(max_context_tokens=1200, max_output_tokens=200),
+        config=ContextConfig(max_context_tokens=1400, max_output_tokens=200),
         **kwargs,
     )
 

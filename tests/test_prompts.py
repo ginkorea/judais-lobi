@@ -47,12 +47,22 @@ from core.skills.library import packs
 from tests.test_run_memory import a_run, bus  # noqa: F401 — a fixture
 
 
-#: The ceiling on the conduct, in whitespace-separated tokens.  183 today,
-#: and the five words of headroom are deliberate: a lane may reword a
-#: sentence, and a lane that wants a whole new paragraph has to argue for
-#: the cap as well as for the paragraph.  It is a cost and not a style —
-#: this string is in the prefix of every request the harness makes.
-WORD_CAP = 185
+#: The ceiling on the conduct, in whitespace-separated tokens.  291 today,
+#: and the headroom is deliberate: a lane may reword a sentence, and a
+#: lane that wants a whole new paragraph has to argue for the cap as well
+#: as for the paragraph.  It is a cost and not a style — this string is in
+#: the prefix of every request the harness makes.
+#:
+#: The argument for the last raise (185 → 300, 18 Aug 2026): three sentences
+#: the reference deployment's hard-tier regressions paid for on the 1.0
+#: candidate — a derived figure is a computation tool's to print, and a
+#: reference the plane can list is looked up before the human is asked,
+#: and a lookup that finds two candidates for a state-changing act names
+#: both and chooses out loud.
+#: All three are failures of *conduct*, not of any pack, and the only place a
+#: conduct sentence lands on every run is here.  A hundred and ten words for
+#: three whole classes of wrong turn.
+WORD_CAP = 300
 
 #: The one sentence that must NOT be here, because the protocol owns it.
 #: "State your plan" alone is a contradiction: every reply is one JSON
@@ -79,6 +89,12 @@ LOAD_BEARING = {
         "Before a multi-step change, read every part you will change",
     "no claim of a check without the result":
         "without the tool result that shows it",
+    "a derived figure is a computation tool's to print":
+        "A figure you derive",
+    "look a listable reference up before asking the human":
+        "look it up before you ask",
+    "two candidates for a state-changing act are chosen out loud":
+        "never pick one silently",
 }
 
 

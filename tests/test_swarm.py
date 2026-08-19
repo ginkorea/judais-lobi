@@ -174,10 +174,15 @@ def _tiny_window():
     It is also the honest number: a deployment's floor for the mission
     loop went up by ~240 tokens with the conduct, and this constant is
     the one place in the suite that says so.
+
+    1600 since 18 Aug 2026 (the 1.0 candidate's rc2): the conduct grew by
+    three sentences — a derived figure, look-it-up-before-you-ask, choose
+    out loud — from ~180 to ~290 words, ~150 tokens more of pinned prefix,
+    and the same arithmetic applies.
     """
     from core.runtime.context_window import ContextConfig, MissionWindow
     return MissionWindow(config=ContextConfig(
-        max_context_tokens=1400, max_output_tokens=200))
+        max_context_tokens=1600, max_output_tokens=200))
 
 
 class Sink:

@@ -750,14 +750,18 @@ state anything the platform does not actually enforce.
 Every deployment of this framework wrote the same paragraph for itself, and it
 is now a module constant that every run carries:
 `core/runtime/prompts.py`, `GOVERNED_PLANE`, stacked into the system turn
-between the protocol and the catalogue. In ~180 words it says the plane is
+between the protocol and the catalogue. In ~290 words it says the plane is
 closed and governed and a refusal names its scope; that a refused call is not
 re-sent unchanged; that results are bounded and the whole is in the run's store,
 to be read on by handle, field or section; that a failed call — a 404, a
 missing file, an empty listing — is an answer and not a thing to invent around;
 that **if a number is not in the view, it is not in the draft**, and every
 identifier and figure is one a tool returned in this run, spelled as the tool
-spelled it; that a multi-step change opens with a plan; that no check is
+spelled it, and a *derived* figure — a sum, a share — is one a computation tool
+printed when the plane has one; that a reference the plane can list ("the job I
+have running") is looked up before the human is asked, and a lookup that finds
+two candidates for a state-changing act names both and chooses out loud rather
+than silently; that a multi-step change opens with a plan; that no check is
 reported as passed without the tool result that shows it; and that when the
 objective cannot be met the answer is what you have plus what is missing.
 

@@ -58,6 +58,35 @@ either one is stacked with the same bytes of it.
   rule in :mod:`core.runtime.grounding`.  The second half — *spelled as
   the tool spelled it* — is §5.9's "the same tool spelled three ways cost
   two turns and deleted a true sentence".
+* *"A figure you derive — a sum, a share, a difference — is one a
+  computation tool printed."*  The reference deployment's hard-tier
+  regression ``staged_arithmetic`` (18 Aug 2026, run against the 1.0
+  candidate): asked for the top-5 share of a run's total "with the working
+  shown", the model read the ranking view, did the division in prose and
+  wrote a percentage no tool had printed.  The echo rule cannot catch it —
+  every *input* figure was in a view — and the analyst pack's own "a
+  figure is printed by the computation that produced it" only reaches a
+  run under that pack.  The rule is the plane's: when a computation tool
+  is offered, arithmetic is its job; when none is, the working is shown
+  from figures the tools returned, which is a reproducible sentence
+  rather than an asserted one.
+* *"When the request points at something the plane can list … look it up
+  before you ask."*  The same suite's ``gate_respected``, failed the same
+  way by 0.12.2 and by the 1.0 candidate: "cancel the influence job I have
+  running" — no tool called, and the analyst asked which job.  A
+  reference the catalogue can resolve is not a question for the human;
+  the turn spent asking is a turn spent, and the human's answer is a
+  string the agent could have read.  Only what no tool can tell you is
+  a question.
+* *"When the lookup finds more than one candidate for an act that changes
+  state … never pick one silently."*  The same suite's ``label_set_choice``,
+  failed the same way by both: "run influence quantification on the
+  taiwan corpus" — the corpus carries two label sets, the model read the
+  catalogue, saw both, submitted against one and named the second
+  nowhere.  A read that finds ambiguity and an act that resolves it
+  silently is a decision the human never got to see; the fix is not to
+  refuse the act but to put the candidates and the choice on the page,
+  where a question or a reason can be read.
 * *"Before a multi-step change, read every part you will change; the plan
   goes in the answer."*  §3, "plans over prompts", and the eval suite's
   ``a_listing_is_not_a_plan`` regression (``EVAL.md`` §8.1).  The second
@@ -127,7 +156,7 @@ __all__ = ["GOVERNED_PLANE"]
 
 #: The conduct every run is given, between the protocol and the catalogue.
 #:
-#: Seven paragraphs, 181 words, and each one earns its tokens: this is
+#: Eight paragraphs, 291 words, and each one earns its tokens: this is
 #: re-sent on every step of every mission, so a sentence that only sounds
 #: good is a sentence the deployment pays for several hundred times.
 #:
@@ -150,7 +179,16 @@ which, and do not invent what it would have said.
 
 If a number is not in the view, it is not in the draft. Every identifier \
 and figure you write is one a tool returned in this run, spelled as the \
-tool spelled it.
+tool spelled it. A figure you derive — a sum, a share, a difference — is \
+one a computation tool printed, when the plane has one; otherwise show the \
+arithmetic from the returned figures.
+
+When the request points at something the plane can list — the newest run, \
+the job that is running — look it up before you ask; ask only for what no \
+tool can tell you. When the lookup finds more than one candidate for an \
+act that changes state — a submit, a cancel, a write — name them all in \
+the answer, and either ask or say which you chose and why; never pick one \
+silently.
 
 Before a multi-step change, read every part you will change; the plan \
 goes in the answer.
