@@ -19,8 +19,8 @@ class InstallProjectTool(RunSubprocessTool):
         # what it left was a `None / "bin"` at construction.
         self.elfenv = kwargs.get("elfenv") or Path(".elfenv")
         self.pip_bin = self.elfenv / "bin" / "pip"
-        if not kwargs.get("skip_venv_setup", False):
-            self._ensure_elfenv()
+        # Created at the first install, not here — see `RunPythonTool`.
+        self._venv_setup = not kwargs.get("skip_venv_setup", False)
         super().__init__(**kwargs)
 
     def __call__(self, path=".", timeout=None, **kwargs) -> Tuple[int, str, str]:
@@ -35,6 +35,12 @@ class InstallProjectTool(RunSubprocessTool):
         else:
             return 1, "", "No installable project found in the given directory."
 
+        if self._venv_setup:
+            try:
+                self._ensure_elfenv()
+            except Exception as exc:  # the venv, not the install, failed
+                return 1, "", (f"could not create the Python environment at "
+                               f"{self.elfenv}: {exc}")
         return self.run(cmd, timeout=timeout or 300)
 
     def _ensure_elfenv(self):

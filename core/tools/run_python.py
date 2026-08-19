@@ -24,8 +24,14 @@ class RunPythonTool(RunSubprocessTool):
         self.elfenv = kwargs.get("elfenv") or Path(".elfenv")
         self.python_bin = self.elfenv / "bin" / "python"
         self.pip_bin = self.elfenv / "bin" / "pip"
-        if not kwargs.get("skip_venv_setup", False):
-            self._ensure_elfenv()
+        # The elfenv is created at the FIRST run, not here. A bus is built
+        # for every mission and every chat turn — a `--replay`, a `--list`,
+        # a run that never touches Python — and building a virtualenv on
+        # each of those is a cost nobody asked for and an environment
+        # dependency nobody declared (a host whose `venv.create` cannot
+        # bootstrap pip made `Tools()` itself raise). A venv that cannot be
+        # made is now that CALL's failure, on the stream, with the reason.
+        self._venv_setup = not kwargs.get("skip_venv_setup", False)
         super().__init__(**kwargs)
         self.name = "run_python_code"
 
@@ -53,6 +59,12 @@ class RunPythonTool(RunSubprocessTool):
         also outlived a hard kill; stdin has nothing to clean up because it
         created nothing.
         """
+        if self._venv_setup:
+            try:
+                self._ensure_elfenv()
+            except Exception as exc:  # the venv, not the program, failed
+                return 1, "", (f"could not create the Python environment at "
+                               f"{self.elfenv}: {exc}")
         return self.run(
             [str(self.python_bin), "-"],
             timeout=timeout or self.timeout,
