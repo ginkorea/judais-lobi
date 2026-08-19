@@ -427,6 +427,7 @@ releases.
 | `--mcp-url` | `MCP_URL` | an HTTP MCP endpoint. Repeatable and namespaced |
 | `--mcp-stdio` | `MCP_STDIO` | an MCP server to spawn over stdio. Repeatable and namespaced |
 | `--mcp-token` | `MCP_TOKEN` | the bearer token, paired with the `--mcp-url` in the same position. **Use the variable**: argv is world-readable |
+| `--mcp-timeout` | `MCP_TIMEOUT_S` | per-call timeout for MCP tool calls, in seconds, for every server on the plane. A property of the platform holding the other end, like `--gate-wait`: a broker that stages a large bundle before returning its handle legitimately takes longer than the default 30. Non-positive means the default; zero is not a value |
 | `--skill` | `MISSION_SKILL` | the manifest directory or file, or the NAME of a shipped pack — `research`, `coding`, `analyst` (§5) |
 | `--swarm` | `MISSION_SWARM` | plan the mission as steps rather than one loop |
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native` tool calling |

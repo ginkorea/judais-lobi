@@ -829,6 +829,7 @@ OUTCOMES: tuple[str, ...] = (
 #: that says so; the rest of the CLI is a person's surface and may move.
 CLI_FLAGS: tuple[str, ...] = (
     "--mission", "--mcp-url", "--mcp-stdio", "--mcp-token",
+    "--mcp-timeout",
     "--mission-steps", "--mission-seconds",
     "--provider", "--model",
     "--profile", "--unsandboxed", "--skill", "--swarm", "--events",
@@ -914,6 +915,7 @@ CLI_FLAGS: tuple[str, ...] = (
 #: the other gets the one it passed.
 ENV_VARS: tuple[str, ...] = (
     "MCP_TOKEN", "MCP_CLIENT_NAME", "MCP_URL", "MCP_STDIO",
+    "MCP_TIMEOUT_S",
     "ELF_PERSONALITY", "TAI_PERSONALITY",
     "LOCAL_API_BASE", "LOCAL_MODEL",
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",

@@ -676,6 +676,7 @@ person's surface and may move.
 - `--mcp-stdio` — the other transport: a tool plane to spawn on this host, as a command line. **Repeatable**, and combinable with `--mcp-url`.
 - Every server gets a **namespace** and its tools are registered as `<namespace>.<tool>`. The first server is `mcp` — unchanged, so a single-server deployment reads exactly the names it always read — the next `mcp2`, then `mcp3`; or write it on the flag as `--mcp-stdio 'name=<command>'` / `--mcp-url 'name=<url>'`, where *name* is `[A-Za-z_][A-Za-z0-9_-]*`. Order is stdio servers first, then HTTP, each in the order given. Two servers may not share a namespace. (A stdio command line that begins with an environment assignment reads its first word as a namespace; write `env FOO=bar …`.)
 - `--mcp-token` — bearer token for `--mcp-url`. **Repeatable**, and paired with the `--mcp-url` in the **same position** — a token is one server's credential and is never reused for another. Give one per URL, `''` where a URL needs none; a count that does not match is refused. A token with no URL at all is ignored. Prefer `MCP_TOKEN`: an argument is visible in `ps`.
+- `--mcp-timeout` — per-call timeout for MCP tool calls, in seconds, for every server on the plane. A property of the platform holding the other end, like `--gate-wait`: a broker that stages a large bundle before returning its handle legitimately takes longer than the default 30. Non-positive means the default; the call that overruns it fails as a tool error on that call, not as the end of the run.
 - `--mission-steps` — the budget in **model turns**; arrives back as `max_steps`. Default 8. Under `--resume` it is read as that many *further* steps, and unset the resumed run is held to the total it started with.
 - `--mission-seconds` — the wall-clock budget for the whole run. Unset is
   **unbounded**. Checked between steps and before each model call, and shared by
@@ -715,6 +716,7 @@ passes the other gets the one it passed.
 - `MCP_CLIENT_NAME` — the name this client is announced under.
 - `MCP_URL` — the environment form of `--mcp-url`, and it names **one** server. A `--mcp-url` on the command line *replaces* it rather than adding to it, so a shell that carries one cannot silently make a two-server run out of a one-server command.
 - `MCP_STDIO` — the environment form of `--mcp-stdio`, as a command line, and one server likewise.
+- `MCP_TIMEOUT_S` — the environment form of `--mcp-timeout`; the flag wins. Unset, blank, garbage or non-positive mean the default: zero is not a value, because a 0-second call timeout is a plane turned off by typo.
 - `ELF_PERSONALITY` — a persona file, on any entry point.
 - `TAI_PERSONALITY` — the same, on any entry point, and it wins over `ELF_PERSONALITY`.
 - `LOCAL_API_BASE` — where the local backend answers.

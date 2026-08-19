@@ -119,7 +119,8 @@ CONFORMANCE: Dict[str, Any] = {
     # person's surface and may move between releases, so a spawn line that
     # reaches for one of those is a spawn line that will break quietly.
     "flags": ("--mission", "--events", "--control", "--mcp-url", "--mcp-stdio",
-              "--mcp-token", "--mission-steps", "--mission-seconds",
+              "--mcp-token", "--mcp-timeout", "--mission-steps",
+              "--mission-seconds",
               "--provider", "--model", "--profile", "--unsandboxed", "--skill",
               "--swarm", "--history", "--gate-tool", "--approval", "--resume",
               "--temperature", "--top-p", "--seed", "--protocol",
@@ -128,6 +129,7 @@ CONFORMANCE: Dict[str, Any] = {
 
     # The environment this platform exports into the child.
     "env": ("MCP_TOKEN", "MCP_CLIENT_NAME", "MCP_URL", "MCP_STDIO",
+            "MCP_TIMEOUT_S",
             "ELF_PERSONALITY", "TAI_PERSONALITY", "LOCAL_API_BASE",
             "LOCAL_MODEL", "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS",
             "MISSION_HISTORY", "MISSION_APPROVAL", "MISSION_SECONDS",

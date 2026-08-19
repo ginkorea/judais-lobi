@@ -552,6 +552,7 @@ surface and may move. Table in `CLI_FLAGS` order:
 | `--mcp-url` | `MCP_URL` | a tool plane, over streamable HTTP. **Repeatable**, and combinable with `--mcp-stdio` (below) |
 | `--mcp-stdio` | `MCP_STDIO` | a tool plane to spawn on this host, as a command line. **Repeatable**. The first server's tools are namespaced `mcp.`, the next `mcp2.`, or write `name=<command>` |
 | `--mcp-token` | `MCP_TOKEN` | bearer token for `--mcp-url`, paired with the URL in the **same position**. **Prefer the env var** — an argument is visible in `ps` |
+| `--mcp-timeout` | `MCP_TIMEOUT_S` | per-call timeout for MCP tool calls, in seconds — a property of the platform holding the other end, like `--gate-wait`. Default 30; non-positive means the default |
 | `--mission-steps` | — | an operator's optional ceiling on **model turns**, parse-error turns included. Unset means no ceiling (`--mission-steps 0` too). Under `--resume` it is read as further steps; unset, a resumed run keeps whatever ceiling it started with |
 | `--mission-seconds` | `MISSION_SECONDS` | wall-clock cap on the whole run. Unset is unbounded; checked between steps and before each model call |
 | `--provider` | — | `openai`, `mistral`, `anthropic` or `local`. `anthropic` needs `pip install 'judais-lobi[anthropic]'` and `ANTHROPIC_API_KEY` |

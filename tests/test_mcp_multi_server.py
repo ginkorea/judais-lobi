@@ -406,3 +406,85 @@ class TestAMissionOverTwoServers:
         out = capsys.readouterr().out
         assert "mcp=" in out and "mcp2=" in out
         assert "both planes answered" in out
+
+
+class TestTheCallTimeoutIsThePlatformsToState:
+    """`--mcp-timeout` / `MCP_TIMEOUT_S` reach every client in the fleet.
+
+    The reference deployment's orchestration submit stages a 2.1 GiB
+    governed bundle before returning its job handle — ~37 s against a
+    hard-coded 30 — and the only knob was editing this package. Same
+    doctrine as `--gate-wait`: how long the other end of the plane takes
+    is a property of the platform holding it, so the platform states it.
+    Zero is NOT a value (unlike the gate window): a 0-second call timeout
+    is a plane turned off by typo, so non-positive means the default.
+    """
+
+    def _timeout_seen(self, elf, tmp_path, monkeypatch, *extra):
+        from unittest.mock import patch as _patch
+
+        skill = tmp_path / "SKILL.md"
+        skill.write_text(SKILL.replace("- fs\n", "- echo\n")
+                              .replace("    - governed_read\n", ""),
+                         encoding="utf-8")
+        MockClass, agent = elf
+        agent.replies = ['{"answer": "done"}']
+        seen = []
+
+        class Spy(McpFleet):
+            def __init__(self, servers, bus, *, timeout=30.0, **kw):
+                seen.append(timeout)
+                super().__init__(servers, bus, timeout=timeout, **kw)
+
+        argv = ["test", "just answer", "--mission", "--skill", str(skill),
+                "--mcp-stdio", THEIRS, *extra]
+        with _patch("core.tools.mcp_client.McpFleet", Spy), \
+             _patch("sys.argv", argv):
+            from core.cli import _main
+            _main(MockClass)
+        assert seen, "the fleet was never built"
+        return seen[-1]
+
+    def test_the_flag_reaches_every_client_in_the_fleet(
+            self, elf, tmp_path, monkeypatch):
+        monkeypatch.delenv("MCP_TIMEOUT_S", raising=False)
+        assert self._timeout_seen(elf, tmp_path, monkeypatch,
+                                  "--mcp-timeout", "120") == 120.0
+
+    def test_silence_means_the_default(self, elf, tmp_path, monkeypatch):
+        monkeypatch.delenv("MCP_TIMEOUT_S", raising=False)
+        assert self._timeout_seen(elf, tmp_path, monkeypatch) == 30.0
+
+    def test_the_environment_form_and_the_flag_beating_it(
+            self, elf, tmp_path, monkeypatch):
+        from core.cli import _env_mcp_timeout
+        monkeypatch.setenv("MCP_TIMEOUT_S", "45")
+        assert _env_mcp_timeout() == 45.0
+        # the argparse default is read at parser build; the helper is the
+        # seam, and the flag wins because argparse replaces the default
+        assert self._timeout_seen(elf, tmp_path, monkeypatch,
+                                  "--mcp-timeout", "120") == 120.0
+
+    def test_zero_is_not_a_value(self, elf, tmp_path, monkeypatch):
+        """A 0-second tool call is every call refused; garbage and
+        negatives likewise fall back rather than turning the plane off."""
+        from core.cli import _env_mcp_timeout
+        monkeypatch.delenv("MCP_TIMEOUT_S", raising=False)
+        assert self._timeout_seen(elf, tmp_path, monkeypatch,
+                                  "--mcp-timeout", "0") == 30.0
+        for raw in ("0", "-5", "soon", ""):
+            monkeypatch.setenv("MCP_TIMEOUT_S", raw)
+            assert _env_mcp_timeout() is None, raw
+        monkeypatch.setenv("MCP_TIMEOUT_S", "12.5")
+        assert _env_mcp_timeout() == 12.5
+
+    def test_the_client_pays_the_timeout_per_call(self):
+        """The fleet's number is each client's `_timeout`, which bounds
+        every `_submit` — the seam the flag was built for."""
+        bus = ToolBus(
+            capability_engine=CapabilityEngine(
+                PolicyPack(allowed_scopes=["*"])),
+            sandbox=NoneSandbox(), audit=None)
+        with McpFleet(transports_from_specs([THEIRS]), bus,
+                      timeout=90.0) as fleet:
+            assert [c._timeout for c in fleet._clients] == [90.0]

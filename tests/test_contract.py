@@ -1195,6 +1195,7 @@ _FLAG_VALUES = {
     "--protocol": "native",
     "--control": "fd:9",
     "--gate-wait": "45",
+    "--mcp-timeout": "120",
     "--grant": "http.read,fs.write",
     "--campaign-plan": "mission.json",
 }

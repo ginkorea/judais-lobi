@@ -24,6 +24,25 @@ def _env_path(name: str):
     return Path(value) if value else None
 
 
+def _env_mcp_timeout(name: str = "MCP_TIMEOUT_S"):
+    """The per-call MCP tool timeout from an env var, or None for "the
+    default".
+
+    Unlike the gate window, zero is NOT a value here: a 0-second tool call
+    is every call refused, silently, which is not a thing anyone asks for
+    by that spelling.  Unset/blank/garbage/non-positive → ``None`` → the
+    client's own default, so a typo cannot turn the plane off.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
+
+
 def _env_gate_wait(name: str = "MISSION_GATE_WAIT"):
     """The in-turn gate window from an env var, or None for "the default".
 
@@ -1718,8 +1737,13 @@ def _mission(elf, args, name, style):
         # than running a mission on half a plane. With exactly one server
         # named it opens exactly the session `McpClient(transport)` opened,
         # under the same namespace, and prints the same line.
+        # The per-call timeout is the platform's to state (--mcp-timeout,
+        # env MCP_TIMEOUT_S): the default 30 s was measured too short for a
+        # broker that stages a governed bundle before returning its handle.
+        _mt = getattr(args, "mcp_timeout", None)
+        mcp_timeout = _mt if _mt is not None and _mt > 0 else 30.0
         with (nullcontext(None) if not servers
-              else McpFleet(servers, bus)) as fleet:
+              else McpFleet(servers, bus, timeout=mcp_timeout)) as fleet:
             if local_plane:
                 # This package's own tools, and no discovery: they were
                 # registered when the agent's `Tools` was built, under the
@@ -2460,6 +2484,16 @@ def _main(AgentClass):
                              "paired with the --mcp-url given in the SAME "
                              "position — a token is one server's credential. "
                              "Prefer the env var; an argument is visible in ps")
+    parser.add_argument("--mcp-timeout", type=float,
+                        default=_env_mcp_timeout(),
+                        metavar="SECONDS",
+                        help="Per-call timeout for MCP tool calls, in "
+                             "seconds. A property of the platform holding "
+                             "the other end, like --gate-wait: a broker "
+                             "that stages a large bundle before returning "
+                             "a handle legitimately takes longer than the "
+                             "default 30. Non-positive values mean the "
+                             "default (env: MCP_TIMEOUT_S)"),
     parser.add_argument("--mission-steps", type=int, default=None,
                         help="Hard ceiling on model turns in a mission. "
                              "UNSET MEANS NO CEILING, like --mission-seconds: "
