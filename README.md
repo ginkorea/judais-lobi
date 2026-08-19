@@ -847,6 +847,10 @@ measurements `core.eval measure` is for — swarm versus direct, `json` versus
 `native`, each grounding tier on versus off — run against a real endpoint,
 which is what gates every one of those defaults moving.
 
+The February documents are kept as history: [`MANIFESTO.md`](MANIFESTO.md)
+is why this exists (an agent, not a chatbot — local, governed, honest), and
+`project.md` is the plan as first drawn. ROADMAP §5 quotes both.
+
 ### Release history
 
 One line each. The commit for every one of these is `release: <version> — …`.
