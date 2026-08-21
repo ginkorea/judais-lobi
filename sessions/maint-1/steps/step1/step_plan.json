@@ -1,0 +1,20 @@
+{
+  "step_id": "step1",
+  "workflow_id": "coding",
+  "objective": "Scan repository structure and key files (README, package/build configs, lint/test configs, main entrypoints) to locate one small maintainability defect; document where it occurs and propose a concrete fix with rationale.",
+  "inputs": [],
+  "outputs_expected": [
+    {
+      "step_id": "step1",
+      "artifact_name": "maintainability_defect_report.md"
+    }
+  ],
+  "capabilities_required": [
+    "fs.read"
+  ],
+  "success_criteria": [
+    "Report identifies exactly one maintainability defect with file path(s)/line(s) or precise location, explains impact, and recommends a specific fix (including example diff snippet if helpful) without modifying repository files."
+  ],
+  "rollback_strategy": "backtrack",
+  "digest": "995cb3cc987c987786bc5243eff4d2698846d002b2fe729069ddfb8b0df2f20b"
+}

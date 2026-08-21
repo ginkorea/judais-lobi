@@ -1,0 +1,34 @@
+{
+  "campaign_id": "maint-1",
+  "objective": "Inspect the repository, identify one small maintainability defect, and recommend a fix without changing any files.",
+  "assumptions": [
+    "Repository contents are accessible via filesystem read capability.",
+    "A single small, actionable maintainability issue is sufficient (e.g., naming consistency, duplicated code, missing docs, brittle config).",
+    "No code modifications will be made; only a recommendation will be produced."
+  ],
+  "steps": [
+    {
+      "step_id": "step1",
+      "description": "Scan repository structure and key files (README, package/build configs, lint/test configs, main entrypoints) to locate one small maintainability defect; document where it occurs and propose a concrete fix with rationale.",
+      "target_workflow": "coding",
+      "capabilities_required": [
+        "fs.read"
+      ],
+      "capabilities_optional": [],
+      "risk_flags": [],
+      "inputs_from": [],
+      "handoff_artifacts": [],
+      "exports": [
+        "maintainability_defect_report.md"
+      ],
+      "success_criteria": "Report identifies exactly one maintainability defect with file path(s)/line(s) or precise location, explains impact, and recommends a specific fix (including example diff snippet if helpful) without modifying repository files.",
+      "budget_overrides": {}
+    }
+  ],
+  "limits": {
+    "max_steps": 10,
+    "max_total_tool_calls": 500,
+    "max_total_tokens": 2000000,
+    "deadline_seconds": null
+  }
+}

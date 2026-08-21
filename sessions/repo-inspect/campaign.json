@@ -1,0 +1,32 @@
+{
+  "campaign_id": "repo-inspect",
+  "objective": "Inspect a repository to identify one small maintainability defect and recommend a fix.",
+  "assumptions": [
+    "The repository is accessible and contains code files."
+  ],
+  "steps": [
+    {
+      "step_id": "step1",
+      "description": "Inspect the repository to identify a small maintainability defect.",
+      "target_workflow": "generic",
+      "capabilities_required": [
+        "fs.read"
+      ],
+      "capabilities_optional": [],
+      "risk_flags": [],
+      "inputs_from": [],
+      "handoff_artifacts": [],
+      "exports": [
+        "defect_analysis.txt"
+      ],
+      "success_criteria": "A small maintainability defect is identified and documented.",
+      "budget_overrides": {}
+    }
+  ],
+  "limits": {
+    "max_steps": 10,
+    "max_total_tool_calls": 500,
+    "max_total_tokens": 2000000,
+    "deadline_seconds": null
+  }
+}

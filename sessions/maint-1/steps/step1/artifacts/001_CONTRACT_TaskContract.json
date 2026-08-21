@@ -1,0 +1,23 @@
+{
+  "task_id": "repo-maintainability-defect-001",
+  "description": "Scan the repository structure and key files (README, package/build configs, lint/test configs, main entrypoints) to identify exactly one small maintainability defect; document the exact location (file path + line range/snippet) and propose a concrete fix with rationale.",
+  "constraints": [
+    "Identify exactly one (1) small maintainability defect (no broad refactor).",
+    "Only use repository structure + the following file types/targets: README, package/build configs, lint/test configs, main entrypoints.",
+    "No destructive actions; read-only inspection.",
+    "Fix must be concrete (specific diff-level change) and minimal.",
+    "Include a runnable verification step (commands) to confirm the fix."
+  ],
+  "acceptance_criteria": [
+    "Provide the defect location as: file path + line range (or exact snippet) that can be verified by opening the file.",
+    "Provide a fix as an exact, checkable change (e.g., a patch/diff or explicit before/after blocks) applicable to the identified file(s).",
+    "Provide rationale tied to maintainability (e.g., reduces duplication, prevents drift, clarifies entrypoint/config).",
+    "Provide verification commands that can be run (e.g., npm test/lint/build, cargo test, pytest, mvn test) and state expected pass/fail outcome before vs after.",
+    "All claims are verifiable by running the listed commands and/or grepping the referenced lines/snippet."
+  ],
+  "allowed_tools": [
+    "List repository tree (e.g., ls, find)",
+    "Read file contents (e.g., cat, sed, head/tail) for README, package/build configs, lint/test configs, and main entrypoints"
+  ],
+  "created_at": "2026-08-16T00:00:00Z"
+}

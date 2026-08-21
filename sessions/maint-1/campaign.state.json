@@ -1,0 +1,8 @@
+{
+  "campaign_id": "maint-1",
+  "status": "halted",
+  "current_step": "step1",
+  "step_status": {
+    "step1": "failed"
+  }
+}

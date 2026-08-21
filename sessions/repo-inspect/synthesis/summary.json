@@ -1,0 +1,8 @@
+{
+  "campaign_id": "repo-inspect",
+  "status": "halted",
+  "steps": {
+    "step1": "failed"
+  },
+  "objective": "Inspect a repository to identify one small maintainability defect and recommend a fix."
+}

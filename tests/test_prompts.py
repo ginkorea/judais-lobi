@@ -47,13 +47,13 @@ from core.skills.library import packs
 from tests.test_run_memory import a_run, bus  # noqa: F401 — a fixture
 
 
-#: The ceiling on the conduct, in whitespace-separated tokens.  291 today,
+#: The ceiling on the conduct, in whitespace-separated tokens.  344 today,
 #: and the headroom is deliberate: a lane may reword a sentence, and a
 #: lane that wants a whole new paragraph has to argue for the cap as well
 #: as for the paragraph.  It is a cost and not a style — this string is in
 #: the prefix of every request the harness makes.
 #:
-#: The argument for the last raise (185 → 300, 18 Aug 2026): three sentences
+#: The argument for the 185 → 300 raise (18 Aug 2026): three sentences
 #: the reference deployment's hard-tier regressions paid for on the 1.0
 #: candidate — a derived figure is a computation tool's to print, and a
 #: reference the plane can list is looked up before the human is asked,
@@ -62,7 +62,16 @@ from tests.test_run_memory import a_run, bus  # noqa: F401 — a fixture
 #: All three are failures of *conduct*, not of any pack, and the only place a
 #: conduct sentence lands on every run is here.  A hundred and ten words for
 #: three whole classes of wrong turn.
-WORD_CAP = 300
+#:
+#: The argument for 300 → 355 (21 Aug 2026): a production transcript on the
+#: reference deployment showed "a failed call is an answer" landing as "a
+#: failed call is a permanent fact" — a model apologising instead of
+#: applying a fix the error named, and remembering "the platform cannot
+#: render charts" across turns after two transport errors.  Two bounds on
+#: the failed-call paragraph: an error that names the fix is an
+#: instruction (apply it, call again once — changed, not repeated), and a
+#: capability is absent only when the catalogue or a refusal says so.
+WORD_CAP = 355
 
 #: The one sentence that must NOT be here, because the protocol owns it.
 #: "State your plan" alone is a contradiction: every reply is one JSON
@@ -95,6 +104,10 @@ LOAD_BEARING = {
         "look it up before you ask",
     "two candidates for a state-changing act are chosen out loud":
         "never pick one silently",
+    "an error naming the fix is an instruction, once":
+        "apply the fix and call again, once",
+    "a failure is not a missing capability":
+        "absent only when the catalogue or a refusal says so",
 }
 
 

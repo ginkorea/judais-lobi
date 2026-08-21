@@ -1,0 +1,8 @@
+{
+  "campaign_id": "maint-1",
+  "status": "halted",
+  "steps": {
+    "step1": "failed"
+  },
+  "objective": "Inspect the repository, identify one small maintainability defect, and recommend a fix without changing any files."
+}
