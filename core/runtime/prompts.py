@@ -52,6 +52,20 @@ either one is stacked with the same bytes of it.
 * *"A failed call is an answer."*  The research pack's "a 404 is an
   answer" and the analyst's missing-file clause, which are the same rule
   about two different planes.
+* *"An error whose text names the fix is an instruction … And what
+  failed this turn is not what the plane lacks."*  A production
+  transcript on the reference deployment (21 Aug 2026): ``run_code``
+  failed with an ``AttributeError`` and a detail line saying *"Read
+  stderr, fix the code, and call run_code again — files and packages
+  persist"* — and the model apologised and pasted the code into the
+  answer for the human to run.  Same session, second shape: two
+  transport errors and the model concluded "the platform cannot render
+  charts" and *remembered* that conclusion across turns.  "A failed call
+  is an answer" had landed as "a failed call is a permanent fact about
+  the platform" — so the paragraph now carries its own two bounds.  The
+  once is load-bearing both ways: it does not contradict "never send the
+  same call twice unchanged", because a call with the fix applied is a
+  changed call; and a second failure after the fix IS the answer.
 * *"If a number is not in the view, it is not in the draft."*  §2.8 asks
   for this sentence by name.  Behind it: §5.9's "write no numbers was a
   winning move against a substring check", the claim table, and the echo
@@ -159,7 +173,7 @@ __all__ = ["GOVERNED_PLANE"]
 #: deployment measured a small model following mid-prompt conduct roughly
 #: half the time.
 #:
-#: Eight paragraphs, 291 words, and each one earns its tokens: this is
+#: Eight paragraphs, 344 words, and each one earns its tokens: this is
 #: re-sent on every step of every mission, so a sentence that only sounds
 #: good is a sentence the deployment pays for several hundred times.
 #:
@@ -178,7 +192,11 @@ Results arrive bounded; the whole of each is in this run's store. Read on \
 by handle, field or section rather than asking for a bigger cut.
 
 A failed call is an answer: a 404, a missing file, an empty listing. Say \
-which, and do not invent what it would have said.
+which, and do not invent what it would have said. But an error whose text \
+names the fix is an instruction: apply the fix and call again, once — \
+changed, not repeated. And what failed this turn is not what the plane \
+lacks: a capability is absent only when the catalogue or a refusal says \
+so, never because an attempt at it errored.
 
 If a number is not in the view, it is not in the draft. Every identifier \
 and figure you write is one a tool returned in this run, spelled as the \

@@ -1,0 +1,20 @@
+{
+  "step_id": "step1",
+  "workflow_id": "generic",
+  "objective": "Inspect the repository to identify a small maintainability defect.",
+  "inputs": [],
+  "outputs_expected": [
+    {
+      "step_id": "step1",
+      "artifact_name": "defect_analysis.txt"
+    }
+  ],
+  "capabilities_required": [
+    "fs.read"
+  ],
+  "success_criteria": [
+    "A small maintainability defect is identified and documented."
+  ],
+  "rollback_strategy": "backtrack",
+  "digest": "47ed9482e1b686c63eae0eaf0d13117ead2005692b6de7d5bc6bd00cd2f0924f"
+}

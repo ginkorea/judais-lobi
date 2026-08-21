@@ -1,0 +1,10 @@
+{
+  "step_id": "step1",
+  "requested_scopes": [
+    "fs.read"
+  ],
+  "granted_scopes": [
+    "fs.read"
+  ],
+  "denied_scopes": []
+}

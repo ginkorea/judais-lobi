@@ -1,0 +1,8 @@
+{
+  "campaign_id": "repo-inspect",
+  "status": "halted",
+  "current_step": "step1",
+  "step_status": {
+    "step1": "failed"
+  }
+}

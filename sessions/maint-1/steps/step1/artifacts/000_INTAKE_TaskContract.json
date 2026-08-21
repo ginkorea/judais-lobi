@@ -1,0 +1,23 @@
+{
+  "task_id": "repo-maintainability-defect-001",
+  "description": "Assess the repository’s structure and key project files (README, package/build configurations, lint/test configurations, and main entrypoints) to identify exactly one small maintainability defect. Document the precise location (file path + relevant snippet/line range) and propose a concrete fix with a clear rationale.",
+  "constraints": [
+    "Limit scope to a single small maintainability defect (not a broad refactor).",
+    "Only inspect repository structure and key files: README, package/build configs, lint/test configs, and main entrypoints.",
+    "Do not execute code or perform destructive actions; analysis-only.",
+    "Proposed fix must be concrete (specific change to make) and justified (why it improves maintainability).",
+    "Output must include where the defect occurs (path + snippet/line range) and how to verify the fix."
+  ],
+  "acceptance_criteria": [
+    "One maintainability defect is identified and described unambiguously.",
+    "The defect’s location is provided as a specific file path and a quoted snippet or line range.",
+    "A specific, minimal fix is proposed (exact edits or configuration changes).",
+    "Rationale explains the maintainability impact and why the fix is appropriate.",
+    "Verification steps are provided to confirm the fix resolves the issue without regressions (e.g., build/lint/test commands)."
+  ],
+  "allowed_tools": [
+    "Repository file tree listing",
+    "Reading file contents of README, package/build config files, lint/test configs, and main entrypoints"
+  ],
+  "created_at": "2026-08-16T00:00:00Z"
+}
