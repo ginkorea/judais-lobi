@@ -178,11 +178,26 @@ def prose_only(answer: str) -> str:
     truncated script's identifiers would reintroduce the failure above in
     exactly the messiest transcripts.
     """
+    return INLINE_CODE.sub(" ", unfenced(answer))
+
+
+def unfenced(answer: str) -> str:
+    """*answer* with its fenced code removed and its inline code kept.
+
+    The half of :func:`prose_only` that every check wants, split out
+    because two of them want **only** that half: a backticked field name
+    is the grammar :class:`FieldAttributionCheck` reads, and a backticked
+    tool name is the grammar :class:`SubjectGroundingCheck` reads, and
+    both would be deleted before extraction by the inline-code pass.
+    One owner of the fence rule — including the unterminated one — so a
+    check that keeps its backticks cannot also quietly keep a truncated
+    script.
+    """
     text = FENCED_CODE.sub(" ", answer or "")
     head, fence, _unclosed = text.partition("```")
     if fence:
         text = head
-    return INLINE_CODE.sub(" ", text)
+    return text
 
 
 #: Characters a language model reaches for in prose and a payload never
@@ -688,6 +703,27 @@ class CheckResult:
     #: supplies them here and the generic paragraph skips it; empty means
     #: the generic wording is correct and there is one owner of it.
     repair: str = ""
+    #: What this check says about the WAY OUT, said alongside whichever
+    #: finding sentence was used — the generic paragraph or :attr:`repair`.
+    #:
+    #: The distinction is the one the reference deployment paid for on 19
+    #: August 2026.  Asked for a top-five share "with the working shown",
+    #: a model summed five scores **in prose**, divided by a field that
+    #: holds a wall clock, and asserted 121.2%.  The figures check flagged
+    #: the sum, the quotient and the percentage correctly and spent the
+    #: repair turn saying so — and the repair turn said only *call a tool
+    #: that returns them, or rewrite the answer without them*, which is a
+    #: finding and not a direction.  The model re-asserted.  What it was
+    #: never told is the one thing that fixes that class of answer:
+    #: **arithmetic belongs on the computation plane**, and this platform
+    #: had already declared which tools that is
+    #: (:attr:`GroundingConfig.figures_from`).
+    #:
+    #: Separate from :attr:`repair` because they compose rather than
+    #: replace: ``repair`` exists for a check whose finding the generic
+    #: sentence states WRONGLY, and a direction is owed whichever sentence
+    #: stated the finding.
+    remedy: str = ""
     #: The same, for the caveat appended when a repair turn did not fix it.
     caveat: str = ""
 
@@ -886,6 +922,12 @@ class GroundingCheck(ABC):
         #: :meth:`observing` immediately before :meth:`check`, and empty
         #: until then — see that method for why it is not on the config.
         self._called: Tuple[str, ...] = ()
+        #: How many dispatches this run made, or ``None`` for *nobody
+        #: said*.  See :meth:`observing`; ``None`` is never read as zero.
+        self._calls: Optional[int] = None
+        #: The rows the earlier checks produced this pass.  See
+        #: :meth:`observing`.
+        self._so_far: Tuple["CheckResult", ...] = ()
         #: The tools this mission offered. Compared with
         #: :func:`~core.tools.descriptors.same_tool`, so every spelling of
         #: one is covered. See :meth:`GroundingConfig.offering` for why
@@ -897,8 +939,10 @@ class GroundingCheck(ABC):
     def config(self) -> GroundingConfig:
         return self._config
 
-    def observing(self, called: Sequence[str]) -> None:
-        """Told which tools this run dispatched, before :meth:`check` runs.
+    def observing(self, called: Sequence[str], *,
+                  calls: Optional[int] = None,
+                  so_far: Sequence["CheckResult"] = ()) -> None:
+        """Told what this run did, before :meth:`check` runs.
 
         Not on :class:`GroundingConfig`, and the difference is the point:
         the config is the *skill's declaration*, read once at the door
@@ -913,9 +957,30 @@ class GroundingCheck(ABC):
         the conversation back would be a second owner, and the second owner
         is the one that goes stale the day a call is made somewhere the
         messages do not show it.
+
+        *calls* is **how many** dispatches there were, and it is a separate
+        fact from *called* rather than ``len(called)``: that list is the
+        distinct tools of one store, and the staged path unions several
+        stores' lists together.  ``None`` — the default — means *nobody
+        said*, and it is not zero: a library caller and a fresh
+        :class:`GroundingValidator` supply neither, and a check that read
+        their silence as "this run called nothing" would report a finding
+        about a run it knows nothing about.  :class:`SubjectGroundingCheck`
+        is the check that needs it and reports :data:`UNCONFIGURED` without
+        it.
+
+        *so_far* is the rows the checks BEFORE this one produced, in
+        :data:`DEFAULT_CHECKS` order.  One check reads them — again
+        :class:`SubjectGroundingCheck`, whose question is partly *did
+        anything else in this answer have something to check* — and it
+        reads the rows rather than re-extracting the answer with the other
+        checks' grammars, which would be a second owner of every grammar
+        in the block.
         """
         self._called = tuple(
             str(name) for name in called if str(name or "").strip())
+        self._calls = calls
+        self._so_far = tuple(so_far)
 
     # ── the template. FINAL. ────────────────────────────────────────────
 
@@ -950,6 +1015,7 @@ class GroundingCheck(ABC):
             detail=self._detail(len(considered), len(unsupported)),
             minimum=self._minimum,
             repair=self.repair_words(unsupported),
+            remedy=self.remedy_words(unsupported),
             caveat=self.caveat_words(unsupported),
         )
 
@@ -1017,6 +1083,15 @@ class GroundingCheck(ABC):
         Empty by default, which means the validator's generic wording is
         correct for this check and there is exactly one copy of it.  See
         :attr:`CheckResult.repair`.
+        """
+        return ""
+
+    def remedy_words(self, failed: Sequence[str]) -> str:
+        """This check's direction out, or ``""``.  See :attr:`CheckResult.remedy`.
+
+        Empty by default: most findings name their own fix — an invented
+        identifier is fixed by quoting the real one — and a paragraph
+        repeating that in other words is a paragraph a model skims.
         """
         return ""
 
@@ -1359,8 +1434,29 @@ class NumericGroundingCheck(GroundingCheck):
         The surviving texts are unioned, so a figure one call echoed is
         still supported where another call produced it.
         """
-        code_plane = tuple(code_plane_tools())
         figures = set()
+        for _text, found in self._grounding_texts(evidence):
+            figures |= found
+        return sorted(figures)
+
+    def _grounding_texts(
+        self, evidence: Sequence[Any],
+    ) -> Iterable[Tuple[Any, set]]:
+        """``(text, its figures)`` for every evidence text that may ground.
+
+        The three questions of :meth:`prepare`, asked in one place because
+        two checks ask them: this one, which wants the figures, and
+        :class:`FieldAttributionCheck`, which wants the field NAMES out of
+        the same texts and must not be able to read a name off a result
+        that no figure of this skill could ground on.  A second copy of
+        "is it sent, is it in scope, did the call compute" is a second
+        answer to it the day one of them is amended.
+
+        The figures come back with the text because both callers need them
+        and finding them twice would double a walk over the largest thing
+        in reach.
+        """
+        code_plane = tuple(code_plane_tools())
         for text in evidence:
             if getattr(text, "sent", False):
                 continue
@@ -1372,8 +1468,47 @@ class NumericGroundingCheck(GroundingCheck):
                     and self._runs_composed_code(text, code_plane)
                     and not (found - self._figures_in(arguments))):
                 continue
-            figures |= found
-        return sorted(figures)
+            yield text, found
+
+    def remedy_words(self, failed: Sequence[str]) -> str:
+        """Where the arithmetic belongs, which is the thing never said.
+
+        Measured on the reference deployment, 19 August 2026.  Asked for
+        the top-five share of a run's total "with the working shown", the
+        model read a five-row ranking out of a lookup, summed the five
+        scores **in prose**, took a real field off the same result that
+        holds the run's elapsed seconds, divided one by the other and
+        asserted a share of 121.2% — with a note explaining why a share may
+        exceed 100%.  Every one of the three derived figures was correctly
+        flagged, the repair turn was spent, and the model re-asserted them.
+
+        The repair turn it got said *call a tool that returns them, or
+        rewrite the answer without them*.  Neither branch is available to a
+        model that believes it has done the arithmetic already: no tool
+        returns a quotient nobody has computed, and rewriting without the
+        figures deletes the answer.  The branch that was missing is the one
+        the platform had already declared — a computation plane — so this
+        names it, out of :attr:`GroundingConfig.figures_from` where the
+        skill said which tools measure this quantity and generically where
+        it did not.
+
+        Said whichever sentence stated the finding, scoped or generic; see
+        :attr:`CheckResult.remedy`.
+        """
+        if not failed:
+            return ""
+        scope = self._scope_words()
+        if scope:
+            return (
+                f"Do not derive figures in prose. Call {scope} to compute "
+                f"them from the tool results' own fields, and state only "
+                f"what it prints."
+            )
+        return (
+            "Do not derive figures in prose. If this catalogue offers a "
+            "computation tool, compute it there and cite what it printed; "
+            "otherwise state only figures the tools returned."
+        )
 
     def repair_words(self, failed: Sequence[str]) -> str:
         """Own words under a scope, because the generic ones become false.
@@ -1494,6 +1629,319 @@ class NumericGroundingCheck(GroundingCheck):
         for separator in cls.SEPARATORS:
             text = text.replace(separator, "")
         return text
+
+
+#: A field name as a payload spells one and as prose quotes one:
+#: ``snake_case`` inside backticks.  Narrow on purpose — an attribution
+#: check that accepted any backticked word would read every quoted tool
+#: name and every quoted filename as a claim about a field.
+FIELD_NAME = r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*"
+
+#: A key as JSON spells one, for **existence only**.  The fallback for a
+#: result this module could not parse — a truncated payload, a log line
+#: with an object embedded in it — where the key is plainly there and its
+#: value is not reachable.  See :meth:`FieldAttributionCheck.prepare`.
+KEY_IN_TEXT = re.compile(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:')
+
+
+def json_blocks(text: Any) -> Iterable[Any]:
+    """Every JSON object or array in *text*, parsed.  Never raises.
+
+    The whole text first, because a tool result usually is one payload.
+    Failing that, each outermost ``{...}`` or ``[...]`` span is tried on
+    its own: a result whose payload is wrapped in a sentence, a log with
+    one record per line, a governed view with a preamble.  Depth is
+    counted outside JSON strings only, so a brace inside a quoted value
+    does not close the span it sits in.
+
+    Text that holds no parseable JSON yields nothing, which is the honest
+    answer: a check reading field NAMES off this has learned no names from
+    it, and no names means nothing considered rather than everything
+    invented.
+    """
+    raw = str(text or "")
+    try:
+        yield json.loads(raw)
+        return
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    closing = {"{": "}", "[": "]"}
+    opened = ""
+    for index, char in enumerate(raw):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in closing:
+            if depth == 0:
+                start, opened = index, char
+            depth += 1
+        elif char in ("}", "]"):
+            if depth == 0:
+                continue
+            depth -= 1
+            if depth == 0:
+                if char == closing[opened]:
+                    try:
+                        yield json.loads(raw[start:index + 1])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                start = -1
+
+
+def harvest_fields(node: Any, keys: set, values: dict) -> None:
+    """Every mapping key in *node* into *keys*, its scalar figures into
+    *values*.
+
+    A key whose value is another object or a list is a key that exists and
+    holds no figure of its own; it lands in *keys* and not in *values*, and
+    :meth:`FieldAttributionCheck.supported` reads that difference as *the
+    field is real and this check cannot say what it holds* rather than as a
+    miss.
+    """
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            key = str(key)
+            keys.add(key)
+            if isinstance(value, (Mapping, list)):
+                harvest_fields(value, keys, values)
+                continue
+            bucket = values.setdefault(key, set())
+            number = _as_decimal(value)
+            if number is not None:
+                bucket.add(number)
+    elif isinstance(node, list):
+        for item in node:
+            harvest_fields(item, keys, values)
+
+
+class FieldAttributionCheck(NumericGroundingCheck):
+    """A figure labelled with the field it came from must be in that field.
+
+    The complement to its base class, and the failure it answers is one a
+    membership check cannot see.  :class:`NumericGroundingCheck` asks *is
+    this number anywhere in the evidence*; a large governed payload answers
+    yes to a great many numbers, and the part of the sentence a reader
+    actually acts on is not the number but the LABEL beside it.
+    ``154.024 (field `total_s`)`` is a claim about provenance, and it is
+    checkable by arithmetic, because the payload either holds that value
+    under that key or it does not.
+
+    Two findings, and they are different mistakes:
+
+    * **the field does not exist.**  Nothing this mission received carries
+      a key by that name.  The figure may well be real; what is invented is
+      the account of where it came from, which is exactly the half a reader
+      cannot verify and will cite onward;
+    * **the field exists and does not hold that figure.**  A key read off
+      one record and a value read off another, joined in one sentence.
+
+    What it deliberately does NOT catch is the misreading the sibling
+    ``remedy`` was written for: ``total_s`` really does hold ``154.024``,
+    so ``154.024 (field `total_s`)`` is a **correct** attribution — of a
+    wall clock that the answer then divided into as though it were a score.
+    That is a semantic error, its instrument is
+    :class:`ReadingGroundingCheck`, and this check passing it is the
+    boundary between the two working rather than a gap between them.
+
+    Inside the figures family, and by subclass rather than by resemblance:
+    it runs only where a manifest asked for figures at all, it reads the
+    same evidence texts through
+    :meth:`NumericGroundingCheck._grounding_texts` — so an echoed result,
+    a call's own arguments and a result outside
+    :attr:`GroundingConfig.figures_from` teach it no field names either —
+    and it spells a figure with the same grammar.
+    """
+
+    name = "attribution"
+
+    #: Between the field and the figure in a token.  Both halves travel,
+    #: because a repair turn naming only one of them would ask the model to
+    #: guess which pairing was rejected.
+    SEPARATOR = "="
+
+    #: How many real field names a repair turn offers.  Enough to show the
+    #: shape of the payload, few enough that the sentence stays readable —
+    #: a governed view has hundreds of keys and pasting them all back is
+    #: pasting the payload back.
+    NAMED = 8
+
+    #: The three spellings an answer pairs a figure with a field in, and
+    #: the only three.  Separate patterns rather than one alternation, so
+    #: each can say which side the figure sits on:
+    #:
+    #: * ``**154.024** (field `total_s`)`` — the figure, then the aside.
+    #:   The recorded one;
+    #: * ``field `total_s` is 154.024`` — the aside, then the figure;
+    #: * ``` `total_s` = 154.024 ``` and ``` `total_s`: 154.024 `` — a bare
+    #:   pairing, which needs its operator: a backticked word standing next
+    #:   to a number is not otherwise a claim about a field.
+    ATTRIBUTIONS: Tuple[Any, ...] = (
+        re.compile(
+            r"(?P<figure>" + NumericGroundingCheck.FIGURE.pattern + r")"
+            r"\**\s*\(\s*(?:the\s+)?field\s+`(?P<field>" + FIELD_NAME
+            + r")`\s*\)"),
+        re.compile(
+            r"(?:the\s+)?field\s+`(?P<field>" + FIELD_NAME + r")`\s*"
+            r"(?:=|:|\bis\b|\bwas\b|\bholds\b|\breports\b)?\s*\**\s*"
+            r"(?P<figure>" + NumericGroundingCheck.FIGURE.pattern + r")"),
+        re.compile(
+            r"`(?P<field>" + FIELD_NAME + r")`\s*(?:=|:)\s*\**\s*"
+            r"(?P<figure>" + NumericGroundingCheck.FIGURE.pattern + r")"),
+    )
+
+    def __init__(self, config: GroundingConfig, *, ask: Optional[Ask] = None):
+        super().__init__(config, ask=ask)
+        #: The field names this mission's results actually carry, learned
+        #: in :meth:`prepare` and read again in :meth:`repair_words` — the
+        #: repair turn names real keys, and walking the evidence a second
+        #: time to find them would be a second answer to what they are.
+        self._known: set = set()
+
+    def text(self, answer: str) -> str:
+        """Prose with its **inline code kept**: the backticks are the grammar.
+
+        A field name is quoted in an answer for the same reason it is
+        quoted in a manifest, and :func:`prose_only` would delete every one
+        of them before this check saw it.  Fenced code still goes — a
+        program that assigns ``total_s = 154.024`` is proposing a
+        computation and not attributing a figure — and so does the claim
+        table, whose entries are :class:`ClaimGroundingCheck`'s to verify
+        by walking.
+        """
+        return unfenced(CLAIM_BLOCK.sub(" ", answer or ""))
+
+    def extract(self, answer: str) -> Iterable[str]:
+        """Every ``field=figure`` pairing the prose states, once each."""
+        answer = self._declocked(answer)
+        found: List[str] = []
+        for pattern in self.ATTRIBUTIONS:
+            for match in pattern.finditer(answer):
+                token = (match.group("field") + self.SEPARATOR
+                         + match.group("figure"))
+                if token not in found:
+                    found.append(token)
+        return found
+
+    def prepare(self, evidence: Sequence[Any]) -> Sequence[Any]:
+        """``(names, figures by name)`` from every result that may ground.
+
+        Structured first: each text is parsed with :func:`json_blocks` and
+        walked with :func:`harvest_fields`, which is what makes the value
+        half of this check arithmetic rather than search.  Then
+        :data:`KEY_IN_TEXT` over the raw text as well — always, not only
+        where parsing failed — because a key spelled ``"total_s":`` in a
+        result IS a key that result carries, and a name this check can see
+        is a name it must not report as invented.  The fallback can only
+        make the check kinder, never stricter.
+        """
+        names: set = set()
+        figures: dict = {}
+        for text, _found in self._grounding_texts(evidence):
+            raw = str(text)
+            for payload in json_blocks(raw):
+                harvest_fields(payload, names, figures)
+            for match in KEY_IN_TEXT.finditer(raw):
+                names.add(match.group(1))
+        self._known = names
+        return (names, figures)
+
+    def supported(self, token: str, evidence: Sequence[Any]) -> bool:
+        """Whether the named field holds the figure beside it.
+
+        Three answers, and the middle one is why the two halves of
+        :meth:`prepare` are kept apart.  A field nothing carries is
+        unsupported.  A field whose figures were read is supported when one
+        of them is this figure, compared as a value and not as a spelling.
+        A field seen only as a NAME — in a result nothing could parse, or
+        as the key of a nested object — is **supported**: this check knows
+        the account of provenance is not invented and cannot say more, and
+        a check that reported its own blind spot as a finding would be
+        putting its coverage into a governance report.
+        """
+        names, figures = evidence
+        field, _, figure = token.partition(self.SEPARATOR)
+        if field not in names:
+            return False
+        if field not in figures:
+            return True
+        value = _as_decimal(self._plain(figure))
+        return value is not None and value in figures[field]
+
+    def _detail(self, stated: int, failed: int) -> str:
+        if not stated:
+            detail = ("nothing to check — the answer pairs no figure with a "
+                      "named field")
+        else:
+            detail = (f"{stated - failed}/{stated} figure(s) held by the "
+                      f"field the answer names")
+        if self._config.figures_from:
+            detail += f"; scope: [{', '.join(self._config.figures_from)}]"
+        return detail
+
+    def repair_words(self, failed: Sequence[str]) -> str:
+        """Which pairing failed, in which of the two ways, and the real keys.
+
+        Wholly its own words: the generic sentence says the token appears
+        in no tool output, and half of these figures appear in several.
+        What is wrong is the label.
+        """
+        if not failed:
+            return ""
+        lines = ["That answer says which field each figure came from, and "
+                 "these pairings are not what the results hold:"]
+        invented = False
+        for token in failed:
+            field, _, figure = token.partition(self.SEPARATOR)
+            if field in self._known:
+                lines.append(
+                    f"  `{field}` is a real field and holds no value "
+                    f"{figure} anywhere in this mission's results")
+            else:
+                invented = True
+                lines.append(
+                    f"  `{field}` is not a field in any result of this "
+                    f"mission; {figure} was attributed to a name nothing "
+                    f"returned")
+        if invented and self._known:
+            named = ", ".join(sorted(self._known)[:self.NAMED])
+            lines.append(
+                f"Fields the results actually hold include: {named}.")
+        lines.append(
+            "Read the field back out of the result and quote it as it is "
+            "spelled there, or drop the attribution and say only what the "
+            "tool returned.")
+        return "\n".join(lines)
+
+    def caveat_words(self, failed: Sequence[str]) -> str:
+        if not failed:
+            return ""
+        listed = ", ".join(
+            token.replace(self.SEPARATOR, " = ") for token in failed)
+        return (
+            f"⚠️ Misattributed: this answer names the field each figure came "
+            f"from and these are not what the results hold: {listed}. The "
+            f"figures may be real; the account of where they came from is "
+            f"not, and neither may be cited onward as sourced."
+        )
+
+    def remedy_words(self, failed: Sequence[str]) -> str:
+        """None.  The base's direction is about where arithmetic belongs and
+        this finding is about a label: a model told to move its arithmetic
+        onto a computation plane because it misspelled a key would move the
+        wrong thing."""
+        return ""
 
 
 class ClaimGroundingCheck(GroundingCheck):
@@ -1776,6 +2224,222 @@ class PlaneClaimCheck(GroundingCheck):
         )
 
 
+#: Phrases an answer writes when its subject is the tool plane rather than
+#: the objective.  Module data, closed, and short on purpose: every one of
+#: them is a sentence ABOUT the run's instrumentation, and none of them is
+#: a thing a person asked for.  Two of them together, or one of them beside
+#: the name of a tool this run was offered, is the pattern
+#: :class:`SubjectGroundingCheck` fires on.
+#:
+#: What is deliberately NOT in the list is any word for a failure of the
+#: work itself — "could not", "no result", "not found".  A mission that
+#: honestly reports the fetch returned 404 is answering the objective, and
+#: a marker set that caught it would flag the most useful answer a run with
+#: bad luck can produce.
+META_MARKERS: Tuple[str, ...] = (
+    "no tool",
+    "not invoked",
+    "was never called",
+    "without a call to",
+    "no evidence to cite",
+    "registered tool",
+    "not retrieved in this turn",
+    "no call was made",
+    "nothing was dispatched",
+)
+
+#: A prose sentence, for the proximity half of the rule.  A tool name and a
+#: meta phrase in ONE sentence is the answer talking about the tool; the
+#: same two words a paragraph apart are an answer that used a tool and
+#: mentioned a limitation.
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+class SubjectGroundingCheck(GroundingCheck):
+    """An answer whose subject is this run's tooling has not answered.
+
+    The hole every other check here leaves open, and it was measured on the
+    reference deployment on 19 August 2026.  Asked to build a small table
+    and show it — a pure run-the-code objective — the model called nothing
+    at all and wrote, in full: *"I could not determine whether a corpus
+    exists … because no catalog or run-related tool was invoked in this
+    turn. Without a call to a registered tool such as `…` I have no
+    evidence to cite … the necessary information was not retrieved in this
+    turn."*
+
+    Every mechanical check passed it.  The identifier and figure grammars
+    extracted nothing, so both reported ``nothing to check — the answer
+    states no identifiers``, which under a skill with no ``must_cite`` is a
+    legitimate verdict; there was no plane claim to be false, because the
+    answer claims the opposite; and the run came back ``answered``.  The
+    control was satisfied by an answer that discussed the harness instead
+    of doing the work — which is the ``0/0`` lesson at the level of the
+    SUBJECT rather than of the tokens.
+
+    Three conditions, all of them, and each one closes a different way of
+    getting this wrong:
+
+    * **the run dispatched nothing.**  A mission that called a tool and
+      then honestly reported what it could not establish is the answer this
+      repository wants, and the commonest shape of it — "the fetch returned
+      404, so the report cannot include the third source" — names a tool
+      and a failure in one sentence.  With even one call this check is
+      silent;
+    * **nothing else in the answer had anything to check.**  Read off the
+      rows the earlier checks already produced rather than by re-extracting
+      the answer, so there is no second copy of the block's grammars here.
+      An answer with real content — "the total is 48750, computed via the
+      code tool" — gives the figures check something to consider and is
+      never this finding, whatever else it mentions;
+    * **the answer is about the tooling.**  Either a tool from THIS run's
+      catalogue is named in the same sentence as a phrase from
+      :data:`META_MARKERS`, or two different markers appear anywhere in it.
+      The catalogue is the run's own, out of
+      :attr:`GroundingConfig.tools_offered`, so a framework that has never
+      heard of a deployment's tool names still recognises an answer
+      reciting them.
+
+    :data:`UNCONFIGURED` where nobody said how many calls the run made —
+    see :meth:`GroundingCheck.observing`.  A library caller, a hand-built
+    validator and the staged synthesizer all supply nothing, and silence is
+    not zero: a check that read it as zero would report this finding about
+    a run whose calls it cannot see.  That also means the check is
+    unconfigured at :meth:`GroundingValidator.from_config` time, on
+    purpose, so a grounding block that configures nothing else still builds
+    no validator.
+    """
+
+    name = "subject"
+
+    #: The one token this check ever considers.  A sentence rather than a
+    #: fragment of the answer, because what failed is not a word in the
+    #: text — it is what the text is about, and a report row quoting
+    #: ``"without a call to"`` would send a reader looking for a phrase to
+    #: delete.
+    FINDING = "the answer's subject is this run's tooling, not the objective"
+
+    def __init__(self, config: GroundingConfig, *, ask: Optional[Ask] = None):
+        super().__init__(config, ask=ask)
+        # Never a floor.  `must_cite: true` is a wildcard over every
+        # configured check, and a minimum here would require every answer
+        # under such a skill to BE a meta-answer — the requirement inverted
+        # by a check whose `considered` is a defect and not a citation.  An
+        # explicit `must_cite: subject` cannot reach this either: the check
+        # is unconfigured at build time and `_audit_must_cite` refuses a
+        # minimum on a check that reports no opinion.
+        self._minimum = 0
+        #: Why it fired, for the report row.  Set in :meth:`extract`.
+        self._why: str = ""
+
+    def unconfigured(self) -> List[str]:
+        if self._calls is None:
+            return [
+                "nobody said how many tools this run called, and whether an "
+                "answer is about the tool plane instead of the objective "
+                "cannot be asked of a report that does not know whether any "
+                "tool ran. A run supplies it; a library caller does not"
+            ]
+        return []
+
+    def text(self, answer: str) -> str:
+        """Prose with its **inline code kept**: a model names a tool in
+        backticks, and :func:`prose_only` would delete the names this check
+        is looking for.  Fenced code still goes."""
+        return unfenced(CLAIM_BLOCK.sub(" ", answer or ""))
+
+    def extract(self, answer: str) -> Iterable[str]:
+        """:attr:`FINDING`, or nothing.  The three conditions, in cost order."""
+        self._why = ""
+        if self._calls:
+            return ()
+        if any(row.considered for row in self._so_far if row.configured):
+            return ()
+        why = self._about_the_tooling(answer)
+        if not why:
+            return ()
+        self._why = why
+        return (self.FINDING,)
+
+    def _about_the_tooling(self, answer: str) -> str:
+        """Why this answer is about the tool plane, or ``""``.
+
+        The reason comes back rather than a bare boolean because it is what
+        the report row says, and a row reading "the answer's subject is the
+        tooling" with nothing behind it is a row a reader cannot check.
+        """
+        lowered = (answer or "").lower()
+        spellings = self._tool_spellings()
+        for sentence in _SENTENCE.split(lowered):
+            markers = [m for m in META_MARKERS if m in sentence]
+            named = [t for t in spellings if t in sentence]
+            if markers and named:
+                return (f"names {named[0]} beside {markers[0]!r} and no tool "
+                        f"was called")
+        found = [m for m in META_MARKERS if m in lowered]
+        if len(found) >= 2:
+            return (f"says {', '.join(repr(m) for m in found[:3])} and no "
+                    f"tool was called")
+        return ""
+
+    def _tool_spellings(self) -> Tuple[str, ...]:
+        """The catalogue's names as an ANSWER writes them, lower-cased.
+
+        The offered name, and the same name with a leading namespace taken
+        off: the MCP bridge prefixes a discovered server's tools so that one
+        server cannot shadow another's, and a model writes the bare name it
+        reads in the skill's prose.  Both are the tool.
+
+        This is recognition and not comparison, which is why it is not
+        :func:`~core.tools.descriptors.same_tool`: there is no second name
+        here to compare with, only a sentence to look in.  Anything shorter
+        than four characters is dropped rather than searched for — a
+        two-letter tool name is a substring of ordinary prose, and a check
+        that fired on it would be reading the word "go" as a catalogue
+        entry.
+        """
+        found: List[str] = []
+        for name in self._offered:
+            for spelling in (str(name), str(name).split(".", 1)[-1]):
+                spelling = spelling.lower().strip()
+                if len(spelling) >= 4 and spelling not in found:
+                    found.append(spelling)
+        return tuple(found)
+
+    def supported(self, token: str, evidence: Sequence[str]) -> bool:
+        """Never.  Like :class:`PlaneClaimCheck` this reads no evidence: the
+        finding is about what the run did and what the answer is about, and
+        no tool output could bear on either."""
+        return False
+
+    def _detail(self, stated: int, failed: int) -> str:
+        if not stated:
+            return ("nothing to check — this run called a tool, or the "
+                    "answer's subject is the objective")
+        return f"the answer's subject is this run's tooling: {self._why}"
+
+    def repair_words(self, failed: Sequence[str]) -> str:
+        if not failed:
+            return ""
+        offered = ", ".join(self._offered) or "no tools"
+        return (
+            "That answer is about this mission's tooling rather than about "
+            "the objective, and no tool was called in it. The objective is "
+            "not about this run's tooling. Do the work: call the tool that "
+            "does it, or answer the objective with what you have and name "
+            "what is missing — without describing the tool plane. This "
+            f"mission offers: {offered}."
+        )
+
+    def caveat_words(self, failed: Sequence[str]) -> str:
+        if not failed:
+            return ""
+        return (
+            "⚠️ Unattempted: this answer describes which tools were not "
+            "called rather than answering the objective, and this mission "
+            "dispatched none. Nothing in it was established by this run."
+        )
+
+
 class ReadingGroundingCheck(GroundingCheck):
     """Was the field read for what it is?  The tier that costs a model call.
 
@@ -2020,15 +2684,19 @@ class ReadingGroundingCheck(GroundingCheck):
 
 #: The order checks run in, and it is the **cost** order.  Identifiers
 #: first: they are the finding a reader acts on, and a repair turn that
-#: leads with them is the one most likely to be actionable.  Figures and
-#: claims next — still free, still arithmetic.  Planes after them: also
-#: free, but a statement about the run rather than about the text.
-#: Reading LAST, because it is the only tier that spends a model call and
-#: the whole affordability argument for it is that everything cheaper has
-#: already had its say.
+#: leads with them is the one most likely to be actionable.  Figures, the
+#: attribution beside them, and claims next — still free, still arithmetic.
+#: Planes after them: also free, but a statement about the run rather than
+#: about the text.  Subject after ALL of those and not merely because it is
+#: cheap: it asks whether anything else in the answer had something to
+#: check, so every row it reads has to exist before it runs — see
+#: :meth:`GroundingCheck.observing`'s ``so_far``.  Reading LAST, because it
+#: is the only tier that spends a model call and the whole affordability
+#: argument for it is that everything cheaper has already had its say.
 DEFAULT_CHECKS: Tuple[type, ...] = (
-    IdentifierGroundingCheck, NumericGroundingCheck, ClaimGroundingCheck,
-    PlaneClaimCheck, ReadingGroundingCheck,
+    IdentifierGroundingCheck, NumericGroundingCheck, FieldAttributionCheck,
+    ClaimGroundingCheck, PlaneClaimCheck, SubjectGroundingCheck,
+    ReadingGroundingCheck,
 )
 
 
@@ -2119,7 +2787,8 @@ class GroundingValidator:
         return self._max_repairs
 
     def validate(self, answer: str, evidence: Sequence[str],
-                 *, called: Sequence[str] = ()) -> GroundingReport:
+                 *, called: Sequence[str] = (),
+                 calls: Optional[int] = None) -> GroundingReport:
         """Run every check over one answer.
 
         *called* is the tools this run actually dispatched, told to each
@@ -2128,11 +2797,22 @@ class GroundingValidator:
         check keeps working; a caller that supplies nothing simply has no
         plane claims to support, which is the honest reading of "we do not
         know what was called".
+
+        *calls* is how many dispatches there were, and its default is
+        ``None`` and not ``0`` for the opposite reason: zero calls is a
+        FINDING about a run, and reading a caller's silence as one would
+        report it about every library caller and every staged synthesis.
+        See :class:`SubjectGroundingCheck`, which is unconfigured without
+        it.
+
+        Each check is told the rows produced before it, so the ones whose
+        question is partly about the rest of the report read them instead
+        of re-deriving them.
         """
         evidence = list(evidence)
-        results = []
+        results: List[CheckResult] = []
         for check in self._checks:
-            check.observing(called)
+            check.observing(called, calls=calls, so_far=tuple(results))
             results.append(check.check(answer, evidence))
         return GroundingReport(results=tuple(results))
 
@@ -2168,8 +2848,10 @@ class GroundingValidator:
                 )
             lines.append(
                 "Either call a tool that returns them, or rewrite the answer "
-                "without them and say plainly what the tools could not "
-                "establish. Do not substitute a similar-looking value."
+                "without them and say plainly what could not be established "
+                "about the objective — never by describing this run's "
+                "tooling in the answer. Do not substitute a similar-looking "
+                "value."
             )
 
         if report.uncited:
@@ -2192,9 +2874,20 @@ class GroundingValidator:
                 "one."
             )
 
+        # A check's own finding, then its own direction out. Both are the
+        # check's and they compose: `repair` REPLACES the generic sentence
+        # for a check the generic sentence would state wrongly, and
+        # `remedy` is owed whichever sentence stated the finding. See
+        # `CheckResult.remedy` and the 121.2% the second one was written
+        # after — a repair turn that names what is wrong and not what to do
+        # instead gets the same answer back.
         for result in report.results:
-            if result.unsupported and result.repair:
+            if not result.unsupported:
+                continue
+            if result.repair:
                 lines.append(result.repair)
+            if result.remedy:
+                lines.append(result.remedy)
 
         lines.append("Reply with one JSON object as before.")
         return "\n".join(lines)

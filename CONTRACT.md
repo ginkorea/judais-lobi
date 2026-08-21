@@ -433,10 +433,17 @@ it beside `usage.total_tokens`; read both with a default.
   promised** — `all(row["grounded"] for row in checks)` would fold a model's
   opinion into a mechanical fact — so read the record's own `grounded`.
   `grounding.unsupported` means *things a check could not support*, which is
-  not the same as *absent from every tool output*: for a `reading` or `planes`
-  row the value is right there in the evidence, and the row's `detail` says
-  what was wrong with it — the figure was read for a field it is not, or the
-  answer claimed a tool plane nothing on it was dispatched from this run.
+  not the same as *absent from every tool output*: for a `reading`, `planes`,
+  `attribution` or `subject` row the value is right there in the evidence, or
+  is not a value at all, and the row's `detail` says what was wrong with it —
+  the figure was read for a field it is not, the answer claimed a tool plane
+  nothing on it was dispatched from this run, a figure was attributed to a
+  field that does not hold it, or the answer's subject was this run's own
+  tooling and no tool was called in it. **The set of check names grows in a
+  minor release** — it is content, like the grammars the rows come from, and
+  a row is a row whatever it is called. Render an unfamiliar one from its own
+  `check`, `verdict` and `detail`; never enumerate the names, and never read
+  a name you do not recognise as an error.
 - **`step_started` carries the plan on a staged mission**, on the first step of
   each plan drawn. It is the first thing a watcher hears after the planner has
   finished, because the record that opens the stream is written before the
