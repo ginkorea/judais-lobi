@@ -58,6 +58,7 @@ import pytest
 
 from core.contracts.schemas import PolicyPack
 from core.runtime.grounding import (
+    NOTHING_CONSIDERED,
     UNCONFIGURED,
     UNSUPPORTED,
     FieldAttributionCheck,
@@ -66,7 +67,8 @@ from core.runtime.grounding import (
     NumericGroundingCheck,
     SubjectGroundingCheck,
 )
-from core.runtime.results import MissionResultStore
+from core.runtime.prompts import GOVERNED_PLANE
+from core.runtime.results import MissionResultStore, SourcedEvidence
 from core.runtime.run import (
     Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
 )
@@ -82,9 +84,16 @@ from tests.test_mission import ScriptedModel
 FIGURES = NumericGroundingCheck.FIGURE.pattern
 
 #: The lookup that answered both recorded turns, and the two other tools
-#: that mission was offered.
+#: that mission was offered. None of them computes anything, which is the
+#: ordinary shape of a lookup-only plane and the case the generic remedy
+#: is for.
 LOOKUP = "runs_get"
 OFFERED = (LOOKUP, "inventory_search", "jobs_list")
+
+#: A catalogue with a computation plane on it. The names are the framework's
+#: own code-plane tools — read through `code_plane_tools()` rather than
+#: matched by spelling, so a test that invented a name would prove nothing.
+COMPUTES = (LOOKUP, "run_python_code")
 
 #: The ranking result, cut to the fields the answer read.  `total_s` is the
 #: run's elapsed seconds and the five scores are impact scores; nothing in
@@ -152,9 +161,9 @@ def store_with(*, tool=LOOKUP, text=RANKING):
     return store
 
 
-def validator(**config):
+def validator(offered=OFFERED, **config):
     made = GroundingValidator.from_config(
-        GroundingConfig(**config).offering(OFFERED))
+        GroundingConfig(**config).offering(offered))
     assert made is not None
     return made
 
@@ -174,8 +183,9 @@ class TestTheRepairTurnNamesTheFix:
     of them can name a tool.
     """
 
-    def report(self, **config):
-        return validator(number_pattern=FIGURES, **config).validate(
+    def report(self, offered=OFFERED, **config):
+        return validator(offered=offered, number_pattern=FIGURES,
+                         **config).validate(
             DERIVED_IN_PROSE, store_with().evidence_texts(), calls=1)
 
     # ── the finding is still the finding ────────────────────────────────
@@ -189,25 +199,65 @@ class TestTheRepairTurnNamesTheFix:
 
     # ── and now it names the fix ────────────────────────────────────────
 
-    def test_a_skill_that_named_its_computation_plane_gets_the_tool(self):
-        prompt = GroundingValidator.repair_prompt(
-            self.report(figures_from=("compute",)))
+    def test_a_catalogue_with_a_computation_plane_gets_the_tool(self):
+        """And the tool is one the mission can actually dispatch: the
+        offered set intersected with what runs a program."""
+        prompt = GroundingValidator.repair_prompt(self.report(COMPUTES))
         assert "Do not derive figures in prose." in prompt
-        assert ("Call compute to compute them from the tool results' own "
-                "fields, and state only what it prints.") in prompt
+        assert ("Call run_python_code to compute them from the tool "
+                "results' own fields, and state only what it prints."
+                ) in prompt
 
-    def test_two_scoped_tools_are_both_named(self):
+    def test_a_bridged_spelling_of_a_code_tool_is_that_tool(self):
         prompt = GroundingValidator.repair_prompt(
-            self.report(figures_from=("compute", "tabulate")))
-        assert "Call compute or tabulate to compute them" in prompt
+            self.report((LOOKUP, "mcp.run_python_code")))
+        assert "Call mcp.run_python_code to compute them" in prompt
 
-    def test_a_skill_that_scoped_nothing_gets_the_generic_half(self):
+    def test_two_computation_tools_are_both_named(self):
+        prompt = GroundingValidator.repair_prompt(
+            self.report((LOOKUP, "run_python_code", "run_shell_command")))
+        assert ("Call run_python_code or run_shell_command to compute them"
+                in prompt)
+
+    def test_figures_from_is_not_read_as_the_computation_plane(self):
+        """`figures_from` says which tool MEASURES this skill's quantity —
+        `verify` measures a test count — and a tool that measures is not a
+        tool that computes. Telling a model to "call verify to compute the
+        share" sends it to run a test suite."""
+        prompt = GroundingValidator.repair_prompt(
+            self.report(figures_from=("verify",)))
+        assert "Call verify to compute" not in prompt
+        assert "show the arithmetic step by step" in prompt
+
+    def test_a_scope_is_stated_beside_the_direction_not_instead_of_it(self):
+        prompt = GroundingValidator.repair_prompt(
+            self.report(COMPUTES, figures_from=("verify",)))
+        assert "Call run_python_code to compute them" in prompt
+        assert ("Only results from verify may ground a figure under this "
+                "skill") in prompt
+
+    def test_a_plane_that_cannot_compute_is_told_to_show_the_working(self):
+        """Never "state only figures the tools returned": the conduct in the
+        same prompt says the opposite, and a repair turn that contradicts
+        the standing instruction is a repair turn the model has to choose
+        between."""
         prompt = GroundingValidator.repair_prompt(self.report())
         assert "Do not derive figures in prose." in prompt
         assert ("If this catalogue offers a computation tool, compute it "
-                "there and cite what it printed; otherwise state only "
-                "figures the tools returned.") in prompt
-        assert "Call compute" not in prompt
+                "there and cite what it printed; otherwise show the "
+                "arithmetic step by step from figures the tools returned."
+                ) in prompt
+        assert "state only figures the tools returned" not in prompt
+        assert "Call run_python_code" not in prompt
+
+    def test_the_direction_is_the_conducts_own_clause(self):
+        """One owner. The framework's conduct already says what to do when
+        the plane has no computation tool, and this repeats it rather than
+        writing a second rule that drifts from it."""
+        assert ("otherwise show the arithmetic from the returned figures"
+                in " ".join(GOVERNED_PLANE.split()))
+        prompt = GroundingValidator.repair_prompt(self.report())
+        assert "show the arithmetic" in prompt
 
     def test_the_direction_is_said_beside_the_generic_finding(self):
         """Unscoped, the figures check has no words of its own and stays in
@@ -220,14 +270,14 @@ class TestTheRepairTurnNamesTheFix:
 
     def test_the_direction_is_said_beside_a_scoped_finding_too(self):
         prompt = GroundingValidator.repair_prompt(
-            self.report(figures_from=("compute",)))
-        assert "These figures are in no compute result" in prompt
+            self.report(COMPUTES, figures_from=("verify",)))
+        assert "These figures are in no verify result" in prompt
         assert "Do not derive figures in prose." in prompt
 
     def test_a_grounded_answer_is_told_nothing(self):
         """No failed figure, no direction: a repair turn that lectures an
         answer it did not fault is a repair turn its reader skims."""
-        report = validator(number_pattern=FIGURES).validate(
+        report = validator(offered=COMPUTES, number_pattern=FIGURES).validate(
             "The run took 154.024 seconds.", store_with().evidence_texts(),
             calls=1)
         assert row(report, "figures").remedy == ""
@@ -299,6 +349,40 @@ class TestAnAnswerAboutTheToolPlane:
             "Without a call to inventory_search there is nothing to say.",
             [], calls=0), "subject")
         assert found.verdict == UNSUPPORTED
+
+    def test_a_tool_name_is_a_word_and_not_a_substring(self):
+        """A tool called `list` is inside "listing", "checklist" and
+        "enlisted". A check that read those as the catalogue being recited
+        would fire on prose that never named a tool."""
+        made = GroundingValidator.from_config(
+            GroundingConfig(identifier_pattern=r"\brun-\d+\b").offering(
+                ["list"]))
+        found = row(made.validate(
+            "No tool was reachable while listing the enlisted records.",
+            [], calls=0), "subject")
+        assert found.unsupported == (), (
+            "'listing' is not the tool `list` being named")
+        fired = row(made.validate(
+            "No tool such as list was reachable.", [], calls=0), "subject")
+        assert fired.verdict == UNSUPPORTED
+
+    def test_an_empty_catalogue_is_not_told_to_call_a_tool(self):
+        """"This mission offers: no tools" hands the model the very
+        sentence this check exists to refuse, and "call the tool that does
+        it" is an instruction to do the impossible. One honest move is
+        left, so it is the only one said."""
+        made = GroundingValidator.from_config(
+            GroundingConfig(identifier_pattern=r"\brun-\d+\b").offering([]))
+        report = made.validate(
+            "No tool was invoked and I have no evidence to cite.", [],
+            calls=0)
+        prompt = GroundingValidator.repair_prompt(report)
+        assert row(report, "subject").verdict == UNSUPPORTED
+        assert "This mission offers" not in prompt
+        assert "no tools" not in prompt
+        assert "call the tool that does it" not in prompt
+        assert ("Answer the objective with what you have and name what is "
+                "missing") in prompt
 
     def test_a_short_name_is_not_hunted_for_in_prose(self):
         """A two-letter tool name is a substring of ordinary English, and a
@@ -387,12 +471,34 @@ class TestAnAnswerAboutTheToolPlane:
 
     def test_a_wildcard_minimum_cannot_require_a_meta_answer(self):
         """`must_cite: true` is a floor on every configured check, and a
-        floor here would demand that every answer BE this failure."""
+        floor on either of the two checks whose `considered` list is a
+        FINDING would demand that every answer carry the defect: an answer
+        that talks about the tooling, an answer that labels a figure with
+        a field. Both read an explicit minimum only."""
         report = validator(identifier_pattern=r"\brun-\d+\b",
+                           number_pattern=FIGURES,
                            must_cite=(("*", 1),)).validate(
-            "run-7 is the newest.", ["run-7"], calls=1)
+            "run-7 is the newest.", [RANKING, "run-7"], calls=1)
         assert row(report, "subject").minimum == 0
+        assert row(report, "attribution").minimum == 0
         assert "subject" not in report.uncited
+        assert "attribution" not in report.uncited
+        assert row(report, "identifiers").minimum == 1, (
+            "the wildcard still binds where a citation is a citation")
+
+    def test_an_explicit_minimum_still_binds_on_attribution(self):
+        """A skill that really wants its figures labelled says so by name
+        and gets it — which is what makes the wildcard rule a narrowing
+        and not a hole."""
+        report = validator(number_pattern=FIGURES,
+                           must_cite=(("attribution", 2),)).validate(
+            "The run took **154.024** (field `total_s`).", [RANKING],
+            calls=1)
+        found = row(report, "attribution")
+        assert found.minimum == 2
+        assert found.unsupported == ()
+        assert found.grounded is False
+        assert "attribution" in report.uncited
 
     # ── the words ───────────────────────────────────────────────────────
 
@@ -509,7 +615,8 @@ class TestAFigureIsHeldByTheFieldItNames:
         assert "1/1 figure(s) held by the field" in found.detail
 
     def test_a_nested_field_read_correctly_passes(self):
-        found = self.found("The top actor's `impact_score`: 54.36487.")
+        found = self.found("The top actor's field `impact_score`: 54.36487.")
+        assert found.considered == ("impact_score=54.36487",)
         assert found.unsupported == ()
 
     # ── the field that does not exist ───────────────────────────────────
@@ -561,7 +668,22 @@ class TestAFigureIsHeldByTheFieldItNames:
         caveat = GroundingValidator.caveat(self.report(self.MISLABELLED))
         assert "Misattributed" in caveat
         assert "total_s = 54.36487" in caveat
+        assert "names a real field that does not hold the figure" in caveat
         assert "in no tool result from this mission" not in caveat
+
+    def test_the_caveat_tells_the_two_mistakes_apart(self):
+        """A reader deciding whether to chase a figure needs to know which
+        it is: an invented field means the account of provenance is
+        fiction, a real field with the wrong value means the number came
+        from somewhere else in the payload. One sentence for both sends
+        every reader to look at the wrong half."""
+        caveat = GroundingValidator.caveat(self.report(
+            "It took **54.36487** (field `total_s`) of **1.212** "
+            "(field `influence_share`)."))
+        assert "names a field no result of this mission carries" in caveat
+        assert "influence_share = 1.212" in caveat
+        assert "names a real field that does not hold the figure" in caveat
+        assert "total_s = 54.36487" in caveat
 
     # ── the three spellings, and what is not one ────────────────────────
 
@@ -569,9 +691,40 @@ class TestAFigureIsHeldByTheFieldItNames:
         assert self.found("field `nodes` is 128").unsupported == \
             ("nodes=128",)
 
-    def test_a_bare_pairing_needs_its_operator(self):
-        assert self.found("`edges` = 1081").unsupported == ("edges=1081",)
-        assert self.found("`edges` then 1081").considered == ()
+    def test_a_pairing_needs_a_field_word(self):
+        """A backticked name and a number are not a claim about provenance.
+        With the word, they are."""
+        assert self.found("`edges` = 1081").considered == ()
+        assert self.found("field `edges` = 1081").unsupported == \
+            ("edges=1081",)
+
+    def test_a_unit_between_the_two_is_still_one_claim(self):
+        """`1482 MWh (field `output_mwh`)` is how a figure is written in a
+        sentence. A whole clause between them is not."""
+        assert self.found("The run reports **127** nodes (field `nodes`)."
+                          ).unsupported == ()
+        assert self.found(
+            "127 came from the operator (field `nodes`)."
+        ).considered == ()
+
+    def test_column_and_key_are_the_same_claim(self):
+        """Three words, because a payload is a record to one platform, a
+        table to the next, and a dict to the third."""
+        assert self.found("column `edges` = 1081").unsupported == \
+            ("edges=1081",)
+        assert self.found("**1081** (key `edges`)").unsupported == \
+            ("edges=1081",)
+
+    def test_an_argument_the_model_will_send_is_not_an_attribution(self):
+        """Recorded against the research pack's retry prose. A model saying
+        which argument it is about to pass is discussing its own next call,
+        not where a figure came from, and a grammar that read every
+        backticked-word-and-number as provenance reported it as a fabricated
+        field on ordinary correct answers."""
+        assert self.found(
+            "That page timed out. I will retry with `max_depth`: 3 and a "
+            "longer deadline."
+        ).considered == ()
 
     def test_a_backticked_word_beside_a_number_is_not_a_claim(self):
         """Otherwise every quoted tool name next to a count is a finding."""
@@ -594,35 +747,108 @@ class TestAFigureIsHeldByTheFieldItNames:
 
     # ── the evidence side ───────────────────────────────────────────────
 
-    def test_evidence_that_is_not_json_teaches_no_field_names(self):
-        """And does not raise. A text with no parseable payload contributes
-        nothing, so an answer checked against it considers a name it cannot
-        confirm — and `supported` is the honest answer only where the name
-        was seen."""
+    #: A research turn's evidence: a fetched page and a CSV. Nothing in it
+    #: parses as JSON, so nothing in it can teach this check a field name.
+    PROSE_EVIDENCE = [
+        "Annual Report 2025\n\nThe Ridgeway plant produced 1482 MWh in "
+        "the year to March, up from 1310 MWh.\nOutput is metered at the "
+        "substation and reported monthly.",
+        "month,output_mwh\n2025-01,118\n2025-02,131\n",
+    ]
+
+    def test_evidence_with_no_structure_anywhere_is_no_opinion(self):
+        """The reviewer's repro, and the reason this gate exists.
+
+        A research answer's evidence is prose and a CSV. This check learns
+        field names from structured results and has learned none, so every
+        attribution in the answer would come back invented — on a pack
+        whose answers are correct. Nothing parsed is `nothing_considered`,
+        which is the verdict for a check with no opinion, and the row says
+        why."""
+        found = self.found(
+            "The plant produced **1482** MWh (field `output_mwh`).",
+            evidence=self.PROSE_EVIDENCE)
+        assert found.verdict == NOTHING_CONSIDERED
+        assert found.considered == ()
+        assert "no result of this mission parsed as a structure" in \
+            found.detail
+
+    def test_one_structured_result_is_enough_to_have_an_opinion(self):
+        """And then the prose beside it is judged as it always was: the
+        gate is about what the run RETURNED, not about which text the
+        answer read."""
+        found = self.found(
+            "The plant produced **1482** MWh (field `output_mwh`).",
+            evidence=self.PROSE_EVIDENCE + [RANKING])
+        assert found.unsupported == ("output_mwh=1482",)
+
+    def test_a_non_json_result_still_does_not_raise(self):
         found = self.found("The run took **154.024** (field `total_s`).",
                            evidence=["the run finished in 154.024 seconds"])
-        assert found.unsupported == ("total_s=154.024",)
+        assert found.verdict == NOTHING_CONSIDERED
+
+    #: A result cut off mid-payload — the transcript bound, a killed
+    #: process — beside one that parses. The truncated one still SHOWS its
+    #: keys; nothing can read their values back.
+    TRUNCATED = [RANKING, '{"data": {"queue_depth": 12, "id": "3b']
 
     def test_a_key_seen_only_in_unparseable_text_is_real_enough(self):
-        """A truncated payload still shows its keys. The check knows the
-        account of provenance is not invented and cannot say more."""
-        found = self.found(
-            "The run took **99.5** (field `total_s`).",
-            evidence=['{"data": {"total_s": 154.024, "run_id": "3b'])
-        assert found.unsupported == ()
+        """A truncated payload still shows its keys, and no structured walk
+        can reach them. The check knows the account of provenance is not
+        invented and cannot say more, so it says nothing more."""
+        found = self.found("The queue held **99** (field `queue_depth`).",
+                           evidence=self.TRUNCATED)
+        assert found.considered == ("queue_depth=99",)
+        assert found.unsupported == (), (
+            "`queue_depth` is spelled as a key in a result of this run")
+
+    def test_a_key_in_no_result_at_all_is_still_a_finding(self):
+        """The other side of the same fallback: it makes the check kinder
+        about names it can see, not blind to names nothing carries."""
+        assert self.found("The queue held **99** (field `queue_latency`).",
+                          evidence=self.TRUNCATED).unsupported == \
+            ("queue_latency=99",)
 
     def test_a_field_holding_an_object_is_real_and_not_compared(self):
         found = self.found("The ranking is **5** (field `ranking`).",
                            evidence=[RANKING])
         assert found.unsupported == ()
 
-    def test_the_scope_applies_here_too(self):
-        """`figures_from` is what a skill says measures its quantity, and a
-        field name read off a result outside that scope is a field name this
-        skill's figures may not be attributed to."""
+    #: One result from the measuring tool and one from the lookup, so the
+    #: two halves of the scope can be told apart: `total_s` is a name only
+    #: the lookup carries, and a VALUE only `verify` may supply.
+    TWO_RESULTS = [
+        SourcedEvidence(json.dumps({"total_s": 1.5}), tool="verify"),
+        SourcedEvidence(RANKING, tool=LOOKUP),
+    ]
+
+    def test_the_scope_governs_the_value_side(self):
+        """`figures_from` says which results may supply the number a figure
+        is checked against, here as for a bare figure."""
         assert self.found(
             "The run took **154.024** (field `total_s`).",
-            figures_from=("compute",)).unsupported == ("total_s=154.024",)
+            evidence=self.TWO_RESULTS,
+            figures_from=("verify",)).unsupported == ("total_s=154.024",)
+        assert self.found(
+            "The run took **1.5** (field `total_s`).",
+            evidence=self.TWO_RESULTS,
+            figures_from=("verify",)).unsupported == ()
+
+    def test_the_scope_does_not_govern_the_name_side(self):
+        """A field is real if any tool returned it. Hiding the lookup's
+        keys behind the figure scope would have this check reporting a
+        field a reader can see in the transcript as one nothing holds —
+        the worst finding a governance report can carry."""
+        found = self.found(
+            "The run has **127** nodes (field `nodes`).",
+            evidence=self.TWO_RESULTS, figures_from=("verify",))
+        assert found.considered == ("nodes=127",)
+        assert found.unsupported == (), (
+            "`nodes` is out of the figure scope, not out of existence")
+        prompt = GroundingValidator.repair_prompt(self.report(
+            "The run has **127** nodes (field `nodes`).",
+            evidence=self.TWO_RESULTS, figures_from=("verify",)))
+        assert "not a field in any result" not in prompt
 
     def test_it_runs_only_where_figures_do(self):
         made = GroundingValidator.from_config(
@@ -631,6 +857,59 @@ class TestAFigureIsHeldByTheFieldItNames:
                                   calls=1), "attribution")
         assert found.verdict == UNCONFIGURED
         assert "number_pattern" in found.detail
+
+    def test_the_walk_stops_at_the_bound(self):
+        """What is below the bound is not examined rather than crashed on.
+
+        The NAME is still known — a key is spelled in the raw text whatever
+        depth it sits at — and its value is not read, so a figure credited
+        to it is neither confirmed nor called invented. That is the same
+        answer this check gives for any field it can see and cannot
+        evaluate."""
+        buried = {"level": 1}
+        for _ in range(100):
+            buried = {"under": buried}
+        found = self.found(
+            "The counter read **99** (field `level`).",
+            evidence=[json.dumps(buried)])
+        assert found.considered == ("level=99",)
+        assert found.unsupported == (), (
+            "the value below the bound was not read, so it is not a finding")
+
+    def test_a_deeply_nested_payload_does_not_blow_the_stack(self):
+        """A tool result is JSON somebody else wrote. `[[[[…]]]]` a couple
+        of thousand deep parses fine and unwinds the interpreter's stack on
+        the way back out, and a RecursionError raised inside a check would
+        take down a mission that had already finished its work."""
+        deep = "[" * 1500 + "1" + "]" * 1500
+        found = self.found(
+            "The run took **154.024** (field `total_s`).",
+            evidence=[RANKING, deep])
+        assert found.unsupported == ()
+
+    def test_the_unconfigured_sentence_is_this_checks_own(self):
+        """"figures are not checked unless a manifest asks for it" is true
+        of the figures check and confusing here: what is switched off is
+        the pairing of a figure with a field, and a reader of the row
+        should not have to know one is implemented as the other."""
+        made = GroundingValidator.from_config(
+            GroundingConfig(identifier_pattern=r"\brun-\d+\b"))
+        found = row(made.validate("nothing", [], calls=1), "attribution")
+        assert "a figure's field is checked only where figures are" in \
+            found.detail
+
+    def test_an_offered_tools_name_is_not_a_field_claim(self):
+        """The name of a tool the harness itself put in the prompt is never
+        an invented anything — the 10 August lesson, asked of the FIELD and
+        not only of the whole token, which is a string neither the manifest
+        nor the catalogue ever spells."""
+        found = self.found("I called field `runs_get` 3 times.")
+        assert found.considered == ()
+
+    def test_a_literal_the_manifest_ignores_is_not_a_field_claim(self):
+        found = self.found("The header row is field `month`: 3.",
+                           ignore=("month",))
+        assert found.considered == ()
 
     def test_a_clean_answer_says_it_pairs_nothing(self):
         found = self.found("The run finished.")
