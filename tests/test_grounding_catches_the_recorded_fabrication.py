@@ -316,7 +316,8 @@ class TestTheEscapeTheFirstFixtureOpens:
         validator = GroundingValidator.from_config(AS_DECLARED)
         report = validator.validate(SILENT_DRAFT, EVIDENCE)
         assert report.verified is False
-        assert set(report.silent) == {"identifiers", "figures"}
+        assert set(report.silent) == {"identifiers", "figures",
+                                      "attribution"}
         for row in report.results:
             if row.configured:
                 assert row.verdict == NOTHING_CONSIDERED

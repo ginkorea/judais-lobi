@@ -14,6 +14,7 @@ import pytest
 
 from core.runtime.grounding import (
     DEFAULT_CHECKS,
+    FieldAttributionCheck,
     NOTHING_CONSIDERED,
     SUPPORTED,
     UNCONFIGURED,
@@ -29,6 +30,7 @@ from core.runtime.grounding import (
     IdentifierGroundingCheck,
     NumericGroundingCheck,
     PlaneClaimCheck,
+    SubjectGroundingCheck,
     ReadingGroundingCheck,
 )
 
@@ -806,17 +808,24 @@ class TestDeclaration:
 
         assert Custom(GroundingConfig()).check("a b", ["a b"]).grounded
 
-    def test_the_default_checks_are_the_five_named_in_cost_order(self):
+    def test_the_default_checks_are_the_seven_named_in_cost_order(self):
         """The order is the cost order and the tuple states it.
 
         Reading is last because it is the only tier that spends a model
         call, and the whole affordability argument for it is that every
         free check has already had its say. A change that moved it earlier
         would be a change to what a mission costs.
+
+        `subject` is second-to-last for a different reason, and it is not
+        cost: it reads the rows the other checks produced — did anything
+        else in this answer have something to check — so every one of them
+        has to have run before it. Moving it earlier would make it answer
+        from a report that is not there yet.
         """
         assert DEFAULT_CHECKS == (
             IdentifierGroundingCheck, NumericGroundingCheck,
-            ClaimGroundingCheck, PlaneClaimCheck, ReadingGroundingCheck,
+            FieldAttributionCheck, ClaimGroundingCheck, PlaneClaimCheck,
+            SubjectGroundingCheck, ReadingGroundingCheck,
         )
 
 

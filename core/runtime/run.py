@@ -4009,7 +4009,15 @@ class Run:
             # them — the plane-claim check's evidence, and the one place
             # that fact lives. See `MissionResultStore.called_tools`.
             called=(self.results.called_tools() if called is None
-                    else called))
+                    else called),
+            # And HOW MANY dispatches there were, which is a different fact
+            # from the list above: that one is distinct names, and the
+            # staged path hands in the union of several stores'. `None` —
+            # what a caller that named its own `called` gets — means nobody
+            # said, and `SubjectGroundingCheck` reports no opinion rather
+            # than reading it as a run that called nothing. The direct
+            # path's store IS the count, one entry per dispatch.
+            calls=(len(self.results) if called is None else None))
         # Reshaped, always, and with the run's own repair count on it. Two
         # facts ride out of here: what the checks said, which is
         # `results`, and how many repair turns this answer has already
