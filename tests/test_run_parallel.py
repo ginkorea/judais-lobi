@@ -863,11 +863,29 @@ class TestTheReRecordedFixturesGainedOnlyTheField:
     Only the two STAGED fixtures were re-recorded.  The direct ones are
     untouched, which is the other half of the claim: a run with no children
     emits no ``branch`` at all, so there was nothing to re-record.
+
+    **The grounding vocabulary is normalised on both sides** (21 Aug 2026):
+    ``CONTRACT.md`` says the set of grounding check names grows in a minor
+    release and a consumer renders an unfamiliar row from its own fields —
+    rc5 grew it (``attribution``, ``subject``).  A guard that froze the
+    ``checks``/``silent`` contents of the ``grounding`` record would forbid
+    exactly what the contract allows, so those two keys are dropped from
+    that one record type, and every other byte of every other record is
+    still the recording that was there.
     """
 
+    GROWABLE = ("checks", "silent")
+
     def stripped(self, records):
-        return [{k: v for k, v in record.items()
-                 if k not in MOVES and k != "branch"} for record in records]
+        out = []
+        for record in records:
+            kept = {k: v for k, v in record.items()
+                    if k not in MOVES and k != "branch"}
+            if kept.get("event") == "grounding":
+                for key in self.GROWABLE:
+                    kept.pop(key, None)
+            out.append(kept)
+        return out
 
     @pytest.mark.parametrize("after,before", RERECORDED)
     def test_take_the_field_out_and_it_is_the_recording_that_was_there(

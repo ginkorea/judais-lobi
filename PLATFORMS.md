@@ -746,6 +746,18 @@ state anything the platform does not actually enforce.
 * **How to work a governed plane.** Since 0.17 that is the framework's, not
   yours — see below.
 
+**Shape your agent-facing schemas for the caller you actually have.** An
+optional filter parameter on an agent-facing tool is an attractive
+nuisance for a small model: offered `submitted_via` as an optional enum,
+a 20b model at temperature 0.2 filled it "helpfully" with the same wrong
+value on eight calls out of eight, filtered the caller's own jobs out of
+the listing, and then honestly reported the emptiness — a wrong answer
+with a clean conscience, invisible to every downstream check because the
+tool did exactly what it was asked. Prefer required-or-absent: make a
+parameter required and let the model be unable to guess it, or take it
+off the call schema entirely and leave the field readable on each result
+row. Measured on a reference deployment, 21 Aug 2026.
+
 ### The conduct: what you no longer have to write
 
 Every deployment of this framework wrote the same paragraph for itself, and it
