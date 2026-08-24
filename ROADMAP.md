@@ -16,10 +16,11 @@ docstrings and the README quote it.
 
 ## 1. Where we are
 
-**v1.0.0**, 18 Aug 2026. 5,883 tests collected (`pytest --collect-only -q`);
-55,322 lines in `core/`+`judais/`+`lobi/` and 67,748 lines of tests (`wc -l`
-over `*.py`, so blanks and docstrings are in both numbers — this repository
-writes a lot of both on purpose).
+**v1.0.0 — released.** Tagged 21 Aug 2026 at c61397e, published to PyPI
+24 Aug 2026. 5,972 tests collected (`pytest --collect-only -q`); 56,496 lines
+in `core/`+`judais/`+`lobi/` and 69,486 lines of tests (`wc -l` over `*.py`,
+so blanks and docstrings are in both numbers — this repository writes a lot of
+both on purpose).
 
 For two weeks this framework ran in production as **Tai**, the mission agent
 inside a separate platform: a 20B local model, an MCP tool plane of ~20
@@ -37,9 +38,18 @@ default, 0.10.0 durable and bounded, 0.11.0 native tool calling behind a flag,
 0.13.0 the eval harness, recorded-run replay and the three grounding tiers
 wired off by default, 0.14.0 what that harness found (an offered set that
 follows the bus, a code gate about this host), staged `--resume`, and
-`--provider anthropic`. What is left is §2 — and the largest piece of it is now
-not that measurement is *impossible* but that it has not been *done*: the
-harness exists and nothing has been scored with it yet.
+`--provider anthropic`. The measurements have
+now been done twice over: `core.eval measure` on the frozen tree (`EVAL.md`
+§12, "The 1.0.0 numbers"), and the release-candidate iteration of 18–21 Aug —
+five rcs scored against a reference platform's 20-scenario mission eval at a
+20B local model, which is where `--mcp-timeout`, the conduct sentences, the
+conduct-after-catalogue ordering and the `subject`/`attribution` grounding
+checks came from, and which ended with an honest instrument reading: the tier
+is 20 dice landing 14–16 at that model class, two scenario ids are a measured
+*capability* residual no runtime change closed, and every scoreboard error was
+the platform's, none the framework's. That split — runtime changes close
+behavioural failures, and cannot close semantic ones — is the finding that §2.9
+turns into the 1.0 → 2.0 plan.
 
 ### 1.1 The six properties
 
@@ -89,8 +99,8 @@ provable rather than asserted.
 
 ## 2. The plan
 
-One numbering, forward only. February's Phases 0–8 are the as-built past;
-Phases 9–13 are the work. Each phase names the seam it touches and, where the
+One numbering, forward only. February's Phases 0–8 and August's 9–15 are the
+as-built past; Phases 16–21 (§2.9) are the work. Each phase names the seam it touches and, where the
 answer already exists somewhere, where to take it from. Lane it: builder in a
 worktree, tests in the file's idiom, mutation-checked, reviewer lane, conductor
 merges. Version bump every phase.
@@ -122,6 +132,13 @@ merges. Version bump every phase.
 | 13 | Embeddable (1.0) | ✅ 1.0.0 — the library API, `model_state`, the `[server]` extra, CI on push + PyPI on tag, PLATFORMS.md + the conformance kit, the framework conduct text, and the freeze: `SCHEMA_VERSION` 1 for the 1.x major. Fresh-venv smoke ran all three packs live from the wheel; the Fable-5 adversarial review's findings closed |
 | 15 | First-party skills | ✅ 0.17.0 — packs by name; `analyst`, `research` (+ the `research` profile), `coding` (multi-file, verified) with eval suites and live proofs; memory (core/recall/working); tools over MCP + multi-server; campaigns on `Run` + `--grant`. Left: the mission-pack `templates/` roles composed as `Run`s (post-1.0) |
 | 14 | The step budget is gone (0.15) | ✅ 0.15.0 — no framework step budget; operator ceilings only; `core/runtime/supervisor.py` catches repetition (§2.6a) |
+| — | *Release 1.0.0 — the initial release* | ✅ tag c61397e 21 Aug 2026, PyPI 24 Aug; the rc iteration (rc1–rc5, 18–21 Aug) measured five framework changes against a reference platform's eval and is §2.9.2's evidence |
+| 16 | Cognition baseline — benchmark pack + the extraction number | §2.9.3 — the 2.0 gatekeeper; kill-early lives here |
+| 17 | Epistemic prototype + shadow cognition | §2.9.4 — `reasoning` records beside the stream; cognition-off byte-identical |
+| 18 | Compiled context + grammar compiler | §2.9.5 — constrained decoding pulled early on rc evidence |
+| 19 | Obligation control — the core experiment | §2.9.6 — the commit-or-kill decision for the whole arc |
+| 20 | Conditional expansions — graph working set, derived swarm, solver, routing | §2.9.7 — each behind its own ablation, none before Phase 19 reads positive |
+| 21 | The specialized local model | §2.9.8 — the deferred racetrack-LoRA thread, aimed at the semantic compiler |
 
 The release numbers in the second column are February's guesses at which
 version a phase would land in, kept so the phase numbers do not move. They are
@@ -973,12 +990,236 @@ Property 6.
   to integrate without reading source, and the eval harness running in CI on
   every push.
 
+### 2.9 Phases 16–21 — the cognitive runtime (1.0 → 2.0)
+
+Distilled 24 Aug 2026 from the owner's thought-experiment document (drafted
+with ChatGPT) and integrated with what the rc iteration measured. This section
+is the whole of that plan — the ONE-roadmap rule applies; there is no second
+document. Phase numbering continues from 15; the thought experiment's own
+"Phase 0–15" labels are folded into six phases here, reordered where our
+evidence says the original order was wrong.
+
+#### 2.9.1 The thesis
+
+The names finally earn their definitions. **JUDAIS — Judicious Unified
+Decision And Inference System**: given what is currently represented, what
+should happen next. **LOBI — Local Orchestrated Belief Infrastructure**: what
+the system currently believes, why it believes it, and what local resources
+can support further cognition.
+
+The hypothesis, stated so it can be falsified:
+
+> A local language model becomes materially more capable when the runtime
+> externalizes problem state, deterministic inference, planning state,
+> constraints and verification, rather than forcing the model to perform those
+> functions inside its context window.
+
+Today's harness — like every conventional harness — owns *execution* state
+(messages, steps, receipts, budgets) while the model owns *problem* state
+(what is known, what is uncertain, what follows, what conflicts, what remains,
+whether the objective is achieved). For a 20B that division is the expensive
+one. The 2.0 arc moves problem state into the runtime: an epistemic store with
+explicit statuses (`OBSERVED`, `DERIVED`, `HYPOTHESIZED`, `REFUTED`,
+`CONTESTED` — `UNKNOWN` is never represented as false), authority that travels
+with every proposition (`DETERMINISTIC` / `SOURCE` / `MODEL_EXTRACTION` /
+`MODEL_INTERPRETATION` / `MODEL_HYPOTHESIS`; only trusted rule authorities
+participate in closure — a model may *propose* a rule, proposing it never
+makes it true), reconstructable provenance on every derived proposition
+(`prove(P)` returns the derivation DAG), and one planning primitive, the
+**Obligation**: something that must be established, refuted, constrained,
+explored or exhausted before the objective advances. The set of unresolved
+obligations relevant to current goals is the **proof frontier**, and the
+frontier is computed, not asked for: the runtime stops asking the model "what
+should I do next?" and starts telling it "resolve this."
+
+The model becomes one processor among several (deterministic code, the
+epistemic store, a solver, child `Run`s), selected per obligation by cost and
+capability. `Run` remains the only runtime — cognition attaches to it; there
+will not be a second loop. And cognition keeps a divergent mode on purpose —
+hypothesis generation, reframing, representation challenge — because "no
+represented solution exists" must never be mistaken for "no solution exists."
+
+#### 2.9.2 What 1.0 already measured — the evidence, both directions
+
+The rc iteration was this experiment at miniature scale, and its data cuts
+both ways. **For:** `gate_respected` went from failing to 4/4 through runtime
+changes alone (conduct sentences + ordering), and `staged_arithmetic` staging
+flipped the moment the repair prompt *named the fix* — remedy-steering is a
+proto-obligation, the runtime computing what is missing and saying exactly
+that. **Against:** `staged_arithmetic` still finished 0/4 and
+`label_set_choice` 1/4 — a capability residual no runtime scaffolding closed,
+on the same model class that misread `total_s=154.024` (elapsed seconds) as a
+"total score." That misreading is precisely the semantic-extraction step the
+whole cognitive stack depends on. So the measured prediction this arc is built
+on: runtime amplification is real for *behavioural discipline* (when to call,
+staging, refusal reporting) and weak-to-nil for *semantic competence* (which
+field means what) — which is why Phase 16 measures extraction before anything
+is built, and why Phase 21 (the fine-tune) is load-bearing rather than polish.
+
+#### 2.9.3 Phase 16 — the cognition baseline
+
+The gatekeeper; nothing in Phases 17–21 begins without it.
+
+- **Benchmark pack** on the existing `core/eval` machinery — no second eval
+  framework. Mission classes that are harness-sensitive by construction:
+  multi-hop evidence, missing evidence, contradictory evidence, dependency
+  reasoning, constraint problems, long-horizon recovery, misleading evidence,
+  representation failure. Same model, tools, objective, data and budget across
+  arms.
+- **The instrument first.** The final gate taught us a 20-scenario tier at a
+  20B is 20 dice landing 14–16. Every exit criterion in this arc therefore
+  states its n and pairs its arms; nothing passes on a lucky single.
+- **The extraction number.** Take real receipts from the replay corpus, ask
+  the target local model for propositions with abstention
+  (`ASSERT`/`HYPOTHESIZE`/`AMBIGUOUS`/`CONTRADICTED`/`INSUFFICIENT_EVIDENCE`),
+  and score them. A wrong proposition in an epistemic store is worse than a
+  wrong sentence in a transcript — deterministic machinery then derives from
+  it with confidence. This number decides the phase order: if it is bad and
+  constrained decoding plus few-shot cannot lift it, Phase 21 moves *before*
+  Phase 19, or the arc stops. Hallucination laundering through extraction is
+  the same non-negotiable as laundering through proposed rules.
+- **Attachment map**: receipts, `_ground`, the supervisor, `Run.child`, the
+  replay store — mostly known; write it down where a lane can cite it.
+
+Exit: a reproducible paired baseline, an extraction-reliability number, and a
+written go/no-go on the phase order.
+
+#### 2.9.4 Phase 17 — the epistemic prototype and shadow cognition
+
+Python first; deliberately replaceable; no native code.
+
+- Minimal types: `Proposition`, `EvidenceRef`, `Rule`, `Derivation`, `Goal`,
+  `Obligation`, `Contradiction`, `CognitiveState`; operations
+  `assert_observation`, `assert_hypothesis`, `derive`, `refute`, `prove`,
+  `contradictions`, `frontier`. Incremental (`apply_delta`), never
+  `recompute_world`.
+- **Shadow attachment**: tool receipts → semantic extraction → candidate
+  propositions → shadow state, persisted as `reasoning` records beside the
+  stream. Contract fit is clean: new record types are a minor release,
+  consumers drop unknown types, `SCHEMA_VERSION` 1 holds.
+- **Cognition-off is byte-identical.** The corpus guard proves it, the same
+  way §2.6.4's before-branch guard proved `Run`. Clean ablation is a 2.0
+  requirement, not a nicety.
+- Rules arrive through skills — a skill manifest may carry a rule pack, which
+  makes rule authorship a named cost of the architecture rather than an
+  unexamined assumption (the thought experiment's gap: it never budgeted for
+  who writes the rules).
+
+Exit: the types survive the benchmark pack without redesign; replay
+reconstructs cognition; every proposition traces to evidence; corpus diff
+empty with cognition off.
+
+#### 2.9.5 Phase 18 — the compiled context and the grammar compiler
+
+Two amplifiers that need no frontier logic, pulled ahead of the thought
+experiment's own ordering on rc evidence.
+
+- **Context Compiler**: compile current problem state — objective, current
+  obligation, established/contested propositions, unknowns, relevant
+  artifacts — into the smallest useful model input, replacing transcript
+  accumulation. Widening is mandatory from day one: search artifacts, hydrate
+  more state, request raw history — compiled context may omit the decisive
+  clue, and the model must be able to say so.
+- **The measured tension, named**: prefix caching wants stable material early;
+  rc4 measured that a 20B binds instructions placed *last*
+  (conduct-after-catalogue). Resolution: stable prefix for reference material,
+  volatile suffix for the binding obligation — and instrument cache locality
+  rather than assuming it.
+- **Grammar compiler**: per cognitive operation, compile the permitted output
+  language (typed propositions, known entity ids, allowed statuses) into
+  constrained decoding where the backend supports it (`vLLM`/`SGLang` class).
+  The cheapest local-model amplifier on the board; it attacks the parse/retry
+  failure class we have already watched a 20B produce.
+
+Exit: measured token and model-call reduction without success regression;
+structural-failure rate falls substantially; information-loss failures
+accounted for, not averaged away.
+
+#### 2.9.6 Phase 19 — obligation control: the core experiment
+
+The commit-or-kill decision for the whole arc.
+
+- Evidence → state delta → incremental closure → frontier → next obligation →
+  compiled context → the cheapest capable processor. The model stops owning
+  top-level progression.
+- The supervisor evolves from procedural repetition (§2.6a) to **epistemic
+  progress**: frontier unchanged, no predicate resolved, no contradiction
+  reduced — that is the stall signal, and it is this arc's largest expected
+  gain.
+- The A/B is the north star in miniature: same local model, same pack, same
+  budgets, cognition on versus off, paired, n stated. Score mission success,
+  unsupported claims, dead-end actions, premature completion, model calls,
+  tool calls, tokens, wall-clock, recovery.
+- **Kill criterion, in writing**: a small gain (the 61%→64% shape) is not
+  success — simplify or stop, and record the honest number either way. A
+  61%→79% shape is evidence of real harness amplification. The strategic
+  benchmark beyond it: smaller local model + this runtime approaching a
+  substantially larger model + a conventional harness.
+
+Exit: the A/B read, the decision taken, the number in `EVAL.md`.
+
+#### 2.9.7 Phase 20 — conditional expansions
+
+Only after Phase 19 reads positive, and each behind its own ablation row —
+this is the thought experiment's remaining machinery, admitted piecewise:
+
+- **Graph working set**: a corpus-graph adapter (Graphify-shaped; none exists
+  in this repo today) behind `hydrate(obligation, limits)` — huge corpus
+  graph → small working graph → tiny context; graph edges enter with
+  authority, never as silent truth. Gate: meaningfully fewer exploratory
+  actions on graph-sensitive missions.
+- **Derived swarm**: independent unresolved obligations become `Run.child`
+  contracts (one obligation, bounded evidence, constrained tools; children
+  return evidence, the parent commits — cognition stays single-writer). The
+  swarm lessons already paid for (one window at the model's max, budgets to
+  their owners) apply unchanged.
+- **Constraint solver** (Z3-class) for the classes that deserve it —
+  scheduling, dependency ordering, feasibility; the runtime recognizes the
+  problem class, the model does not have to remember to ask.
+- **Capability registry**: empirical routing across local models, coarse
+  first; route only when differences are statistically meaningful — no false
+  precision from tiny samples.
+
+#### 2.9.8 Phase 21 — the specialized local model
+
+The deferred racetrack-LoRA thread, aimed where the evidence points: the
+semantic boundary. Convert validated runtime traces into training data —
+proposition extraction, epistemic classification, entity normalization,
+obligation interpretation, and *abstention above all*: a useful semantic
+compiler must know when not to create a fact. Evaluate as compiler
+reliability against Phase 16's extraction number, not as language quality;
+compare base, prompted, fine-tuned, larger-local and a frontier reference.
+Fine-tune only after the protocol stabilizes — never train against
+abstractions still moving.
+
+#### 2.9.9 What 2.0 means, and the non-goals
+
+**2.0 means**: `Run` owns persistent cognitive state; receipts are
+evidence-backed observations; trusted rules derive with exact provenance;
+contradictions and obligations are explicit; the frontier is deterministic;
+cognitive state replays exactly; cognition disables cleanly; and the same
+local model **measurably** outperforms its own non-cognitive baseline on the
+paired pack. #11 of the thought experiment's success list is the release
+gate; everything else on the list is scaffolding for it.
+
+**Non-goals until their gates are met, in writing:** no native (C) kernel
+before the Python semantics survive the benchmark without redesign — the
+thought experiment spends a fifth of its length on C data layout and CUDA
+tiers, and the only thing this roadmap keeps from those sections is the rule
+that generated them: messy and semantic stays Python, stable and computational
+may move native, and CUDA waits for a profiled >5× on an operation that
+materially affects missions. No corpus-graph build-out before Phase 20's
+gate. No sophisticated inference-aware scheduling before the telemetry
+exists. The cost metric throughout is **model calls per successful mission**
+— a cognitive architecture that turns one strong call into five mediocre
+calls has failed at its own game, whatever its microbenchmarks say.
+
 ---
 
 ## 3. Principles
 
 The February design philosophy and the August lessons say the same things in
-different words. Merged, deduplicated, and still true at 0.12.0. The eight the
+different words. Merged, deduplicated, and still true at 1.0.0. The eight the
 README's closing section quotes are all here, under the same names.
 
 - **Artifacts over Chat:** State is on disk, not in a sliding text window.
@@ -1038,6 +1279,17 @@ README's closing section quotes are all here, under the same names.
   division is what made the trust boundary safe, and it holds at 1.0.
 - **Measure before default.** Nothing becomes on-by-default until the harness
   scores it against a held-out set.
+- **The runtime holds the problem.** (2.0's thesis, §2.9.) The model does not
+  need to hold the problem in its head; never ask a local model to solve a
+  problem the runtime can first turn into a smaller, better-defined one.
+- **Never silently promote model inference to observed truth.** Authority
+  travels with every proposition and every rule; a model may propose, and
+  proposing does not establish. This is the same boundary the grounding
+  validator already enforces for answers, extended to beliefs.
+- **Model calls per successful mission is the cost metric.** Not symbolic
+  microseconds, not token counts alone — the count of model invocations a
+  mission needed to succeed, which is what a cognitive runtime is supposed to
+  reduce.
 
 **Constraints and non-goals.** No Docker: sandboxing uses native Linux
 namespaces — `bwrap` is the backend that ships, and February's Tier-2 `nsjail`
