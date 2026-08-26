@@ -24,6 +24,46 @@ def _env_path(name: str):
     return Path(value) if value else None
 
 
+def _env_skills(name: str = "MISSION_SKILL"):
+    """``MISSION_SKILL`` as the list ``--skill`` now appends to, or None.
+
+    ``os.pathsep``-separated, the separator every other list of paths in
+    an environment already uses, so a platform exporting a skill family
+    writes what it writes for ``PATH``.  One path with no separator in it
+    is one skill, which is what this variable has always meant.
+
+    NOT passed as ``default=`` to an ``append`` action — argparse appends
+    to a mutable default, so an operator with ``MISSION_SKILL`` set who
+    also typed ``--skill`` would silently run under both, one of them a
+    skill they had forgotten was in their shell.  Same trap
+    ``--mcp-stdio`` documents; read in :func:`_load_skill` instead, where
+    a typed flag simply wins.
+    """
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        return None
+    found = [Path(part.strip()) for part in value.split(os.pathsep)
+             if part.strip()]
+    return found or None
+
+
+def _skill_values(args):
+    """Every ``--skill`` this run was given, in order, primary first.
+
+    ONE OWNER of *which skills were named*, because there are now two
+    places that ask — :func:`_load_skill`, which loads them, and
+    :func:`_campaign_packs`, which wants the primary's pack name — and
+    two readings of a repeatable flag drift the moment one of them
+    forgets the environment form.
+
+    A typed flag wins outright over ``MISSION_SKILL`` rather than
+    extending it: the alternative is an operator who typed one skill and
+    ran under two.
+    """
+    typed = list(getattr(args, "skill", None) or [])
+    return typed or list(_env_skills() or [])
+
+
 def _env_mcp_timeout(name: str = "MCP_TIMEOUT_S"):
     """The per-call MCP tool timeout from an env var, or None for "the
     default".
@@ -286,14 +326,24 @@ def _load_skill(args):
     unchanged, one exception type included, because ``PackError``
     subclasses ``SkillManifestError`` and is refused by the clause that
     was already here.
+
+    **The flag repeats**, and several manifests become one:
+    :func:`~core.runtime.skills.compose_manifests` owns what that means
+    — first is primary, tools union, strictness unions, one answer shape
+    — and this function owns only the resolution of each value and the
+    turning of a refusal into a ``SystemExit``.  One value composes to
+    itself, unchanged, so every command line that named one skill is the
+    run it always was.
     """
-    if not getattr(args, "skill", None):
+    named = _skill_values(args)
+    if not named:
         return None
 
-    from core.runtime.skills import SkillManifestError, resolve_skill
+    from core.runtime.skills import (SkillManifestError, compose_manifests,
+                                     resolve_skill)
 
     try:
-        return resolve_skill(args.skill)
+        return compose_manifests([resolve_skill(value) for value in named])
     except SkillManifestError as exc:
         raise SystemExit(f"--skill: {exc}")
 
@@ -334,7 +384,13 @@ def _campaign_packs(args, personality):
     """
     from core.runtime.campaign import templates_of
 
-    name = str(getattr(args, "skill", "") or "").strip()
+    # The PRIMARY skill's, when several were named. A campaign step is
+    # given one persona and one pack's templates, and the pack a composed
+    # mission belongs to is the one whose name, version and answer shape
+    # it carries — the same first-is-primary rule `compose_manifests`
+    # applies to everything else a mission has exactly one of.
+    named = _skill_values(args)
+    name = str(named[0]).strip() if named else ""
     if not name or Path(name).expanduser().exists():
         return {}, {}
     try:
@@ -782,7 +838,13 @@ def _run_meta_flags(args) -> dict:
     """
     given = {}
     for flag in RUN_META_FLAGS:
-        value = getattr(args, flag, None)
+        # `skill` goes through `_skill_values` and not through `getattr`,
+        # because the environment form is no longer an argparse default:
+        # a run started from `MISSION_SKILL` alone would otherwise index
+        # itself as having had no skill, which is the one thing a reader
+        # of a run directory most wants to know it was under.
+        value = (_skill_values(args) if flag == "skill"
+                 else getattr(args, flag, None))
         if value in (None, "", False, []):
             continue
         given[flag] = value
@@ -1846,9 +1908,16 @@ def _mission(elf, args, name, style):
                         f"pass quietly",
                         style="yellow")
             if manifest:
+                # `manifest.composed` is empty for one skill and names all
+                # of them, primary first, for several — so the line that
+                # says which skill a run is under does not name one of
+                # three and leave the other two to be inferred.
                 console.print(
-                    f"📜 skill {manifest.name} — {len(tool_names)} tool(s): "
-                    f"{', '.join(tool_names)}"
+                    f"📜 skill {manifest.name}"
+                    + (f" + {', '.join(manifest.composed[1:])}"
+                       if manifest.composed else "")
+                    + f" — {len(tool_names)} tool(s): "
+                    + f"{', '.join(tool_names)}"
                     + ("" if validator else "  (no grounding grammar)"),
                     style=style,
                 )
@@ -2633,13 +2702,22 @@ def _main(AgentClass):
                              "minutes-long mission. Turning it off changes "
                              "nothing else — the same answer record arrives "
                              "at the same moment (env: MISSION_STREAM=off)")
-    parser.add_argument("--skill", type=Path, default=_env_path("MISSION_SKILL"),
+    # Repeatable, and MISSION_SKILL is read in `_skill_values` rather than
+    # as a `default=` here, for the reason --mcp-stdio documents above:
+    # argparse APPENDS to an `append` action's default, so an operator with
+    # MISSION_SKILL set who also typed --skill would silently run under two
+    # skills, one of them a skill they had forgotten was in their shell.
+    parser.add_argument("--skill", type=Path, action="append", default=None,
                         help="A SKILL.md manifest (or a directory holding "
                              "one), OR the name of a mission pack this "
                              "install ships (--skill analyst) — supplying "
                              "the mission's closed tool set, its prompt and "
-                             "its grounding grammar. A path that exists wins "
-                             "(env: MISSION_SKILL)")
+                             "its grounding grammar. A path that exists wins. "
+                             "REPEATABLE: several skills compose into one "
+                             "mission — the FIRST is primary and owns the "
+                             "mission's name and its answer shape, the rest "
+                             "add tools, prompt and grounding strictness "
+                             "(env: MISSION_SKILL, os.pathsep-separated)")
     parser.add_argument("--events", type=str,
                         default=os.getenv("MISSION_EVENTS", ""),
                         help="Write an NDJSON account of the mission AS IT "

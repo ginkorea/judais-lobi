@@ -53,6 +53,14 @@ what governs it instead is the server, the closed set, the ``mcp.call``
 capability and ``--gate-tool``.  See
 :meth:`SkillManifest.code_plane_entries`.
 
+**Skills compose.**  ``--skill`` repeats, and several manifests fold
+into one by :func:`compose_manifests` — the first is the primary and owns
+the mission's identity and its answer shape; the rest bring tools, prompt
+and grounding strictness, unioned.  One manifest folds to itself,
+unchanged.  That function is the only place that knows what running two
+skills at once means, for the reason this module is the only place that
+knows what one skill means.
+
 **The format is generic.**  Frontmatter between ``---`` fences, an
 optional ``skill:`` block for the operational fields, a Markdown body.
 Fields this module has never heard of are rendered into the prompt
@@ -137,6 +145,14 @@ _PROMPT_FIELDS: Tuple[Tuple[str, str], ...] = (
 )
 
 _OUTPUT_FIELD = "output_format"
+
+#: The label :meth:`SkillManifest._render_prompt` writes the output contract
+#: under, and the one :func:`compose_manifests` has to find again to take a
+#: supporting skill's answer shape back off.  A literal in both places is two
+#: owners of one fact, and the second one drifts silently: a composed prompt
+#: would simply keep the supporting contract and the mission would be told to
+#: produce two answer shapes.
+_OUTPUT_LABEL = "Output format"
 
 
 def code_plane_tools() -> Dict[str, Tuple[str, ...]]:
@@ -290,6 +306,14 @@ class SkillManifest:
     #: have an opinion about it.
     sandbox: str = ""
     source: Optional[Path] = None
+    #: The names of the skills :func:`compose_manifests` folded into this
+    #: one, in the order they were listed, primary first.  Empty for a
+    #: manifest that came off one file, which is what keeps the
+    #: single-skill path byte-identical to what it was before composition
+    #: existed.  It is here so a caller can SAY which skills a run is
+    #: under — the composed :attr:`name` is the primary's and names only
+    #: one of them — rather than leave it to be worked out of the prompt.
+    composed: Tuple[str, ...] = ()
 
     # ── loading ─────────────────────────────────────────────────────────
 
@@ -524,7 +548,7 @@ class SkillManifest:
         if body.strip():
             parts.append(body.strip())
         if output:
-            parts.append(f"Output format:\n{output}")
+            parts.append(f"{_OUTPUT_LABEL}:\n{output}")
         return "\n\n".join(parts)
 
     # ── the closed set, against what was discovered ─────────────────────
@@ -797,6 +821,388 @@ def resolve_skill(arg) -> SkillManifest:
     from core.skills.library import resolve as _resolve_pack
 
     return _resolve_pack(arg)
+
+
+#: ``grounding:`` keys merged as a first-seen-order union of literals.
+#: Both are lists of content a skill wrote down, and two skills that each
+#: know a placeholder to ignore both still know it.
+_GROUNDING_LISTS: Tuple[str, ...] = ("ignore", "figures_from")
+
+#: ``grounding:`` keys merged with OR.  Checking asked for by ANY skill
+#: binds the composed run: a skill that asked for a claim table asked
+#: because its own answers are not worth much without one, and being
+#: composed with a laxer skill is not a reason to stop asking.
+_GROUNDING_FLAGS: Tuple[str, ...] = ("claim_table", "reading", "critic")
+
+#: ``grounding:`` keys that are one value for the whole run.  Absent
+#: yields to declared; declared twice has to AGREE, because there is no
+#: honest way to choose between two identifier grammars — the merge
+#: cannot know which of them the answer will be written in, and taking
+#: the first would switch a check off for the other skill's identifiers
+#: while the report went on saying the check ran.
+_GROUNDING_SCALARS: Tuple[str, ...] = (
+    "identifier_pattern", "number_pattern", "max_repairs",
+)
+
+
+def _canonical(value: Any) -> Any:
+    """A ``grounding:`` value reduced to something two skills compare on.
+
+    YAML hands back plain mappings, lists and scalars, and one plane
+    written in two YAML styles is one declaration.  Only the container
+    shapes are normalised — the content is left exactly as written,
+    because deciding that two *different* tool lists were meant to be the
+    same is not this function's call to make.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): _canonical(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical(item) for item in value]
+    return value
+
+
+def _prompt_without_output_contract(manifest: "SkillManifest") -> str:
+    """*manifest*'s prompt with its answer shape taken back off.
+
+    A mission has ONE answer shape.  A supporting skill's operational
+    knowledge is worth having and its ``output_format`` is not: two
+    output contracts in one system message is a model choosing between
+    them, and the one it chooses is not necessarily the one the primary
+    skill's grounding block is written against.
+
+    Removed by the exact suffix :meth:`SkillManifest._render_prompt`
+    wrote, and a prompt that does not end in it is returned untouched: a
+    manifest assembled by hand may carry a prompt this module never
+    rendered, and truncating that one on a guess is worse than leaving a
+    sentence in.
+    """
+    contract = manifest.output_contract
+    if not contract:
+        return manifest.prompt
+    tail = f"\n\n{_OUTPUT_LABEL}:\n{contract}"
+    if manifest.prompt.endswith(tail):
+        return manifest.prompt[:-len(tail)]
+    return manifest.prompt
+
+
+def _merge_grounding(
+    manifests: Sequence["SkillManifest"], problems: List[str],
+) -> Optional[Dict[str, Any]]:
+    """One ``grounding:`` mapping out of several, appending every problem.
+
+    Raw mappings in, a raw mapping out.  The merge deliberately does not
+    build a :class:`~core.runtime.grounding.GroundingConfig` and take it
+    apart again, because that class is the *reader* of this block and a
+    merge going through it would be a second reader of the same fact.
+    What the caller does with the result is hand it straight back to
+    :meth:`~core.runtime.grounding.GroundingConfig.from_mapping`, so a
+    merge that produced something unusable refuses at the door rather
+    than at the end of an 11,000-second mission.
+
+    Each skill's own block is validated first and one that does not stand
+    up alone is left out with its own reason named.  Merging an
+    unreadable block would produce a second, stranger complaint about a
+    mapping nobody wrote.
+    """
+    from core.runtime.grounding import GroundingConfig
+
+    declared = [m for m in manifests if m.grounding is not None]
+    if not declared:
+        return None
+
+    usable: List["SkillManifest"] = []
+    for manifest in declared:
+        try:
+            GroundingConfig.from_mapping(manifest.grounding)
+        except ValueError as exc:
+            problems.append(
+                f"skill {manifest.name!r} has a `grounding:` block that is "
+                f"not usable on its own, so there is nothing to merge: {exc}"
+            )
+            continue
+        usable.append(manifest)
+    if not usable:
+        return None
+
+    merged: Dict[str, Any] = {}
+
+    for key in _GROUNDING_LISTS:
+        union: List[str] = []
+        for manifest in usable:
+            for item in (manifest.grounding.get(key) or ()):
+                text = str(item)
+                if text not in union:
+                    union.append(text)
+        if union:
+            merged[key] = union
+
+    for key in _GROUNDING_FLAGS:
+        if any(bool(m.grounding.get(key, False)) for m in usable):
+            merged[key] = True
+
+    for key in _GROUNDING_SCALARS:
+        stated = [(m.name, m.grounding[key]) for m in usable
+                  if m.grounding.get(key) is not None]
+        if not stated:
+            continue
+        if any(value != stated[0][1] for _name, value in stated):
+            problems.append(
+                f"`grounding: {key}` is declared by more than one skill and "
+                f"they disagree — "
+                + "; ".join(f"{name!r} says {value!r}"
+                            for name, value in stated)
+                + f". A composed mission has one {key}, and choosing between "
+                  f"two would switch the check off for whichever skill lost "
+                  f"while the report went on saying it ran. Make them agree, "
+                  f"or do not compose these skills"
+            )
+            continue
+        merged[key] = stated[0][1]
+
+    # `must_cite:` has three spellings and one meaning, and
+    # `_read_must_cite` is the owner of that reduction — so the merge
+    # compares what IT says rather than the spelling a skill happened to
+    # use. Identity is the check NAME, the thing two skills can both
+    # name; the content is the minimum count.
+    minimums: Dict[str, Tuple[str, int]] = {}
+    order: List[str] = []
+    for manifest in usable:
+        pairs, _problems = GroundingConfig._read_must_cite(
+            manifest.grounding.get("must_cite"))
+        for check, minimum in pairs:
+            if check not in minimums:
+                minimums[check] = (manifest.name, minimum)
+                order.append(check)
+            elif minimums[check][1] != minimum:
+                owner, first = minimums[check]
+                problems.append(
+                    f"`grounding: must_cite` asks for {check!r} twice over "
+                    f"with different counts: {owner!r} says {first} and "
+                    f"{manifest.name!r} says {minimum}. One answer cannot "
+                    f"have two different floors for one kind of thing"
+                )
+    if order:
+        merged["must_cite"] = {check: minimums[check][1] for check in order}
+
+    # A plane NAME is what a report says and what a claim phrase is
+    # recognised under, so two skills declaring one name over different
+    # tools have declared two planes and given them one word. Refused
+    # naming both, rather than one of them quietly winning.
+    planes: Dict[str, Any] = {}
+    plane_owner: Dict[str, str] = {}
+    for manifest in usable:
+        for name, body in (manifest.grounding.get("planes") or {}).items():
+            key = str(name).strip()
+            if key not in planes:
+                planes[key] = body
+                plane_owner[key] = manifest.name
+            elif _canonical(planes[key]) != _canonical(body):
+                problems.append(
+                    f"`grounding: planes: {key}` is declared by both "
+                    f"{plane_owner[key]!r} and {manifest.name!r}, over "
+                    f"different tools or claims. One plane name is one "
+                    f"plane: rename one of them, or make the two "
+                    f"declarations identical"
+                )
+    if planes:
+        merged["planes"] = planes
+
+    return merged or None
+
+
+def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
+    """Several manifests as the ONE a mission runs under, or a refusal.
+
+    ``--skill`` repeats, and this is the only place in the framework that
+    knows what repeating it means.  One owner, for the reason the loader
+    is one: a second implementation of *what does it mean to run two
+    skills at once* would union the tools one way in the CLI and another
+    way in a platform embedding the library, and both transcripts would
+    look ordinary.
+
+    **One manifest is returned unchanged** — the same object, not a copy
+    — so the single-skill path is byte-identical to what it was before
+    composition existed, which the replay corpus is what proves.
+
+    Several, and the FIRST is the primary.  It owns everything a mission
+    has exactly one of: the :attr:`~SkillManifest.name` every refusal and
+    every memory bank is filed under, the version, the ``source``, and
+    **the answer shape** — a supporting skill's ``output_format`` is
+    stripped back out of its prompt, because two output contracts in one
+    system message is a model picking one, and the one the primary's
+    grounding block checks is the one it may not pick.  The primary's own
+    contract is moved to the END of the composition, after every
+    supporting body, because :meth:`SkillManifest._render_prompt` puts it
+    last for a reason that composition would otherwise undo: it is the
+    instruction a model is acting on when it stops.
+
+    What the supporting skills bring is what a mission can have more than
+    one of:
+
+    * the **closed set**, as a union in first-seen order.  Identity is
+      :func:`~core.tools.descriptors.same_tool`, this framework's one
+      answer to *are these the same tool*, so two skills naming one tool
+      in two conventions name it once.  A tool optional (``?``) in one
+      skill and required in another is **required**: the skill that needs
+      it needs it, and being composed with a skill that merely likes it
+      is not news about the plane;
+    * the **prompt**, in listed order, primary first;
+    * the **grounding block**, merged key by key (see
+      :func:`_merge_grounding`) and then handed to
+      :meth:`~core.runtime.grounding.GroundingConfig.from_mapping`, so a
+      merge that produced something unusable is a refusal at the door.
+      Checking is unioned and never intersected: strictness asked for by
+      any skill binds the run;
+    * the ``sdk_import``, if exactly one distinct one was named, and the
+      ``sandbox``, at the strictest thing anybody asked for.
+
+    Everything that cannot be merged honestly is a **refusal listing
+    every problem at once**, in this module's idiom: a disagreement about
+    the identifier grammar, two SDKs, one plane name meaning two things,
+    the same skill listed twice.  Composing skills is something an
+    operator does at a command line and gets wrong at a command line, and
+    a refusal arriving one line at a time is fixed one line at a time.
+
+    Known and deliberate: two skills naming one tool in two conventions
+    keep the FIRST spelling, so a set holding ``thing`` first and
+    ``mcp.thing`` second composes to ``thing``.  Resolution matches on
+    ``same_tool`` either way and the mission binds the same tool; what is
+    lost is only that the composed entry no longer *says* a server owns
+    it.
+    """
+    loaded = list(manifests)
+    if not loaded:
+        raise SkillManifestError(
+            "no skill manifests to compose. A mission runs under one skill "
+            "or several; composing none is not a way to run under none"
+        )
+    if len(loaded) == 1:
+        return loaded[0]
+
+    problems: List[str] = []
+    primary = loaded[0]
+
+    # The same skill twice is a typo, and a silent de-duplication is what
+    # would make it a typo nobody ever finds: the second copy contributes
+    # no tool, no sentence and no grounding rule the first did not, so the
+    # run would be exactly the single-skill run the operator believed they
+    # had just left behind.
+    seen_source: Dict[str, str] = {}
+    seen_name: Dict[str, str] = {}
+    for manifest in loaded:
+        source = (str(Path(manifest.source).expanduser().resolve())
+                  if manifest.source is not None else "")
+        if source and source in seen_source:
+            problems.append(
+                f"{manifest.source} is listed twice. A skill composed with "
+                f"itself adds nothing to itself"
+            )
+            continue
+        if manifest.name in seen_name:
+            problems.append(
+                f"two of these skills are both called {manifest.name!r} "
+                f"({seen_name[manifest.name]}). Every refusal, every memory "
+                f"bank and every report names a skill by that one word, so "
+                f"two of them is one being talked about and the other one "
+                f"silently not"
+            )
+            continue
+        if source:
+            seen_source[source] = manifest.name
+        seen_name[manifest.name] = source or f"pack {manifest.name!r}"
+
+    entries: List[str] = []
+    still_optional: Dict[str, bool] = {}
+    for manifest in loaded:
+        for entry in manifest.allowed_tools:
+            optional_here = entry in manifest.optional_tools
+            already = next((seen for seen in entries
+                            if same_tool(seen, entry)), None)
+            if already is None:
+                entries.append(entry)
+                still_optional[entry] = optional_here
+            elif not optional_here:
+                still_optional[already] = False
+
+    stated_sdk = [(m.name, m.sdk_import) for m in loaded if m.sdk_import]
+    sdk_import = ""
+    if len({value for _name, value in stated_sdk}) > 1:
+        problems.append(
+            "these skills name different SDKs — "
+            + "; ".join(f"{name!r} says `import {value}`"
+                        for name, value in stated_sdk)
+            + ". The sentence that offers a step the platform's own module "
+              "names one module, and a sentence naming two is a sentence the "
+              "model writes wrong"
+        )
+    elif stated_sdk:
+        sdk_import = stated_sdk[0][1]
+
+    asked = [manifest.sandbox for manifest in loaded]
+    sandbox = BWRAP if BWRAP in asked else ("none" if "none" in asked else "")
+
+    # The primary's answer shape comes off the front of the composition and
+    # goes back on the END, after every supporting body. `_render_prompt`
+    # puts `output_format` last for a reason — it is the instruction a model
+    # is acting on when it stops — and appending three more skills' prose
+    # after it would bury the reason under exactly the recency effect the
+    # reference deployment measured when moving the conduct after the
+    # catalogue was what finally made the conduct bind.
+    prompt = "\n\n".join(
+        part for part in
+        [_prompt_without_output_contract(m) for m in loaded]
+        + [f"{_OUTPUT_LABEL}:\n{primary.output_contract}"
+           if primary.output_contract else ""]
+        if part and part.strip()
+    )
+
+    grounding = _merge_grounding(loaded, problems)
+    if grounding is not None:
+        # Validated HERE rather than left to the caller, because a merge
+        # can produce a block no skill wrote: two skills each scoping
+        # `figures_from` to their own `number_pattern`, the patterns
+        # disagreeing so neither survives, and the surviving scope able to
+        # bind nothing. Run even when the merge already found problems —
+        # that IS the case, and an operator fixing a composition wants the
+        # consequence named beside the cause rather than on the next run.
+        from core.runtime.grounding import GroundingConfig
+
+        try:
+            GroundingConfig.from_mapping(grounding)
+        except ValueError as exc:
+            problems.append(
+                f"the merged `grounding:` block is not one a validator can "
+                f"be built from: {exc}"
+            )
+
+    composed = SkillManifest(
+        name=primary.name,
+        description=primary.description,
+        version=primary.version,
+        allowed_tools=tuple(entries),
+        optional_tools=frozenset(entry for entry, optional
+                                 in still_optional.items() if optional),
+        prompt=prompt,
+        output_contract=primary.output_contract,
+        grounding=grounding,
+        sdk_import=sdk_import,
+        sandbox=sandbox,
+        source=primary.source,
+        composed=tuple(manifest.name for manifest in loaded),
+    )
+
+    # Belt and braces. Every skill passed the code-plane gate on its own
+    # file and `bwrap` wins the sandbox merge, so a union cannot invent a
+    # code plane without isolation. Asserted anyway: the argument for why
+    # it cannot happen is three sentences long and the check is one line.
+    problems.extend(composed._sandbox_problems(None))
+
+    if problems:
+        raise SkillManifestError(
+            f"these {len(loaded)} skills do not compose into one mission:\n"
+            f"  - " + "\n  - ".join(problems)
+        )
+    return composed
 
 
 def available_skills(directory) -> List[Path]:
