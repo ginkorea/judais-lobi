@@ -123,6 +123,25 @@ VERDICTS: Tuple[str, ...] = (
 #: minimum against this name.  An explicit check name always wins over it.
 ANY_CHECK = "*"
 
+#: Every key a ``grounding:`` block may set.  Anything else is refused by
+#: name when the block is read — a manifest that misspelled
+#: ``identifier_pattern`` would otherwise produce a validator with no
+#: opinion and a report that looks like a clean one.
+#:
+#: Module level rather than a set built inside
+#: :meth:`GroundingConfig.from_mapping`, because a SECOND reader of this
+#: block exists now: :func:`core.runtime.skills._merge_grounding` folds
+#: several skills' blocks into one and owes every one of these keys a
+#: merge rule.  Two hand-written lists of "the keys there are" is how a
+#: key added to one goes unmerged in the other, silently — which is the
+#: class of defect the composed-mapping shape bug was.
+#: ``tests/test_skills_compose.py`` iterates this to say so.
+GROUNDING_KEYS = frozenset({
+    "identifier_pattern", "number_pattern", "ignore", "max_repairs",
+    "must_cite", "claim_table", "reading", "critic", "planes",
+    "figures_from",
+})
+
 #: The fenced block a claim table is written in.  Module level because two
 #: checks need it and for opposite reasons: :class:`ClaimGroundingCheck`
 #: reads it, and every *prose* check has to not — a table of
@@ -472,15 +491,12 @@ class GroundingConfig:
                 f"a grounding block is a mapping, not a {type(raw).__name__}"
             )
 
-        known = {"identifier_pattern", "number_pattern", "ignore",
-                 "max_repairs", "must_cite", "claim_table", "reading",
-                 "critic", "planes", "figures_from"}
         problems: List[str] = []
-        unknown = sorted(set(raw) - known)
+        unknown = sorted(set(raw) - GROUNDING_KEYS)
         if unknown:
             problems.append(
                 f"unknown key(s): {', '.join(unknown)}. A grounding block sets "
-                f"{', '.join(sorted(known))}"
+                f"{', '.join(sorted(GROUNDING_KEYS))}"
             )
 
         for key in ("identifier_pattern", "number_pattern"):

@@ -136,6 +136,13 @@ NOT_A_MISSION_FLAG = {
 NOT_A_PUBLISHED_VARIABLE = {
     "ELF_PROVIDER": "the environment form of --provider, which is published "
                     "as a flag; the variable is a person's convenience",
+    "JUDAIS_LOBI_HOME": "the conformance kit's locator reads it (§10) to find "
+                        "a checkout to compare against. It is read by a TEST "
+                        "a platform copies, never by a mission, so it is not "
+                        "part of the wire the contract publishes",
+    "JUDAIS_LOBI_CONFORMANCE_ALLOW_MISSING": "the same kit's one opt-out "
+                                             "(§10). Also a test's variable "
+                                             "and not a mission's",
 }
 
 _FAMILIES = re.compile(
