@@ -1171,13 +1171,19 @@ implementation of it would union them quietly. The rules are these:
   asked for by any skill binds the run, because a skill that asked for a claim
   table asked because its own answers are not worth much without one.
   `must_cite` unions by check name, and a `must_cite: true` wildcard is a
-  **floor**: a named check exempted below it by *another* skill is raised to it,
-  because an explicit name beats the wildcard and nobody wrote both sentences
-  (an exemption written beside its own skill's wildcard is deliberate and is
-  left alone). `planes` unions by plane name, and two skills of a family may
-  restate the plane they share — membership is compared, tools by the same
-  `tool_key` identity everything else uses and claims casefolded, so a different
-  order or naming convention is not a conflict. A block that declared only
+  **floor**: an exemption below it survives only when **every** skill that
+  declared the wildcard also declared that exemption. One author writing
+  `{"*": 1, figures: 0}` meant it and keeps it; two authors both writing
+  `figures: 0` agree and keep it; an exemption one skill wrote under a floor
+  another skill set is raised, because nobody wrote both sentences. (The rule is
+  over the declarer *set* rather than over whoever named a check first — first-
+  namer gave two different answers depending on argument order.) `planes` unions
+  by plane name, and two skills of a family may restate the plane they share —
+  membership is compared, tools by the same `tool_key` identity everything else
+  uses **with a trailing `*` kept as part of the identity**, and claims
+  casefolded, so a different order or naming convention is not a conflict while
+  `catalog_*` (a family) and `catalog` (one tool) remain two different
+  declarations. A block that declared only
   `false` still *is* a block: the merged mapping keeps it, and the mission gets
   the same validator a single skill would have built. The merged block is then
   validated exactly as a written one is, so a merge that produced something
@@ -1209,12 +1215,19 @@ Compose skills that were written to work together. The refusals above are the
 framework telling you two skills disagree about the platform, which is a thing
 to fix in the manifests rather than at the command line.
 
-**`python -m core.eval measure` refuses a composing spawn line** (§9). A tier
-variant is measured by rewriting the manifest the line points at; with two of
-them there is no single manifest to rewrite, and the merged grounding block a
+**`python -m core.eval measure` cannot measure a *tier* against a composing
+spawn line** (§9), and refuses those configurations **one row at a time**. A
+tier variant is written by rewriting the manifest the line points at; with two
+of them there is no single manifest to rewrite, and the merged grounding block a
 composed mission actually runs under is not reproduced by measuring either skill
-alone. Measure a single-skill line, or measure the composition with the tiers
-its manifests already declare.
+alone. So `reading`, `planes` and `critic` come back SKIPPED with that reason
+beside them, while `direct`, `swarm` and `native` — which measure the line as
+you wrote it and need no manifest rewritten — run normally. One consequence
+worth knowing: with no variant to strip, the `direct` row on a composing line
+carries whatever tiers the manifests themselves declare, so it is the *baseline
+of that composition* rather than the every-tier-off baseline it is for a
+single-skill line. To measure a tier, point the line at one skill, or turn the
+tier on in the manifests and read it out of the direct row.
 
 ### Without a manifest
 

@@ -888,12 +888,25 @@ def _same_plane(one: Any, other: Any) -> bool:
     So membership is compared, on the identities the rest of the
     framework already uses: tools by
     :func:`~core.tools.descriptors.tool_key`, so ``catalog.search`` and
-    ``mcp_catalog_search`` are the one tool they are everywhere else, and
-    claims by casefolded text, because
+    ``mcp_catalog_search`` are the one tool they are everywhere else,
+    **with the trailing ``*`` kept out of the reduction and carried as a
+    flag of its own**, and claims by casefolded text, because
     :class:`~core.runtime.grounding.PlaneClaimCheck` matches them
     case-insensitively and two spellings it cannot tell apart are not two
     declarations.  Genuinely different membership is still the refusal it
     was: one plane name over two tool sets is two planes wearing one word.
+
+    The ``*`` is why the reduction is not simply ``tool_key``.
+    ``tool_key("catalog_*")`` and ``tool_key("catalog")`` are the same
+    string, and to
+    :func:`~core.runtime.grounding.plane_matches` they are nothing like
+    the same thing: ``catalog_*`` is every catalogue tool a server
+    advertises and ``catalog`` is one tool called ``catalog``.  Folding
+    them together let ``{tools: [catalog_*]}`` and ``{tools: [catalog]}``
+    compose without a word, and then LISTING ORDER decided whether
+    ``catalog_search_assets`` was on the plane — the same
+    order-dependence the code-plane gate had, one field over.  So a spec
+    reduces to ``(key, is_family)`` and a family is not a single tool.
 
     The bodies are read through
     :meth:`~core.runtime.grounding.GroundingConfig._read_planes` rather
@@ -908,11 +921,15 @@ def _same_plane(one: Any, other: Any) -> bool:
         planes, _problems = GroundingConfig._read_planes({"plane": body})
         return planes[0] if planes else None
 
+    def spec(name: Any) -> Tuple[str, bool]:
+        text = str(name).strip()
+        return (tool_key(text.rstrip("*")), text.endswith("*"))
+
     left, right = read(one), read(other)
     if left is None or right is None:
         return _canonical(one) == _canonical(other)
-    return (frozenset(tool_key(name) for name in left.tools)
-            == frozenset(tool_key(name) for name in right.tools)
+    return (frozenset(spec(name) for name in left.tools)
+            == frozenset(spec(name) for name in right.tools)
             and frozenset(claim.casefold() for claim in left.claims)
             == frozenset(claim.casefold() for claim in right.claims))
 
@@ -1049,11 +1066,16 @@ def _merge_grounding(
     # use. Identity is the check NAME, the thing two skills can both
     # name; the content is the minimum count.
     minimums: Dict[str, Tuple[str, int]] = {}
+    #: Every skill that declared each check, not merely the first — the
+    #: exemption rule below is about WHO asked, and "the first namer" is
+    #: an answer that changes when the arguments are swapped.
+    declarers: Dict[str, set] = {}
     order: List[str] = []
     for manifest in usable:
         pairs, _problems = GroundingConfig._read_must_cite(
             manifest.grounding.get("must_cite"))
         for check, minimum in pairs:
+            declarers.setdefault(check, set()).add(manifest.name)
             if check not in minimums:
                 minimums[check] = (manifest.name, minimum)
                 order.append(check)
@@ -1077,17 +1099,28 @@ def _merge_grounding(
         # so. Raised rather than refused, on the same principle as the
         # bools: strictness asked for by any skill binds the run.
         #
-        # Only across skills. A single block MAY write `{"*": 1,
-        # figures: 0}` — one author saying "cite generally, except this
-        # kind, which my answers legitimately omit" — and that sentence is
-        # deliberate, so an exemption written by the same skill that set
-        # the floor is left exactly as written. What is raised is an
-        # exemption one skill wrote under a floor another skill set,
-        # which nobody wrote and nobody meant.
-        floor_owner, floor = minimums.get(ANY_CHECK, ("", 0))
+        # An exemption survives only when EVERY skill that set the floor
+        # also wrote it. That is the whole rule and it is deliberately
+        # about the declarer SET rather than about who happened to say a
+        # thing first. Scoping it to the first namer looked equivalent
+        # and was order-dependent: `{"*": 1, figures: 0}` composed with a
+        # bare `must_cite: true` gave figures a floor of 0 or of 1
+        # depending on which was typed first, and in the 0 direction the
+        # skill that asked for citations generally lost its floor to an
+        # exemption it had never written. A set is the same answer both
+        # ways round.
+        #
+        # `{"*": 1, figures: 0}` alone keeps its 0 — one author saying
+        # "cite generally, except this kind, which my answers legitimately
+        # omit", which is a sentence somebody did write. So does the same
+        # block composed with a skill that ALSO writes `figures: 0`: two
+        # authors agreeing is agreement.
+        floor = minimums.get(ANY_CHECK, ("", 0))[1]
+        wildcard_declarers = declarers.get(ANY_CHECK, set())
         merged["must_cite"] = {
-            check: (minimums[check][1] if check == ANY_CHECK
-                    or minimums[check][0] == floor_owner
+            check: (minimums[check][1]
+                    if check == ANY_CHECK
+                    or wildcard_declarers <= declarers[check]
                     else max(minimums[check][1], floor))
             for check in order
         }
@@ -1183,12 +1216,22 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
     operator does at a command line and gets wrong at a command line, and
     a refusal arriving one line at a time is fixed one line at a time.
 
-    Known and deliberate: two skills naming one tool in two conventions
-    keep the FIRST spelling, so a set holding ``thing`` first and
-    ``mcp.thing`` second composes to ``thing``.  Resolution matches on
-    ``same_tool`` either way and the mission binds the same tool; what is
-    lost is only that the composed entry no longer *says* a server owns
-    it.
+    Known and deliberate, and it cuts BOTH ways: two skills naming one
+    tool in two conventions keep the FIRST spelling, so the composed
+    entry's *namespace* is decided by listing order.  ``thing`` first and
+    ``mcp.thing`` second composes to ``thing`` — the entry stops saying a
+    server owns it, and :func:`core.cli._local_plane_or_refuse`, which
+    reads a ``mcp.``-prefixed entry as *this must come from a server*,
+    stops asking for one.  The other way round composes to ``mcp.thing``,
+    and the entry now claims a server owns a tool that may be built in:
+    on a host with no transport that composition is **refused** while the
+    first order runs.  Resolution itself matches on ``same_tool`` either
+    way and binds the same tool, so nothing is mis-dispatched; what moves
+    is which questions get asked about the entry, and the direction it
+    moves in is fail-closed — a refusal naming the composition, not a
+    quiet run.  The gate that must never move with order is the
+    code-plane one, and that is why it is asked of each input manifest
+    rather than of the deduplicated set.
     """
     loaded = list(manifests)
     if not loaded:

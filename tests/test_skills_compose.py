@@ -381,11 +381,11 @@ class TestGroundingMerges:
 
     def test_one_skills_own_exemption_beside_its_own_wildcard_survives(
             self, tmp_path):
-        """The other side of the rule, and the reason it is written per
-        OWNER rather than per key. `{"*": 1, figures: 0}` in one block is
-        one author saying "cite generally, except this kind, which my
-        answers legitimately omit". Raising that would overrule a sentence
-        somebody did write, which is the opposite failure."""
+        """The other side of the rule, and the reason it is written over
+        the DECLARER SET rather than per key. `{"*": 1, figures: 0}` in
+        one block is one author saying "cite generally, except this kind,
+        which my answers legitimately omit". Raising that would overrule a
+        sentence somebody did write, which is the opposite failure."""
         from core.runtime.grounding import GroundingConfig
 
         composed = compose_manifests([
@@ -395,6 +395,46 @@ class TestGroundingMerges:
         ])
         config = GroundingConfig.from_mapping(composed.grounding)
         assert config.minimum_for("figures") == 0
+
+    def test_two_skills_both_exempting_it_is_agreement(self, tmp_path):
+        """Every skill that set the floor also wrote the exemption, so
+        the exemption stands. This is the case the rule has to keep
+        working, or "compose skills written to work together" stops being
+        possible for a family that agrees about its own figures."""
+        from core.runtime.grounding import GroundingConfig
+
+        composed = compose_manifests([
+            skill(tmp_path, "first",
+                  grounding={"must_cite": {"*": 1, "figures": 0}}),
+            skill(tmp_path, "second", grounding={"must_cite": {"figures": 0}}),
+        ])
+        config = GroundingConfig.from_mapping(composed.grounding)
+        assert config.minimum_for("figures") == 0
+
+    @pytest.mark.parametrize("swapped", [False, True], ids=["as-listed",
+                                                            "reversed"])
+    def test_a_bare_wildcard_does_not_lose_its_floor_to_someone_elses_exemption(
+            self, tmp_path, swapped):
+        """THE second order-dependence the re-review found. Scoping the
+        exemption to the FIRST NAMER looked equivalent to scoping it to
+        the declarer set and was not: `{"*": 1, figures: 0}` composed with
+        a bare `must_cite: true` gave figures a floor of 0 or of 1
+        depending on which was typed first, and in the 0 direction the
+        skill that asked for citations generally lost its floor to an
+        exemption it had never written.
+
+        Parametrised over both orders on purpose. One order is not
+        evidence about an order-dependence bug — it is how the bug got
+        through the first time."""
+        from core.runtime.grounding import GroundingConfig
+
+        exempting = skill(tmp_path, "exempting",
+                          grounding={"must_cite": {"*": 1, "figures": 0}})
+        just_true = skill(tmp_path, "just_true", grounding={"must_cite": True})
+        pair = [just_true, exempting] if swapped else [exempting, just_true]
+        config = GroundingConfig.from_mapping(
+            compose_manifests(pair).grounding)
+        assert config.minimum_for("figures") == 1
 
     def test_one_check_with_two_floors_is_a_refusal(self, tmp_path):
         with pytest.raises(SkillManifestError) as exc:
@@ -477,6 +517,47 @@ class TestGroundingMerges:
                     "claims": ["I used the SDK"]}}}),
             ])
         assert "planes: sdk" in str(exc.value)
+
+    def test_a_family_and_a_single_tool_of_that_name_are_not_one_plane(
+            self, tmp_path):
+        """`tool_key("catalog_*")` and `tool_key("catalog")` are the same
+        string, and to `plane_matches` they are nothing like the same
+        thing: `catalog_*` is every catalogue tool a server advertises,
+        `catalog` is one tool called catalog. Folding them let the two
+        compose without a word, and then LISTING ORDER decided whether
+        `catalog_search_assets` was on the plane — the code-plane gate's
+        order-dependence, one field over."""
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first", grounding={"planes": {"catalog": {
+                    "tools": ["catalog_*"], "claims": ["I searched"]}}}),
+                skill(tmp_path, "second", grounding={"planes": {"catalog": {
+                    "tools": ["catalog"], "claims": ["I searched"]}}}),
+            ])
+        assert "planes: catalog" in str(exc.value)
+
+    def test_and_that_holds_the_other_way_round(self, tmp_path):
+        """Both orders, or the assertion is about which one was read
+        first rather than about the two specs being different."""
+        with pytest.raises(SkillManifestError):
+            compose_manifests([
+                skill(tmp_path, "first", grounding={"planes": {"catalog": {
+                    "tools": ["catalog"], "claims": ["I searched"]}}}),
+                skill(tmp_path, "second", grounding={"planes": {"catalog": {
+                    "tools": ["catalog_*"], "claims": ["I searched"]}}}),
+            ])
+
+    def test_two_spellings_of_one_family_are_still_one_family(self, tmp_path):
+        """The loosening has to survive the fix: a family written in two
+        conventions is one family, and only the `*` is being kept out of
+        the reduction."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"planes": {"catalog": {
+                "tools": ["catalog_*"], "claims": ["I searched"]}}}),
+            skill(tmp_path, "second", grounding={"planes": {"catalog": {
+                "tools": ["catalog.*"], "claims": ["I searched"]}}}),
+        ])
+        assert list(composed.grounding["planes"]) == ["catalog"]
 
     def test_a_grounding_block_of_only_false_bools_is_still_a_block(
             self, tmp_path):
@@ -946,6 +1027,32 @@ class TestARefusalNamesEverySkillItIsAbout:
         message = str(exc.value)
         assert "'first' (composed with 'second')" in message
         assert "'beta' is in the closed set and was not discovered" in message
+
+    def test_the_serverless_refusal_names_the_composition_too(self, tmp_path):
+        """The residual the docstring admits, pinned in the direction it
+        fails.
+
+        Dedup keeps the FIRST spelling, so `mcp.thing` listed first and
+        `thing` second composes to `mcp.thing` — an entry that CLAIMS a
+        server owns it. On a host with no transport
+        `_local_plane_or_refuse` reads that claim and refuses; the other
+        listing order composes to `thing` and runs. The order-dependence
+        is real and fail-closed, which is why it is a residual and not the
+        blocker the code-plane gate was — and the refusal has to name
+        every skill it is about, because the entry that provoked it came
+        from the one that is not the primary."""
+        from core.cli import _local_plane_or_refuse
+        from core.tools import Tools
+
+        composed = compose_manifests([
+            skill(tmp_path, "bridged", allowed_tools=["mcp.run_shell_command"]),
+            skill(tmp_path, "local", allowed_tools=["run_shell_command"],
+                  sandbox="bwrap"),
+        ])
+        assert composed.allowed_tools == ("mcp.run_shell_command",)
+        with pytest.raises(SystemExit) as exc:
+            _local_plane_or_refuse(composed, Tools(root=str(tmp_path)).bus)
+        assert "'bridged' (composed with 'local')" in str(exc.value)
 
     def test_one_skill_is_named_exactly_as_it_always_was(self, tmp_path):
         """The compatibility half: no composition, no parenthesis, and the

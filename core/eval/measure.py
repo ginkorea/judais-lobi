@@ -178,6 +178,36 @@ class Unmeasurable(RuntimeError):
 
 # ── the spawn line, per configuration ────────────────────────────────────────
 
+#: Why a **tiered** configuration cannot be measured against a spawn line
+#: that composes several skills.
+#:
+#: Module level because two places say it — the per-configuration refusal
+#: in :func:`measure` and the guard in :func:`spawn_line_for` — and a
+#: sentence written twice is a sentence that stops agreeing with itself.
+COMPOSING_IS_UNTIERABLE = (
+    "the spawn line names --skill more than once. Several skills compose "
+    "into one mission, and a tier variant is measured by rewriting the "
+    "manifest the line points at — with two of them there is no single "
+    "manifest to rewrite, and the merged grounding block a composed "
+    "mission actually runs under is not reproduced by measuring either "
+    "skill on its own. The untiered configurations still run; to measure "
+    "the tiers, either point the line at one skill, or turn the tier on "
+    "in the manifests themselves and read it out of the direct row"
+)
+
+
+def _composes(template: Sequence[str]) -> bool:
+    """Whether *template* names ``--skill`` more than once.
+
+    ONE OWNER of that question.  ``--skill`` repeats and several
+    manifests fold into one mission
+    (:func:`core.runtime.skills.compose_manifests`), and everything in
+    this module that rewrites a manifest has to know it cannot.
+    """
+    return len([token for token in template
+                if token == "--skill" or token.startswith("--skill=")]) > 1
+
+
 def _skill_at(template: Sequence[str]) -> Optional[int]:
     """Index of the ``--skill`` **value** in *template*, or ``None``.
 
@@ -185,32 +215,26 @@ def _skill_at(template: Sequence[str]) -> Optional[int]:
     convenient and a harness that only understood one would silently run
     every tier configuration against the unmodified manifest.
 
-    **A composing spawn line is refused here.**  ``--skill`` repeats and
-    several manifests fold into one mission
-    (:func:`core.runtime.skills.compose_manifests`); this function returns
-    one index, and every tier variant is written by rewriting the manifest
-    at it.  Against a line naming two skills that rewrites one of them and
-    leaves the other alone — so the run would be measured with the tier
-    switched on in half of its grounding block, and the table would print
-    a number for a configuration nobody ran.  Taking the first was the
-    bug the reviewer found; measuring each skill separately is not the fix
-    either, because the grounding block a composed mission runs under is
-    the MERGE and no single manifest reproduces it.  The honest answer is
-    that this matrix cannot measure that mission, said out loud.
+    ``None`` for a **composing** line, and that is not a refusal — it is
+    the truthful answer to *which manifest do I rewrite*, which is none of
+    them.  Taking the first was the bug: a line naming two skills would
+    have had one manifest rewritten and the other left alone, and the
+    table would print a number for a configuration nobody ran.  Refusing
+    from HERE was the over-correction, and it was worse than it looked:
+    this function is called once, above the loop, so a composing line
+    killed the whole matrix — including ``direct``, ``swarm`` and
+    ``native``, which measure the line as written and need no manifest
+    rewritten at all.  A harness that cannot measure three of six
+    configurations must still measure the other three.
+
+    So the refusal lives where the *configuration* is known:
+    :func:`measure` raises :data:`COMPOSING_IS_UNTIERABLE` for a tiered
+    row, exactly where it already refuses a tier on a line with no
+    ``--skill``, and those rows come back SKIPPED with the reason beside
+    them.
     """
-    found = [index for index, token in enumerate(template)
-             if token == "--skill" or token.startswith("--skill=")]
-    if len(found) > 1:
-        raise Unmeasurable(
-            "the spawn line names --skill more than once. Several skills "
-            "compose into one mission, and a tier variant is measured by "
-            "rewriting the manifest the line points at — with two of them "
-            "there is no single manifest to rewrite, and the merged "
-            "grounding block a composed mission actually runs under is not "
-            "reproduced by measuring either skill on its own. Measure a "
-            "single-skill spawn line, or measure the composition with the "
-            "tiers its manifests already declare (no --tier)"
-        )
+    if _composes(template):
+        return None
     for index, token in enumerate(template):
         if token == "--skill" and index + 1 < len(template):
             return index + 1
@@ -241,8 +265,15 @@ def spawn_line_for(template: Sequence[str], measurement: Measurement,
     argv = list(template)
     if skill is not None:
         at = _skill_at(argv)
-        if at is None:                        # pragma: no cover - guarded above
-            raise Unmeasurable("the spawn line has no --skill to repoint")
+        if at is None:
+            # Two ways to have no index, and they are different news: a
+            # line with no `--skill` at all, and a line with two. Asked
+            # through the same owner as `measure`'s refusal, so a caller
+            # that reached here by another door cannot get a variant
+            # written against half a composition.
+            raise Unmeasurable(
+                COMPOSING_IS_UNTIERABLE if _composes(argv)
+                else "the spawn line has no --skill to repoint")
         argv[at] = (f"--skill={skill}" if argv[at].startswith("--skill=")
                     else str(skill))
     return argv + list(measurement.flags)
@@ -508,8 +539,9 @@ def measure(suite: Suite, template: Sequence[str], out: Path, *,
             try:
                 if skill is None and measurement.tier is not None:
                     raise Unmeasurable(
-                        "the spawn line names no --skill, so there is no "
-                        "grounding block to switch this tier in")
+                        COMPOSING_IS_UNTIERABLE if _composes(template)
+                        else "the spawn line names no --skill, so there is "
+                             "no grounding block to switch this tier in")
                 if skill is not None:
                     variant = manifest_variant(
                         skill, measurement, out / measurement.name / "skill.md")
