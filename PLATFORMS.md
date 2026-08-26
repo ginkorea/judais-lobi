@@ -198,7 +198,9 @@ mission runs in, and a mission that needs another one is run from there.
 injected callable and cannot ask a backend anything the caller did not offer.
 **Almost every other default means *nothing*** — no bus of its own, no ceiling,
 no clock, no durable log — so a platform adds the ones it wants and
-pays for nothing else. `Skill` and `load_skill` read a `SKILL.md` (§5);
+pays for nothing else. `Skill` and `load_skill` read a `SKILL.md`, and
+`compose_manifests` folds several into one mission the way a repeated
+`--skill` does (§5);
 `Deadline` and `Cancellation` build a real `Bounds` (§7); `RunStore` is the
 `Store` (§6); `MissionWindow` is the `Model`'s context bound.
 
@@ -428,7 +430,7 @@ releases.
 | `--mcp-stdio` | `MCP_STDIO` | an MCP server to spawn over stdio. Repeatable and namespaced |
 | `--mcp-token` | `MCP_TOKEN` | the bearer token, paired with the `--mcp-url` in the same position. **Use the variable**: argv is world-readable |
 | `--mcp-timeout` | `MCP_TIMEOUT_S` | per-call timeout for MCP tool calls, in seconds, for every server on the plane. A property of the platform holding the other end, like `--gate-wait`: a broker that stages a large bundle before returning its handle legitimately takes longer than the default 30. Non-positive means the default; zero is not a value |
-| `--skill` | `MISSION_SKILL` | the manifest directory or file, or the NAME of a shipped pack — `research`, `coding`, `analyst` (§5) |
+| `--skill` | `MISSION_SKILL` | the manifest directory or file, or the NAME of a shipped pack — `research`, `coding`, `analyst` (§5). Repeatable: several compose into one mission, first is primary (§5, "Composing skills"). The variable takes an `os.pathsep`-separated list |
 | `--swarm` | `MISSION_SWARM` | plan the mission as steps rather than one loop |
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native` tool calling |
 | `--no-stream` | `MISSION_STREAM` | suppress `answer_delta` |
@@ -1124,6 +1126,108 @@ that has already run has already run whatever it ran.
   operational field. Network is denied inside the namespace, and an agent that
   has not been told reads `ENETUNREACH` as a broken tool and spends a turn
   retrying it.
+
+### Composing skills
+
+`--skill` **repeats**, and several manifests become one mission — which is how
+a platform ships a *family* of skills rather than one file per combination it
+can imagine. `--skill analyst --skill research` is one mission holding both
+closed sets and both bodies of operational knowledge. The environment form takes
+an `os.pathsep`-separated list (`MISSION_SKILL=a/SKILL.md:b/SKILL.md`), and one
+value with no separator in it is one skill, exactly as before. A typed `--skill`
+wins over the variable outright rather than extending it. Paths and pack names
+mix freely.
+
+One function knows what this means, and it is public:
+
+```python
+from judais_lobi import Skill, compose_manifests
+
+mission = compose_manifests([Skill.load("analyst"), Skill.load("research")])
+```
+
+The CLI calls exactly that — `--skill` resolves each value and hands the list
+over — so a platform composing in-process gets the same manifest, the same
+refusals and the same prompt as the command line does. Do not union the closed
+sets yourself: the merge is where the refusals live, and a second
+implementation of it would union them quietly. The rules are these:
+
+* **The first is the primary**, and owns everything a mission has exactly one
+  of: the `name` every refusal, report and memory bank is filed under, the
+  `version`, and **the answer shape**. A supporting skill's `output_format` is
+  stripped back out of its prompt — two output contracts in one system message
+  is a model choosing one, and the one the primary's grounding block is written
+  against is the one it may not choose.
+* **`allowed_tools` is a union**, in first-seen order, deduplicated on the same
+  `same_tool` identity resolution uses, so two skills naming one tool in two
+  conventions name it once (the first spelling is the one kept). A tool
+  optional (`?`) in one skill and required in another is **required**.
+* **Prompts concatenate in listed order**, primary first, and the primary's
+  `output_format` moves to the **end** of the composition — it is rendered last
+  in a single manifest because it is the instruction a model is acting on when
+  it stops, and appending three more skills' prose after it would undo that.
+* **Grounding merges key by key, and strictness unions.** `ignore` and
+  `figures_from` union; `claim_table`, `reading` and `critic` are OR — checking
+  asked for by any skill binds the run, because a skill that asked for a claim
+  table asked because its own answers are not worth much without one.
+  `must_cite` unions by check name, and a `must_cite: true` wildcard is a
+  **floor**: an exemption below it survives only when **every** skill that
+  declared the wildcard also declared that exemption. One author writing
+  `{"*": 1, figures: 0}` meant it and keeps it; two authors both writing
+  `figures: 0` agree and keep it; an exemption one skill wrote under a floor
+  another skill set is raised, because nobody wrote both sentences. (The rule is
+  over the declarer *set* rather than over whoever named a check first — first-
+  namer gave two different answers depending on argument order.) `planes` unions
+  by plane name, and two skills of a family may restate the plane they share —
+  membership is compared, tools by the same `tool_key` identity everything else
+  uses **with a trailing `*` kept as part of the identity**, and claims
+  casefolded, so a different order or naming convention is not a conflict while
+  `catalog_*` (a family) and `catalog` (one tool) remain two different
+  declarations. A block that declared only
+  `false` still *is* a block: the merged mapping keeps it, and the mission gets
+  the same validator a single skill would have built. The merged block is then
+  validated exactly as a written one is, so a merge that produced something
+  unusable refuses at the door.
+* **What cannot be merged honestly is refused**, listing every problem at once:
+  `identifier_pattern`, `number_pattern` or `max_repairs` declared by more than
+  one skill with different values (there is no honest way to pick between two
+  identifier grammars — taking one would switch the check off for the other
+  skill's identifiers while the report went on saying it ran); one plane name
+  declared over different tools or claims; two different `sdk_import` values;
+  the same skill listed twice.
+* **`sandbox` goes to the strictest thing anybody asked for** — `bwrap` if any
+  skill asks for it — and the code-plane gate then runs over **each input
+  manifest** under that composed sandbox, as well as over the composed set.
+  Per-input is the half that matters: the union deduplicates on `same_tool`, and
+  `mcp.run_shell_command` and `run_shell_command` are the same tool to it, so a
+  skill that bridges a shell and a skill that runs one *here* collapse to
+  whichever was listed first. Gating only the composed set would let the bridged
+  spelling swallow the local one, and a mission that runs arbitrary code on the
+  host with no isolation would compose cleanly in one argument order and refuse
+  in the other. A gate whose answer depends on which skill you typed first is
+  not a gate.
+* **A refusal names the whole composition** — `skill 'analyst' (composed with
+  'research')` — because the closed set it is about is the union, and a tool
+  missing for the third skill reported under the first skill's name sends you to
+  open the wrong file.
+
+Compose skills that were written to work together. The refusals above are the
+framework telling you two skills disagree about the platform, which is a thing
+to fix in the manifests rather than at the command line.
+
+**`python -m core.eval measure` cannot measure a *tier* against a composing
+spawn line** (§9), and refuses those configurations **one row at a time**. A
+tier variant is written by rewriting the manifest the line points at; with two
+of them there is no single manifest to rewrite, and the merged grounding block a
+composed mission actually runs under is not reproduced by measuring either skill
+alone. So `reading`, `planes` and `critic` come back SKIPPED with that reason
+beside them, while `direct`, `swarm` and `native` — which measure the line as
+you wrote it and need no manifest rewritten — run normally. One consequence
+worth knowing: with no variant to strip, the `direct` row on a composing line
+carries whatever tiers the manifests themselves declare, so it is the *baseline
+of that composition* rather than the every-tier-off baseline it is for a
+single-skill line. To measure a tier, point the line at one skill, or turn the
+tier on in the manifests and read it out of the direct row.
 
 ### Without a manifest
 

@@ -694,7 +694,7 @@ person's surface and may move.
 - `--model` — which model on it.
 - `--profile` — the capability profile: deny-by-default `safe`, then `dev`, `research`, `ops`, `god`. Arrives back as `profile`.
 - `--unsandboxed` — run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists. Arrives back as `sandbox`.
-- `--skill` — the skill manifest: tool subset, prompt, grounding grammar.
+- `--skill` — the skill manifest: tool subset, prompt, grounding grammar. **Repeatable**: several manifests compose into one mission. The FIRST is the primary and owns what a mission has one of — the name every record is filed under, the version, and the answer shape (a supporting skill's `output_format` is dropped); the rest add tools (union, first-seen order, required beats optional), prompt text in listed order, and grounding strictness (unioned, never intersected). Two skills that disagree about a scalar — the identifier grammar, the number grammar, `max_repairs` — or about what a plane name means, or that name two SDKs, are refused at the door listing every disagreement at once. The environment form takes an `os.pathsep`-separated list; one value behaves exactly as one `--skill` always has.
 - `--swarm` — triage first, then stage the mission if it needs staging.
 - `--events` — where the NDJSON goes **out**. See above.
 - `--history` — prior turns, seeded as chat messages ahead of the objective.

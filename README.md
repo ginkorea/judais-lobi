@@ -464,6 +464,11 @@ you add what you want and pay for nothing else; the one exception is the
 **supervisor**, which `Bounds()` carries by default (`Bounds(supervisor=
 NO_SUPERVISOR)` opts out).
 
+`from judais_lobi import Skill, compose_manifests` is the skill half:
+`Skill.load("analyst")` takes a path or a shipped pack's name, and
+`compose_manifests([...])` folds several into one mission exactly as a
+repeated `--skill` does — first is primary, tools union, strictness unions.
+
 **The CLI is a client of this**, not a second implementation: `judais
 --mission` is argparse and then these same six objects handed to this same
 `Run`. `from judais_lobi import contract` is the wire as data —
@@ -559,7 +564,7 @@ surface and may move. Table in `CLI_FLAGS` order:
 | `--model` | — | which model on that provider |
 | `--profile` | `JUDAIS_LOBI_PROFILE` | `safe` (default), `dev`, `research`, `ops`, `god` — see [How it is governed](#how-it-is-governed) |
 | `--unsandboxed` | `JUDAIS_LOBI_SANDBOX=none` | run tool subprocesses with no isolation |
-| `--skill` | `MISSION_SKILL` | a `SKILL.md` manifest, a directory holding one, or a first-party pack's name |
+| `--skill` | `MISSION_SKILL` | a `SKILL.md` manifest, a directory holding one, or a first-party pack's name. Repeatable — several compose into one mission, the first is primary and owns the answer shape; the variable takes an `os.pathsep`-separated list |
 | `--swarm` | `MISSION_SWARM` | stage the mission when it needs staging — see [`--swarm`](#--swarm--staged-decomposition-when-it-is-needed) |
 | `--events` | `MISSION_EVENTS` | where the NDJSON account goes out: `-`, `fd:N`, or a path |
 | `--history` | `MISSION_HISTORY` | a JSON file of prior conversation turns, seeded as real role-tagged chat turns ahead of the objective |

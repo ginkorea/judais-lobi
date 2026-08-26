@@ -150,6 +150,60 @@ class TestTheSpawnLineIsTheCallersPlusTheDelta:
     def test_a_line_with_no_skill_has_none_to_find(self):
         assert M._skill_path(["judais", "--mission"]) is None
 
+    def test_one_skill_is_found_exactly_as_it_always_was(self):
+        """The compatibility half of the refusal below: a single `--skill`
+        is the line this harness has always measured."""
+        assert M._skill_path(self.BASE) == Path("/s/SKILL.md")
+
+    #: `self.BASE` with a second skill on it: `--skill` repeats, and
+    #: several manifests fold into one mission.
+    COMPOSING = BASE + ["--skill", "/s/other/SKILL.md"]
+
+    def test_a_composing_line_has_no_single_manifest_to_rewrite(self):
+        """`None`, and it is not a refusal — it is the truthful answer to
+        *which manifest do I rewrite*, which is none of them. A tier
+        variant is written by rewriting the manifest the line points at,
+        and with two of them this harness would rewrite one and leave the
+        other alone, printing a number for a configuration it did not
+        run."""
+        assert M._skill_path(self.COMPOSING) is None
+
+    def test_the_joined_spelling_counts_towards_that_too(self):
+        """Both spellings, because a caller writes whichever their shell
+        made convenient and a check that understood one would let the
+        other through."""
+        assert M._skill_path(["judais", "--skill=/a/SKILL.md",
+                              "--skill=/b/SKILL.md"]) is None
+
+    def test_an_untiered_configuration_measures_a_composing_line_as_written(
+            self):
+        """The over-correction this replaces: refusing from `_skill_at`
+        killed the WHOLE matrix, including `direct`, `swarm` and `native`,
+        which measure the line as the caller wrote it and need no manifest
+        rewritten at all. A harness that cannot measure three of six
+        configurations must still measure the other three."""
+        line = M.spawn_line_for(self.COMPOSING, M.MEASUREMENTS[1], None)
+        assert line[:len(self.COMPOSING)] == self.COMPOSING
+        assert line[len(self.COMPOSING):] == ["--swarm"]
+
+    def test_a_repoint_of_a_composing_line_still_refuses(self, tmp_path):
+        """One owner: `spawn_line_for` asks `_skill_at` too, so a caller
+        that reached here by another door cannot get a variant written
+        against half a composition — and the reason it hears is the
+        composing one, not the "no --skill at all" one."""
+        with pytest.raises(M.Unmeasurable) as exc:
+            M.spawn_line_for(self.COMPOSING, M.MEASUREMENTS[0],
+                             tmp_path / "v.md")
+        assert "--skill more than once" in str(exc.value)
+
+    def test_a_line_with_no_skill_at_all_hears_the_other_reason(
+            self, tmp_path):
+        """Two ways to have no index and they are different news."""
+        with pytest.raises(M.Unmeasurable) as exc:
+            M.spawn_line_for(["judais", "--mission"], M.MEASUREMENTS[0],
+                             tmp_path / "v.md")
+        assert "no --skill to repoint" in str(exc.value)
+
 
 # ── the manifest variants ────────────────────────────────────────────────────
 
@@ -297,6 +351,25 @@ class TestNativeIsSkippedWhenTheEndpointSaysSo:
             log=lambda *_: None)
         assert "no --skill" in matrix.configured[0].skipped
 
+    def test_a_tier_on_a_composing_line_is_skipped_per_configuration(
+            self, tmp_path):
+        """Not the whole matrix. The refusal lives where the CONFIGURATION
+        is known, so a tiered row comes back SKIPPED with the reason
+        beside it and the untiered rows are left to run — the same place
+        and the same shape as the refusal one test up, which is the point:
+        a tier that cannot be switched in is a tier that cannot be
+        switched in, however the line failed to offer one manifest."""
+        entry = next(m for m in M.MEASUREMENTS if m.tier == "critic")
+        matrix = M.measure(
+            SUITE, ["judais", "{objective}", "--skill", "/a/SKILL.md",
+                    "--skill", "/b/SKILL.md"],
+            tmp_path / "out", measurements=[entry], only=[TRAIN_KEY],
+            capabilities=None, log=lambda *_: None)
+        row = matrix.configured[0]
+        assert not row.ran
+        assert "--skill more than once" in row.skipped
+        assert "Configurations not run" in matrix.to_markdown()
+
 
 # ── the header ───────────────────────────────────────────────────────────────
 
@@ -409,6 +482,63 @@ def driven(template, sandboxed, tmp_path):
         SUITE, template, tmp_path / "out", measurements=entries,
         only=[TRAIN_KEY, TEST_KEY], capabilities=None, timeout_s=120,
         log=lambda *_: None)
+
+
+@pytest.fixture
+def composing_template(template, tmp_path):
+    """The same spawn line with a SECOND skill on it.
+
+    A minimal supporting manifest: its own closed set, no grounding block
+    of its own, nothing to disagree with the primary about — so what is
+    being measured is composition and not a refusal.
+    """
+    second = tmp_path / "supporting" / "SKILL.md"
+    second.parent.mkdir(parents=True, exist_ok=True)
+    second.write_text(
+        "---\n"
+        "name: supporting\n"
+        "when_to_use: Beside the stub plane.\n"
+        "allowed_tools: [echo]\n"
+        "---\n\n"
+        "# Supporting\n\nEcho before you conclude.\n",
+        encoding="utf-8")
+    return template + ["--skill", str(second)]
+
+
+class TestAComposingSpawnLineIsMeasuredWhereItCanBe:
+    """Really spawned, because the finding was about the whole matrix.
+
+    Refusing a composing line from `_skill_at` — one call, above the loop
+    — killed every configuration, including the three that measure the
+    line as written and need no manifest rewritten at all. This is that
+    claim exercised through the real loop rather than through the helper
+    the bug was in.
+    """
+
+    def test_the_untiered_row_runs_and_the_tiered_one_is_skipped(
+            self, composing_template, sandboxed, tmp_path):
+        entries = [m for m in M.MEASUREMENTS if m.name in ("direct", "critic")]
+        matrix = M.measure(
+            SUITE, composing_template, tmp_path / "out", measurements=entries,
+            only=[TRAIN_KEY], capabilities=None, timeout_s=120,
+            log=lambda *_: None)
+        rows = {row.name: row for row in matrix.configured}
+        assert rows["direct"].ran, rows["direct"].skipped
+        assert not rows["critic"].ran
+        assert "--skill more than once" in rows["critic"].skipped
+
+    def test_the_row_that_ran_used_the_line_the_caller_wrote(
+            self, composing_template, sandboxed, tmp_path):
+        """Both skills, unrewritten. A composing line's baseline carries
+        whatever tiers the manifests themselves declare — there is no
+        variant to strip them out of — and the honest thing is that the
+        command it ran is recorded as the command it ran."""
+        entries = [m for m in M.MEASUREMENTS if m.name == "direct"]
+        matrix = M.measure(
+            SUITE, composing_template, tmp_path / "out", measurements=entries,
+            only=[TRAIN_KEY], capabilities=None, timeout_s=120,
+            log=lambda *_: None)
+        assert list(matrix.configured[0].command).count("--skill") == 2
 
 
 class TestTheDrivenMatrix:

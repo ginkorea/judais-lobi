@@ -338,6 +338,138 @@ class TestTheRefusals:
         assert agent.client.chat.call_count == 0
 
 
+#: A second manifest for the composition tests: its own knowledge, its own
+#: tool on the same stub server, no answer shape of its own.
+SECOND_SKILL = textwrap.dedent("""\
+    ---
+    name: viewer
+    skill:
+      skill_id: viewer
+      when_to_use: When a facet has to be read back.
+      allowed_tools:
+        - governed_view
+      policy:
+        - Quote the facet, never paraphrase it.
+    ---
+
+    # Viewer
+
+    Read the facet before describing it.
+    """)
+
+
+@pytest.fixture
+def second_skill_file(tmp_path):
+    path = tmp_path / "second" / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(SECOND_SKILL, encoding="utf-8")
+    return path
+
+
+class TestTwoSkillsFromTheCommandLine:
+    """`--skill` twice, down the real path, against the real stub server.
+
+    Not a rehearsal: what is asserted is what `core/cli.py` actually
+    prints and what actually reaches the model, because the composition
+    is only worth anything if the union survives argparse, the bridge and
+    the closed-set intersection — and the console line an operator reads
+    to check they got the run they asked for is the one in the source,
+    not one a test rebuilt from the same fields.
+    """
+
+    def test_the_report_line_names_every_skill_primary_first(
+            self, elf, skill_file, second_skill_file, capsys):
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--skill", str(second_skill_file))
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "skill recon + viewer" in out
+
+    def test_one_skill_still_prints_the_line_it_always_did(
+            self, elf, skill_file, capsys):
+        """The compatibility half, asserted on the console: no plus, no
+        second name, the sentence every operator's eye already knows."""
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "skill recon —" in out
+        assert "skill recon +" not in out
+
+    def test_both_closed_sets_reach_the_model(
+            self, elf, skill_file, second_skill_file):
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--skill", str(second_skill_file))
+        system = agent.client.chat.call_args_list[0].kwargs["messages"][0][
+            "content"]
+        assert "mcp.governed_read" in system
+        assert "mcp.governed_view" in system
+        assert "mcp.run_shell_command" not in system
+
+    def test_both_bodies_reach_the_model_primary_first(
+            self, elf, skill_file, second_skill_file):
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--skill", str(second_skill_file))
+        system = agent.client.chat.call_args_list[0].kwargs["messages"][0][
+            "content"]
+        assert "Start broad, then narrow by facet." in system
+        assert "Read the facet before describing it." in system
+        assert (system.index("Start broad, then narrow by facet.")
+                < system.index("Read the facet before describing it."))
+
+    def test_the_primarys_answer_shape_is_the_last_thing_said(
+            self, elf, skill_file, second_skill_file):
+        """`output_format` is the instruction a model is acting on when it
+        stops, and a supporting skill's body must not come after it."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file),
+                "--skill", str(second_skill_file))
+        system = agent.client.chat.call_args_list[0].kwargs["messages"][0][
+            "content"]
+        assert (system.index("Read the facet before describing it.")
+                < system.index("A table."))
+
+    def test_the_environment_form_takes_a_list(
+            self, elf, skill_file, second_skill_file, capsys, monkeypatch):
+        MockClass, _agent = elf
+        monkeypatch.setenv(
+            "MISSION_SKILL",
+            os.pathsep.join([str(skill_file), str(second_skill_file)]))
+        run_cli(MockClass)
+        assert "skill recon + viewer" in capsys.readouterr().out.replace(
+            "\n", "")
+
+    def test_a_composition_that_cannot_be_merged_stops_the_run(
+            self, elf, skill_file, tmp_path):
+        """Before the server is dialled and before the model is asked, as
+        every other bad `--skill` is."""
+        MockClass, agent = elf
+        clashing = tmp_path / "clashing" / "SKILL.md"
+        clashing.parent.mkdir(parents=True, exist_ok=True)
+        clashing.write_text(textwrap.dedent("""\
+            ---
+            name: clashing
+            skill:
+              skill_id: clashing
+              when_to_use: Never, in this test.
+              allowed_tools:
+                - governed_view
+              grounding:
+                identifier_pattern: '\\bnothing\\b'
+            ---
+
+            # Clashing
+
+            A second, different idea of what an identifier looks like.
+            """), encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(skill_file),
+                    "--skill", str(clashing))
+        assert "identifier_pattern" in str(exc.value)
+        assert agent.client.chat.call_count == 0
+
+
 class TestWithoutASkill:
     def test_the_mission_still_runs(self, elf):
         MockClass, agent = elf

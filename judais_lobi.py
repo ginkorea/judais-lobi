@@ -84,8 +84,8 @@ from core.runtime.prompts import GOVERNED_PLANE
 from core.runtime.run import (
     NO_SUPERVISOR, Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
 )
-from core.runtime.skills import (SkillManifest as Skill, load_skill,
-                                 resolve_skill)
+from core.runtime.skills import (SkillManifest as Skill, compose_manifests,
+                                 load_skill, resolve_skill)
 from core.runtime.supervisor import Supervisor
 from core.skills.library import packs
 from core.tools import Tools
@@ -112,6 +112,13 @@ __all__ = [
     # writes its own manifest keeps using `load_skill` and never calls
     # either.
     "resolve_skill",    # a path, or the name of a shipped pack
+    # Several skills as one mission — the public door for what `--skill`
+    # does when it repeats. A platform shipping a FAMILY of skills calls
+    # this rather than unioning the closed sets itself, because the merge
+    # is where the refusals live (two identifier grammars, one plane name
+    # over two tool sets) and a second implementation of it would union
+    # them quietly.
+    "compose_manifests",
     "packs",            # ('analyst', 'coding', 'research')
     "Deadline",         # a wall clock for `Bounds`
     "Cancellation",     # a switch for `Bounds`
