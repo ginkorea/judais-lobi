@@ -875,6 +875,30 @@ def _canonical(value: Any) -> Any:
     return value
 
 
+def _declared(manifests: Sequence["SkillManifest"], key: str) -> bool:
+    """Whether ANY of *manifests* wrote *key* into its ``grounding:`` block.
+
+    THE SHAPE RULE, and the one line that enforces it: **composition may
+    change a value, never a declared key's presence.**  A key that one
+    skill wrote is in the merged mapping, whatever the merge did to what
+    it says.
+
+    Presence is not decoration, and the reference deployment found out
+    how: every skill in a family declared ``must_cite: {}`` — an empty
+    floor, deliberately — and the merge dropped the key because the union
+    of nothing is nothing.  One skill returned the manifest unchanged and
+    ``"must_cite" in grounding`` was True; two skills composed and it was
+    False.  A consumer that switches on key presence turns its check off
+    the moment a second skill is added to the line, and nothing anywhere
+    says so.
+
+    ``key in m.grounding`` and not ``m.grounding.get(key)``: the whole
+    point is to tell *declared and empty* from *never mentioned*, which
+    is the distinction ``get`` throws away.
+    """
+    return any(key in m.grounding for m in manifests)
+
+
 def _same_plane(one: Any, other: Any) -> bool:
     """Whether two ``planes:`` bodies declare the SAME plane.
 
@@ -994,6 +1018,15 @@ def _merge_grounding(
     :meth:`~core.runtime.grounding.GroundingConfig.minimum_for` lets an
     explicit name beat the wildcard and nobody wrote both sentences.
     Inside ONE block that exemption is deliberate and is left alone.
+
+    **Composition may change a value; it may never change a declared
+    key's presence.**  Every key any input wrote is in the mapping that
+    comes out, even when the merge left it empty — ``must_cite`` as
+    ``{}``, ``ignore`` and ``figures_from`` as ``[]``, ``planes`` as
+    ``{}``, a bool as ``false``, a scalar as the ``null`` somebody typed.
+    See :func:`_declared` for what that costs when it is not true.  The
+    keys are :data:`~core.runtime.grounding.GROUNDING_KEYS`, which this
+    function owes a merge rule to every one of.
     """
     from core.runtime.grounding import ANY_CHECK, GroundingConfig
 
@@ -1024,7 +1057,7 @@ def _merge_grounding(
                 text = str(item)
                 if text not in union:
                     union.append(text)
-        if union:
+        if _declared(usable, key):
             merged[key] = union
 
     for key in _GROUNDING_FLAGS:
@@ -1037,14 +1070,22 @@ def _merge_grounding(
         # so, over a composition where nobody asked for anything to
         # change. A declaration that survives as `false` is the same
         # validator the single-skill path builds.
-        if any(key in m.grounding for m in usable):
+        if _declared(usable, key):
             merged[key] = any(bool(m.grounding.get(key, False))
                               for m in usable)
 
     for key in _GROUNDING_SCALARS:
+        # An explicit `identifier_pattern: null` is a DECLARATION carrying
+        # no opinion, and the two halves of that are handled separately:
+        # it is not compared (a null cannot disagree with a grammar, and
+        # refusing over one would refuse a composition over nothing), and
+        # it is not dropped either, because it was written down.
         stated = [(m.name, m.grounding[key]) for m in usable
                   if m.grounding.get(key) is not None]
         if not stated:
+            if _declared(usable, key):
+                merged[key] = next(m.grounding[key] for m in usable
+                                   if key in m.grounding)
             continue
         if any(value != stated[0][1] for _name, value in stated):
             problems.append(
@@ -1087,7 +1128,7 @@ def _merge_grounding(
                     f"{manifest.name!r} says {minimum}. One answer cannot "
                     f"have two different floors for one kind of thing"
                 )
-    if order:
+    if _declared(usable, "must_cite"):
         # The wildcard is a FLOOR, and composition must not let a named
         # check dig under it. `minimum_for` lets an explicit name beat
         # `must_cite: true` — which is right inside one skill, where the
@@ -1115,6 +1156,12 @@ def _merge_grounding(
         # omit", which is a sentence somebody did write. So does the same
         # block composed with a skill that ALSO writes `figures: 0`: two
         # authors agreeing is agreement.
+        #
+        # `order` empty is the declared-but-empty case — `must_cite: {}`
+        # or `must_cite: false`, both of which reduce to no pairs. It
+        # comes out as `{}`: the key a skill wrote is still there, and
+        # `_read_must_cite` reads `{}` back to the same no-floor it read
+        # the original to. The value may change; the presence may not.
         floor = minimums.get(ANY_CHECK, ("", 0))[1]
         wildcard_declarers = declarers.get(ANY_CHECK, set())
         merged["must_cite"] = {
@@ -1145,7 +1192,7 @@ def _merge_grounding(
                     f"plane: rename one of them, or make the two "
                     f"declarations identical"
                 )
-    if planes:
+    if _declared(usable, "planes"):
         merged["planes"] = planes
 
     # `merged` and not `merged or None`. Reaching here means at least one

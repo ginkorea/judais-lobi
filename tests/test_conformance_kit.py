@@ -104,6 +104,174 @@ class TestThePinComparisonSaysTheRightThing:
             kit.installed_version(), str)
 
 
+def _make_checkout(root: Path) -> Path:
+    """A directory that looks like a judais-lobi checkout to the locator.
+
+    The locator's whole acceptance test is "does `core/runtime/contract.py`
+    exist under here", so that one file is the whole fixture — and building
+    it rather than pointing at the real tree is what lets these tests state
+    a LAYOUT rather than a machine.
+    """
+    (root / "core" / "runtime").mkdir(parents=True, exist_ok=True)
+    (root / "core" / "runtime" / "contract.py").write_text(
+        "SCHEMA_VERSION = '0.0.0-fixture'\n", encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def locator(monkeypatch):
+    """The kit's `conftest.py`, with the environment out of the way.
+
+    `$JUDAIS_LOBI_HOME` is deleted rather than left alone: it is the first
+    candidate, so a developer who has it exported would make every layout
+    test below pass without testing the layout.
+    """
+    from tests.conformance import conftest as module
+
+    monkeypatch.delenv(module.HOME_ENV, raising=False)
+    return module
+
+
+class TestTheLocatorFindsACheckoutFromAWorktree:
+    """Where the harness is, from a working tree that is INSIDE a repository.
+
+    The kit guessed `<repo>/../judais-lobi`: one level, right for the layout
+    everybody describes and blind for the one `git worktree` produces. A
+    platform lane running in `<repo>/.claude/worktrees/wt-x/` computes its
+    repository as the worktree, guesses `.claude/worktrees/judais-lobi`,
+    finds nothing, and the one test that compares that platform's reading of
+    the wire against the harness's own declaration reports the checkout
+    absent and stops comparing. The reference deployment measured the gap:
+    eight errors the moment `$JUDAIS_LOBI_HOME` was set, zero reported
+    before it was.
+
+    A conformance kit that silently checks nothing is the exact failure this
+    kit's module docstring says it exists to prevent, so the search is a
+    bounded ancestor walk now and these are the layouts it has to answer.
+    """
+
+    def worktree(self, tmp_path, monkeypatch, locator):
+        """`<tmp>/repo/.claude/worktrees/wt`, with the checkout beside
+        `repo` — the layout an isolated agent lane actually runs in."""
+        kit_home = tmp_path / "repo" / ".claude" / "worktrees" / "wt"
+        (kit_home / "tests" / "conformance").mkdir(parents=True)
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", kit_home)
+        return _make_checkout(tmp_path / "judais-lobi")
+
+    def test_the_checkout_beside_the_outer_repository_is_found(
+            self, tmp_path, monkeypatch, locator):
+        found = self.worktree(tmp_path, monkeypatch, locator)
+        assert locator.checkout() == found
+
+    def test_the_flat_sibling_layout_still_resolves(self, tmp_path,
+                                                    monkeypatch, locator):
+        """The loosening must not move the case that already worked: two
+        checkouts side by side is what the walk's first step is."""
+        (tmp_path / "platform").mkdir()
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", tmp_path / "platform")
+        found = _make_checkout(tmp_path / "judais-lobi")
+        assert locator.checkout() == found
+
+    def test_the_nearest_ancestor_wins(self, tmp_path, monkeypatch, locator):
+        """Nearest first, so a machine with checkouts at two depths gets the
+        one next to the repository being worked on rather than whichever the
+        walk happened to reach."""
+        kit_home = tmp_path / "outer" / "inner" / "platform"
+        kit_home.mkdir(parents=True)
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", kit_home)
+        near = _make_checkout(tmp_path / "outer" / "inner" / "judais-lobi")
+        _make_checkout(tmp_path / "outer" / "judais-lobi")
+        assert locator.checkout() == near
+
+    def test_a_named_home_still_wins_over_the_walk(self, tmp_path,
+                                                   monkeypatch, locator):
+        """`$JUDAIS_LOBI_HOME` is a person saying which checkout, and a
+        search that could overrule it would be a search that ignores them."""
+        self.worktree(tmp_path, monkeypatch, locator)
+        named = _make_checkout(tmp_path / "elsewhere")
+        monkeypatch.setenv(locator.HOME_ENV, str(named))
+        assert locator.checkout() == named
+
+    def test_a_stale_named_home_falls_through_to_the_walk(
+            self, tmp_path, monkeypatch, locator):
+        """A variable pointing at an empty directory is not agreement. It
+        was true before the walk and it has to stay true through it."""
+        found = self.worktree(tmp_path, monkeypatch, locator)
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv(locator.HOME_ENV, str(tmp_path / "empty"))
+        assert locator.checkout() == found
+
+    def test_a_repository_that_is_ITSELF_a_checkout_beats_an_ancestor(
+            self, tmp_path, monkeypatch, locator):
+        """You do not go looking for a sibling copy of what you are standing
+        in.
+
+        This is the case the walk created and the single guess could not
+        reach: judais-lobi's own worktrees live at
+        `<checkout>/.claude/worktrees/wt-x`, so the main checkout is an
+        ANCESTOR of the lane. Preferring it would make a lane compare — and,
+        through `harness_home`, spawn a replay of — the code on master while
+        looking exactly like a pass on the lane's own tree.
+        """
+        main = _make_checkout(tmp_path / "judais-lobi")
+        lane = _make_checkout(main / ".claude" / "worktrees" / "wt")
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", lane)
+        assert locator.checkout() == lane
+
+    def test_nothing_that_carries_the_contract_module_is_nothing_found(
+            self, tmp_path, monkeypatch, locator):
+        """The acceptance predicate, not the machine. `CONTRACT_MODULE` is
+        pointed at a filename nothing has, so this says *no candidate
+        qualified* on any host rather than *this host happens to have no
+        checkout anywhere above /tmp*."""
+        (tmp_path / "platform").mkdir()
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", tmp_path / "platform")
+        monkeypatch.setattr(locator, "CONTRACT_MODULE",
+                            Path("core") / "runtime" / "no_such_module.py")
+        _make_checkout(tmp_path / "judais-lobi")
+        assert locator.checkout() is None
+
+    def test_the_opt_out_is_still_the_only_one(self, tmp_path, monkeypatch,
+                                               locator):
+        """`ALLOW_MISSING` reads its own variable and nothing else — not the
+        layout, not an ImportError. Inferring it is what lets a conformance
+        test report a pass on a comparison it never made."""
+        monkeypatch.delenv(locator.ALLOW_MISSING_ENV, raising=False)
+        assert locator.allowed_to_be_missing() is False
+        monkeypatch.setenv(locator.ALLOW_MISSING_ENV, "1")
+        assert locator.allowed_to_be_missing() is True
+        monkeypatch.setenv(locator.ALLOW_MISSING_ENV, "yes")
+        assert locator.allowed_to_be_missing() is False
+
+    def test_the_failure_message_describes_the_walk_and_not_one_path(
+            self, tmp_path, monkeypatch, locator):
+        """A message naming a single sibling is what made the worktree case
+        unreadable: it pointed at a directory nobody expected to exist and
+        said nothing about the others it had tried."""
+        kit_home = tmp_path / "repo" / ".claude" / "worktrees" / "wt"
+        kit_home.mkdir(parents=True)
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", kit_home)
+        said = locator.where_it_looked()
+        for path in locator.sibling_checkouts()[:3]:
+            assert str(path) in said, path
+        assert str(kit_home) in said
+        assert locator.HOME_ENV in said
+
+    def test_the_walk_is_bounded_and_ends_at_the_root(self, tmp_path,
+                                                      monkeypatch, locator):
+        """`Path.parents` ends at the filesystem root, so the search is
+        finite by construction and needs no depth cap somebody has to keep
+        right. Said as a test because "bounded" is the property, not the
+        implementation."""
+        kit_home = tmp_path / "a" / "b" / "c"
+        kit_home.mkdir(parents=True)
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", kit_home)
+        walked = locator.sibling_checkouts()
+        assert walked[0] == tmp_path / "a" / "b" / "judais-lobi"
+        assert walked[-1] == Path(kit_home.anchor) / "judais-lobi"
+        assert len(walked) == len(kit_home.parents)
+
+
 class TestTheKitIsTwoFilesAndAPageThatSaysSo:
     """`PLATFORMS.md` §10 tells a reader to copy two files. A kit that had
     grown a third would leave every copy of it subtly broken."""

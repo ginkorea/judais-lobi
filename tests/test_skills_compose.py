@@ -589,6 +589,81 @@ class TestGroundingMerges:
         assert composed.grounding is not None
         assert GroundingConfig.from_mapping(composed.grounding) is not None
 
+    def test_an_empty_must_cite_survives_as_an_empty_must_cite(
+            self, tmp_path):
+        """THE case the reference deployment found, composing 13 skills.
+
+        Every input declared `must_cite: {}` — an empty floor, written on
+        purpose. One skill returned the manifest unchanged and
+        `"must_cite" in grounding` was True; two skills composed and the
+        union of nothing dropped the key, so it was False. A consumer that
+        switches on key presence turns its check off the moment a second
+        skill is added to the line, and the only sign of it is a shape
+        change nothing reports."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"must_cite": {}}),
+            skill(tmp_path, "second", grounding={"must_cite": {}}),
+        ])
+        assert "must_cite" in composed.grounding
+        assert composed.grounding["must_cite"] == {}
+
+    def test_an_empty_must_cite_still_reads_back_to_no_floor(self, tmp_path):
+        """The value may change — `{}` where a skill wrote `{}` or
+        `false` — and what it MEANS may not. `_read_must_cite` reads the
+        emitted `{}` back to the same no-floor it read the original to."""
+        from core.runtime.grounding import GroundingConfig
+
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"must_cite": {}}),
+            skill(tmp_path, "second", grounding={"must_cite": False}),
+        ])
+        config = GroundingConfig.from_mapping(composed.grounding)
+        assert config.must_cite == ()
+        assert config.minimum_for("identifiers") == 0
+
+    @pytest.mark.parametrize("key", ["ignore", "figures_from"])
+    def test_a_declared_empty_list_survives_as_an_empty_list(
+            self, tmp_path, key):
+        """Same defect, same shape, one field over: the union of two empty
+        lists is empty, and `if union:` dropped the key that both skills
+        had written down."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={key: []}),
+            skill(tmp_path, "second", grounding={key: []}),
+        ])
+        assert composed.grounding[key] == []
+
+    def test_a_declared_empty_planes_block_survives(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"planes": {}}),
+            skill(tmp_path, "second", grounding={"planes": {}}),
+        ])
+        assert composed.grounding["planes"] == {}
+
+    def test_an_explicit_null_scalar_is_a_declaration_and_not_a_silence(
+            self, tmp_path):
+        """`identifier_pattern: null` carries no opinion, and that is not
+        the same as never having written the key. It is not COMPARED —
+        a null cannot disagree with a grammar, and refusing over one would
+        refuse a composition over nothing — and it is not DROPPED either,
+        because somebody typed it."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"identifier_pattern": None}),
+            skill(tmp_path, "second", grounding={"identifier_pattern": None}),
+        ])
+        assert "identifier_pattern" in composed.grounding
+        assert composed.grounding["identifier_pattern"] is None
+
+    def test_a_null_scalar_yields_to_a_skill_that_stated_one(self, tmp_path):
+        """Presence is preserved; the VALUE still comes from whoever had
+        an opinion. A null beside a grammar is not a disagreement."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"identifier_pattern": None}),
+            skill(tmp_path, "second",
+                  grounding={"identifier_pattern": r"\bacme\.\w+\b"}),
+        ])
+        assert composed.grounding["identifier_pattern"] == r"\bacme\.\w+\b"
+
     def test_a_block_that_does_not_stand_up_alone_is_named_as_such(
             self, tmp_path):
         """Its own reason, not a stranger complaint about a merged mapping
@@ -1060,6 +1135,94 @@ class TestARefusalNamesEverySkillItIsAbout:
         with pytest.raises(SkillToolsUnavailable) as exc:
             skill(tmp_path, "solo", allowed_tools=["alpha"]).resolve(["beta"])
         assert "skill 'solo' cannot run against this server" in str(exc.value)
+
+
+#: One value per ``grounding:`` key that is a DECLARATION carrying nothing:
+#: what a skill writes when it means "this key, and no opinion yet". Each
+#: has to be a value `from_mapping` accepts on its own, because the merge
+#: validates every input block before folding it.
+#:
+#: ``max_repairs`` has no empty — a count is a count — so its neutral value
+#: is the default somebody would have got anyway, written down.
+NOTHING_DECLARED = {
+    "identifier_pattern": None,
+    "number_pattern": None,
+    "ignore": [],
+    "figures_from": [],
+    "max_repairs": 1,
+    "must_cite": {},
+    "claim_table": False,
+    "reading": False,
+    "critic": False,
+    "planes": {},
+}
+
+
+class TestCompositionNeverChangesAKeysPresence:
+    """The rule, over every key a grounding block may set.
+
+    Written as a sweep and not as a list of cases on purpose. The defect
+    the reference deployment hit was not "must_cite is wrong" — it was that
+    the merge had four separate `if <non-empty>:` guards and nobody had
+    asked what each of them did to a key that was declared and empty. A key
+    added to `grounding.py` tomorrow with no merge rule fails here on the
+    day it is added, rather than on the day a platform composes with it.
+    """
+
+    def test_the_neutral_values_cover_every_key_there_is(self):
+        """The sweep below is only as good as this mapping, and this
+        mapping is the thing that would silently stop covering a new
+        key."""
+        from core.runtime.grounding import GROUNDING_KEYS
+
+        assert set(NOTHING_DECLARED) == set(GROUNDING_KEYS)
+
+    @pytest.mark.parametrize("key", sorted(NOTHING_DECLARED))
+    def test_a_key_declared_empty_by_every_input_survives(self, tmp_path, key):
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={key: NOTHING_DECLARED[key]}),
+            skill(tmp_path, "second", grounding={key: NOTHING_DECLARED[key]}),
+        ])
+        assert key in composed.grounding, (
+            f"{key!r} was declared by both skills and is not in the merged "
+            f"mapping: composition may change a value, never a key's presence")
+
+    @pytest.mark.parametrize("key", sorted(NOTHING_DECLARED))
+    def test_a_key_declared_by_only_one_input_survives_too(self, tmp_path, key):
+        """The asymmetric half. A family where one member declares a key
+        and the others do not is the ordinary case, not the exotic one."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={key: NOTHING_DECLARED[key]}),
+            skill(tmp_path, "second", grounding={"ignore": ["placeholder"]}),
+        ])
+        assert key in composed.grounding
+
+    @pytest.mark.parametrize("key", sorted(NOTHING_DECLARED))
+    def test_a_key_nobody_declared_is_not_invented(self, tmp_path, key):
+        """The other direction, and the reason this is a rule about
+        PRESERVING presence rather than about filling the mapping in: a
+        merge that emitted every key at its default would tell a consumer
+        that ten checks were configured when none were."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"ignore": ["dead"]}),
+            skill(tmp_path, "second", grounding={"ignore": ["tbd"]}),
+        ])
+        if key != "ignore":
+            assert key not in composed.grounding
+
+    @pytest.mark.parametrize("key", sorted(NOTHING_DECLARED))
+    def test_the_merged_shape_is_the_single_skill_shape(self, tmp_path, key):
+        """Stated as the equality it is. One skill composes to itself, so
+        its mapping IS the reference shape — and the two-skill mapping has
+        to carry the same keys or a consumer's `in` test answers differently
+        for the same declarations."""
+        block = {key: NOTHING_DECLARED[key]}
+        alone = compose_manifests([skill(tmp_path, "solo", grounding=block)])
+        together = compose_manifests([
+            skill(tmp_path / "a", "first", grounding=block),
+            skill(tmp_path / "b", "second", grounding=block),
+        ])
+        assert set(together.grounding) == set(alone.grounding)
 
 
 def test_the_module_docstring_says_composition_has_one_owner():

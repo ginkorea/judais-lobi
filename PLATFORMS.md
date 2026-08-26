@@ -1661,6 +1661,33 @@ emitters run with the replies served off disk by ordinal. **No model, no API
 key, no MCP server, no GPU, no network.** Any run directory you have archived
 will do. Put it on the same CI trigger as everything else.
 
+### Where it looks for the harness
+
+The copied `conftest.py` needs no editing, ever, and this is the paragraph that
+says why it can find your checkout without any. It tries, in order: the
+installed `judais_lobi`/`core` distribution; a checkout named by
+`$JUDAIS_LOBI_HOME`; your own repository, if it happens to *be* a judais-lobi
+checkout; and then `judais-lobi` beside **each ancestor** of your repository,
+nearest first. A candidate counts only if `core/runtime/contract.py` is really
+under it, so a stale variable pointing at an empty directory falls through
+rather than being reported as agreement.
+
+The ancestor walk is what makes it work from a **git worktree**. It used to be
+one guess — `<yourrepo>/../judais-lobi` — and a lane running in
+`<yourrepo>/.claude/worktrees/wt-x/` computes its repository as the worktree,
+looks for `.claude/worktrees/judais-lobi`, and reports the checkout absent. The
+kit then said so loudly, which is the right failure, but the reference
+deployment ran that way for a while with the comparison never happening: eight
+errors surfaced the moment `$JUDAIS_LOBI_HOME` was exported, and none before.
+If your layout is stranger than a walk can guess, export `$JUDAIS_LOBI_HOME`;
+`JUDAIS_LOBI_HOME` wins over everything but an installed distribution.
+
+And if a runner legitimately has no harness at all, say so:
+`JUDAIS_LOBI_CONFORMANCE_ALLOW_MISSING` set to `1` is the **only** way this kit
+is allowed not to run — it never infers permission from an
+`ImportError`, because inferring it is what lets a conformance test report a
+pass on a comparison it never made.
+
 ### Why a copy and not an import
 
 The thing being tested is your *restatement* of the contract — the field names
