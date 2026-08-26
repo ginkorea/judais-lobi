@@ -464,6 +464,11 @@ you add what you want and pay for nothing else; the one exception is the
 **supervisor**, which `Bounds()` carries by default (`Bounds(supervisor=
 NO_SUPERVISOR)` opts out).
 
+`from judais_lobi import Skill, compose_manifests` is the skill half:
+`Skill.load("analyst")` takes a path or a shipped pack's name, and
+`compose_manifests([...])` folds several into one mission exactly as a
+repeated `--skill` does — first is primary, tools union, strictness unions.
+
 **The CLI is a client of this**, not a second implementation: `judais
 --mission` is argparse and then these same six objects handed to this same
 `Run`. `from judais_lobi import contract` is the wire as data —

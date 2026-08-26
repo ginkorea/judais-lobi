@@ -59,9 +59,22 @@ def _skill_values(args):
     A typed flag wins outright over ``MISSION_SKILL`` rather than
     extending it: the alternative is an operator who typed one skill and
     ran under two.
+
+    A **scalar** ``args.skill`` is accepted and wrapped, because ``args``
+    is not always argparse's: a library caller, a test and
+    :mod:`core.eval` all build one by hand, and every one of them wrote
+    ``skill="analyst"`` while the flag took a single value.  ``list()``
+    over a string is seven skills called ``a``, ``n``, ``a``…, and over a
+    ``Path`` it is a ``TypeError`` — both of them a mangling of an
+    argument somebody passed correctly for the shape this function used
+    to have.
     """
-    typed = list(getattr(args, "skill", None) or [])
-    return typed or list(_env_skills() or [])
+    typed = getattr(args, "skill", None)
+    if typed is None or typed == "":
+        typed = []
+    elif isinstance(typed, (str, Path)) or not isinstance(typed, (list, tuple)):
+        typed = [typed]
+    return list(typed) or list(_env_skills() or [])
 
 
 def _env_mcp_timeout(name: str = "MCP_TIMEOUT_S"):
@@ -295,7 +308,7 @@ def _local_plane_or_refuse(manifest, bus):
     if not missing:
         return
     raise SystemExit(
-        f"--mission needs a server: skill {manifest.name!r} names "
+        f"--mission needs a server: skill {manifest.describe()} names "
         f"{', '.join(repr(entry) for entry in missing)}, which "
         f"{'is' if len(missing) == 1 else 'are'} not among this host's own "
         f"tools ({', '.join(local) or 'none'}). Point --mcp-stdio "

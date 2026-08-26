@@ -662,6 +662,14 @@ class GroundingConfig:
         to :meth:`GroundingValidator.from_config`, and validating a name
         against a hard-coded list in this method is how the list and the
         checks drift apart.
+
+        **Called from outside this module**, and deliberately so:
+        :func:`core.runtime.skills._merge_grounding` unions the
+        ``must_cite`` of several composed skills and has to compare what
+        they MEAN rather than the spelling each author used, so it asks
+        this reducer.  It is the only cross-module caller; if a second one
+        appears, promote this to a module-level function rather than let
+        the three-spellings rule be re-implemented anywhere.
         """
         if raw is None or raw is False:
             return (), []

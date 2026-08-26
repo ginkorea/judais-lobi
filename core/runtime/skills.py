@@ -551,6 +551,20 @@ class SkillManifest:
             parts.append(f"{_OUTPUT_LABEL}:\n{output}")
         return "\n\n".join(parts)
 
+    def describe(self) -> str:
+        """How a refusal names this manifest — and everything it composes.
+
+        ``'analyst'`` for a manifest off one file, byte for byte what
+        every refusal said before composition existed.  ``'analyst'
+        (composed with 'research')`` for several, and the reason is that
+        the closed set a refusal is ABOUT is the union: a tool missing
+        for the third skill, reported under the first skill's name, sends
+        an operator to open the wrong file and find nothing wrong with
+        it.
+        """
+        rest = ", ".join(repr(name) for name in self.composed[1:])
+        return f"{self.name!r} (composed with {rest})" if rest else repr(self.name)
+
     # ── the closed set, against what was discovered ─────────────────────
 
     def code_plane_entries(self) -> List[Tuple[str, str, Tuple[str, ...]]]:
@@ -715,7 +729,7 @@ class SkillManifest:
 
         if unsafe or problems:
             message = (
-                f"skill {self.name!r} cannot run against this server:\n  - "
+                f"skill {self.describe()} cannot run against this server:\n  - "
                 + "\n  - ".join(unsafe + problems)
             )
             # The discovered list and the sentence about narrowing answer
@@ -734,7 +748,7 @@ class SkillManifest:
             raise SkillToolsUnavailable(message)
         if not resolved:
             raise SkillToolsUnavailable(
-                f"skill {self.name!r} resolved to no tools at all: every entry "
+                f"skill {self.describe()} resolved to no tools at all: every entry "
                 f"in its closed set is optional and none was discovered. "
                 f"Discovered: " + (", ".join(offered) or "(nothing)")
             )
@@ -861,6 +875,48 @@ def _canonical(value: Any) -> Any:
     return value
 
 
+def _same_plane(one: Any, other: Any) -> bool:
+    """Whether two ``planes:`` bodies declare the SAME plane.
+
+    Not equality of what was typed.  A skill family legitimately restates
+    the plane its members share, and two authors — or one author on two
+    days — write the tools in a different order and in a different
+    naming convention.  Comparing the text would refuse a composition
+    over a difference that is not one, and that refusal has no fix short
+    of editing somebody else's manifest to match your typing.
+
+    So membership is compared, on the identities the rest of the
+    framework already uses: tools by
+    :func:`~core.tools.descriptors.tool_key`, so ``catalog.search`` and
+    ``mcp_catalog_search`` are the one tool they are everywhere else, and
+    claims by casefolded text, because
+    :class:`~core.runtime.grounding.PlaneClaimCheck` matches them
+    case-insensitively and two spellings it cannot tell apart are not two
+    declarations.  Genuinely different membership is still the refusal it
+    was: one plane name over two tool sets is two planes wearing one word.
+
+    The bodies are read through
+    :meth:`~core.runtime.grounding.GroundingConfig._read_planes` rather
+    than picked apart here, so the plane schema keeps one owner.  A body
+    that reader cannot make a plane of falls back to comparing the raw
+    text — it belongs to a skill that is being refused on its own terms
+    anyway, and guessing about it here would only add a second reason.
+    """
+    from core.runtime.grounding import GroundingConfig
+
+    def read(body: Any):
+        planes, _problems = GroundingConfig._read_planes({"plane": body})
+        return planes[0] if planes else None
+
+    left, right = read(one), read(other)
+    if left is None or right is None:
+        return _canonical(one) == _canonical(other)
+    return (frozenset(tool_key(name) for name in left.tools)
+            == frozenset(tool_key(name) for name in right.tools)
+            and frozenset(claim.casefold() for claim in left.claims)
+            == frozenset(claim.casefold() for claim in right.claims))
+
+
 def _prompt_without_output_contract(manifest: "SkillManifest") -> str:
     """*manifest*'s prompt with its answer shape taken back off.
 
@@ -875,6 +931,15 @@ def _prompt_without_output_contract(manifest: "SkillManifest") -> str:
     manifest assembled by hand may carry a prompt this module never
     rendered, and truncating that one on a guess is worse than leaving a
     sentence in.
+
+    Known edge, and left alone deliberately: a skill whose Markdown BODY
+    writes out its own ``Output format:`` paragraph keeps that paragraph
+    in the composition.  It is prose the author wrote into the body, the
+    suffix this function removes is the one the renderer appended, and a
+    function that went looking for the label anywhere in the text would
+    start deleting a supporting skill's explanation of its own reporting
+    conventions.  The way to have a stripped answer shape is to put it in
+    ``output_format:``, which is what the field is.
     """
     contract = manifest.output_contract
     if not contract:
@@ -903,8 +968,17 @@ def _merge_grounding(
     up alone is left out with its own reason named.  Merging an
     unreadable block would produce a second, stranger complaint about a
     mapping nobody wrote.
+
+    **Strictness only ever goes up.**  The bools OR.  A ``must_cite``
+    wildcard is a floor and a named check may not dig under it *across
+    skills*: ``must_cite: true`` in the primary composed with
+    ``must_cite: {figures: 0}`` in a supporting skill comes out with
+    ``figures`` at the wildcard's minimum, not at zero, because
+    :meth:`~core.runtime.grounding.GroundingConfig.minimum_for` lets an
+    explicit name beat the wildcard and nobody wrote both sentences.
+    Inside ONE block that exemption is deliberate and is left alone.
     """
-    from core.runtime.grounding import GroundingConfig
+    from core.runtime.grounding import ANY_CHECK, GroundingConfig
 
     declared = [m for m in manifests if m.grounding is not None]
     if not declared:
@@ -937,8 +1011,18 @@ def _merge_grounding(
             merged[key] = union
 
     for key in _GROUNDING_FLAGS:
-        if any(bool(m.grounding.get(key, False)) for m in usable):
-            merged[key] = True
+        # Emitted whenever anybody DECLARED it, at the OR of what they
+        # said — not only when the OR came out true. A skill whose whole
+        # block is `claim_table: false` has declared a grounding block,
+        # and dropping its one false key left the merged mapping empty,
+        # which `merged or None` then turned into *no grounding grammar
+        # at all*: the run lost its validator and the console line said
+        # so, over a composition where nobody asked for anything to
+        # change. A declaration that survives as `false` is the same
+        # validator the single-skill path builds.
+        if any(key in m.grounding for m in usable):
+            merged[key] = any(bool(m.grounding.get(key, False))
+                              for m in usable)
 
     for key in _GROUNDING_SCALARS:
         stated = [(m.name, m.grounding[key]) for m in usable
@@ -982,7 +1066,31 @@ def _merge_grounding(
                     f"have two different floors for one kind of thing"
                 )
     if order:
-        merged["must_cite"] = {check: minimums[check][1] for check in order}
+        # The wildcard is a FLOOR, and composition must not let a named
+        # check dig under it. `minimum_for` lets an explicit name beat
+        # `must_cite: true` — which is right inside one skill, where the
+        # author who wrote both sentences meant the exemption — and wrong
+        # across two, where nobody wrote both: a primary asking for
+        # citations generally, composed with a supporting skill that
+        # exempts figures for its own reasons, would come out citing
+        # fewer things than the primary asked for and nothing would say
+        # so. Raised rather than refused, on the same principle as the
+        # bools: strictness asked for by any skill binds the run.
+        #
+        # Only across skills. A single block MAY write `{"*": 1,
+        # figures: 0}` — one author saying "cite generally, except this
+        # kind, which my answers legitimately omit" — and that sentence is
+        # deliberate, so an exemption written by the same skill that set
+        # the floor is left exactly as written. What is raised is an
+        # exemption one skill wrote under a floor another skill set,
+        # which nobody wrote and nobody meant.
+        floor_owner, floor = minimums.get(ANY_CHECK, ("", 0))
+        merged["must_cite"] = {
+            check: (minimums[check][1] if check == ANY_CHECK
+                    or minimums[check][0] == floor_owner
+                    else max(minimums[check][1], floor))
+            for check in order
+        }
 
     # A plane NAME is what a report says and what a claim phrase is
     # recognised under, so two skills declaring one name over different
@@ -996,7 +1104,7 @@ def _merge_grounding(
             if key not in planes:
                 planes[key] = body
                 plane_owner[key] = manifest.name
-            elif _canonical(planes[key]) != _canonical(body):
+            elif not _same_plane(planes[key], body):
                 problems.append(
                     f"`grounding: planes: {key}` is declared by both "
                     f"{plane_owner[key]!r} and {manifest.name!r}, over "
@@ -1007,7 +1115,14 @@ def _merge_grounding(
     if planes:
         merged["planes"] = planes
 
-    return merged or None
+    # `merged` and not `merged or None`. Reaching here means at least one
+    # skill declared a usable block, and *a block was declared* is the
+    # fact the return value carries: `from_mapping({})` builds a validator
+    # with no opinion, exactly as it does for a manifest that wrote
+    # `grounding: {}`, while `None` says nobody asked for checking. Those
+    # are different answers and composition must not swap one for the
+    # other. `None` is returned above, where it is true.
+    return merged
 
 
 def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
@@ -1054,7 +1169,12 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
       Checking is unioned and never intersected: strictness asked for by
       any skill binds the run;
     * the ``sdk_import``, if exactly one distinct one was named, and the
-      ``sandbox``, at the strictest thing anybody asked for.
+      ``sandbox``, at the strictest thing anybody asked for.  The
+      code-plane gate then runs over **each input manifest** under that
+      composed sandbox, and over the composed set as well: the union
+      deduplicates on ``same_tool``, so gating only the composed set
+      would let the bridged spelling of a tool swallow this host's own
+      and make the refusal depend on which skill was typed first.
 
     Everything that cannot be merged honestly is a **refusal listing
     every problem at once**, in this module's idiom: a disagreement about
@@ -1191,11 +1311,37 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
         composed=tuple(manifest.name for manifest in loaded),
     )
 
-    # Belt and braces. Every skill passed the code-plane gate on its own
-    # file and `bwrap` wins the sandbox merge, so a union cannot invent a
-    # code plane without isolation. Asserted anyway: the argument for why
-    # it cannot happen is three sentences long and the check is one line.
-    problems.extend(composed._sandbox_problems(None))
+    # The code-plane gate, run over EACH INPUT manifest under the sandbox
+    # the composition arrived at — and then over the composed set as well.
+    #
+    # Per-input is not belt and braces, it is the only correct half, and
+    # the reviewer found out why: the union deduplicates on `same_tool`,
+    # so a skill naming the bridged `mcp.run_shell_command` and a skill
+    # naming this host's own `run_shell_command` collapse to ONE entry —
+    # whichever was listed first. Gating the composed set alone therefore
+    # made the refusal depend on the order two skills were typed in: the
+    # bridged spelling first swallowed the local one and the local code
+    # plane went ungated, the other way round it refused. A gate that
+    # depends on argument order is not a gate.
+    #
+    # `replace(m, sandbox=sandbox)` asks each manifest its own question —
+    # *do YOUR tools run code on this host* — against the isolation the
+    # COMPOSITION will actually run under, which is the honest pairing: a
+    # skill that declared `none` is not unsafe when it is composed with
+    # one that brought bwrap, and a skill that declared bwrap is not safe
+    # because somebody else's entry is the one that survived dedup.
+    #
+    # The composed check stays too, for the entries that are only a
+    # problem together. Identical lines are folded: one entry gated twice
+    # is one thing to fix, and a refusal that says it twice reads like two.
+    from dataclasses import replace
+
+    unsafe: List[str] = []
+    for manifest in loaded + [composed]:
+        for line in replace(manifest, sandbox=sandbox)._sandbox_problems(None):
+            if line not in unsafe:
+                unsafe.append(line)
+    problems.extend(unsafe)
 
     if problems:
         raise SkillManifestError(

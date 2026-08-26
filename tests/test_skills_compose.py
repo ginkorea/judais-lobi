@@ -30,6 +30,7 @@ import pytest
 from core.runtime.skills import (
     SkillManifest,
     SkillManifestError,
+    SkillToolsUnavailable,
     compose_manifests,
     load_skill,
 )
@@ -94,12 +95,17 @@ class TestTheClosedSetUnions:
         """A union and never an intersection. Two skills composed for the
         knowledge in both of them, handed the tools in neither, is a
         mission that answers from the model's memory — the same failure a
-        silently narrowed closed set is, arrived at a different way."""
+        silently narrowed closed set is, arrived at a different way.
+
+        The names are deliberately NOT in alphabetical order: the order a
+        skill author chose is the order the catalogue is read in, and a
+        fixture that happened to be sorted would pass against a merge
+        that sorted."""
         composed = compose_manifests([
-            skill(tmp_path, "first", allowed_tools=["alpha", "beta"]),
-            skill(tmp_path, "second", allowed_tools=["beta", "gamma"]),
+            skill(tmp_path, "first", allowed_tools=["beta", "alpha"]),
+            skill(tmp_path, "second", allowed_tools=["alpha", "gamma"]),
         ])
-        assert composed.allowed_tools == ("alpha", "beta", "gamma")
+        assert composed.allowed_tools == ("beta", "alpha", "gamma")
 
     def test_the_set_stays_closed(self, tmp_path):
         """Composition widens the closed set to exactly the union and not
@@ -343,6 +349,53 @@ class TestGroundingMerges:
         ])
         assert composed.grounding["must_cite"] == {"*": 1, "claims": 2}
 
+    def test_a_supporting_exemption_cannot_dig_under_the_wildcard(
+            self, tmp_path):
+        """THE weakening the review found. `minimum_for` lets an explicit
+        name beat the `must_cite: true` wildcard — right inside one skill,
+        where the author who wrote both sentences meant the exemption, and
+        wrong across two, where nobody wrote both. A primary asking for
+        citations generally, composed with a supporting skill that exempts
+        figures for its own reasons, would come out citing FEWER things
+        than the primary asked for and the report would not say so."""
+        from core.runtime.grounding import GroundingConfig
+
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"must_cite": True}),
+            skill(tmp_path, "second", grounding={"must_cite": {"figures": 0}}),
+        ])
+        config = GroundingConfig.from_mapping(composed.grounding)
+        assert config.minimum_for("figures") == 1
+
+    def test_a_higher_named_minimum_is_left_alone(self, tmp_path):
+        """Raised to the floor, never lowered to it: the wildcard is a
+        floor and not a setting."""
+        from core.runtime.grounding import GroundingConfig
+
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"must_cite": True}),
+            skill(tmp_path, "second", grounding={"must_cite": {"claims": 3}}),
+        ])
+        config = GroundingConfig.from_mapping(composed.grounding)
+        assert config.minimum_for("claims") == 3
+
+    def test_one_skills_own_exemption_beside_its_own_wildcard_survives(
+            self, tmp_path):
+        """The other side of the rule, and the reason it is written per
+        OWNER rather than per key. `{"*": 1, figures: 0}` in one block is
+        one author saying "cite generally, except this kind, which my
+        answers legitimately omit". Raising that would overrule a sentence
+        somebody did write, which is the opposite failure."""
+        from core.runtime.grounding import GroundingConfig
+
+        composed = compose_manifests([
+            skill(tmp_path, "first",
+                  grounding={"must_cite": {"*": 1, "figures": 0}}),
+            skill(tmp_path, "second", grounding={"ignore": ["dead"]}),
+        ])
+        config = GroundingConfig.from_mapping(composed.grounding)
+        assert config.minimum_for("figures") == 0
+
     def test_one_check_with_two_floors_is_a_refusal(self, tmp_path):
         with pytest.raises(SkillManifestError) as exc:
             compose_manifests([
@@ -393,6 +446,67 @@ class TestGroundingMerges:
             skill(tmp_path, "second", grounding={"planes": plane}),
         ])
         assert list(composed.grounding["planes"]) == ["sdk"]
+
+    def test_a_shared_plane_restated_in_another_order_composes(self, tmp_path):
+        """A skill family restates the plane its members share, and two
+        authors — or one author on two days — write the tools in another
+        order and another naming convention. Comparing the TEXT refused
+        that, over a difference that is not one, with no fix short of
+        editing somebody else's manifest to match your typing. Membership
+        is what is compared: tools by `tool_key`, claims casefolded."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"planes": {"sdk": {
+                "tools": ["mcp.run_python_code", "acme.sdk_call"],
+                "claims": ["I used the SDK", "I recomputed"]}}}),
+            skill(tmp_path, "second", grounding={"planes": {"sdk": {
+                "tools": ["acme_sdk_call", "mcp_run_python_code"],
+                "claims": ["i recomputed", "i used the sdk"]}}}),
+        ])
+        assert list(composed.grounding["planes"]) == ["sdk"]
+
+    def test_genuinely_different_membership_still_refuses(self, tmp_path):
+        """The refusal has to survive the loosening, or the loosening is
+        just a removal. One extra tool is different membership."""
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first", grounding={"planes": {"sdk": {
+                    "tools": ["mcp.run_python_code"],
+                    "claims": ["I used the SDK"]}}}),
+                skill(tmp_path, "second", grounding={"planes": {"sdk": {
+                    "tools": ["mcp.run_python_code", "acme_sdk_call"],
+                    "claims": ["I used the SDK"]}}}),
+            ])
+        assert "planes: sdk" in str(exc.value)
+
+    def test_a_grounding_block_of_only_false_bools_is_still_a_block(
+            self, tmp_path):
+        """`grounding: {claim_table: false}` is a declaration. Dropping the
+        false key left the merged mapping empty, `merged or None` turned
+        that into *no grounding grammar at all*, and a composition where
+        nobody asked for anything to change lost its validator — and the
+        console line said so. Declared is declared."""
+        from core.runtime.grounding import GroundingConfig
+
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={"claim_table": False}),
+            skill(tmp_path, "second"),
+        ])
+        assert composed.grounding["claim_table"] is False
+        assert GroundingConfig.from_mapping(composed.grounding) is not None
+
+    def test_an_empty_grounding_block_is_a_declaration_too(self, tmp_path):
+        """`grounding: {}` builds a validator with no opinion for a single
+        skill — `from_mapping({})` is a config, `from_mapping(None)` is
+        `None`, and those are different answers. Composition must not swap
+        one for the other on its way through an empty merged mapping."""
+        from core.runtime.grounding import GroundingConfig
+
+        composed = compose_manifests([
+            skill(tmp_path, "first", grounding={}),
+            skill(tmp_path, "second"),
+        ])
+        assert composed.grounding is not None
+        assert GroundingConfig.from_mapping(composed.grounding) is not None
 
     def test_a_block_that_does_not_stand_up_alone_is_named_as_such(
             self, tmp_path):
@@ -471,11 +585,12 @@ class TestTheSandboxTakesTheStrictestAsk:
         ])
         assert composed.sandbox == "bwrap"
 
-    def test_and_the_code_plane_gate_is_re_run_over_the_union(self, tmp_path):
-        """Belt and braces, and the belt is what this asserts: the
-        composed manifest still carries the code-plane tool, and still
-        passes the gate, so the check ran over something rather than over
-        an empty set."""
+    def test_a_bwrap_composition_keeps_the_code_plane_it_was_given(
+            self, tmp_path):
+        """Supplementary to the gate tests below, and only that: it says
+        the composition still CARRIES the code-plane tool, so those tests
+        are refusing over something rather than over an empty set. It is
+        not itself evidence that the gate ran."""
         composed = compose_manifests([
             skill(tmp_path, "first", allowed_tools=["run_shell_command"],
                   sandbox="bwrap"),
@@ -483,6 +598,105 @@ class TestTheSandboxTakesTheStrictestAsk:
         ])
         assert [entry for entry, _tool, _scopes
                 in composed.code_plane_entries()] == ["run_shell_command"]
+
+
+class TestTheCodePlaneGateDoesNotDependOnArgumentOrder:
+    """THE class the adversarial review paid for.
+
+    The union deduplicates on `same_tool`, and `mcp.run_shell_command` and
+    `run_shell_command` are the same tool to that function — so composing
+    a skill that bridges a shell with a skill that runs one HERE collapses
+    both to whichever entry was listed first. The bridged spelling is not
+    gated (it executes on the server, and bwrap here would isolate nothing
+    about it); the local one is. Gate only the composed set and the bridged
+    entry swallows the local one, and a governed mission that runs
+    arbitrary code on the host with no isolation composes cleanly — in one
+    argument order, and refuses in the other.
+
+    A gate whose answer depends on which skill was typed first is not a
+    gate. So the declaration half runs over EACH INPUT manifest, under the
+    sandbox the composition arrived at.
+    """
+
+    def bridged(self, tmp_path):
+        """A shell on a discovered SERVER: legal without `sandbox: bwrap`,
+        because this host spawns nothing for it."""
+        return skill(tmp_path, "bridged",
+                     allowed_tools=["mcp.run_shell_command"])
+
+    def local(self, tmp_path):
+        """A shell on THIS host with no isolation declared: the thing the
+        gate exists to refuse."""
+        return skill(tmp_path, "local", allowed_tools=["run_shell_command"])
+
+    def test_the_bridged_skill_first_still_refuses(self, tmp_path):
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([self.bridged(tmp_path), self.local(tmp_path)])
+        assert "runs code the model composed ON THIS HOST" in str(exc.value)
+
+    def test_the_local_skill_first_refuses_too(self, tmp_path):
+        """The same two manifests the other way round. Both orders, or the
+        assertion is about dedup order rather than about the gate."""
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([self.local(tmp_path), self.bridged(tmp_path)])
+        assert "runs code the model composed ON THIS HOST" in str(exc.value)
+
+    def test_the_refusal_names_the_local_entry_and_not_the_bridged_one(
+            self, tmp_path):
+        """The bridged tool is not the problem and must not be named as
+        one: an operator told to sandbox `mcp.run_shell_command` would go
+        and write a declaration that is not true about where it runs."""
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([self.bridged(tmp_path), self.local(tmp_path)])
+        message = str(exc.value)
+        assert "'run_shell_command' runs code" in message
+        assert "'mcp.run_shell_command' runs code" not in message
+
+    def test_it_is_said_once_and_not_once_per_manifest(self, tmp_path):
+        """One entry gated twice is one thing to fix. A refusal that says
+        it twice reads like two problems and gets half-fixed."""
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([self.local(tmp_path), self.bridged(tmp_path)])
+        assert str(exc.value).count("runs code the model composed") == 1
+
+    def test_a_skill_that_supplies_bwrap_lets_the_composition_through(
+            self, tmp_path):
+        """The other half, or the rule above is just "refuse". The sandbox
+        merge takes the strictest ask, and a skill that brought bwrap
+        brought it for the whole composition — including for an entry
+        another skill contributed."""
+        composed = compose_manifests([
+            self.bridged(tmp_path),
+            skill(tmp_path, "local", allowed_tools=["run_shell_command"],
+                  sandbox="bwrap"),
+        ])
+        assert composed.sandbox == "bwrap"
+
+    def test_and_that_holds_in_the_other_order_as_well(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "local", allowed_tools=["run_shell_command"],
+                  sandbox="bwrap"),
+            self.bridged(tmp_path),
+        ])
+        assert composed.sandbox == "bwrap"
+
+    def test_a_skill_declaring_none_does_not_drag_a_bwrap_one_down(
+            self, tmp_path):
+        """The per-manifest check asks each skill its question under the
+        COMPOSED sandbox, not under the one it wrote. A skill that said
+        `none` is not unsafe once another skill has brought isolation —
+        gating it against its own declaration would refuse a composition
+        that is, in fact, isolated."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", allowed_tools=["run_python_code"],
+                  sandbox="bwrap"),
+            skill(tmp_path, "second", allowed_tools=["run_shell_command"],
+                  sandbox="none"),
+        ])
+        assert composed.sandbox == "bwrap"
+        assert sorted(entry for entry, _t, _s
+                      in composed.code_plane_entries()) == [
+            "run_python_code", "run_shell_command"]
 
     def test_none_survives_when_nobody_asked_for_isolation(self, tmp_path):
         composed = compose_manifests([
@@ -658,6 +872,34 @@ class TestTheRepeatableFlag:
             cli._load_skill(args)
         assert "--skill:" in str(exc.value)
 
+    def test_a_hand_built_args_may_still_carry_a_scalar_skill(
+            self, tmp_path, monkeypatch):
+        """`args` is not always argparse's — a library caller, a test and
+        `core.eval` all build one by hand, and every one of them wrote
+        `skill="analyst"` while the flag took a single value. `list()`
+        over a string is seven skills called 'a', 'n', 'a'…, which is a
+        mangling of an argument somebody passed correctly."""
+        from types import SimpleNamespace
+
+        from core import cli
+
+        monkeypatch.delenv("MISSION_SKILL", raising=False)
+        assert cli._skill_values(SimpleNamespace(skill="analyst")) == ["analyst"]
+
+    def test_a_scalar_path_is_not_a_typeerror(self, tmp_path, monkeypatch):
+        """The other spelling, and the worse failure: `list(Path(...))`
+        raises rather than mangling, so a caller that had been working
+        would stop with a message about iteration."""
+        from pathlib import Path as P
+        from types import SimpleNamespace
+
+        from core import cli
+
+        monkeypatch.delenv("MISSION_SKILL", raising=False)
+        one = skill(tmp_path, "solo")
+        args = SimpleNamespace(skill=P(one.source))
+        assert cli._load_skill(args).name == "solo"
+
     def test_the_run_metadata_records_every_skill_it_ran_under(
             self, tmp_path, monkeypatch):
         """A run directory outlives the process, and *which skills* is the
@@ -686,19 +928,31 @@ class TestTheRepeatableFlag:
         assert list(packs) == ["analyst"]
 
 
-class TestTheReportNamesEverySkill:
-    def test_the_line_leads_with_the_primary(self, tmp_path):
-        """The `📜 skill` line is what an operator reads to check they got
-        the run they asked for, and a composed run that named one of three
-        skills would leave the other two to be inferred from a prompt
-        nobody prints."""
+class TestARefusalNamesEverySkillItIsAbout:
+    """The closed set a refusal is about is the UNION.
+
+    A tool missing for the third skill, reported under the first skill's
+    name, sends an operator to open the wrong file and find nothing wrong
+    with it.
+    """
+
+    def test_the_resolve_refusal_names_the_composition(self, tmp_path):
         composed = compose_manifests([
-            skill(tmp_path, "first"), skill(tmp_path, "second"),
+            skill(tmp_path, "first", allowed_tools=["alpha"]),
+            skill(tmp_path, "second", allowed_tools=["beta"]),
         ])
-        line = (f"📜 skill {composed.name}"
-                + (f" + {', '.join(composed.composed[1:])}"
-                   if composed.composed else ""))
-        assert line == "📜 skill first + second"
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            composed.resolve(["alpha"])
+        message = str(exc.value)
+        assert "'first' (composed with 'second')" in message
+        assert "'beta' is in the closed set and was not discovered" in message
+
+    def test_one_skill_is_named_exactly_as_it_always_was(self, tmp_path):
+        """The compatibility half: no composition, no parenthesis, and the
+        sentence every existing test and every operator's eye knows."""
+        with pytest.raises(SkillToolsUnavailable) as exc:
+            skill(tmp_path, "solo", allowed_tools=["alpha"]).resolve(["beta"])
+        assert "skill 'solo' cannot run against this server" in str(exc.value)
 
 
 def test_the_module_docstring_says_composition_has_one_owner():

@@ -184,7 +184,33 @@ def _skill_at(template: Sequence[str]) -> Optional[int]:
     Both spellings, because a caller writes whichever their shell made
     convenient and a harness that only understood one would silently run
     every tier configuration against the unmodified manifest.
+
+    **A composing spawn line is refused here.**  ``--skill`` repeats and
+    several manifests fold into one mission
+    (:func:`core.runtime.skills.compose_manifests`); this function returns
+    one index, and every tier variant is written by rewriting the manifest
+    at it.  Against a line naming two skills that rewrites one of them and
+    leaves the other alone — so the run would be measured with the tier
+    switched on in half of its grounding block, and the table would print
+    a number for a configuration nobody ran.  Taking the first was the
+    bug the reviewer found; measuring each skill separately is not the fix
+    either, because the grounding block a composed mission runs under is
+    the MERGE and no single manifest reproduces it.  The honest answer is
+    that this matrix cannot measure that mission, said out loud.
     """
+    found = [index for index, token in enumerate(template)
+             if token == "--skill" or token.startswith("--skill=")]
+    if len(found) > 1:
+        raise Unmeasurable(
+            "the spawn line names --skill more than once. Several skills "
+            "compose into one mission, and a tier variant is measured by "
+            "rewriting the manifest the line points at — with two of them "
+            "there is no single manifest to rewrite, and the merged "
+            "grounding block a composed mission actually runs under is not "
+            "reproduced by measuring either skill on its own. Measure a "
+            "single-skill spawn line, or measure the composition with the "
+            "tiers its manifests already declare (no --tier)"
+        )
     for index, token in enumerate(template):
         if token == "--skill" and index + 1 < len(template):
             return index + 1

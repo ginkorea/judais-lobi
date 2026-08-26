@@ -150,6 +150,39 @@ class TestTheSpawnLineIsTheCallersPlusTheDelta:
     def test_a_line_with_no_skill_has_none_to_find(self):
         assert M._skill_path(["judais", "--mission"]) is None
 
+    def test_one_skill_is_found_exactly_as_it_always_was(self):
+        """The compatibility half of the refusal below: a single `--skill`
+        is the line this harness has always measured."""
+        assert M._skill_path(self.BASE) == Path("/s/SKILL.md")
+
+    def test_a_composing_spawn_line_is_refused_rather_than_half_measured(self):
+        """`--skill` repeats and several manifests fold into one mission.
+        A tier variant is measured by REWRITING the manifest the line
+        points at — and with two of them this harness would rewrite one
+        and leave the other alone, printing a number for a configuration
+        it did not run. Measuring each skill separately is not the fix
+        either: the grounding block a composed mission runs under is the
+        MERGE, and no single manifest reproduces it. The honest answer is
+        that this matrix cannot measure that mission, said out loud."""
+        with pytest.raises(M.Unmeasurable) as exc:
+            M._skill_path(self.BASE + ["--skill", "/s/other/SKILL.md"])
+        assert "--skill more than once" in str(exc.value)
+
+    def test_the_joined_spelling_counts_towards_that_too(self):
+        """Both spellings, because a caller writes whichever their shell
+        made convenient and a check that understood one would let the
+        other through."""
+        with pytest.raises(M.Unmeasurable):
+            M._skill_path(["judais", "--skill=/a/SKILL.md",
+                           "--skill=/b/SKILL.md"])
+
+    def test_the_repoint_refuses_the_same_line(self, tmp_path):
+        """One owner: `spawn_line_for` asks the same function, so a
+        composing line cannot get past by a different door."""
+        with pytest.raises(M.Unmeasurable):
+            M.spawn_line_for(self.BASE + ["--skill", "/s/other/SKILL.md"],
+                             M.MEASUREMENTS[0], tmp_path / "v.md")
+
 
 # ── the manifest variants ────────────────────────────────────────────────────
 

@@ -198,7 +198,9 @@ mission runs in, and a mission that needs another one is run from there.
 injected callable and cannot ask a backend anything the caller did not offer.
 **Almost every other default means *nothing*** — no bus of its own, no ceiling,
 no clock, no durable log — so a platform adds the ones it wants and
-pays for nothing else. `Skill` and `load_skill` read a `SKILL.md` (§5);
+pays for nothing else. `Skill` and `load_skill` read a `SKILL.md`, and
+`compose_manifests` folds several into one mission the way a repeated
+`--skill` does (§5);
 `Deadline` and `Cancellation` build a real `Bounds` (§7); `RunStore` is the
 `Store` (§6); `MissionWindow` is the `Model`'s context bound.
 
@@ -1136,8 +1138,19 @@ value with no separator in it is one skill, exactly as before. A typed `--skill`
 wins over the variable outright rather than extending it. Paths and pack names
 mix freely.
 
-`core.runtime.skills.compose_manifests` is the only thing that knows what this
-means, and the rules are these:
+One function knows what this means, and it is public:
+
+```python
+from judais_lobi import Skill, compose_manifests
+
+mission = compose_manifests([Skill.load("analyst"), Skill.load("research")])
+```
+
+The CLI calls exactly that — `--skill` resolves each value and hands the list
+over — so a platform composing in-process gets the same manifest, the same
+refusals and the same prompt as the command line does. Do not union the closed
+sets yourself: the merge is where the refusals live, and a second
+implementation of it would union them quietly. The rules are these:
 
 * **The first is the primary**, and owns everything a mission has exactly one
   of: the `name` every refusal, report and memory bank is filed under, the
@@ -1157,9 +1170,18 @@ means, and the rules are these:
   `figures_from` union; `claim_table`, `reading` and `critic` are OR — checking
   asked for by any skill binds the run, because a skill that asked for a claim
   table asked because its own answers are not worth much without one.
-  `must_cite` unions by check name. `planes` unions by plane name. The merged
-  block is then validated exactly as a written one is, so a merge that produced
-  something unusable refuses at the door.
+  `must_cite` unions by check name, and a `must_cite: true` wildcard is a
+  **floor**: a named check exempted below it by *another* skill is raised to it,
+  because an explicit name beats the wildcard and nobody wrote both sentences
+  (an exemption written beside its own skill's wildcard is deliberate and is
+  left alone). `planes` unions by plane name, and two skills of a family may
+  restate the plane they share — membership is compared, tools by the same
+  `tool_key` identity everything else uses and claims casefolded, so a different
+  order or naming convention is not a conflict. A block that declared only
+  `false` still *is* a block: the merged mapping keeps it, and the mission gets
+  the same validator a single skill would have built. The merged block is then
+  validated exactly as a written one is, so a merge that produced something
+  unusable refuses at the door.
 * **What cannot be merged honestly is refused**, listing every problem at once:
   `identifier_pattern`, `number_pattern` or `max_repairs` declared by more than
   one skill with different values (there is no honest way to pick between two
@@ -1168,11 +1190,31 @@ means, and the rules are these:
   declared over different tools or claims; two different `sdk_import` values;
   the same skill listed twice.
 * **`sandbox` goes to the strictest thing anybody asked for** — `bwrap` if any
-  skill asks for it — and the code-plane gate is re-run over the composed set.
+  skill asks for it — and the code-plane gate then runs over **each input
+  manifest** under that composed sandbox, as well as over the composed set.
+  Per-input is the half that matters: the union deduplicates on `same_tool`, and
+  `mcp.run_shell_command` and `run_shell_command` are the same tool to it, so a
+  skill that bridges a shell and a skill that runs one *here* collapse to
+  whichever was listed first. Gating only the composed set would let the bridged
+  spelling swallow the local one, and a mission that runs arbitrary code on the
+  host with no isolation would compose cleanly in one argument order and refuse
+  in the other. A gate whose answer depends on which skill you typed first is
+  not a gate.
+* **A refusal names the whole composition** — `skill 'analyst' (composed with
+  'research')` — because the closed set it is about is the union, and a tool
+  missing for the third skill reported under the first skill's name sends you to
+  open the wrong file.
 
 Compose skills that were written to work together. The refusals above are the
 framework telling you two skills disagree about the platform, which is a thing
 to fix in the manifests rather than at the command line.
+
+**`python -m core.eval measure` refuses a composing spawn line** (§9). A tier
+variant is measured by rewriting the manifest the line points at; with two of
+them there is no single manifest to rewrite, and the merged grounding block a
+composed mission actually runs under is not reproduced by measuring either skill
+alone. Measure a single-skill line, or measure the composition with the tiers
+its manifests already declare.
 
 ### Without a manifest
 
