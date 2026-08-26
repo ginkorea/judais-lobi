@@ -1154,7 +1154,10 @@ implementation of it would union them quietly. The rules are these:
 
 * **The first is the primary**, and owns everything a mission has exactly one
   of: the `name` every refusal, report and memory bank is filed under, the
-  `version`, and **the answer shape**. A supporting skill's `output_format` is
+  `version`, and **the answer shape** — `output_format` in the file, the
+  `output_contract` attribute on the loaded `SkillManifest` (write
+  `.output_contract`, not `.output_format`, when reading it back off the
+  composed object). A supporting skill's `output_format` is
   stripped back out of its prompt — two output contracts in one system message
   is a model choosing one, and the one the primary's grounding block is written
   against is the one it may not choose.
