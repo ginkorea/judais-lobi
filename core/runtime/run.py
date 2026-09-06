@@ -113,8 +113,9 @@ from core.runtime.mission import (
     NATIVE_PROTOCOL_TEXT, PLANE_CHANGED, PROTOCOL, PROTOCOLS, MissionCall,
     MissionStep, MissionTranscript, _FENCE, _finished_record,
     _grounding_record, _profile_field, _protocol_field, _record_decision,
-    _run_field, _takes_deadline, _takes_step, audit_ref_of, persist_record,
-    sandbox_of, second_opinion, stacked, validate_history,
+    _run_field, _takes_deadline, _takes_step, audit_ref_of, first_json_object,
+    persist_record, sandbox_of, second_opinion, stacked, strip_envelope,
+    validate_history,
 )
 from core.runtime.mission_stream import (
     ANSWER, ANSWER_DELTA, GATE_REQUESTED, GROUNDING, MISSION_FINISHED,
@@ -2844,6 +2845,10 @@ class Run:
             start = resumption.next_index
             opening = {"resumed": resumption.as_record()}
 
+        # How many times this run has been handed an empty reply. The only
+        # thing the loop asks a model to do over now, and it does so once.
+        empty_replies = 0
+
         # Unbounded unless an operator asked for a ceiling — see `_indices`.
         # When they did, `self.bounds.max_steps` is the TOTAL for the run
         # and not
@@ -2964,11 +2969,25 @@ class Run:
 
             messages.append({"role": "assistant", "content": reply})
 
-            decision, problem = self._parse(reply)
+            # The native calls are read under BOTH protocols. A server that
+            # was handed `tools` answers in `tool_calls` whenever it likes,
+            # whichever protocol the prompt asked for, and a decision that
+            # arrived on the channel the loop was not watching used to be
+            # thrown away as "not valid JSON" — see `_parse`.
+            decision, problem = self._parse(
+                reply, self._read_tool_calls(index, capture))
             if problem:
+                # An empty reply, and nothing else reaches here now. Asked
+                # again ONCE: a second empty reply is a model with nothing
+                # to say, and going back around a third time spends an
+                # analyst's tokens to be told so again.
+                empty_replies += 1
                 step.error = problem
                 transcript.steps.append(step)
                 self._reject(index, problem, **spent)
+                if empty_replies > 1:
+                    transcript.outcome = "incomplete"
+                    return self._with_draft(transcript)
                 messages.append({"role": "user", "content": problem})
                 continue
 
@@ -4096,37 +4115,78 @@ class Run:
     # ── parsing ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def _parse(reply: str):
+    def _parse(reply: str, calls: Sequence[Dict[str, Any]] = ()):
         """Return ``(decision, problem)``; exactly one is truthy.
 
-        A model that wrapped its JSON in a fence gets the fence stripped
-        — that is a formatting slip, not a different decision.  A model
-        that said something else entirely gets told what was expected,
-        because guessing an intent out of prose is how a loop calls a
-        tool nobody asked for.
+        The envelope first, and then four ways a model can have decided
+        something while writing it down badly.  Every one of them was read
+        off a live TAIPAN mission pane on 6 September 2026, and the run
+        that motivated the whole method is 21:13:26Z: asked which APEX
+        tools it had, the model wrote the six ``mcp.apex_*`` names in
+        plain prose — the complete, correct answer — and this parser threw
+        it away with *that was not valid JSON*, three times, until the
+        supervisor called the run stuck.  An analyst was handed nothing
+        for an answer the model had already written.
+
+        So, in order:
+
+        * a fence and a harmony **channel marker** come off, because
+          ``final{"answer": …}`` is the object it plainly is;
+        * an envelope EMBEDDED in commentary is taken — the model decided,
+          and then explained itself around the decision;
+        * a turn that carried NATIVE ``tool_calls`` while its text was
+          prose is a dispatch, not an answer.  This is the other live
+          shape (21:15:02Z): the reasoning went to ``content`` and a
+          perfectly good ``mcp.web_search`` call went to ``tool_calls``,
+          which this protocol used to discard.  Taken before the prose
+          rule below, or a run serves its own scratchpad as a finding;
+        * and anything else that has TEXT is an answer.  "Let the answers
+          breathe" is the ruling this implements: a model that talks in
+          prose has answered, and the loop's job is to deliver it rather
+          than to bill an analyst for four turns of protocol correction.
+
+        Only an EMPTY reply is a problem now, and the caller asks again
+        once.  There is nothing there to deliver and nothing to dispatch,
+        so it is the one case where going back around can add something.
+
+        The envelope is read before the native calls, and the order only
+        decides a turn where the two DISAGREE.  A model that wrote
+        ``{"answer": …}`` in its text has finished, and a stale call left
+        beside it must not send a finished run off to dispatch something;
+        a model whose text is reasoning has written no envelope for this
+        branch to find, so its native call is reached on the next one.
         """
-        text = _FENCE.sub("", (reply or "").strip()).strip()
-        if not text:
-            return None, "Empty reply. Reply with one JSON object."
-        try:
-            decision = json.loads(text)
-        except json.JSONDecodeError as exc:
-            return None, (
-                f"That was not valid JSON ({exc.msg}). Reply with exactly one "
-                f'JSON object: {{"tool": ..., "arguments": {{...}}}} or '
-                f'{{"answer": ...}}.'
-            )
-        if not isinstance(decision, dict):
-            return None, (
-                f"Expected a JSON object, got a {type(decision).__name__}. "
-                f"Reply with one JSON object."
-            )
-        if "answer" not in decision and "tool" not in decision:
-            return None, (
-                'The object needs either a "tool" key or an "answer" key. '
-                "Reply with one JSON object."
-            )
-        return decision, None
+        text = strip_envelope(reply)
+        decision: Any = None
+        if text:
+            try:
+                decision = json.loads(text)
+            except json.JSONDecodeError:
+                decision = first_json_object(text)
+        if isinstance(decision, dict) and (
+                "answer" in decision or "tool" in decision):
+            return decision, None
+
+        for call in calls:
+            name = str(call.get("name") or "").strip()
+            if not name:
+                continue
+            arguments = call.get("arguments")
+            if not isinstance(arguments, dict) or (
+                    not arguments and not call.get("shaped", True)):
+                # A provider that sent `arguments` as a JSON STRING, which
+                # is the OpenAI wire shape and what `_read_tool_calls`
+                # keeps verbatim under `raw` when it could not shape it.
+                # An unparseable one is a call with no arguments, not a
+                # refusal: the dispatch below tells the model what the
+                # tool actually wanted.
+                parsed = first_json_object(str(call.get("raw") or ""))
+                arguments = parsed if isinstance(parsed, dict) else {}
+            return {"tool": name, "arguments": dict(arguments)}, None
+
+        if text:
+            return {"answer": text}, None
+        return None, "Empty reply. Reply with one JSON object."
 
     def _render_result(self, name: str, result: Any, handle: str = "",
                        already: Any = None):

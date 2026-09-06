@@ -152,12 +152,14 @@ class TestTheStreamIsAPublishedVocabulary:
         assert result["truncated"] is True
 
     def test_a_rejected_reply_is_reported_rather_than_swallowed(self):
-        _, seen, _ = _run([
-            "I think I will search the catalogue.",
-            json.dumps({"answer": "done"}),
-        ])
+        """An EMPTY reply, which since 1.1.3 is the only one refused.
+
+        Prose is an answer now; a reply with nothing in it is the one
+        thing left with neither an answer to deliver nor a call to
+        dispatch, so it is the record this vocabulary is tested on."""
+        _, seen, _ = _run(["", json.dumps({"answer": "done"})])
         rejected = _first(seen, ms.REPLY_REJECTED)
-        assert "JSON" in rejected["problem"]
+        assert "Empty reply" in rejected["problem"]
 
     def test_an_invented_tool_is_reported_with_the_name_it_invented(self):
         _, seen, _ = _run([

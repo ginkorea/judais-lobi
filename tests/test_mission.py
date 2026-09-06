@@ -17,8 +17,8 @@ from core.runtime.contract import conforms
 from core.runtime.control import ControlChannel
 from core.runtime.grounding import GroundingConfig, GroundingValidator
 from core.runtime.mission import (
-    ANSWER_FUNCTION, ANSWER_TOOL, JSON_PROTOCOL, NATIVE_PROTOCOL, MissionCall,
-    MissionRunner, MissionTranscript,
+    ANSWER_FUNCTION, ANSWER_TOOL, JSON_PROTOCOL, NATIVE_PROTOCOL, PROTOCOL,
+    MissionCall, MissionRunner, MissionTranscript,
 )
 from core.runtime.results import RESULT_TOOL
 from core.runtime.skills import SkillManifest
@@ -344,12 +344,25 @@ class TestRefusals:
         ).run("go")
         assert calls == []
 
-    def test_unparseable_json_is_handed_back(self, bus):
-        model = ScriptedModel("I think I will search now!", '{"answer": "ok"}')
+    def test_prose_is_the_answer(self, bus):
+        """A model that talks in prose has ANSWERED.
+
+        Measured on TAIPAN's hosted mission pane at 21:13:26Z on
+        6 September 2026: asked which APEX tools it had, the model wrote
+        the six ``mcp.apex_*`` names in plain prose — complete and correct
+        — and this loop threw it away with *that was not valid JSON*,
+        three turns running, until the supervisor called the run stuck and
+        the analyst was handed nothing.  Delivering the text costs one
+        step.  Refusing it cost four steps and 347,000 tokens for no
+        answer at all.
+        """
+        model = ScriptedModel("I think I will search now!")
         transcript = MissionRunner(model, bus, ["catalog.search"]).run("go")
 
-        assert "not valid JSON" in transcript.steps[0].error
+        assert transcript.answer == "I think I will search now!"
         assert transcript.completed
+        # One turn. It did not go back around to be told how to format.
+        assert len(transcript.steps) == 1
 
     def test_a_fenced_reply_is_accepted(self, bus):
         """A code fence is a formatting slip, not a different decision."""
@@ -360,10 +373,42 @@ class TestRefusals:
         transcript = MissionRunner(model, bus, ["catalog.search"]).run("go")
         assert transcript.steps[0].output == "hits for z"
 
-    def test_an_object_with_neither_key_is_refused(self, bus):
-        model = ScriptedModel('{"thoughts": "hmm"}', '{"answer": "ok"}')
+    def test_an_envelope_wrapped_in_commentary_is_the_decision(self, bus):
+        """The model decided, and then explained itself around it."""
+        model = ScriptedModel(
+            'Sure — I will look that up.\n'
+            '{"tool": "catalog.search", "arguments": {"q": "z"}}\n'
+            'That should find it.',
+            '{"answer": "ok"}',
+        )
         transcript = MissionRunner(model, bus, ["catalog.search"]).run("go")
-        assert '"tool" key or an "answer" key' in transcript.steps[0].error
+        assert transcript.steps[0].output == "hits for z"
+
+    def test_a_harmony_channel_marker_comes_off(self, bus):
+        """gpt-oss writes the channel name before the channel's text."""
+        model = ScriptedModel('final{"answer": "the six apex tools"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"]).run("go")
+        assert transcript.answer == "the six apex tools"
+
+    def test_an_answer_containing_a_brace_survives(self, bus):
+        """The balanced scan, and why a first-``}`` rule is not enough."""
+        model = ScriptedModel(
+            'Here you go: {"answer": "he wrote {\\"a\\": 1} on the board"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"]).run("go")
+        assert transcript.answer == 'he wrote {"a": 1} on the board'
+
+    def test_an_object_with_neither_key_is_the_answer(self, bus):
+        """Nothing but an empty reply goes back around now.
+
+        An object with neither key is not a decision this loop can act on,
+        and the ruling of 6 September 2026 is that a reply with text in it
+        is delivered rather than corrected: the analyst sees what the
+        model said, which is the fact, instead of a run that stopped.
+        """
+        model = ScriptedModel('{"thoughts": "hmm"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"]).run("go")
+        assert transcript.answer == '{"thoughts": "hmm"}'
+        assert len(transcript.steps) == 1
 
     def test_non_object_arguments_are_refused(self, bus):
         model = ScriptedModel(
@@ -377,6 +422,19 @@ class TestRefusals:
             ScriptedModel("", '{"answer": "ok"}'), bus, ["catalog.search"],
         ).run("go")
         assert "Empty reply" in transcript.steps[0].error
+
+    def test_an_empty_reply_is_asked_again_once_and_no_more(self, bus):
+        """Two empty replies is a model with nothing to say.
+
+        Going back around a third time spends an analyst's tokens to be
+        told so again, so the run ends and hands over whatever draft it
+        holds.
+        """
+        model = ScriptedModel("", "", '{"answer": "ok"}')
+        transcript = MissionRunner(model, bus, ["catalog.search"]).run("go")
+        assert len(transcript.steps) == 2
+        assert transcript.outcome == "incomplete"
+        assert not transcript.completed
 
     def test_a_capability_denial_reaches_the_model_as_a_refusal(self):
         gated = ToolBus(
@@ -584,11 +642,15 @@ class TestTheSupervisor:
     def test_rejected_replies_are_a_pattern_the_supervisor_sees(self, bus):
         """Five places can refuse a reply and all five go through one
         method, because a watcher shown four rejections out of five is
-        counting a pattern it cannot see the whole of."""
+        counting a pattern it cannot see the whole of.
+
+        An invented tool name and not unparseable text: since prose is an
+        answer, naming a tool nobody offers is the refusal a run can now
+        repeat, and it is one of the five the signal is written about."""
         seen = []
         transcript, _model = self._looping(
             bus, verdict("stuck"), observer=seen.append,
-            replies=["not json at all"] * 6)
+            replies=[tool_call("delete_everything")] * 6)
         reviewed = [r for r in seen
                     if r["event"] == "step_started" and "review" in r]
         assert reviewed[0]["review"]["signal"] == "rejected_replies"
@@ -853,7 +915,7 @@ class TestTheWallClock:
         a repair turn past its deadline."""
         clock = _Clock()
         transcript = self._runner(
-            bus, clock, 5.0, 6.0, "not json at all", "also not json",
+            bus, clock, 5.0, 6.0, "", "",
             max_steps=6,
         ).run("go")
 
@@ -2172,7 +2234,7 @@ class TestEveryStringOnTheStreamIsClassified:
         that answers was never gated."""
         events = []
         MissionRunner(
-            ScriptedModel("not json",
+            ScriptedModel("",
                           tool_call("catalog.search"),
                           tool_call("nosuchtool"),
                           '{"answer": "asset.5f21c9 is unsupported by 3.14159"}'),
@@ -2587,7 +2649,7 @@ class TestThePerCallUsageRidesTheRecordItPaidFor:
         """A ledger that counted only the calls that worked would
         under-report exactly the runs that went badly."""
         _, events = _metered(
-            bus, "not json at all", '{"answer": "done"}',
+            bus, "", '{"answer": "done"}',
             meter=Meter(usage(50, 5), usage(60, 6)),
         )
         assert _of(events, "reply_rejected")[0]["usage"]["prompt_tokens"] == 50
@@ -2631,7 +2693,7 @@ class TestThePerCallUsageRidesTheRecordItPaidFor:
 
     def test_every_record_still_conforms(self, bus):
         _, events = _metered(
-            bus, "not json", tool_call("catalog.search", q="x"),
+            bus, "", tool_call("catalog.search", q="x"),
             '{"answer": "done"}',
             meter=Meter(usage(1, 1), usage(2, 2), usage(3, 3)),
         )
@@ -3990,8 +4052,7 @@ class TestTheAnswerArrivesWhileItIsBeingWritten:
     def test_a_rejected_reply_streams_nothing_and_still_rejects(self, bus):
         events = []
         MissionRunner(
-            StreamingModel("not json at all",
-                           json.dumps({"answer": "second time lucky"})),
+            StreamingModel("", json.dumps({"answer": "second time lucky"})),
             bus, ["catalog.search"], observer=events.append,
         ).run("go")
         rejected = [r for r in events if r["event"] == contract.REPLY_REJECTED]
@@ -5203,7 +5264,7 @@ class TestThePlaneChangesUnderneathTheRun:
                 return reply
 
         events = []
-        model = GrowsWhileThinking("not json at all", '{"answer": "noted"}')
+        model = GrowsWhileThinking("", '{"answer": "noted"}')
         MissionRunner(model, bus, ["catalog.search"],
                       observer=events.append).run("go")
         assert [r["event"] for r in events].count("tool_call") == 0
@@ -5336,3 +5397,80 @@ class _Opinion:
 
     def as_check(self):
         return dict(self.row)
+
+
+class TestANativeCallUnderTheJsonProtocol:
+    """The served model answers in ``tool_calls`` whatever the prompt asked.
+
+    TAIPAN starts gpt-oss with ``--enable-auto-tool-choice --tool-call-parser
+    openai`` and the harness hands the endpoint ``tools=``, so a decision may
+    arrive as a structured call with the model's REASONING in ``content`` —
+    whichever protocol the system turn asked for.  Read off the pool at
+    21:15:02Z on 6 September 2026: ``content`` held *"We need to call
+    web_search…"* and ``tool_calls`` held a perfectly good
+    ``mcp.web_search``.  This loop discarded the call, refused the
+    reasoning as *not valid JSON*, and did it four times.
+    """
+
+    def test_the_call_is_dispatched_and_the_reasoning_is_not_the_answer(
+            self, bus):
+        model = NativeModel(
+            ("We need to search. Let me call catalog.search.",
+             [native_call("catalog.search", q="z")]),
+            ('{"answer": "ok"}', []),
+        )
+        transcript = MissionRunner(
+            model, bus, ["catalog.search"], tool_calls_fn=model.tool_calls,
+        ).run("go")
+
+        assert transcript.steps[0].tool == "catalog.search"
+        assert transcript.steps[0].output == "hits for z"
+        assert transcript.answer == "ok"
+
+    def test_an_envelope_in_the_text_still_wins_over_a_stale_call(self, bus):
+        """A model that wrote its answer down has finished."""
+        model = NativeModel(
+            ('{"answer": "done already"}',
+             [native_call("catalog.search", q="z")]),
+        )
+        transcript = MissionRunner(
+            model, bus, ["catalog.search"], tool_calls_fn=model.tool_calls,
+        ).run("go")
+        assert transcript.answer == "done already"
+
+    def test_string_arguments_are_parsed(self, bus):
+        """The OpenAI wire shape: ``function.arguments`` is a JSON string."""
+        call = native_call("catalog.search")
+        call["arguments"] = '{"q": "z"}'
+        call["arguments_raw"] = '{"q": "z"}'
+        model = NativeModel(("thinking", [call]), ('{"answer": "ok"}', []))
+        transcript = MissionRunner(
+            model, bus, ["catalog.search"], tool_calls_fn=model.tool_calls,
+        ).run("go")
+        assert transcript.steps[0].output == "hits for z"
+
+
+class TestTheEnvelopeIsTheProtocolAndNotACheck:
+    """`--no-grounding` declines the CHECKS; it does not change the contract.
+
+    Diffed off the pool the night this was found: the system turn of a
+    v1.1.1 run with grounding on and of a v1.1.2 run with `--no-grounding`
+    carry the same envelope instruction, byte for byte.  The instruction
+    is a module constant for that reason and this test says so, because a
+    deployment that switched the checks off and lost the protocol with
+    them is the failure the run at 21:13:26Z looked like.
+    """
+
+    def _seed(self, bus, **kw):
+        return MissionRunner(
+            ScriptedModel(), bus, ["catalog.search"], **kw,
+        ).seed("find things")[0]["content"]
+
+    def test_the_instruction_and_its_example_survive_no_grounding(self, bus):
+        without = self._seed(bus)
+        with_checks = self._seed(bus, validator=GroundingValidator([]))
+        for system in (without, with_checks):
+            assert "Reply with exactly one JSON object" in system
+            assert '{"tool": "<tool name from the catalogue>"' in system
+            assert '{"answer": "<your final answer>"}' in system
+        assert PROTOCOL in without and PROTOCOL in with_checks

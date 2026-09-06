@@ -131,6 +131,40 @@ result. The campaign's own plan rides `plan` on the first step in the same
 task template, and `branch` names the step a record belongs to exactly as it
 names a stage.
 
+### Since 1.1.3 — what counts as a decision
+
+The JSON protocol asks the model for one object and it still does. What
+changed is what happens when the model answers some other way, because a
+served model answers however it likes: TAIPAN starts gpt-oss with
+`--enable-auto-tool-choice --tool-call-parser openai`, so a decision can
+arrive as a structured `tool_calls` entry with the model's *reasoning* in
+`content` — whichever protocol the system turn asked for.
+
+A reply is now read four ways, in order, and only the last of them is a
+`reply_rejected`:
+
+1. the envelope, with a code fence and a harmony channel marker
+   (`analysis` / `commentary` / `final`) taken off the front, and an
+   envelope **embedded in commentary** recovered by a balanced scan;
+2. a native `tool_calls` entry, as `{"tool": name, "arguments": …}` —
+   read under **both** protocols now, because a decision that arrived on
+   the channel the loop was not watching used to be discarded;
+3. anything else with text in it, as the **answer**. A model that talks
+   in prose has answered;
+4. an empty reply, which is the one thing asked again — **once**. A
+   second empty reply ends the run rather than spending a third turn.
+
+Measured on TAIPAN's hosted mission pane on 6 September 2026. Asked which
+APEX tools it had, the model wrote the six `mcp.apex_*` names in plain
+prose — complete and correct — and the loop refused it as *not valid
+JSON* three turns running until the supervisor called the run stuck: four
+steps, 347,000 tokens, and the analyst was handed no answer at all. On
+the next turn the model's `mcp.web_search` call arrived in `tool_calls`
+with its reasoning in `content`, and that was discarded the same way.
+
+A consumer sees **fewer** `reply_rejected` records and more answers; no
+record changed shape, and nothing that parsed before parses differently.
+
 ### `branch` — which child emitted the record, when a child did
 
 A `--swarm` turn is one mission made of several child runs, and since 0.16 two

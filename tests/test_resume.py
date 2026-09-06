@@ -617,19 +617,23 @@ class TestWhatIsLostIsSaidOutLoud:
         assert replayed.store.get("r1").structured is None
 
     def test_a_run_with_no_results_claims_no_such_loss(self, bus, store):
-        replayed = self._stopped_after(bus, store, "not json at all")
+        replayed = self._stopped_after(bus, store, "")
         assert LOST_STRUCTURED not in replayed.lost
 
     def test_the_text_of_a_rejected_reply_is_gone_and_the_refusal_is_not(
             self, bus, store):
-        replayed = self._stopped_after(bus, store, "not json at all")
+        replayed = self._stopped_after(bus, store, "")
         assert any(s.startswith("the text of 1 rejected model reply")
                    for s in replayed.lost)
         assert replayed.tail[0] == {"role": "assistant", "content": ""}
-        assert "not valid JSON" in replayed.tail[1]["content"]
+        assert "Empty reply" in replayed.tail[1]["content"]
 
     def test_the_plural_reads_as_a_sentence(self, bus, store):
-        replayed = self._stopped_after(bus, store, "nope", "nope again")
+        # Two invented tool names and not two empty replies: since 1.1.3
+        # a second empty reply ends the run, and this needs a run that
+        # was still going when the store was stopped.
+        replayed = self._stopped_after(
+            bus, store, tool_call("nope"), tool_call("nope again"))
         assert LOST_REJECTED_REPLY.format(n=2, y="ies") in replayed.lost
 
 

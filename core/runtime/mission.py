@@ -103,6 +103,7 @@ fields for its trouble.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 import sys
 import time
@@ -338,6 +339,67 @@ actually received; if the tools cannot support a statement, say so in \
 """
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
+
+#: A harmony model's channel marker at the head of a reply.  gpt-oss writes
+#: ``analysis`` / ``commentary`` / ``final`` before the text of that channel,
+#: and a backend that flattened the channels into one string hands the marker
+#: to the parser as though the model had typed it.  Stripped so that
+#: ``final{"answer": …}`` is the object it plainly is; the text AFTER the
+#: marker is kept, because on the ``final`` channel that text is the answer.
+_CHANNEL = re.compile(
+    r"^\s*(?:<\|channel\|>)?(?:analysis|commentary|final)\b[:\s]*",
+    re.IGNORECASE)
+
+
+def first_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """The first balanced ``{…}`` in *text* that parses as an object.
+
+    Not a regex, because a JSON object nests and a regex cannot count.  A
+    scan that respects strings and escapes is the only way to find the end
+    of an answer whose text contains a brace or an escaped quote; the naive
+    first-``}`` rule cuts such an answer in half and reports a parse error
+    on the piece.
+
+    ``None`` when there is no such object — a model that wrote prose ABOUT
+    an envelope and never wrote one gets nothing from here, which is the
+    point.  This recovers an envelope that arrived wrapped in commentary;
+    it does not invent one.
+    """
+    start = text.find("{")
+    while start != -1:
+        depth, index, in_string, escaped = 0, start, False, False
+        while index < len(text):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        found = json.loads(text[start:index + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(found, dict):
+                        return found
+                    break
+            index += 1
+        start = text.find("{", start + 1)
+    return None
+
+
+def strip_envelope(reply: str) -> str:
+    """*reply* with a code fence and a leading channel marker removed."""
+    return _CHANNEL.sub(
+        "", _FENCE.sub("", (reply or "").strip()).strip(), count=1).strip()
 
 #: Bounds on a seeded conversation history, chosen as a safety net and not
 #: a working limit.  The one caller that seeds history today (TAIPAN's
