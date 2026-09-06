@@ -813,10 +813,18 @@ def _mission_tools(manifest, discovered, style, bus=None):
 #: The transport a mission used is recoverable from the audit log of what it
 #: called; a credential written into `meta.json` is a credential on somebody's
 #: disk next month.
+#:
+#: ``no_grounding`` is here for the reason the others are, and one more: it
+#: is the only flag that changes what an ANSWER is worth.  A run directory
+#: whose answers were never checked and a run directory whose answers passed
+#: are otherwise identical — both carry no ``grounding`` record — and the
+#: second is a fact and the first is an absence.  Recorded, so the question
+#: "was this checked" is answerable from the run rather than from whoever
+#: remembers the unit file.
 RUN_META_FLAGS = (
     "mission_steps", "provider", "model", "profile", "unsandboxed", "skill",
     "swarm", "events", "control", "history", "gate_tool", "temperature",
-    "top_p", "seed",
+    "top_p", "seed", "no_grounding",
 )
 
 #: The step ceiling a mission runs under when nobody says otherwise: **none**.
@@ -1450,6 +1458,36 @@ def _mission(elf, args, name, style):
         validator = GroundingValidator.from_config(grounding)
     except ValueError as exc:
         raise SystemExit(f"--skill: {exc}")
+    # `--no-grounding`, and it is applied HERE — after the door-check and
+    # before anything is built from the config.
+    #
+    # The block is still PARSED, so an unusable regex or an unknown key is
+    # still a refusal at the door. What is dropped is everything built from
+    # it: `GroundingValidator.from_config` is not called with it below (the
+    # `offering()` pass at the tool-resolution site reads `grounding is not
+    # None`), and neither is the critic. So one flag is the whole of "no
+    # checks, no second opinion, no repair turn" — a deployment cannot get
+    # half of it, and a skill cannot switch a piece of it back on.
+    #
+    # WHY A DEPLOYMENT WOULD ASK FOR THAT. TAIPAN's hosted mission pane,
+    # 6 September 2026, owner's ruling on two live turns: "im good with we
+    # remove the figure-grounding. some hallucinations might be better", and
+    # on the second — a correct web-search answer rewritten by the repair
+    # turn into a list of identifiers and claims — "it was good and then the
+    # checks ruined it". The measured failure is not that the checks are
+    # wrong about grounding; it is that a CONVERSATIONAL turn ("what tools do
+    # you have", "what is trending in Vietnam") is not a finding, its figures
+    # come from the tool CATALOGUE rather than from a tool RESULT, and a
+    # repair turn spent on one destroys an answer that was already right.
+    #
+    # This does NOT delete the skills' `grounding:` blocks, and it must not:
+    # they are read by other agents against the same skills, and they are
+    # what `--skill` refuses on. It is a deployment saying this surface does
+    # not spend a turn on them. A deployment that drafts governed findings
+    # leaves the flag off, and the checks are exactly what they were.
+    if getattr(args, "no_grounding", False):
+        grounding = None
+        validator = None
     # The second opinion, built below once the offered set is known and only
     # where the manifest asked for one. Named here so the runner construction
     # can read it whether or not that happened.
@@ -2643,6 +2681,22 @@ def _main(AgentClass):
                              "call already in flight is not interrupted, so "
                              "the real bound is this plus one round trip "
                              "(env: MISSION_SECONDS)")
+    parser.add_argument("--no-grounding", action="store_true",
+                        default=bool((os.getenv("MISSION_NO_GROUNDING")
+                                      or "").strip()),
+                        help="Do not check this run's answers, and do not "
+                             "ask a critic about them. The skill's "
+                             "`grounding:` block is still PARSED — an "
+                             "unusable one still refuses at the door — and "
+                             "nothing is built from it: no validator, no "
+                             "critic, no repair turn, no caveat, and no "
+                             "`grounding` record on the stream. For a "
+                             "CONVERSATIONAL surface, where a figure comes "
+                             "from the tool catalogue rather than a tool "
+                             "result and a repair turn rewrites a correct "
+                             "answer into a compliance report. Leave it off "
+                             "wherever answers are governed findings "
+                             "(env: MISSION_NO_GROUNDING)")
     parser.add_argument("--swarm", action="store_true",
                         default=bool((os.getenv("MISSION_SWARM") or "").strip()),
                         help="Stage the mission when it needs staging: a "

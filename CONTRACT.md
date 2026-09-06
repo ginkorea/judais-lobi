@@ -68,12 +68,39 @@ carry and which is described below the table.
 | **`tool_call`** | `usage`, `call` | what the model call that chose this tool cost; and which call of the turn it is when the model asked for several |
 | **`tool_result`** | `call` | the same ordinal as its `tool_call`, so a consumer can pair them under a shared `index` |
 | **`gate_requested`** | `approval_id` | the name of the durable record this request was written to, which is what a decision is addressed to afterwards |
-| **`answer`** | `usage` | what the call that wrote this text cost — the repair turn's, on a repaired answer |
-| **`mission_finished`** | `usage`, `budget`, `reason`, `elapsed_s` | the run's ledger; which budget ran out and by how much; why it ended when the outcome word does not say; and the wall clock |
+| **`answer`** | `usage`, `draft` | what the call that wrote this text cost — the repair turn's, on a repaired answer; and `draft: true` on the one answer a run emits after its outcome is already decided (see below) |
+| **`mission_finished`** | `usage`, `budget`, `reason`, `elapsed_s`, `stopped_with_draft` | the run's ledger; which budget ran out and by how much; why it ended when the outcome word does not say; the wall clock; and whether the run ended early having handed over an answer it had already written |
 | **`model_state`** | `index`, `detail`, `since_s`, `retry_after_s` | the step the wait happened in; what the server said about it; how long the run had been waiting when it was reported; and the `Retry-After` the server asked for |
 
 **`branch` may ride any of them**, and is the one optional field that is not
 listed per event: see the section below.
+
+### `draft` and `stopped_with_draft` — an answer a run wrote and did not deliver
+
+A mission can write a complete answer and then not return it. There is one way
+in: a grounding repair judges the answer ungrounded and sends the model back
+around. There are three ways for the model never to write another — the
+supervisor winds the run up and the wind-up turn does not answer, the step
+ceiling arrives, or the rest of the run goes on refused tool calls — and all
+three used to end with the consumer holding an outcome word over prose it had
+already been streamed, delta by delta.
+
+Since **1.1.2** the draft is kept and handed over at those exits:
+
+* the `answer` record carries `draft: true`, and its `outcome` is
+  `incomplete` or `budget_exhausted` rather than one of the answered words —
+  which is the point. The run *did* stop early, and this field is how a
+  consumer tells that answer from the answer of a run that finished;
+* `mission_finished` carries `stopped_with_draft: true`, because the two are
+  read by different consumers: a pane reads the answer, and whoever asks
+  afterwards what a run delivered reads its finish record.
+
+The text is the model's own, **unaltered** — nothing is appended to it, because
+a run that abandoned a draft has no verdict to append and a sentence written in
+by the harness would be a caveat with no check behind it. Both fields are
+absent, never `false`, on every ordinary run. `--no-grounding` makes the one
+entrance to this state unreachable, so a run under that flag never carries
+them.
 
 `plan` rode `mission_started` until 0.8.x: that record is now emitted before
 triage — which is itself a call to the model — so at the time it is written
@@ -708,6 +735,7 @@ person's surface and may move.
 - `--no-stream` — ask the model for the whole reply at once. Streaming is **on** by default wherever the backend declares `supports_streaming`, and the only difference it makes to this stream is the `answer_delta` records: the same `answer` arrives at the same moment either way.
 - `--control` — where NDJSON commands come **in** from: `fd:N`, a FIFO, a path, or `-` for stdin. Four words — `inject`, `cancel`, `cancel_step`, `gate_decision` — and a bad line is dropped, never fatal. See the exit contract.
 - `--gate-wait` — seconds a run standing at a gate waits in-turn for a `gate_decision` on `--control` before ending the turn at `awaiting_approval` (the decision then arrives on a later turn via `--approval`). Also capped by `--mission-seconds`. `0` = never wait; default 300. An unattended caller — an eval driver, a batch, a pane nobody is watching — sets it low.
+- `--no-grounding` — do not check this run's answers and do not ask a critic about them. The skill's `grounding:` block is still **parsed**, so an unusable one is still a refusal at the door; nothing is built from it. No validator, no critic, no repair turn, no caveat, and **no `grounding` record on the stream at all** — which a consumer must not read as a pass: a run whose answers were never checked and a run whose answers passed are otherwise identical on the wire, and `no_grounding` is recorded in the run's `meta.json` for exactly that reason. For a CONVERSATIONAL surface, where the figures in an answer come from the tool catalogue rather than from a tool result and a repair turn rewrites a correct answer into a compliance report; not for one whose answers are governed findings.
 - `--grant` — pre-authorise capability scopes for **this run**, beyond whatever `--profile` grants. Comma-separated inside one value and repeatable across several: `--grant http.read` lets a mission under `safe` fetch a page without opting the whole run up to `ops`, which would also hand it `git.push`, `pip.install` and `fs.delete`. It widens **scopes only** — the sandbox named by `sandbox`, the tools named by `gated` and the skill's closed set are unchanged — and a campaign step narrowed past the grant is still refused, in a sentence naming the grant rather than the profile. A scope no profile names is refused at the door, by name, listing the known set; `*` is refused, because that is `--profile god`. Arrives back as `granted` on `mission_started`.
 - `--campaign` — run a **campaign**: a plan of missions. The message is drafted into a `CampaignPlan`, a person approves it, and each step then runs as its own child mission with its own effective scopes, with declared artifacts handed from one step to the next. Implies `--mission`. Every record carries `branch`; the plan rides the first `step_started` as `plan` and each step's files ride its own `step_started` as `artifacts`; `--resume` continues it as a campaign.
 - `--campaign-plan` — the same, from a `CampaignPlan` JSON or YAML file rather than a drafted one. Implies `--mission`. With no positional message the plan's own `objective` is the mission's. An unapproved plan ends the run at `awaiting_approval` with the whole plan on the `gate_requested` record, to be answered with `--approve <id>` and carried back with `--approval <id>` — the same mechanism a gated tool call uses, because it is the same kind of stop.
@@ -739,6 +767,7 @@ passes the other gets the one it passed.
 - `MISSION_PROTOCOL` — the environment form of `--protocol`; the flag wins. Unset and blank both mean `json`, which is what a mission runs under unless somebody asks otherwise.
 - `MISSION_STREAM` — the environment form of `--no-stream`, the way round a consumer wants to read it: `off`, `0`, `false`, `no` or `none` turn streaming off and anything else — including unset and blank — leaves it on. The flag wins. It has no effect on a backend that does not declare `supports_streaming`, which is asked first.
 - `MISSION_CONTROL` — the environment form of `--control`; the flag wins. Unset and blank both mean no channel, which is a run that can only be stopped by `SIGTERM`.
+- `MISSION_NO_GROUNDING` — the environment form of `--no-grounding`; any non-empty value turns the checks off.
 - `MISSION_GATE_WAIT` — the environment form of `--gate-wait`; the flag wins. `0` is a value (never wait); unset, blank, garbage or negative mean the default.
 - `JUDAIS_LOBI_PROFILE` — the environment form of `--profile`; the flag wins.
 - `JUDAIS_LOBI_SANDBOX` — `none` is the environment form of `--unsandboxed`; `bwrap` forces it and refuses on a host without it. The flag wins.

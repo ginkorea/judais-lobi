@@ -361,9 +361,9 @@ what it says is not about the record's kind.
 | `tool_result` | `index`, `tool`, `arguments`, `ok`, `exit_code`, `output`, `error`, `handle`, `truncated` | `call`, `branch` |
 | `gate_requested` | `index`, `tool`, `arguments`, `reason` | `approval_id`, `branch` |
 | `answer_delta` | `index`, `part`, `text` | `branch` |
-| `answer` | `text`, `outcome` | `usage`, `branch` |
+| `answer` | `text`, `outcome` | `usage`, `draft`, `branch` |
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` | `branch` |
-| `mission_finished` | `outcome`, `steps`, `max_steps` | `usage`, `budget`, `reason`, `elapsed_s`, `branch` |
+| `mission_finished` | `outcome`, `steps`, `max_steps` | `usage`, `budget`, `reason`, `elapsed_s`, `stopped_with_draft`, `branch` |
 | `model_state` | `state`, `provider`, `model` | `index`, `detail`, `since_s`, `retry_after_s`, `branch` |
 
 **`model_state`** (0.16, the eleventh) says why a pane is waiting: `state` is
@@ -400,6 +400,18 @@ that exists is an answer:
 
 **Stopping is not an outcome word**, and `reason: "stuck"` is not a failure —
 the supervisor asks for a best answer, which usually earns `answered` (§7).
+
+**An answer can arrive after the outcome is decided.** Since 1.1.2 a run that
+wrote a complete answer, had it sent back by a grounding repair, and then never
+wrote another — the wind-up turn did not answer, the step ceiling arrived, the
+rest of the run went on refused calls — hands that draft over rather than
+dropping it. The `answer` record carries `draft: true` and an `outcome` of
+`incomplete` or `budget_exhausted`; `mission_finished` carries
+`stopped_with_draft: true`. **Render it.** The text is the model's own and
+unaltered, and the sentence a driver shows beside it should say the run stopped
+early — not that it reached no answer, which is the thing on the page. Both
+fields are absent, never `false`, otherwise; `--no-grounding` removes the one
+entrance to this state, so a run under that flag never carries them.
 
 ### The opening frame is the run's posture
 
@@ -438,6 +450,7 @@ releases.
 | `--mission-seconds` | `MISSION_SECONDS` | an operator's wall clock. **Unset means none** |
 | `--gate-tool` | — | a tool this deployment offers and gates; repeatable (§5) |
 | `--gate-wait` | `MISSION_GATE_WAIT` | how long a gate waits for a decision on `--control` |
+| `--no-grounding` | `MISSION_NO_GROUNDING` | do not check the answers and do not ask a critic: no validator, no repair turn, no caveat, and no `grounding` record on the stream. The `grounding:` block is still parsed, so an unusable one still refuses at the door. For a conversational surface; not for one whose answers are governed findings |
 | `--approval` | `MISSION_APPROVAL` | spend one approved gate record on this run (§5) |
 | `--resume` | `MISSION_RESUME` | continue an unfinished run against a live model (§6) |
 | `--replay` | `MISSION_REPLAY` | run a finished recording again, dialling nothing (§6) |

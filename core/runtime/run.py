@@ -1607,6 +1607,17 @@ class Run:
         #: one path that legitimately continues after an answer, and
         #: therefore the one thing that may follow a wind-up turn.
         self._repairing = False
+        #: The last complete answer this run WROTE and did not return.
+        #:
+        #: There is exactly one way to write one and not return it — a
+        #: grounding repair sends the model back around — and there are
+        #: three ways for the run to then end without ever writing another:
+        #: the wind-up turn does not answer, the step ceiling arrives, or
+        #: the model spends the rest of the run on refused tool calls. All
+        #: three end with a consumer holding an outcome word over a draft
+        #: it has already been streamed delta by delta. See
+        #: :attr:`~core.runtime.mission.MissionTranscript.draft`.
+        self._draft = ""
         #: What the bus had registered when this run started, or ``None``
         #: before one has. The baseline for "the plane GREW", so a tool that
         #: was on the bus and deliberately left out of the closed set can
@@ -2587,6 +2598,9 @@ class Run:
         # second run already winding up from the first one's verdict.
         self._winding_up = False
         self._repairing = False
+        # And the draft, for the same reason: a runner used twice must not
+        # deliver the first run's abandoned answer as the second's.
+        self._draft = ""
         offered = self.offered
         transcript = MissionTranscript(
             objective=objective, catalogue=list(offered),
@@ -2694,7 +2708,8 @@ class Run:
                 budget=transcript.budget,
                 reason=transcript.reason,
                 usage=transcript.usage.as_record(self.model.rate),
-                started_at=self._started_at))
+                started_at=self._started_at,
+                stopped_with_draft=transcript.delivered_draft))
 
     def _register_store(self) -> str:
         """Put the result store on the bus for the length of this run.
@@ -2845,7 +2860,7 @@ class Run:
             # further attempt at the mission, so it is allowed through.
             if self._winding_up and not self._repairing:
                 transcript.outcome = "incomplete"
-                return transcript
+                return self._with_draft(transcript)
             self._repairing = False
             # Between steps AND before the model call, which in this loop
             # is one point: every path that continues — a parse error, a
@@ -3049,6 +3064,42 @@ class Run:
         # a faster endpoint.
         transcript.budget = BudgetExhausted(
             "steps", self.bounds.max_steps, len(transcript.steps))
+        return self._with_draft(transcript)
+
+    def _with_draft(self, transcript: MissionTranscript) -> MissionTranscript:
+        """Hand over the abandoned draft, when the run ended without one.
+
+        The two exits that end a run *without an answer it meant to give*:
+        the wind-up turn that did not answer, and the step ceiling.  Not
+        :meth:`_stopped` — a person pressed a button or an operator's clock
+        fired, and delivering an answer they interrupted would be this loop
+        overriding them; and not the answered paths, which have their own.
+
+        **The outcome word is not touched.**  ``incomplete`` and
+        ``budget_exhausted`` are the truth about the run, and a consumer
+        that branches on them keeps branching on them.  What changes is
+        that :attr:`~core.runtime.mission.MissionTranscript.answer` is no
+        longer empty and ``delivered_draft`` says why — so a pane can show
+        the model's words with a line about where they came from, instead
+        of an outcome sentence over prose the reader has already watched
+        arrive.
+
+        The text is the model's, **unaltered**.  Nothing is appended to it:
+        a run that abandoned a draft has no verdict to append, and a
+        sentence written in here would be a caveat with no check behind it.
+        Whatever the consumer wants to say about a delivered draft, it says
+        beside the answer, from ``delivered_draft``.
+
+        An empty draft returns the transcript exactly as it arrived, which
+        is every run that never wrote an answer at all.
+        """
+        if transcript.answer or not self._draft:
+            return transcript
+        transcript.draft = self._draft
+        transcript.answer = self._draft
+        transcript.delivered_draft = True
+        self.observer.emit(ANSWER, text=self._draft,
+                           outcome=transcript.outcome, draft=True)
         return transcript
 
     # ── the pieces both protocols are made of ───────────────────────────
@@ -3252,6 +3303,15 @@ class Run:
         if report is not None and report.ran and not report.grounded:
             if repairs < self.personality.grounding.max_repairs:
                 repairs += 1
+                # KEPT BEFORE IT IS SENT BACK. This is the one place a
+                # complete answer is written and not returned, so it is the
+                # one place the draft can be taken. If the model never
+                # writes another — a wind-up that does not answer, a step
+                # ceiling, a run that spends the rest of itself on refused
+                # calls — this is what the run has to show for itself, and
+                # the alternative is an outcome word over prose the
+                # consumer was already streamed.
+                self._draft = answer
                 problem = self._repairing_turn(report, repairs)
                 step.error = problem
                 transcript.steps.append(step)

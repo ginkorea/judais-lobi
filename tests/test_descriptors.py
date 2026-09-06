@@ -261,3 +261,68 @@ class TestTheMultiActionToolsPublishTheirArguments:
         a model finds that out: no path, no flags, no command line."""
         schema = self.descriptor("verify").input_schema
         assert list(schema["properties"]) == ["action"]
+
+
+class TestATooLThatTakesNoArgumentsSaysSo:
+    """`{"properties": {}}` and *nobody described this tool* are different
+    facts, and this function returned `""` for both.
+
+    Measured on TAIPAN's hosted mission pane, 6 September 2026, on
+    `mcp.apex_sources` — schema `{"type": "object", "properties": {},
+    "additionalProperties": false}`:
+
+    * its catalogue line carried no `arguments:` row while every sibling
+      carried one, so an empty schema read as *undescribed*;
+    * the model filled the void with the envelope's own vocabulary —
+      `{"tool": "mcp.apex_sources", "arguments": {"arguments": {}}}`, the
+      outer key repeated inside itself;
+    * the schema refused it (`'arguments' was unexpected`) and
+      `schema_check._sentence` appended **nothing**, because its teaching
+      clause is written `if summary`. The one refusal that could have said
+      *this tool takes no arguments* was the one refusal that said least;
+    * four rejections and 432,900 tokens later the turn ended `incomplete`,
+      over a question a correct answer had already been written for.
+    """
+
+    EMPTY = {"type": "object", "properties": {}, "additionalProperties": False}
+
+    def test_it_is_not_silence(self):
+        from core.tools.descriptors import summarize_input_schema
+        assert summarize_input_schema(self.EMPTY) != ""
+
+    def test_it_names_the_call_rather_than_describing_it(self):
+        """What the model got wrong was the LITERAL, so the sentence carries
+        the literal. A summary that said "takes no arguments" in prose leaves
+        the reader to invent the JSON, which is the whole failure again."""
+        from core.tools.descriptors import summarize_input_schema
+        assert '"arguments": {}' in summarize_input_schema(self.EMPTY)
+
+    def test_no_schema_at_all_is_still_silence(self):
+        """The only silence, and it has to stay one: a consumer renders no
+        `arguments:` row for a tool nobody described, and rendering "takes
+        none" there would be a claim the schema never made."""
+        from core.tools.descriptors import summarize_input_schema
+        assert summarize_input_schema(None) == ""
+        assert summarize_input_schema({}) == ""
+
+    def test_a_properties_key_that_is_not_a_mapping_is_silence_too(self):
+        from core.tools.descriptors import summarize_input_schema
+        assert summarize_input_schema({"properties": []}) == ""
+
+    def test_a_tool_with_arguments_is_unchanged(self):
+        from core.tools.descriptors import summarize_input_schema
+        said = summarize_input_schema(
+            {"type": "object", "properties": {"q": {"type": "string"}},
+             "required": ["q"]})
+        assert said == "q (string, required)"
+
+    def test_the_refusal_now_teaches_what_the_catalogue_teaches(self):
+        """THE POINT OF THE CHANGE. `schema_check` appends its teaching clause
+        `if summary`, so making the summary non-empty is what puts the
+        accepted call into the refusal the model actually reads — the same
+        string in both places, so the catalogue and the refusal cannot come to
+        disagree about one tool."""
+        from core.runtime.schema_check import check
+        said = check("mcp.apex_sources", self.EMPTY, {"arguments": {}})
+        assert said, "an unexpected property must still be refused"
+        assert '"arguments": {}' in said

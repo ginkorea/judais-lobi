@@ -175,8 +175,40 @@ class ToolDescriptor:
 MAX_ENUM_SHOWN = 8
 
 
+#: What a tool that declares a schema and NO arguments in it renders as.
+#:
+#: **A tool that takes nothing and a tool nobody described are different
+#: facts, and this function used to return ``""`` for both.**  Measured on
+#: TAIPAN's hosted mission pane, 6 September 2026, on ``mcp.apex_sources``,
+#: whose schema is ``{"type": "object", "properties": {},
+#: "additionalProperties": false}``:
+#:
+#: * its catalogue line carried no ``arguments:`` row at all while every
+#:   sibling carried one, so an empty schema read as *undescribed* rather
+#:   than as *empty*;
+#: * the model filled the void with the envelope's own vocabulary and sent
+#:   ``{"tool": "mcp.apex_sources", "arguments": {"arguments": {}}}`` — the
+#:   outer key repeated inside itself;
+#: * the schema refused that (``'arguments' was unexpected``) and
+#:   :func:`~core.runtime.schema_check._sentence` appended **nothing**,
+#:   because its teaching clause is written ``if summary``.  The one
+#:   refusal that could have said *this tool takes no arguments* was the
+#:   one refusal that said least, and the contradiction is sharper than
+#:   silence: the wire's required outer key IS called ``arguments``;
+#: * the model then guessed ``asset_id``/``asset_version``, was refused
+#:   again, re-sent the double-wrapped envelope byte for byte, and the turn
+#:   ended ``incomplete`` after 432,900 tokens — over a question a complete
+#:   and correct answer had already been written for, at step 1.
+#:
+#: The sentence names the correct call rather than describing it, because
+#: what the model got wrong was the literal.  It is the catalogue row and
+#: the teaching clause of the refusal at once — one string, so the two
+#: cannot come to say different things about the same tool.
+NO_ARGUMENTS = 'none — call it with "arguments": {}'
+
+
 def summarize_input_schema(schema: Optional[Dict[str, Any]]) -> str:
-    """One compact line of argument types, or ``""``.
+    """One compact line of argument types, :data:`NO_ARGUMENTS`, or ``""``.
 
     ``q (string, required), type (string: dataset|model|service), limit (integer)``
 
@@ -185,12 +217,19 @@ def summarize_input_schema(schema: Optional[Dict[str, Any]]) -> str:
     JSON Schema has spent its context before the objective arrives.  It
     is a *summary*: the authority is :attr:`ToolDescriptor.input_schema`,
     which is kept whole for the callers that need it.
+
+    ``""`` means **nobody described this tool's arguments**, and that is
+    the only silence.  A schema declaring an empty ``properties`` HAS
+    described them — there are none — and says so; see
+    :data:`NO_ARGUMENTS` for what the two being one string cost.
     """
     if not schema:
         return ""
     properties = schema.get("properties")
-    if not isinstance(properties, dict) or not properties:
+    if not isinstance(properties, dict):
         return ""
+    if not properties:
+        return NO_ARGUMENTS
     required = schema.get("required")
     required = set(required) if isinstance(required, (list, tuple, set)) else set()
 

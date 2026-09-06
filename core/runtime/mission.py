@@ -672,7 +672,8 @@ def _finished_record(*, outcome: str, steps: int, max_steps: int,
                      budget: Optional[BudgetExhausted] = None,
                      reason: str = "",
                      usage: Optional[Dict[str, Any]] = None,
-                     started_at: Optional[float] = None) -> Dict[str, Any]:
+                     started_at: Optional[float] = None,
+                     stopped_with_draft: bool = False) -> Dict[str, Any]:
     """The ``mission_finished`` fields, for **both** paths that emit them.
 
     One function because there are two emitters — the direct loop's
@@ -712,6 +713,11 @@ def _finished_record(*, outcome: str, steps: int, max_steps: int,
     # absence means "the provider reported nothing" and must stay a statement.
     if started_at is not None:
         record["elapsed_s"] = round(max(0.0, time.monotonic() - started_at), 3)
+    # Present only when true, like `reason` and unlike `steps`: this says a
+    # run did something unusual, and a `false` on every ordinary run would
+    # be a field a reader learns to skip on the one run it means something.
+    if stopped_with_draft:
+        record["stopped_with_draft"] = True
     return record
 
 
@@ -840,6 +846,28 @@ class MissionTranscript:
     #: gets there first, which is the right precedence: somebody threw a
     #: switch, and that is the sentence they are owed.
     reason: str = ""
+    #: The last readable answer this run WROTE and did not return, and
+    #: whether the run ended by handing it over anyway.
+    #:
+    #: A mission can write a complete answer and then not deliver it: a
+    #: grounding repair sends the model back around, the supervisor winds
+    #: the run up, the step ceiling arrives — and the consumer is left with
+    #: an outcome word over a draft it has already been streamed.  Measured
+    #: on TAIPAN's hosted mission pane, 6 September 2026: a correct
+    #: six-item answer at step 1, seven ``answer_delta`` records carrying
+    #: it, then four refused tool calls and ``incomplete``.  The pane held
+    #: every byte of the answer and said "your agent stopped after 5
+    #: step(s) without reaching an answer".
+    #:
+    #: So the draft is KEPT, and at the exits that end a run without one it
+    #: is delivered rather than dropped.  :attr:`delivered_draft` is what
+    #: keeps that honest: these are the model's own words and they are not
+    #: the answer the run would have returned had it finished.
+    #: :attr:`outcome` is deliberately NOT changed — the run did stop
+    #: early, and writing ``answered`` over it would be this loop
+    #: overstating what happened to make a page read better.
+    draft: str = ""
+    delivered_draft: bool = False
 
     @property
     def completed(self) -> bool:

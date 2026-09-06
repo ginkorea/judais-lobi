@@ -3391,3 +3391,99 @@ class TestResumingAStagedRunFromTheCommandLine:
             {"answer": "The asset is asset.5f21."})
         run_resume(MockClass, run_id, "--skill", str(skill_file), "--swarm")
         assert "swarm: set aside for this turn" in capsys.readouterr().out
+
+
+class TestADeploymentThatDoesNotCheckItsAnswers:
+    """`--no-grounding` — one flag, and it turns off all of it.
+
+    ## Whose decision this is, and why the flag exists
+
+    Owner's ruling on TAIPAN's hosted mission pane, 6 September 2026, on two
+    live turns. Asked *"can you tell me the tools you have regarding apex"*,
+    the agent answered at step 1 with the six `mcp.apex_*` tools — complete,
+    correct, streamed to the analyst — and the validator reported
+    `grounded: false` with **`unsupported` empty**: nothing in the answer was
+    wrong, and three checks came back `nothing_considered` against a
+    `must_cite` floor the composed skills declare. A question about WHICH
+    TOOLS EXIST has no identifier, figure or claim to cite. The repair turn
+    sent the model back around, it spent four refused tool calls and 432,900
+    tokens, and the analyst was handed *"your agent stopped without reaching
+    an answer"*. On the next turn a good web-search synthesis came back
+    rewritten into `Identifiers (…): / Claims (…):` under three warnings.
+
+    Verbatim: *"too much control. too much validation. let the answers
+    breathe."* and *"it was good and then the checks ruined it."*
+
+    ## What the flag must and must not do
+
+    It must turn off **everything built from the block** — the validator, the
+    critic, the repair turn, the caveat and the `grounding` record — because a
+    deployment that got half of it would be spending a repair turn it thought
+    it had switched off.
+
+    It must **not** stop the block being read. `--skill` refusing an unusable
+    grammar at the door is a different control, it is still right, and losing
+    it would trade a bad turn for a mission that starts with no validator and
+    says nothing about it — which is the defect
+    `test_a_broken_grounding_grammar_stops_the_run` exists for.
+    """
+
+    def test_the_default_still_checks(self, elf, skill_file, capsys):
+        """The flag is opt-in. Every deployment that says nothing gets the
+        behaviour it has always had."""
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file))
+        assert "grounded" in capsys.readouterr().out
+
+    def test_the_flag_reports_nothing_about_grounding(self, elf, skill_file,
+                                                      capsys):
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--no-grounding")
+        out = capsys.readouterr().out
+        assert "grounded" not in out
+
+    def test_the_run_still_answers(self, elf, skill_file, capsys):
+        """The point of the whole change: the answer arrives, unrewritten."""
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--no-grounding")
+        assert "asset.5f21" in capsys.readouterr().out
+
+    def test_the_skill_is_still_loaded_and_the_closed_set_still_binds(
+            self, elf, skill_file):
+        """Not `--skill` with the skill taken out. The persona, the policy,
+        the prompt and the closed tool set are all exactly as they were —
+        this flag is about what happens to the ANSWER."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--no-grounding")
+        system = agent.client.chat.call_args_list[0].kwargs["messages"][0][
+            "content"]
+        assert "Never invent an asset id." in system
+        assert "mcp.governed_read" in system
+        assert "mcp.run_shell_command" not in system
+
+    def test_an_unusable_grammar_is_still_a_refusal_at_the_door(
+            self, elf, tmp_path):
+        """THE ONE THAT MATTERS. The block is still parsed under the flag, so
+        a manifest with a broken regex still stops the run before the model is
+        asked — rather than starting a mission whose validator was never
+        going to be built anyway and saying nothing about the typo."""
+        MockClass, agent = elf
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            SKILL.replace("'\\basset\\.[0-9a-z]{4,}\\b'", "'[unclosed'"),
+            encoding="utf-8",
+        )
+        with pytest.raises(SystemExit) as exc:
+            run_cli(MockClass, "--skill", str(path), "--no-grounding")
+        assert "regex" in str(exc.value)
+        assert agent.client.chat.call_count == 0
+
+    def test_the_catalogue_line_says_there_is_no_grammar(self, elf,
+                                                         skill_file, capsys):
+        """`(no grounding grammar)` — the console line an operator reads at
+        the start already says whether a run is checked, and it has to keep
+        saying so under the flag. A run that quietly did not check would be
+        the same shape as a run that passed."""
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--no-grounding")
+        assert "no grounding grammar" in capsys.readouterr().out

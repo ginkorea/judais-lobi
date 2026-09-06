@@ -655,7 +655,16 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: a shared ``index`` needs both halves numbered the same way.
     TOOL_RESULT: ("call",),
     #: ``usage`` — as above: the cost of the call that wrote ``text``.
-    ANSWER: ("usage",),
+    #:
+    #: ``draft`` — ``true`` on the one ``answer`` a run emits **after** its
+    #: outcome is already decided: a complete answer the model wrote, was
+    #: sent back around by a grounding repair, and never replaced, handed
+    #: over at the exit rather than dropped.  Its ``outcome`` is
+    #: ``incomplete`` or ``budget_exhausted`` and not one of the answered
+    #: words, which is deliberate — the run did stop early — so this field
+    #: is how a consumer tells that answer from the answer of a run that
+    #: finished.  Absent, never ``false``, on every ordinary answer.
+    ANSWER: ("usage", "draft"),
     #: ``usage`` — the whole run's, and the only place a TOTAL appears:
     #: ``{prompt_tokens, completion_tokens, total_tokens, calls}``, where
     #: ``calls`` counts the model calls that **reported** usage rather than the
@@ -720,7 +729,16 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: beside ``usage.total_tokens`` and reads both with a default.  Kept
     #: OUT of ``usage`` on purpose: that field is absent when the provider
     #: reported nothing, and elapsed time is known regardless.
-    MISSION_FINISHED: ("usage", "budget", "reason", "elapsed_s"),
+    #:
+    #: ``stopped_with_draft`` — ``true`` when this run ended without an
+    #: answer of its own and handed over an abandoned draft instead (see
+    #: ``draft`` on ``answer``).  On the finish record as well as on the
+    #: answer because the two are read by different consumers: a pane
+    #: reads the answer, and a run's metadata is read by whoever asks
+    #: afterwards what this run actually delivered.  Absent, never
+    #: ``false``.
+    MISSION_FINISHED: ("usage", "budget", "reason", "elapsed_s",
+                       "stopped_with_draft"),
     #: ``approval_id`` — the id of the durable record this request was
     #: written to, when the deployment keeps them (it does by default;
     #: ``JUDAIS_LOBI_APPROVALS=none`` turns them off, and then this field is
@@ -837,6 +855,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--top-p", "--seed", "--protocol", "--no-stream", "--control",
     "--gate-wait", "--replay", "--grant",
     "--campaign", "--campaign-plan",
+    "--no-grounding",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -900,6 +919,18 @@ CLI_FLAGS: tuple[str, ...] = (
 #: declare both ``supports_tool_calls`` and ``supports_tool_choice_required``,
 #: because a mission that silently fell back to prose would be measured as
 #: the protocol it was not running.
+#: ``MISSION_NO_GROUNDING`` is the environment form of ``--no-grounding``
+#: — set to anything non-empty and this run's answers are neither checked
+#: nor sent to a critic: no validator is built from the skill's
+#: ``grounding:`` block (which is still parsed, so an unusable one still
+#: refuses at the door), no repair turn is spent, no caveat is appended,
+#: and **no ``grounding`` record appears on the stream at all**.  A
+#: consumer reading that absence must not read it as a pass: a run whose
+#: answers were never checked and a run whose answers passed are
+#: otherwise identical on the wire, which is why ``no_grounding`` is
+#: recorded in the run's ``meta.json``.  For a CONVERSATIONAL surface,
+#: where the figures in an answer come from the tool catalogue rather
+#: than from a tool result; not for one that drafts governed findings.
 #: ``MISSION_STREAM`` is the environment form of ``--no-stream``, spelled
 #: the way round a consumer wants to read it: ``off``, ``0``, ``false``,
 #: ``no`` or ``none`` turn the streamed model call off and anything else —
@@ -927,6 +958,7 @@ ENV_VARS: tuple[str, ...] = (
     "MISSION_STREAM",
     "MISSION_CONTROL",
     "MISSION_GATE_WAIT",
+    "MISSION_NO_GROUNDING",
     "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",

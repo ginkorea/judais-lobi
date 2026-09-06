@@ -263,3 +263,109 @@ class TestGroundingOverARealRun:
             manifest, bus, discovered, ScriptedModel('{"answer": "done"}'),
         ).run("go")
         assert RESULT_TOOL not in bus.list_tools()
+
+
+class TestAnAnswerWrittenAndNotDeliveredIsStillHandedOver:
+    """The draft a repair turn took away and nothing gave back.
+
+    There is exactly one way for a run to write a complete answer and not
+    return it — a grounding repair judges it ungrounded and sends the model
+    back around — and three ways for the model never to write another: the
+    supervisor winds the run up and the wind-up turn does not answer, the step
+    ceiling arrives, or the rest of the run goes on refused calls.
+
+    All three used to end the same way: the consumer holding an outcome word
+    over prose it had already been streamed, delta by delta. Measured on
+    TAIPAN's hosted mission pane, 6 September 2026 — a complete and correct
+    answer at step 1, seven `answer_delta` records carrying it, then four
+    refused tool calls, and *"your agent stopped after 5 step(s) without
+    reaching an answer"* on the page.
+
+    So the draft is kept and handed over. The outcome word is deliberately
+    **not** rewritten: the run did stop early, and calling it `answered` would
+    be the loop overstating what happened to make a page read better.
+    """
+
+    def _abandons_then_runs_out(self, manifest, bus, discovered):
+        """A run that answers ungrounded, is sent back, and never answers
+        again — it spends the rest of its steps on a tool call instead."""
+        model = ScriptedModel(
+            tool_call("mcp.governed_view", run_id="run.5f21"),
+            '{"answer": "Top actor a.9999."}',
+            tool_call("mcp.echo", text="still going"),
+            tool_call("mcp.echo", text="still going"),
+            tool_call("mcp.echo", text="still going"),
+            tool_call("mcp.echo", text="still going"),
+            tool_call("mcp.echo", text="still going"),
+        )
+        return runner_for(manifest, bus, discovered, model,
+                          max_result_bytes=2_000).run("go")
+
+    def test_the_draft_is_delivered_rather_than_dropped(
+            self, manifest, bus, discovered):
+        transcript = self._abandons_then_runs_out(manifest, bus, discovered)
+        assert transcript.answer == "Top actor a.9999."
+        assert transcript.delivered_draft is True
+        assert transcript.draft == "Top actor a.9999."
+
+    def test_the_outcome_word_is_not_rewritten(
+            self, manifest, bus, discovered):
+        """The run really did run out of steps, and a consumer branching on
+        the outcome keeps branching on it. `completed` stays False for the
+        same reason: this is not an answer the run stands behind."""
+        transcript = self._abandons_then_runs_out(manifest, bus, discovered)
+        assert transcript.outcome == "budget_exhausted"
+        assert transcript.completed is False
+
+    def test_nothing_is_appended_to_the_model_s_words(
+            self, manifest, bus, discovered):
+        """A run that abandoned a draft has no verdict to append, so a
+        sentence written in here would be a caveat with no check behind it.
+        Whatever a consumer wants to say about a delivered draft it says
+        beside the answer, off `delivered_draft`."""
+        transcript = self._abandons_then_runs_out(manifest, bus, discovered)
+        assert "Ungrounded" not in transcript.answer
+        assert transcript.answer.strip() == "Top actor a.9999."
+
+    def test_a_run_that_wrote_nothing_delivers_nothing(
+            self, manifest, bus, discovered):
+        """The empty case, and it must stay empty: inventing an answer for a
+        run that never wrote one is the failure this is the opposite of."""
+        model = ScriptedModel(
+            *[tool_call("mcp.echo", text="a")] * 8,
+        )
+        transcript = runner_for(manifest, bus, discovered, model,
+                                max_result_bytes=2_000).run("go")
+        assert transcript.outcome == "budget_exhausted"
+        assert not transcript.answer
+        assert transcript.delivered_draft is False
+
+    def test_a_run_that_finished_normally_carries_no_draft(
+            self, manifest, bus, discovered):
+        """`delivered_draft` is a fact about an unusual run. On every
+        ordinary one it is False and `draft` is empty, so a consumer that
+        branches on it is branching on something that means something."""
+        model = ScriptedModel(
+            tool_call("mcp.governed_view", run_id="run.5f21"),
+            '{"answer": "Top actor a.0000, records rec.0000a."}',
+        )
+        transcript = runner_for(manifest, bus, discovered, model,
+                                max_result_bytes=2_000).run("go")
+        assert transcript.outcome == "answered"
+        assert transcript.delivered_draft is False
+        assert transcript.draft == ""
+
+    def test_a_repaired_run_that_answered_again_delivers_the_repair(
+            self, manifest, bus, discovered):
+        """Not the draft. The second answer is the one the run reached, and
+        a draft delivered over it would hand back the text the repair turn
+        existed to replace."""
+        model = ScriptedModel(
+            tool_call("mcp.governed_view", run_id="run.5f21"),
+            '{"answer": "Top actor a.9999."}',
+            '{"answer": "Top actor a.0000."}',
+        )
+        transcript = runner_for(manifest, bus, discovered, model,
+                                max_result_bytes=2_000).run("go")
+        assert transcript.answer.startswith("Top actor a.0000.")
+        assert transcript.delivered_draft is False
