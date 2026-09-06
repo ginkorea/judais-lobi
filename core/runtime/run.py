@@ -111,7 +111,7 @@ from core.runtime.mission import (
     ANSWER_FUNCTION, ANSWER_TOOL, AWAITING_APPROVAL, CANCEL_STEP_LATE,
     CANCEL_STEP_NOTE, CANCELLED, JSON_PROTOCOL, NATIVE_PROTOCOL,
     NATIVE_PROTOCOL_TEXT, PLANE_CHANGED, PROTOCOL, PROTOCOLS, MissionCall,
-    MissionStep, MissionTranscript, _FENCE, _finished_record,
+    MissionStep, MissionTranscript, _finished_record,
     _grounding_record, _profile_field, _protocol_field, _record_decision,
     _run_field, _takes_deadline, _takes_step, audit_ref_of, first_json_object,
     persist_record, sandbox_of, second_opinion, stacked, strip_envelope,

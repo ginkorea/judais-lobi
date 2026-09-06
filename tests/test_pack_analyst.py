@@ -562,9 +562,11 @@ SCRIPTS = {
             code(COUNT_ROWS),
             answer("24"),
         ],
-        # Two turns spent on replies the loop could not read.
+        # Two turns spent on replies the loop could not read. An EMPTY
+        # reply and not prose: since 1.1.3 prose with text in it is the
+        # answer, and this case is about turns the loop could not read.
         "bad": [
-            "Sure — let me count those rows for you now.",
+            "",
             '{"tool": "run_python_code", "arguments": "print(1)"}',
             code(COUNT_ROWS),
             answer("24"),

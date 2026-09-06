@@ -401,8 +401,11 @@ def scripts(site: str) -> Dict[str, Dict[str, List[str]]]:
                     f"Sources:\n[S1] {index}"),
             ],
             "bad": [
-                "here you go, I will read the index now",
-                "```\nfetch_page_content(index)\n```",
+                # Two replies the loop cannot read. Since 1.1.3 prose is
+                # an ANSWER, so these are the two shapes still refused: an
+                # empty reply, and arguments that are not an object.
+                "",
+                '{"tool": "fetch_page_content", "arguments": "the index"}',
                 tool("fetch_page_content", url=index),
                 answer(
                     "The index lists the Solar Array Annual Report 2025, "

@@ -3200,7 +3200,7 @@ class TestTheSwarmEndToEnd:
             agent,
             '{"route": "staged"}',
             SWARM_PLAN,
-            "I will read the asset now.",            # not a decision at all
+            "",                                      # not a decision at all
             json.dumps({"tool": "mcp.governed_read",
                         "arguments": {"asset_id": "asset.5f21"}}),
             json.dumps({"answer": "asset.5f21 is results only"}),

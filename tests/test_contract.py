@@ -214,7 +214,9 @@ class TestAMissionConformsToItsOwnContract:
         """The awkward paths, because they are the ones a pane renders least
         often and therefore the ones that rot."""
         _, seen = _run(
-            ["not json at all",
+            # An empty reply: since 1.1.3 prose is an answer, and an empty
+            # reply is the one thing this loop still asks again for.
+            ["",
              json.dumps({"tool": "catalog_delete_everything", "arguments": {}}),
              json.dumps({"tool": "compute_cancel_job",
                          "arguments": {"job_id": "job_7f3"}})],
@@ -731,7 +733,7 @@ class TestTheLedgerIsAFieldAndNotAnEvent:
         declare is a field a consumer meets with no sentence for it."""
         _, seen = _run([json.dumps({"tool": "catalog_search_assets",
                                     "arguments": {"q": "x"}}),
-                        "not json at all",
+                        "",
                         json.dumps({"answer": "done"})],
                        usage_fn=self._usage(50, 5))
         assert _faults(seen) == []

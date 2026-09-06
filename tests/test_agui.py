@@ -84,7 +84,9 @@ def answered(bus, strict):
     records = []
     MissionRunner(
         ScriptedModel(
-            "not json",
+            # An empty reply, which since 1.1.3 is the one thing this loop
+            # refuses: prose is an answer now.
+            "",
             tool_call("catalog.search", q="taiwan"),
             '{"answer": "labels.7a19c4e2 is the set."}',
             '{"answer": "It is definitely labels.7a19c4e2."}'),

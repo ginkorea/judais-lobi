@@ -246,7 +246,10 @@ SCRIPTS = {
                    "unchanged."),
         ],
         "bad": [
-            "Sure, I will send that through the plane now.",
+            # An empty reply and not prose: since 1.1.3 a reply with text
+            # in it is the ANSWER, and this case measures turns lost to
+            # replies the harness could not read.
+            "",
             '{"tool": "mcp.echo", "arguments": "plane check ok"}',
             tool("mcp.echo", text="plane check ok"),
             answer("It came back as \"echo: plane check ok\" — the phrase is "
