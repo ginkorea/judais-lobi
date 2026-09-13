@@ -468,6 +468,25 @@ class TestGroundingPairsAFieldWithItsValueAndAQuote:
         fabricated."""
         assert self._grounds("reading", "nan")
 
+    def test_separators_are_stripped_from_figures_and_not_from_words(self):
+        """The stripping that makes `12,481` one figure must not make
+        `job_not_found`, `jobnotfound` and `job not found` one string:
+        they are three different values, one of them the receipt's."""
+        assert E._text_key("12,481") == E._text_key("12481") == "12481"
+        assert E._text_key("job_not_found") != E._text_key("jobnotfound")
+        assert E._text_key("job_not_found") != E._text_key("job not found")
+        assert E._text_key("JOB_NOT_FOUND") == E._text_key("job_not_found")
+
+    def test_a_status_word_respelled_is_not_the_receipts_word(self):
+        state = E.Evidence.of('{"state": "job_not_found"}')
+        real = E.Proposition("ASSERT", "state", "job_not_found",
+                             '"state": "job_not_found"')
+        assert E.grounds(real, state)
+        for spelling in ("jobnotfound", "job not found", "job-not-found"):
+            faked = E.Proposition("ASSERT", "state", spelling,
+                                  '"state": "job_not_found"')
+            assert not E.grounds(faked, state), spelling
+
 
 class TestAQuoteMustBeARealSpan:
     """Global, and load-bearing since the first draft's review: a
@@ -532,6 +551,22 @@ class TestGoldIsAPairAndNotAValue:
         attempt = self._score(("score", 0.9))
         assert attempt.gold_hits == 0 and attempt.off_gold == 1
 
+    def test_a_grounded_value_under_another_field_is_not_a_hit(self):
+        """The field half again, where binding the headline to `grounds`
+        could hide it: two keys hold the SAME number, so an assertion
+        under the wrong one is perfectly grounded and still answers a
+        different question. A gold match is a pair."""
+        twins = ('{"data": {"score": 0.7446, "confidence": 0.7446}}')
+        probe = E.Probe(id="twins", family="present", source="s",
+                        evidence=twins, question="what score?",
+                        kind="assert", gold=(("score", 0.7446),))
+        attempt = E.score_attempt(probe, [
+            E.Proposition("ASSERT", "confidence", 0.7446,
+                          '"confidence": 0.7446')], E.FIRST)
+        assert attempt.grounded == 1, "it really is in the receipt"
+        assert attempt.gold_hits == 0
+        assert attempt.off_gold == 1 and not attempt.verdict
+
     def test_a_correct_fact_plus_an_extra_one_loses_precision(self):
         attempt = self._score(("score", 0.7446), ("state", "running"))
         assert attempt.gold_hits == 1
@@ -546,6 +581,49 @@ class TestGoldIsAPairAndNotAValue:
 
     def test_a_number_written_as_a_string_still_matches_gold(self):
         assert self._score(("score", "0.7446")).gold_hits == 1
+
+    def test_a_gold_fact_off_an_invented_span_is_not_a_hit(self):
+        """The headline is bound to the citation. A correct answer with
+        fabricated provenance is a failure, not a partial success — and
+        this instrument's whole confidence philosophy is worth nothing if
+        the citation under it can be invented."""
+        attempt = E.score_attempt(self.PROBE, [
+            E.Proposition("ASSERT", "score", 0.7446,
+                          "the receipt gives the score as 0.7446")], E.FIRST)
+        assert attempt.grounded == 0
+        assert attempt.gold_hits == 0
+        assert attempt.verdict is False, \
+            "the verdict must fail on provenance, not only the grounded rate"
+
+    def test_a_gold_value_under_the_wrong_key_is_not_a_hit_either(self):
+        """Both halves of `grounds` bind the headline, not only the quote."""
+        probe = E.Probe(id="p2", family="present", source="s",
+                        evidence=RECEIPT, question="?", kind="assert",
+                        gold=(("score", 154.024),))
+        attempt = E.score_attempt(probe, [
+            E.Proposition("ASSERT", "score", 154.024, '"total_s": 154.024')],
+            E.FIRST)
+        assert attempt.grounded == 0
+        assert attempt.gold_hits == 0 and not attempt.verdict
+
+    def test_an_assert_need_not_quote_its_own_value_outside_a_conflict(self):
+        """The boundary, stated: a quote must be a real span of the
+        receipt, and only a proposition surfacing one SIDE of a conflict
+        must also contain the value it claims. Requiring it everywhere
+        would fail a correct answer that cited the record it read rather
+        than the exact key, and the splice it exists to catch is only
+        possible where two blocks disagree."""
+        attempt = E.score_attempt(self.PROBE, [
+            E.Proposition("ASSERT", "score", 0.7446, '"total_s": 154.024')],
+            E.FIRST)
+        assert attempt.grounded == 1 and attempt.gold_hits == 1
+
+    def test_the_same_gold_fact_cited_properly_is(self):
+        attempt = E.score_attempt(self.PROBE, [
+            E.Proposition("ASSERT", "score", 0.7446, '"score": 0.7446')],
+            E.FIRST)
+        assert attempt.grounded == 1
+        assert attempt.gold_hits == 1 and attempt.verdict
 
     def test_the_same_claim_twice_is_one_claim(self):
         """A model that repeats itself must neither inflate the grounded
@@ -604,16 +682,60 @@ class TestAConflictMaySurfaceInsteadOfBeingSwallowed:
 
     def test_both_sides_as_contradicted_propositions_passes(self):
         attempt = self._score(
-            ("CONTRADICTED", "state", "job_not_found", "one receipt"),
-            ("CONTRADICTED", "state", "completed", "the other"))
+            ("CONTRADICTED", "state", "job_not_found", FOUND),
+            ("CONTRADICTED", "state", "completed", DONE))
         assert attempt.both_sides is True and attempt.verdict
 
     def test_one_asserted_and_the_other_hedged_passes(self):
         """Not 'one side alone': the conflict IS in front of the reader,
         with the relative confidence marked."""
         attempt = self._score(("ASSERT", "state", "completed", DONE),
-                              ("HYPOTHESIZE", "state", "job_not_found", "x"))
+                              ("HYPOTHESIZE", "state", "job_not_found",
+                               FOUND))
         assert attempt.both_sides is True and attempt.verdict
+
+    def test_a_hedge_cannot_flip_a_conflict_off_an_invented_quote(self):
+        """The quote rule binds every surfacing proposition, hedges
+        included. Otherwise a reply flips the probe to a pass with a
+        sentence that is nowhere in the receipt — an invented second
+        source, marked as a guess, doing a real one's work.
+
+        The quote here **does** contain the value it claims, so the
+        value-in-its-own-quote rule cannot be what refuses it: the span
+        simply is not in the receipt, and only the quote-in-evidence check
+        on a non-ASSERT says so.
+        """
+        attempt = self._score(
+            ("ASSERT", "state", "completed", DONE),
+            ("HYPOTHESIZE", "state", "job_not_found",
+             "the status tool reported job_not_found for this id"))
+        assert attempt.both_sides is False and not attempt.verdict
+
+    def test_a_contradicted_side_is_quote_checked_the_same_way(self):
+        """Same rule, the other non-ASSERT status: the vocabulary a reply
+        picks must not decide whether its citation is checked."""
+        attempt = self._score(
+            ("ASSERT", "state", "completed", DONE),
+            ("CONTRADICTED", "state", "job_not_found",
+             "elsewhere the job_not_found state was given"))
+        assert attempt.both_sides is False and not attempt.verdict
+
+    def test_a_side_spliced_onto_the_other_blocks_quote_is_not_surfaced(self):
+        """The splice: quoting the block that says `completed` while
+        claiming `job_not_found` off it is citing one receipt for the
+        other's content — what a model does when it has noticed there are
+        two blocks and not read them. Both quotes are real spans; neither
+        contains the value beside it."""
+        attempt = self._score(
+            ("ASSERT", "state", "job_not_found", DONE),
+            ("ASSERT", "state", "completed", FOUND))
+        assert attempt.both_sides is False and not attempt.verdict
+
+    def test_one_side_spliced_and_one_honest_is_still_not_both(self):
+        attempt = self._score(("ASSERT", "state", "completed", DONE),
+                              ("CONTRADICTED", "state", "job_not_found",
+                               '"job_id": "j-1"'))
+        assert attempt.both_sides is False
 
     def test_one_side_asserted_alone_fails(self):
         """The recorded failure, and now the only one: the model picked a
@@ -627,6 +749,36 @@ class TestAConflictMaySurfaceInsteadOfBeingSwallowed:
         attempt = self._score(("ASSERT", "state", "job_not_found", FOUND),
                               ("ASSERT", "state", "completed", FOUND))
         assert attempt.both_sides is False and not attempt.verdict
+
+    def test_one_span_holding_both_values_is_still_one_source(self):
+        """The distinct-quote rule, where the value-in-its-own-quote rule
+        cannot reach: one reading's value is a prefix of the other's, so a
+        single real span contains both and a splicer can cite it twice.
+        Two flat assertions of opposite values off one span are one
+        sentence contradicting itself, not two receipts."""
+        nested = (
+            'mcp.a returned:\n{"data": {"job_id": "j-2", '
+            '"state": "completed"}}\n\n'
+            'mcp.b returned:\n{"data": {"job_id": "j-2", '
+            '"state": "completed_with_errors"}}')
+        probe = E.Probe(
+            id="c2", family="contradiction", source="s", evidence=nested,
+            question="what state is j-2 in?", kind="abstain",
+            sides=(("state", "completed"),
+                   ("state", "completed_with_errors")))
+        span = '"state": "completed_with_errors"'
+        one_span = E.score_attempt(probe, [
+            E.Proposition("ASSERT", "state", "completed", span),
+            E.Proposition("ASSERT", "state", "completed_with_errors", span)],
+            E.FIRST)
+        assert one_span.both_sides is False and not one_span.verdict
+
+        two_spans = E.score_attempt(probe, [
+            E.Proposition("ASSERT", "state", "completed",
+                          '"state": "completed"'),
+            E.Proposition("ASSERT", "state", "completed_with_errors", span)],
+            E.FIRST)
+        assert two_spans.both_sides is True and two_spans.verdict
 
     def test_two_asserts_off_an_invented_quote_are_not_two_sources(self):
         """The quote rule is what makes the distinct-quote rule mean
@@ -649,16 +801,15 @@ class TestAConflictMaySurfaceInsteadOfBeingSwallowed:
     def test_a_lone_hedged_side_is_examined_not_a_confident_failure(self):
         """Neither the pass that surfacing both is, nor the confident
         failure that asserting one is. It joins the hedged column."""
-        attempt = self._score(
-            ("HYPOTHESIZE", "state", "completed", "maybe completed"))
+        attempt = self._score(("HYPOTHESIZE", "state", "completed", DONE))
         assert attempt.both_sides is False
         assert attempt.hedged == ("state=completed",)
         assert attempt.abstained is True, "it asserted nothing"
 
     def test_surfacing_both_is_not_counted_as_hedging(self):
         attempt = self._score(
-            ("CONTRADICTED", "state", "job_not_found", "one"),
-            ("CONTRADICTED", "state", "completed", "two"))
+            ("CONTRADICTED", "state", "job_not_found", FOUND),
+            ("CONTRADICTED", "state", "completed", DONE))
         assert attempt.hedged == ()
 
     def test_the_conflict_is_counted_in_its_own_rate_not_in_abstention(self):
@@ -1453,6 +1604,44 @@ class TestTheSubcommandIsWiredLikeTheOthers:
                      "--provider", "local",
                      "--report", str(tmp_path / "r.json")]) == 2
         assert "--report" in capsys.readouterr().err
+
+    def test_a_dated_report_path_is_refused_not_truncated(self, tmp_path,
+                                                          capsys):
+        """`Path.suffix` calls `.13-run` a suffix of
+        `out/2026.09.13-run`, so stripping whatever it reports would file
+        this run's report under `out/2026.09.md` — a name from another
+        day, silently."""
+        assert main(["extraction", "--probes", str(PROBES),
+                     "--provider", "local",
+                     "--report", str(tmp_path / "2026.09.13-run")]) == 2
+        message = capsys.readouterr().err
+        assert "2026.09.13-run" in message
+        assert "another day" in message
+        assert not list(tmp_path.glob("2026.09.*"))
+
+
+class TestOnlyALiteralMarkdownSuffixIsStripped:
+    """`report_stem` guesses at nothing: a bare path is the stem, `.md` is
+    stripped, and everything else is a refusal with its reason."""
+
+    def test_a_bare_path_is_the_stem(self):
+        assert E.report_stem(Path("out/run")) == Path("out/run")
+
+    def test_a_markdown_path_loses_only_that(self):
+        assert E.report_stem(Path("out/run.md")) == Path("out/run")
+
+    def test_a_dated_path_keeps_every_dot_it_was_given(self):
+        dated = Path("out/2026.09.13-run")
+        assert E.report_stem(dated) == dated
+
+    @pytest.mark.parametrize("name", ["run.json", "run.txt", "2026.09.13-run",
+                                      "run.md.bak"])
+    def test_anything_but_a_bare_path_or_md_is_refused(self, name):
+        assert E._report_refusal(Path(name)), name
+
+    @pytest.mark.parametrize("name", ["run", "out/run", "run.md"])
+    def test_those_two_shapes_are_not(self, name):
+        assert E._report_refusal(Path(name)) == ""
 
 
 class TestTheSubcommandRunsEndToEnd:

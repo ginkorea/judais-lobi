@@ -798,7 +798,11 @@ python -m core.eval extraction \
 
 `--report` takes a **stem**: `out/extraction.md` and `out/extraction.json` are
 both written, so a `.json` argument is refused rather than silently naming
-both. The Markdown tables (or, with `--json`, the JSON) go to **stdout** and
+both. Only a literal `.md` is stripped and nothing else is guessed at — Python
+calls `.13-run` the suffix of `out/2026.09.13-run`, and stripping whatever it
+reported would have filed that run under `out/2026.09.md`, a name from another
+day — so any other dotted ending is refused with that reason.
+The Markdown tables (or, with `--json`, the JSON) go to **stdout** and
 the per-probe progress goes to **stderr**, so `--json | jq` works. `--max-
 seconds` bounds the whole run: a run cut short is refused, not reported as a
 low score.
@@ -891,10 +895,17 @@ reads — a misspelled `trap_field` is a rule that silently does not apply, and 
 probe with no trap reads as a model that never fell for one.
 
 A side is surfaced by a proposition of its own at any status that puts it on
-the record (`ASSERT`, `CONTRADICTED`, `HYPOTHESIZE`, `AMBIGUOUS`); where two of
-them are `ASSERT`s their quotes must differ, since two flat assertions of
-opposite values off one span are one self-contradicting sentence and not two
-receipts. A **lone hedged side** — one reading marked as uncertain and the
+the record (`ASSERT`, `CONTRADICTED`, `HYPOTHESIZE`, `AMBIGUOUS`) **whose quote
+is a real span of the receipt and contains the value it is claiming**; where
+two of them are `ASSERT`s their quotes must also differ, since two flat
+assertions of opposite values off one span are one self-contradicting sentence
+and not two receipts. Every clause closes a way of faking a conflict off one
+block: the quote check binds hedges too, or a reply flips the probe to a pass
+with an invented second source marked as a guess; and the value-in-its-own-
+quote check kills the splice — quoting the block that says `completed` while
+claiming `job_not_found` off it is citing one receipt for the other's content,
+which is what a model does when it has noticed there are two blocks and not
+read them. A **lone hedged side** — one reading marked as uncertain and the
 other never mentioned — is neither the pass that surfacing both is nor the
 confident failure that asserting one is: it is counted in `hedged`.
 
@@ -935,12 +946,12 @@ two reports are comparable only when those header fields match, and `--baseline
 | `repair` | the attempt needed the repair turn — **lower is better**, and it is printed apart rather than folded into `structural` |
 | `grounded` | an ASSERT whose value the receipt holds **under the field it names**. The field half is the half that matters: a real number under an invented key is the half a reader cannot check and will cite onward |
 | `gold_precision` | an ASSERT that is a fact the probe asked for |
-| `gold_recall` | a fact the probe asked for that was asserted |
+| `gold_recall` | a fact the probe asked for that was asserted **and grounded** — a right value read off a span that is not in the receipt is not a hit |
 | `abstention` | a probe where **silence is the only right answer**, answered with no assertion at all. Probes that declare a better alternative — a conflict to surface, a mask to transcribe — are counted in their own rows instead, since scoring them here would report the better answer as a miss |
 | `conflict_surfaced` | a conflict handled: no assertion at all, **or** both sides surfaced with their own sources. The one failure is asserting a single side as if nothing disagreed |
 | `trap` | a `trap` probe that did not **ASSERT** from the trap field |
 | `hedged` | an attempt that touched what its probe was watching — a trap field, a key declared absent, one side of a conflict — at `HYPOTHESIZE`/`AMBIGUOUS`. **Not a failure rate, and not folded into any verdict** — read it against `trap`: low `trap` with high `hedged` is a model that is wrong *carefully*; both low is one that is wrong *flatly*, and they are not the same risk to a deployment |
-| `probe` | the **attempt** answered correctly and completely — every gold fact, nothing else, the trap not asserted, a conflict not swallowed, a mask not replaced |
+| `probe` | the **attempt** answered correctly and completely — every gold fact asserted *and grounded*, nothing else asserted, the trap not asserted, a conflict not swallowed, a mask not replaced. **A correct answer with fabricated provenance is a failure** |
 | `probe_reliable` | the **probe** whose *every* attempt was right. **The headline under `--repeats`** |
 
 `grounded`'s denominator is every ASSERT of every kind of probe, so a corpus
@@ -955,14 +966,27 @@ are one `FAIL` apiece in the `verdict` column, and they are not the same result.
 
 Five rules the scoring is deliberate about:
 
-- **A quote must be a real span.** Every `ASSERT` is ungrounded unless its
-  `quote` occurs in the receipt (runs of whitespace collapsed on both sides, so
-  re-indenting a JSON fragment is still quoting it). A proposition carries the
-  span it was read off precisely so a reader can check it, and a well-formed
-  citation to nothing is the shape a fabrication takes once the field and the
-  value happen to be right. It is also what makes the conflict rule mean
-  anything: two assertions of opposite values are two *sources* only if each
-  one's quote came out of the receipt.
+- **A quote must be a real span, and the headline is bound to it.** Every
+  `ASSERT` is ungrounded unless its `quote` occurs in the receipt (runs of
+  whitespace collapsed on both sides, so re-indenting a JSON fragment is still
+  quoting it) — and an ungrounded proposition **cannot score a gold fact**, so
+  a right value with an invented citation fails the probe rather than passing
+  with a footnote. A correct answer with fabricated provenance is a failure;
+  this instrument's confidence philosophy — mark a guess, surface both sides,
+  transcribe a mask — is worth nothing if the citation under it can be made up.
+  It is also what makes the conflict rule mean anything: two assertions of
+  opposite values are two *sources* only if each one's quote came out of the
+  receipt, **contains the value it is claiming**, and differs from the other's.
+  Outside a conflict an ASSERT need not quote its own value — requiring it
+  everywhere would fail a correct answer that cited the record it read rather
+  than the exact key, and the splice it catches is only possible where two
+  blocks disagree.
+- **Separators are stripped from figures, not from words.** `12,481` and
+  `12481` are one number; `job_not_found`, `jobnotfound` and `job not found`
+  are three different values, and a comparison that could not tell them apart
+  would ground a fabricated status word against a real one. The test is the
+  strip itself: strip, and keep the stripping only if what is left parses as a
+  decimal.
 - **The same claim twice is one claim.** Identical `(field, value)` ASSERTs are
   collapsed before anything is counted.
 - **An unreadable reply did not abstain.** `invalid` fails abstention and trap

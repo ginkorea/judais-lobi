@@ -118,8 +118,8 @@ from typing import (Any, Callable, Dict, List, Mapping, Optional, Sequence,
                     Tuple)
 
 from core.durable import atomic_write_text
-from core.runtime.grounding import (harvest_fields, json_blocks, plain_figure,
-                                    same_value)
+from core.runtime.grounding import (as_decimal, harvest_fields, json_blocks,
+                                    plain_figure, same_value)
 
 __all__ = [
     "ASSERT", "CONTRADICTED", "HEDGING", "STATUSES", "KINDS", "FAMILIES",
@@ -129,7 +129,7 @@ __all__ = [
     "PROMPT", "REPAIR", "prompt_for", "repair_for", "prompt_fingerprint",
     "load_probes", "parse_propositions", "grounds", "both_sides_surfaced",
     "score_attempt", "rates_of", "wilson", "run_probes", "asker", "header",
-    "add_parser", "from_args",
+    "report_stem", "add_parser", "from_args",
 ]
 
 
@@ -270,13 +270,26 @@ def _squashed(text: Any) -> str:
 def _text_key(value: Any) -> str:
     """A scalar as one comparable string.
 
-    :func:`core.runtime.grounding.plain_figure` first, so ``12,481`` and
-    ``12481`` are one number and a measurement of fabrication is not
-    reporting a thousands separator, then case-folded, because a status
-    word re-cased is the same fact and a number that counted ``Pass``
-    against ``pass`` would be measuring capitalisation.
+    Case-folded always, because a status word re-cased is the same fact and
+    a measurement that counted ``Pass`` against ``pass`` would be measuring
+    capitalisation.
+
+    :func:`core.runtime.grounding.plain_figure`'s separators are stripped
+    **only from something that is then a number**.  ``12,481`` and ``12481``
+    are one figure and a measurement of fabrication must not report a
+    thousands separator — but the same stripping applied to words makes
+    ``job_not_found``, ``jobnotfound`` and ``job not found`` one string,
+    and they are three different values.  One of them is the receipt's;
+    the other two are not, and a comparison that could not tell them apart
+    would ground a fabricated status word against a real one.  The test is
+    the strip, not the guess: strip, ask whether what is left parses as a
+    decimal, and keep the stripping only if it does.
     """
-    return plain_figure(value).strip().casefold()
+    text = str(value).strip()
+    stripped = plain_figure(text)
+    if stripped and as_decimal(stripped) is not None:
+        return stripped.casefold()
+    return text.casefold()
 
 
 @dataclass(frozen=True)
@@ -768,12 +781,28 @@ def both_sides_surfaced(probe: Probe, propositions: Sequence[Proposition],
 
     **The rule, in one sentence.**  A side is surfaced by a proposition of
     its own, at any status that puts it on the record — :data:`ASSERT`,
-    :data:`CONTRADICTED` or either of :data:`HEDGING` — naming its field and
-    its value; both sides surfaced is a pass; and where two of those
-    propositions are ASSERTs their quotes must differ **and each must be a
-    real span of the receipt** (:func:`grounds` holds every ASSERT to the
-    second half), because two flat assertions of opposite values off one
-    span are not two sources, they are one sentence contradicting itself.
+    :data:`CONTRADICTED` or either of :data:`HEDGING` — naming that side's
+    field and value, **quoting a real span of the receipt, and quoting a
+    span that contains the value it is claiming**; both sides surfaced is a
+    pass; and where two of those propositions are ASSERTs their quotes must
+    also differ.
+
+    Every clause of that is load-bearing, and each closes a way of faking
+    a conflict off one block:
+
+    * **the quote is checked for every surfacing proposition, hedges
+      included**, not only for the ASSERTs.  Without it a reply could flip
+      a probe to a pass with a ``HYPOTHESIZE`` carrying a sentence that is
+      nowhere in the receipt — an invented second source, marked as a
+      guess, doing the work of a real one;
+    * **the value has to be inside its own quote.**  This is the one that
+      kills splicing: quoting the block that says ``completed`` while
+      claiming ``job_not_found`` off it is citing one receipt for the
+      other's content, and it is exactly what a model does when it has
+      noticed there are two blocks and not read them;
+    * **two ASSERTs need different spans**, because two flat assertions of
+      opposite values off one span are not two sources, they are one
+      sentence contradicting itself.
 
     Deliberately wider than only-``CONTRADICTED``-or-two-``ASSERT``s, and
     the reason is the spectrum rule in the module docstring: a reply that
@@ -788,7 +817,8 @@ def both_sides_surfaced(probe: Probe, propositions: Sequence[Proposition],
     marked = [p for p in propositions if p.status != INSUFFICIENT]
     per_side: List[List[Proposition]] = [
         [p for p in marked
-         if p.field.strip() == name and _text_key(p.value) == _text_key(value)]
+         if p.field.strip() == name and _text_key(p.value) == _text_key(value)
+         and evidence.quotes(p.quote) and _quotes_its_value(p)]
         for name, value in probe.sides]
     if not all(per_side):
         return False
@@ -800,14 +830,28 @@ def both_sides_surfaced(probe: Probe, propositions: Sequence[Proposition],
         if len({id(p) for p in combination}) != len(combination):
             continue                       # one proposition serving two sides
         claimed = [p for p in combination if p.status == ASSERT]
-        if any(not evidence.quotes(p.quote) for p in claimed):
-            continue                       # a citation to nothing is no source
         if len(claimed) < 2:
             return True
         quotes = [_squashed(p.quote) for p in claimed]
         if len(set(quotes)) == len(quotes):
             return True
     return False
+
+
+def _quotes_its_value(proposition: Proposition) -> bool:
+    """Whether the span a proposition cites actually contains its value.
+
+    A citation points at the thing it is citing.  Both spellings of the
+    value are tried against the span — the plain one and the
+    separator-stripped one — so a payload that writes ``12,481`` and a
+    proposition that writes ``12481`` are still one figure in one quote,
+    which is :func:`_text_key`'s rule read the other way round.
+    """
+    quote = _text_key(proposition.quote)
+    value = _text_key(proposition.value)
+    if not value:
+        return False
+    return value in quote or value in plain_figure(quote).casefold()
 
 
 # ── scoring ──────────────────────────────────────────────────────────────────
@@ -875,6 +919,14 @@ class Attempt:
         ``abstain`` probe wants no assertion — *or*, where the probe
         declared one, the better alternative it declared: both sides of a
         conflict surfaced, or a mask transcribed faithfully.
+
+        **A gold fact only counts from a grounded proposition.**  The
+        headline is bound to the citation, so a right value read off a
+        span that is not in the receipt, or attributed to a key that does
+        not hold it, is a FAIL and not a pass with a footnote.  A correct
+        answer with fabricated provenance is a failure — and a gatekeeper
+        that scored it otherwise would be certifying a model whose numbers
+        happen to be right, which is not the property Phase 17 needs.
 
         Two things are deliberately **outside** this verdict, because a
         headline that absorbed them would hide them: :attr:`hedged`, which
@@ -945,11 +997,20 @@ def score_attempt(probe: Probe, propositions: Sequence[Proposition],
             continue
         seen_claims.add(proposition.claim)
         asserted.append(proposition)
-    grounded = sum(1 for p in asserted if grounds(p, evidence))
+    supported = [p for p in asserted if grounds(p, evidence)]
+    grounded = len(supported)
 
+    # A gold fact counts only from a proposition the receipt SUPPORTS. The
+    # repository's rule, applied to the headline: a correct answer with
+    # fabricated provenance is a failure, not a partial success — and this
+    # instrument's whole confidence philosophy (mark a guess, surface both
+    # sides, transcribe a mask) is worth nothing if the citation under it
+    # can be invented. Reading a right value off a span that is not in the
+    # receipt is the one way to be accidentally correct, and accidentally
+    # correct is what a store cannot survive.
     gold_hits = 0
     for name, value in probe.gold:
-        if any(p.claim == (name, _text_key(value)) for p in asserted):
+        if any(p.claim == (name, _text_key(value)) for p in supported):
             gold_hits += 1
     wanted = {(name, _text_key(value)) for name, value in probe.gold}
     off_gold = sum(1 for p in asserted if p.claim not in wanted)
@@ -1101,7 +1162,9 @@ CATEGORIES: Tuple[Tuple[str, str], ...] = (
     ("gold_precision", "ASSERTs that are a fact the probe asked for "
                        "(assert and trap probes; an abstain probe asks for "
                        "no fact, so its assertions are counted elsewhere)"),
-    ("gold_recall", "facts the probe asked for that were asserted"),
+    ("gold_recall", "facts the probe asked for that were asserted AND "
+                    "grounded — a right value off an invented span is not "
+                    "a hit"),
     ("abstention", "probes where SILENCE is the only right answer, answered "
                    "with no assertion at all. Probes that declare a better "
                    "alternative — a conflict to surface, a mask to "
@@ -1114,7 +1177,10 @@ CATEGORIES: Tuple[Tuple[str, str], ...] = (
                "trap field, a key declared absent, one side of a conflict — "
                "at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported "
                "beside `trap` and NOT folded into any verdict"),
-    ("probe", "ATTEMPTS answered correctly and completely"),
+    ("probe", "ATTEMPTS answered correctly and completely — every gold "
+              "fact asserted AND grounded, nothing else asserted, the trap "
+              "not taken, a conflict not swallowed, a mask not replaced. A "
+              "correct answer with fabricated provenance is a failure"),
     ("probe_reliable", "PROBES whose every attempt was right. The headline "
                        "under --repeats: a gatekeeper is a question about "
                        "reliability, and no majority voting"),
@@ -1740,9 +1806,10 @@ def add_parser(subs) -> argparse.ArgumentParser:
                         metavar="S",
                         help="wall-clock bound on the WHOLE run; a run cut "
                              "short is refused rather than reported")
-    parser.add_argument("--report", type=Path, metavar="PATH",
-                        help="write <stem>.md and <stem>.json here; a .json "
-                             "path is refused, since both would be it")
+    parser.add_argument("--report", type=Path, metavar="STEM",
+                        help="write <stem>.md and <stem>.json here; only a "
+                             "literal .md is stripped, and any other dotted "
+                             "ending is refused rather than guessed at")
     parser.add_argument("--baseline", type=Path, metavar="PATH",
                         help="an earlier report.json; its rates are printed "
                              "beside these as paired deltas")
@@ -1767,6 +1834,35 @@ ALL_INVALID = (
 )
 
 
+def report_stem(path: Path) -> Path:
+    """Where the two renderings go, from what the caller wrote.
+
+    **Only a literal ``.md`` is stripped**, and nothing else is guessed at.
+    ``Path.suffix`` calls ``.13-run`` a suffix of ``out/2026.09.13-run``,
+    so a stem taken by stripping whatever ``suffix`` reports would have
+    written that run's report to ``out/2026.09.md`` and ``out/2026.09.json``
+    — silently, under a name from another day. Anything that is not a bare
+    path or a ``.md`` one is refused instead: see :func:`_report_refusal`.
+    """
+    return path.with_suffix("") if path.suffix == ".md" else path
+
+
+def _report_refusal(path: Path) -> str:
+    """Why this ``--report`` path cannot be used, or ``""``."""
+    if path.suffix in ("", ".md"):
+        return ""
+    if path.suffix == ".json":
+        return ("--report takes the path WITHOUT a suffix, or with `.md`: "
+                "both a Markdown and a JSON rendering are written beside "
+                "each other, and a `.json` argument would name them both")
+    return (f"--report takes the path WITHOUT a suffix, or with `.md`, and "
+            f"{str(path)!r} ends in {path.suffix!r}. Only a literal `.md` is "
+            f"stripped, because a path like `out/2026.09.13-run` has "
+            f"`.13-run` for a suffix and stripping it would write this run's "
+            f"report under `out/2026.09.md` — a name from another day. Write "
+            f"it as `{path}` with no dot in the last segment, or add `.md`")
+
+
 def from_args(args: argparse.Namespace) -> int:
     """``extraction`` as :func:`core.eval.run.main` reaches it."""
     if int(args.repeats) < 1:
@@ -1777,12 +1873,11 @@ def from_args(args: argparse.Namespace) -> int:
         print(f"--max-seconds wants a positive budget, got "
               f"{args.max_seconds}", file=sys.stderr)
         return 2
-    if args.report is not None and args.report.suffix == ".json":
-        print("--report takes the path WITHOUT a suffix, or with `.md`: "
-              "both a Markdown and a JSON rendering are written beside each "
-              "other, and a `.json` argument would name them both",
-              file=sys.stderr)
-        return 2
+    if args.report is not None:
+        refusal = _report_refusal(args.report)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 2
 
     try:
         probes = load_probes(args.probes)
@@ -1841,7 +1936,7 @@ def from_args(args: argparse.Namespace) -> int:
     print(report.to_json(baseline=baseline) if args.json
           else report.to_markdown(baseline))
     if args.report is not None:
-        stem = args.report.with_suffix("")
+        stem = report_stem(args.report)
         stem.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(stem.with_suffix(".md"),
                           report.to_markdown(baseline))
