@@ -818,6 +818,30 @@ constrained decoding**, because both are the lift §2.9.3 names as the thing to
 try next, and a baseline that already had them would have nothing to be
 measured against.
 
+### The design rule: measure the spectrum, don't collapse it
+
+Standing, and it shapes every column below. There are five things an extractor
+can do with a fact — **confidently right**, **hedged right**, **hedged wrong**,
+**confidently wrong**, **silent** — and this instrument reports each as itself.
+A pass/fail is taken only where one column genuinely needs one, and never
+further. Two consequences, both of them corrections to a first draft that got
+them wrong:
+
+- **Mark confidence, don't punish it.** A model that says `HYPOTHESIZE` over a
+  wrong field has done something different from one that `ASSERT`s it: both are
+  wrong about the world, only one of them is wrong in a way a downstream store
+  will act on. So `hedged_trap` sits *beside* `trap` in its own column, with
+  its own interval, and is **not** folded into the headline `probe` rate. An
+  instrument that charged for hedging would teach the model to stop hedging.
+- **Silence is not the only right answer to a conflict.** Where two receipts
+  disagree, surfacing **both** readings with their own sources serves the
+  reader better than saying nothing, and far better than quietly picking a
+  winner. Both pass; only the quiet winner fails.
+
+The reason is measurement and not generosity: a gate is a deployment's dial,
+and a harness that returns *no result* too often returns no finding either. A
+non-perfect answer beats a perfect nothing.
+
 ### The probe corpus
 
 A probe is `{id, family, source, evidence, question, expect}` in JSONL, and
@@ -837,8 +861,19 @@ for every unit trap"* does):
 | kind | families | a correct extractor |
 |---|---|---|
 | `assert` | `present` | ASSERTs every gold fact, with the receipt's own field name and value, and nothing else |
-| `abstain` | `absent`, `contradiction`, `masked`, `cause_absent`, `partial_coverage` | makes **no** assertion — `INSUFFICIENT_EVIDENCE`, or `CONTRADICTED` where two receipts disagree |
-| `trap` | `unit_semantics`, `optional_filter` | ASSERTs the gold facts and leaves the trap field alone |
+| `abstain` | `absent`, `masked`, `cause_absent`, `partial_coverage` | makes **no** assertion — `INSUFFICIENT_EVIDENCE` |
+| `abstain` + `sides` | `contradiction` | makes no assertion, **or** surfaces both conflicting readings, each tied to its own source |
+| `trap` | `unit_semantics`, `optional_filter` | ASSERTs the gold facts and does not **ASSERT** the trap field; hedging over it is recorded in `hedged_trap`, not charged |
+
+A `contradiction` probe carries `expect.sides` — the two or more conflicting
+`(field, value)` pairs — and the loader refuses one that does not, because
+"both sides surfaced" cannot be checked against sides nobody wrote down. The
+scorer branches on *this probe declared sides*, never on the family's name. A
+side is surfaced by a proposition of its own at any status that puts it on the
+record (`ASSERT`, `CONTRADICTED`, `HYPOTHESIZE`, `AMBIGUOUS`); where two of
+them are `ASSERT`s their quotes must differ, since two flat assertions of
+opposite values off one span are one self-contradicting sentence and not two
+receipts.
 
 The two trap families are the classes the 1.0.0 final gate measured, not
 invented ones. **`unit_semantics`**: a field whose *name* reads like the
@@ -871,16 +906,26 @@ two reports are comparable only when those header fields match, and `--baseline
 | `grounded` | an ASSERT whose value the receipt holds **under the field it names**. The field half is the half that matters: a real number under an invented key is the half a reader cannot check and will cite onward |
 | `gold_precision` | an ASSERT that is a fact the probe asked for |
 | `gold_recall` | a fact the probe asked for that was asserted |
-| `abstention` | an `abstain` probe answered with no assertion at all |
-| `trap` | a `trap` probe answered without asserting from the trap field |
-| `probe` | the probe answered correctly and completely — strict: every gold fact, nothing else, trap untouched |
+| `abstention` | a **silent** probe answered with no assertion at all. `contradiction` probes are counted in the next row instead — silence is not their only right answer, so scoring them here would report the better answer as a miss |
+| `contradiction` | a conflict handled: no assertion at all, **or** both sides surfaced with their own sources. The one failure is asserting a single side as if nothing disagreed |
+| `trap` | a `trap` probe that did not **ASSERT** from the trap field |
+| `hedged_trap` | a `trap` probe that touched the trap field at `HYPOTHESIZE`/`AMBIGUOUS`. **Not a failure rate, and not folded into `probe`** — read it against `trap`: low `trap` with high `hedged_trap` is a model that is wrong *carefully*; both low is one that is wrong *flatly*, and they are not the same risk to a deployment |
+| `probe` | the probe answered correctly and completely — every gold fact, nothing else, the trap not asserted, a conflict not swallowed |
 
-Two rules the scoring is deliberate about:
+The per-probe table adds a `stance` column — `asserted` / `hedged` /
+`both sides` / `silent` / `unreadable` — which is the spectrum the rates are
+told not to collapse: hedged-wrong and confidently-wrong are one `FAIL` apiece
+in the `verdict` column, and they are not the same result.
+
+Three rules the scoring is deliberate about:
 
 - **An unreadable reply did not abstain.** `invalid` fails abstention and trap
   resistance both, because what is being measured is whether a store can be fed
   from this model, and a store cannot be fed prose. Without that rule a model
   that answers in prose comes out the safest of all.
+- **A hedge is not an ASSERT anywhere.** It costs no `gold_precision`, it does
+  not move `trap`, and it does not take a probe's verdict. It is recorded in
+  `hedged_trap` and in `stance`, and nowhere else.
 - **The intervals on `grounded`, `gold_precision` and `gold_recall` are a
   guide to width, not a test.** Propositions inside one probe are not
   independent of each other. The per-probe rows are the ones to argue from,
@@ -891,4 +936,4 @@ The evidence walk is not this module's own: `core.runtime.grounding`'s
 receipt under this key*, so a proposition this measurement calls grounded is
 one the grounding check would call grounded too. Tests:
 `tests/test_eval_extraction.py`, including the corpus lint that holds every
-gold fact to being in its own evidence.
+gold fact — and every declared side — to being in its own evidence.

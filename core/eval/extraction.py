@@ -48,6 +48,35 @@ prompt is part of the interpreter: changing it changes the number, and a
 report that did not say which prompt ran could be compared with one that
 ran a different one.
 
+**The instrument measures a spectrum and never collapses it.**  The standing
+design rule for this module, and the one that shapes every column below:
+there are five things an extractor can do with a fact — be **confidently
+right**, **hedged right**, **hedged wrong**, **confidently wrong**, or
+**silent** — and each is reported as itself.  A pass/fail is taken only where
+one column genuinely needs one, and never further.
+
+Two consequences, both of them corrections to an earlier and worse version of
+this file:
+
+* **Marking confidence is not the same as being wrong, and is not scored as
+  if it were.**  A model that says ``HYPOTHESIZE`` over a trap field has done
+  something different from one that ``ASSERT``s it: the first published its
+  uncertainty and the second published a fact.  Both are wrong about the
+  world; only one of them is wrong in a way a downstream store will act on.
+  So :data:`CATEGORIES` carries ``hedged_trap`` beside ``trap``, in its own
+  column with its own interval, and it is deliberately **not** folded into
+  the headline ``probe`` rate.  *Mark confidence, don't punish it.*
+* **Silence is not the only right answer to a conflict.**  Where two receipts
+  disagree, an extractor that surfaces **both** sides, each tied to its own
+  source, has served the reader better than one that says nothing — and much
+  better than one that quietly picks a winner, which is the real failure.
+  See :func:`both_sides_surfaced`.
+
+The reason is not generosity, it is measurement.  A gate is a deployment's
+dial; an instrument that scored only silence as safe would teach silence, and
+a harness that returns *no result* too often returns no finding either.  A
+non-perfect answer beats a perfect nothing.
+
 **What is deliberately not here.**  No few-shot examples and no constrained
 decoding.  §2.9.3 names both as the lift to try *if the number is bad*, and
 §2.9.5 makes the grammar compiler a phase of its own — so the baseline has
@@ -64,6 +93,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -78,14 +108,14 @@ from core.durable import atomic_write_text
 from core.runtime.grounding import harvest_fields, json_blocks, same_value
 
 __all__ = [
-    "ASSERT", "STATUSES", "KINDS", "FAMILIES", "CATEGORIES",
-    "FIRST", "REPAIRED", "INVALID",
+    "ASSERT", "CONTRADICTED", "HEDGING", "STATUSES", "KINDS", "FAMILIES",
+    "CATEGORIES", "FIRST", "REPAIRED", "INVALID",
     "Probe", "ProbeMisdeclared", "Proposition", "Attempt", "Rate",
     "ExtractionReport", "Unextractable",
     "PROMPT", "REPAIR", "prompt_for", "repair_for", "prompt_fingerprint",
     "load_probes", "parse_propositions", "fields_of", "grounds",
-    "score_attempt", "rates_of", "wilson", "run_probes", "asker", "header",
-    "add_parser", "from_args",
+    "both_sides_surfaced", "score_attempt", "rates_of", "wilson",
+    "run_probes", "asker", "header", "add_parser", "from_args",
 ]
 
 
@@ -96,13 +126,23 @@ __all__ = [
 #: whole measurement: a store may take an ``ASSERT`` and derive from it.
 ASSERT = "ASSERT"
 
+#: The status for *this receipt disagrees with that one*.  Named because two
+#: things read it: the contradiction rule in :func:`both_sides_surfaced`, and
+#: the prompt, which asks for a proposition per side rather than a winner.
+CONTRADICTED = "CONTRADICTED"
+
+#: The two ways to put a fact on the record **with its uncertainty marked**.
+#: Everything in this module that distinguishes hedged wrongness from
+#: confident wrongness reads this tuple, so the distinction has one owner —
+#: see ``hedged_trap`` in :data:`CATEGORIES`.
+HEDGING: Tuple[str, ...] = ("HYPOTHESIZE", "AMBIGUOUS")
+
 #: The status vocabulary ROADMAP §2.9.3 names, in the order the prompt
 #: offers them.  A reply using a word that is not here is a **structural**
 #: failure and not a wrong answer: a downstream store would not know what
 #: to do with it, which is a different defect from knowing and being wrong.
 STATUSES: Tuple[str, ...] = (
-    ASSERT, "HYPOTHESIZE", "AMBIGUOUS", "CONTRADICTED",
-    "INSUFFICIENT_EVIDENCE",
+    ASSERT, *HEDGING, CONTRADICTED, "INSUFFICIENT_EVIDENCE",
 )
 
 #: The three things a probe can expect.  ``assert`` — the facts are in the
@@ -128,10 +168,11 @@ FAMILIES: Mapping[str, Tuple[str, str]] = {
         "abstention case, and the floor for every other one"),
     "contradiction": (
         "abstain",
-        "two receipts about one subject disagree; a single ASSERT of "
-        "either one is the failure, measured live on a deployment "
-        "6 Sep 2026 (one status tool says the id is unknown, another says "
-        "it completed)"),
+        "two receipts about one subject disagree; asserting ONE side alone, "
+        "as if uncontested, is the failure — surfacing both, each tied to "
+        "its own source, passes and is the better answer. Measured live on "
+        "a deployment 6 Sep 2026 (one status tool says the id is unknown, "
+        "another says it completed)"),
     "masked": (
         "abstain",
         "the record exists and its material is withheld by handling; the "
@@ -205,6 +246,12 @@ class Probe:
     #: makes "the fact is not in here" mechanically checkable rather than
     #: an author's assurance.
     absent_fields: Tuple[str, ...] = ()
+    #: The **conflicting** ``(field, value)`` pairs, two or more, where this
+    #: probe's receipts disagree.  Declared by the probe rather than inferred
+    #: from the family, so the scorer branches on *this probe has sides* and
+    #: never on a family's name: see :func:`both_sides_surfaced`, which is
+    #: reached exactly when this is non-empty.
+    sides: Tuple[Tuple[str, Any], ...] = ()
 
     @property
     def gold_fields(self) -> Tuple[str, ...]:
@@ -271,6 +318,9 @@ def _probe_from(raw: Mapping[str, Any], where: str) -> Probe:
                  if isinstance(item, Mapping))
     trap_fields = tuple(str(name) for name in (expect.get("trap_fields") or ()))
     absent = tuple(str(name) for name in (expect.get("absent_fields") or ()))
+    sides = tuple((str(item.get("field") or ""), item.get("value"))
+                  for item in (expect.get("sides") or ())
+                  if isinstance(item, Mapping))
 
     if kind == "abstain" and gold:
         raise ProbeMisdeclared(
@@ -291,6 +341,19 @@ def _probe_from(raw: Mapping[str, Any], where: str) -> Probe:
             f"{where}: {overlap} is both gold and a trap, so asserting it "
             f"would be scored right and wrong at once")
 
+    if family == "contradiction" and len(sides) < 2:
+        raise ProbeMisdeclared(
+            f"{where}: a contradiction probe declares the conflicting "
+            f"`sides` — at least two — because surfacing BOTH of them is a "
+            f"pass and nothing can check that against sides nobody wrote")
+    if sides and family != "contradiction":
+        raise ProbeMisdeclared(
+            f"{where}: only a contradiction probe carries sides")
+    if len({(name, str(value)) for name, value in sides}) != len(sides):
+        raise ProbeMisdeclared(
+            f"{where}: two sides of this contradiction are the same "
+            f"(field, value) pair, so they do not conflict")
+
     evidence = str(raw.get("evidence") or "")
     question = str(raw.get("question") or "").strip()
     if not evidence.strip() or not question:
@@ -299,7 +362,7 @@ def _probe_from(raw: Mapping[str, Any], where: str) -> Probe:
     return Probe(id=identifier, family=family,
                  source=str(raw.get("source") or ""), evidence=evidence,
                  question=question, kind=kind, gold=gold,
-                 trap_fields=trap_fields, absent_fields=absent)
+                 trap_fields=trap_fields, absent_fields=absent, sides=sides)
 
 
 # ── the ask ──────────────────────────────────────────────────────────────────
@@ -335,10 +398,15 @@ The rules:
   is not the fact: a key whose NAME resembles the question, or one that
   measures something else, is not an answer to it.
 * If two parts of the receipt say different things about the same subject,
-  say CONTRADICTED and give a proposition for each.
+  give a proposition for EACH of them, with each one's own quote, and do
+  not pick a winner. CONTRADICTED is the status for saying so.
 * If the receipt says a value is masked, withheld or restricted, or that
   its own coverage was partial, do not assert what it withheld and do not
   read an empty result as an absence.
+* Where the receipt points at something without establishing it, say so
+  with HYPOTHESIZE or AMBIGUOUS rather than saying nothing. A guess that is
+  marked as a guess is useful; the same guess unmarked is not, and silence
+  is not safer than either.
 * Derive nothing. Do not add, divide, convert units, rank or summarise.
 """
 
@@ -526,6 +594,59 @@ def grounds(proposition: Proposition, keys: set,
     return False
 
 
+def both_sides_surfaced(probe: Probe,
+                        propositions: Sequence[Proposition]) -> bool:
+    """Whether the reply put **both** sides of a conflict on the record.
+
+    The second right answer to a contradiction, and the better one.  Silence
+    is safe and says nothing; surfacing both readings, each tied to its own
+    source, hands the reader the conflict and lets them act on it.  What is
+    wrong — the failure this family exists to count — is asserting ONE side
+    alone as though it were uncontested, because that is the model quietly
+    choosing a winner and the reader never learning there was a race.
+
+    **The rule, in one sentence.**  A side is surfaced by a proposition of
+    its own, at any status that puts it on the record — :data:`ASSERT`,
+    :data:`CONTRADICTED` or either of :data:`HEDGING` — naming its field and
+    its value; both sides surfaced is a pass; and where two of those
+    propositions are ASSERTs their quotes must differ, because two flat
+    assertions of opposite values off one span are not two sources, they are
+    one sentence contradicting itself.
+
+    Deliberately wider than only-``CONTRADICTED``-or-two-``ASSERT``s, and
+    the reason is the spectrum rule in the module docstring: a reply that
+    asserts one reading and *hedges* the other has put the conflict in front
+    of the reader with its relative confidence marked, which is more than
+    silence and is not the failure.  The failure is narrow and is exactly
+    the recorded one — **one side named, the other never mentioned**, which
+    is the model choosing a winner where the receipts did not.
+    """
+    if not probe.sides:
+        return False
+    marked = [p for p in propositions
+              if p.status != "INSUFFICIENT_EVIDENCE"]
+    per_side: List[List[Proposition]] = [
+        [p for p in marked
+         if p.field.strip() == name and _same_text(p.value, value)]
+        for name, value in probe.sides]
+    if not all(per_side):
+        return False
+    # A bound, not a preference: `sides` is two in every probe written so
+    # far and the loader allows a few, but the product below is exponential
+    # in them and a reply may repeat a side many times.
+    per_side = [candidates[:8] for candidates in per_side]
+    for combination in itertools.product(*per_side):
+        if len({id(p) for p in combination}) != len(combination):
+            continue                       # one proposition serving two sides
+        claimed = [p for p in combination if p.status == ASSERT]
+        if len(claimed) < 2:
+            return True
+        quotes = [p.quote.strip() for p in claimed]
+        if len(set(quotes)) == len(quotes):
+            return True
+    return False
+
+
 # ── scoring ──────────────────────────────────────────────────────────────────
 
 #: What the three structural outcomes are called, in the order they are
@@ -559,26 +680,46 @@ class Attempt:
     #: ``None`` where the probe does not ask the question.
     abstained: Optional[bool] = None
     trap_clean: Optional[bool] = None
-    #: The trap fields this attempt asserted from, for the table.
+    #: The trap fields this attempt **asserted** from, for the table.
     sprung: Tuple[str, ...] = ()
+    #: The trap fields it touched at :data:`HEDGING` instead.  Reported and
+    #: never folded into :attr:`trap_clean` or :attr:`verdict`: a marked
+    #: guess over a trap field and a flat assertion of it are different
+    #: failures, and a deployment may tolerate one and not the other.
+    hedged: Tuple[str, ...] = ()
+    #: ``None`` unless the probe declared conflicting :attr:`Probe.sides`.
+    both_sides: Optional[bool] = None
 
     @property
     def parsed(self) -> bool:
         return self.structural != INVALID
 
     @property
+    def hedged_trap(self) -> Optional[bool]:
+        """Whether a trap field was touched with its uncertainty marked."""
+        return None if self.kind != "trap" else bool(self.hedged)
+
+    @property
     def verdict(self) -> bool:
         """Whether this attempt answered its probe correctly, all of it.
 
-        Per kind, and strictly: an ``assert`` probe wants every gold fact
-        and nothing else; an ``abstain`` probe wants no assertion at all; a
-        ``trap`` probe wants the gold facts with the trap left alone.  An
+        Per kind, and strictly where strictness is the finding: an
+        ``assert`` probe wants every gold fact and nothing else; a ``trap``
+        probe wants the gold facts with the trap not **asserted**; an
+        ``abstain`` probe wants no assertion — *or*, where it declared
+        conflicting sides, both of them surfaced, which is the better
+        answer and not a lesser one.
+
+        Two things are deliberately **outside** this verdict, because a
+        headline that absorbed them would hide them:
+        :attr:`hedged_trap`, which is marked uncertainty and not a wrong
+        claim, and the repair count, which is a cost and not a failure.  An
         unreadable reply is never correct — see :func:`score_attempt`.
         """
         if not self.parsed:
             return False
         if self.kind == "abstain":
-            return bool(self.abstained)
+            return bool(self.abstained) or bool(self.both_sides)
         complete = self.gold_hits == self.gold_total and not self.off_gold
         if self.kind == "trap":
             return bool(self.trap_clean) and complete
@@ -595,6 +736,8 @@ class Attempt:
             "gold_hits": self.gold_hits, "gold_total": self.gold_total,
             "off_gold": self.off_gold, "abstained": self.abstained,
             "trap_clean": self.trap_clean, "sprung": list(self.sprung),
+            "hedged": list(self.hedged), "hedged_trap": self.hedged_trap,
+            "both_sides": self.both_sides,
             "verdict": self.verdict,
         }
 
@@ -611,6 +754,14 @@ def score_attempt(probe: Probe, propositions: Sequence[Proposition],
     would then look safest of all.  What is being measured is whether a
     *store* can be fed from this model, and a store cannot be fed prose, so
     :data:`INVALID` fails both.
+
+    **A hedge over a trap is recorded, not charged.**  :attr:`Attempt.sprung`
+    counts trap fields the reply ASSERTed; :attr:`Attempt.hedged` counts the
+    ones it touched at :data:`HEDGING`, and they are two different lists on
+    purpose.  Only the first moves ``trap_clean``.  A model that marks its
+    uncertainty and one that states a wrong fact flatly are not the same
+    model, and an instrument that scored them alike would be teaching the
+    first to stop marking.
     """
     keys, scalars = fields_of(probe.evidence)
     asserted = [p for p in propositions if p.status == ASSERT]
@@ -627,14 +778,22 @@ def score_attempt(probe: Probe, propositions: Sequence[Proposition],
                               for name, value in probe.gold))
 
     abstained: Optional[bool] = None
+    both_sides: Optional[bool] = None
     if probe.kind == "abstain":
         abstained = structural != INVALID and not asserted
+    if probe.sides:
+        both_sides = (structural != INVALID
+                      and both_sides_surfaced(probe, propositions))
     trap_clean: Optional[bool] = None
     sprung: Tuple[str, ...] = ()
+    hedged: Tuple[str, ...] = ()
     if probe.kind == "trap":
         sprung = tuple(dict.fromkeys(
             p.field.strip() for p in asserted
             if p.field.strip() in probe.trap_fields))
+        hedged = tuple(dict.fromkeys(
+            p.field.strip() for p in propositions
+            if p.status in HEDGING and p.field.strip() in probe.trap_fields))
         trap_clean = structural != INVALID and not sprung
 
     return Attempt(
@@ -643,7 +802,8 @@ def score_attempt(probe: Probe, propositions: Sequence[Proposition],
         propositions=tuple(propositions), replies=tuple(replies),
         asserts=len(asserted), grounded=grounded, gold_hits=gold_hits,
         gold_total=len(probe.gold), off_gold=off_gold, abstained=abstained,
-        trap_clean=trap_clean, sprung=sprung)
+        trap_clean=trap_clean, sprung=sprung, hedged=hedged,
+        both_sides=both_sides)
 
 
 def _same_text(claimed: Any, gold: Any) -> bool:
@@ -732,18 +892,42 @@ CATEGORIES: Tuple[Tuple[str, str], ...] = (
                  "they name"),
     ("gold_precision", "ASSERTs that are a fact the probe asked for"),
     ("gold_recall", "facts the probe asked for that were asserted"),
-    ("abstention", "abstain probes answered with no assertion at all"),
-    ("trap", "trap probes answered without asserting from the trap field"),
+    ("abstention", "silent probes answered with no assertion at all "
+                   "(contradiction probes are counted in `contradiction` "
+                   "instead: silence is not their only right answer)"),
+    ("contradiction", "conflicts handled — no assertion at all, OR both "
+                      "sides surfaced with their own sources. The failure "
+                      "is asserting ONE side as if uncontested"),
+    ("trap", "trap probes that did not ASSERT from the trap field"),
+    ("hedged_trap", "trap probes that touched the trap field at "
+                    "HYPOTHESIZE or AMBIGUOUS — hedged wrongness, reported "
+                    "beside `trap` and NOT folded into `probe`"),
     ("probe", "probes answered correctly and completely, all kinds"),
 )
 
 
 def rates_of(attempts: Sequence[Attempt]) -> Dict[str, Rate]:
-    """Every category of :data:`CATEGORIES`, over *attempts*."""
+    """Every category of :data:`CATEGORIES`, over *attempts*.
+
+    Two denominators are worth naming, because both are a judgement:
+
+    * ``abstention`` counts only the ``abstain`` attempts whose probe has
+      **no declared sides**.  For a contradiction, surfacing both readings
+      is also correct, so scoring one in an *abstention accuracy* rate
+      would report the better answer as a miss;
+    * ``hedged_trap`` is over every trap attempt, and it is a **rate of
+      hedging, not of success**.  It sits beside ``trap`` rather than
+      inside it, and higher is neither good nor bad on its own: read it
+      against ``trap``.  A model whose trap column is low and whose hedge
+      column is high is wrong carefully; one where both are low is wrong
+      confidently, and they are not the same risk.
+    """
     what = dict(CATEGORIES)
     parsed = [a for a in attempts if a.parsed]
     gold_bearing = [a for a in attempts if a.kind != "abstain"]
-    abstaining = [a for a in attempts if a.kind == "abstain"]
+    conflicted = [a for a in attempts if a.both_sides is not None]
+    silent = [a for a in attempts
+              if a.kind == "abstain" and a.both_sides is None]
     traps = [a for a in attempts if a.kind == "trap"]
 
     def rate(name: str, k: int, n: int) -> Rate:
@@ -767,10 +951,17 @@ def rates_of(attempts: Sequence[Attempt]) -> Dict[str, Rate]:
                             sum(a.gold_hits for a in gold_bearing),
                             sum(a.gold_total for a in gold_bearing)),
         "abstention": rate("abstention",
-                           len([a for a in abstaining if a.abstained]),
-                           len(abstaining)),
+                           len([a for a in silent if a.abstained]),
+                           len(silent)),
+        "contradiction": rate(
+            "contradiction",
+            len([a for a in conflicted if a.abstained or a.both_sides]),
+            len(conflicted)),
         "trap": rate("trap", len([a for a in traps if a.trap_clean]),
                      len(traps)),
+        "hedged_trap": rate("hedged_trap",
+                            len([a for a in traps if a.hedged_trap]),
+                            len(traps)),
         "probe": rate("probe", len([a for a in attempts if a.verdict]),
                       len(attempts)),
     }
@@ -874,6 +1065,25 @@ def _markdown(report: ExtractionReport,
                  "have an interval that is a guide to their width and not a "
                  "test — the per-probe rows are the ones to argue from.")
     lines.append("")
+    lines.append(
+        "**`hedged_trap` is not a failure rate and is not folded into "
+        "`probe`.** It is the fraction of trap probes where the model "
+        "reached for the trap field and *marked that it was unsure* — "
+        "hedged wrongness, which is a different class from the confident "
+        "wrongness `trap` counts, and a deployment may tolerate one and "
+        "not the other. Read the two together: a low `trap` with a high "
+        "`hedged_trap` is a model that is wrong carefully; both low is a "
+        "model that is wrong flatly. Marking confidence is not punished "
+        "here, because an instrument that punished it would teach the "
+        "model to stop marking, and a harness that only ever rewards "
+        "silence teaches silence.")
+    lines.append("")
+    lines.append(
+        "`contradiction` is scored the same way round: an answer that "
+        "surfaces BOTH readings with their own sources passes exactly as "
+        "an abstention does, because it serves the reader better. The one "
+        "failure is asserting a single side as if nothing disagreed.")
+    lines.append("")
 
     lines.append("## by family")
     lines.append("")
@@ -881,9 +1091,9 @@ def _markdown(report: ExtractionReport,
     lines += _table(
         [[f"`{family}`", FAMILIES.get(family, ("", ""))[0],
           rates["probe"].text, rates["structural"].text,
-          rates["grounded"].text]
+          rates["grounded"].text, rates["hedged_trap"].text]
          for family, rates in families.items()],
-        ["family", "kind", "probe", "structural", "grounded"])
+        ["family", "kind", "probe", "structural", "grounded", "hedged_trap"])
     lines.append("")
     lines += [f"- `{family}` — {FAMILIES.get(family, ('', ''))[1]}"
               for family in families]
@@ -895,11 +1105,16 @@ def _markdown(report: ExtractionReport,
         [[f"`{a.probe}`", a.family, a.kind, str(a.repeat), a.structural,
           str(a.asserts), f"{a.grounded}/{a.asserts}" if a.asserts else "—",
           f"{a.gold_hits}/{a.gold_total}" if a.gold_total else "—",
-          "PASS" if a.verdict else "FAIL",
-          "; ".join(a.sprung) or ("; ".join(a.defects) if a.defects else "")]
+          _spectrum(a), "PASS" if a.verdict else "FAIL", _note(a)]
          for a in report.attempts],
         ["probe", "family", "kind", "rep", "structural", "asserts",
-         "grounded", "gold", "verdict", "note"])
+         "grounded", "gold", "stance", "verdict", "note"])
+    lines.append("")
+    lines.append("The `stance` column is the spectrum this instrument "
+                 "refuses to collapse: `asserted` / `hedged` / `both sides` "
+                 "/ `silent` / `unreadable`. `verdict` is the one pass/fail "
+                 "each probe needs and no more than that — a gate is a "
+                 "deployment's dial and not a measurement.")
     lines.append("")
 
     if baseline is not None:
@@ -911,6 +1126,40 @@ def _markdown(report: ExtractionReport,
                  "sentence in a transcript, because deterministic machinery "
                  "then derives from it with confidence.")
     return "\n".join(lines)
+
+
+def _spectrum(attempt: Attempt) -> str:
+    """Where this reply sat on the confident-to-silent spectrum.
+
+    Reported per probe rather than inferred from the other columns, because
+    it is the thing the rates were told not to collapse: *hedged wrong* and
+    *confidently wrong* both read as one FAIL in the verdict column, and
+    they are not the same result.
+    """
+    if not attempt.parsed:
+        return "unreadable"
+    parts: List[str] = []
+    if attempt.asserts:
+        parts.append("asserted")
+    if attempt.hedged:
+        parts.append("hedged")
+    if attempt.both_sides:
+        parts.append("both sides")
+    return "; ".join(parts) or "silent"
+
+
+def _note(attempt: Attempt) -> str:
+    """The shortest true thing about why a row reads as it does."""
+    notes: List[str] = []
+    if attempt.sprung:
+        notes.append("asserted trap " + ", ".join(attempt.sprung))
+    if attempt.hedged:
+        notes.append("hedged trap " + ", ".join(attempt.hedged))
+    if attempt.both_sides is False and attempt.asserts:
+        notes.append("picked one side of a conflict")
+    if not notes and attempt.defects:
+        notes.append("; ".join(attempt.defects))
+    return "; ".join(notes)
 
 
 def _baseline_section(report: ExtractionReport,

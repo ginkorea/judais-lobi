@@ -119,6 +119,32 @@ class TestTheProbeCorpusIsMeasurable:
                     f"{probe.id} is the plain abstention case and names no " \
                     f"key the receipt lacks, so nothing checks it"
 
+    def test_every_contradiction_probe_declares_its_two_sides(self, probes):
+        """Surfacing both readings is a pass, and nothing can check that
+        against sides nobody wrote down."""
+        for probe in probes:
+            if probe.family == "contradiction":
+                assert len(probe.sides) >= 2, probe.id
+            else:
+                assert probe.sides == (), \
+                    f"{probe.id} is not a contradiction and carries sides"
+
+    def test_every_declared_side_is_in_its_own_evidence(self, probes):
+        """Same lint as gold, for the same reason: a side the receipts do
+        not carry would mark a correct extractor a fabricator."""
+        for probe in probes:
+            keys, scalars = E.fields_of(probe.evidence)
+            for name, value in probe.sides:
+                assert E.grounds(E.Proposition("ASSERT", name, value, "q"),
+                                 keys, scalars), \
+                    f"{probe.id}: side ({name}, {value!r}) is not in the " \
+                    f"receipts"
+
+    def test_the_sides_of_a_contradiction_actually_differ(self, probes):
+        for probe in probes:
+            pairs = {(name, str(value)) for name, value in probe.sides}
+            assert len(pairs) == len(probe.sides), probe.id
+
     def test_no_gold_value_is_a_boolean(self, probes):
         """`parse_propositions` refuses a boolean ASSERT value — a
         proposition whose value is `true` says nothing a store can join on —
@@ -185,6 +211,38 @@ class TestTheLoaderRefusesACorpusThatCannotMeasure:
             expect={"kind": "trap", "gold": [{"field": "a", "value": 1}],
                     "trap_fields": ["a"]}))
         with pytest.raises(E.ProbeMisdeclared, match="both gold and a trap"):
+            E.load_probes(path)
+
+    def test_a_contradiction_probe_with_no_sides_is_refused(self, tmp_path):
+        path = self._write(tmp_path, self._probe(
+            family="contradiction", expect={"kind": "abstain"}))
+        with pytest.raises(E.ProbeMisdeclared, match="conflicting `sides`"):
+            E.load_probes(path)
+
+    def test_a_contradiction_probe_with_one_side_is_refused(self, tmp_path):
+        path = self._write(tmp_path, self._probe(
+            family="contradiction",
+            expect={"kind": "abstain",
+                    "sides": [{"field": "a", "value": 1}]}))
+        with pytest.raises(E.ProbeMisdeclared, match="at least two"):
+            E.load_probes(path)
+
+    def test_two_identical_sides_are_refused(self, tmp_path):
+        path = self._write(tmp_path, self._probe(
+            family="contradiction",
+            expect={"kind": "abstain",
+                    "sides": [{"field": "a", "value": 1},
+                              {"field": "a", "value": 1}]}))
+        with pytest.raises(E.ProbeMisdeclared, match="do not conflict"):
+            E.load_probes(path)
+
+    def test_sides_on_any_other_family_are_refused(self, tmp_path):
+        path = self._write(tmp_path, self._probe(
+            expect={"kind": "assert",
+                    "gold": [{"field": "a", "value": 1}],
+                    "sides": [{"field": "a", "value": 1},
+                              {"field": "a", "value": 2}]}))
+        with pytest.raises(E.ProbeMisdeclared, match="only a contradiction"):
             E.load_probes(path)
 
     def test_an_empty_file_is_refused(self, tmp_path):
@@ -355,6 +413,183 @@ class TestGoldIsAPairAndNotAValue:
         assert self._score(("score", "0.7446")).gold_hits == 1
 
 
+# ── a conflict may be surfaced instead of swallowed ──────────────────────────
+
+CONFLICT = (
+    'mcp.job_status returned:\n{"data": {"job_id": "j-1", '
+    '"state": "job_not_found"}}\n\n'
+    'mcp.jobs_list returned:\n{"data": {"jobs": [{"job_id": "j-1", '
+    '"state": "completed"}]}}')
+
+
+class TestAConflictMaySurfaceInsteadOfBeingSwallowed:
+    """The owner's ruling, and the better semantics: an answer that shows
+    the reader the conflict beats silence, and silence still beats a
+    silently chosen winner. Only the last of the three is a failure."""
+
+    PROBE = E.Probe(
+        id="c", family="contradiction", source="s", evidence=CONFLICT,
+        question="what state is j-1 in?", kind="abstain",
+        sides=(("state", "job_not_found"), ("state", "completed")))
+
+    def _score(self, *propositions):
+        return E.score_attempt(
+            self.PROBE,
+            [E.Proposition(status, name, value, quote)
+             for status, name, value, quote in propositions], E.FIRST)
+
+    def test_silence_still_passes(self):
+        attempt = self._score(
+            ("INSUFFICIENT_EVIDENCE", "", None, ""))
+        assert attempt.abstained is True
+        assert attempt.both_sides is False
+        assert attempt.verdict
+
+    def test_both_sides_as_two_asserts_with_their_own_quotes_passes(self):
+        attempt = self._score(
+            ("ASSERT", "state", "job_not_found", '"state": "job_not_found"'),
+            ("ASSERT", "state", "completed", '"state": "completed"'))
+        assert attempt.both_sides is True
+        assert attempt.abstained is False
+        assert attempt.verdict, "surfacing the conflict is a pass"
+
+    def test_both_sides_as_contradicted_propositions_passes(self):
+        attempt = self._score(
+            ("CONTRADICTED", "state", "job_not_found", "one receipt"),
+            ("CONTRADICTED", "state", "completed", "the other"))
+        assert attempt.both_sides is True and attempt.verdict
+
+    def test_one_asserted_and_the_other_hedged_passes(self):
+        """Not 'one side alone': the conflict IS in front of the reader,
+        with the relative confidence marked. The spectrum rule — mark
+        confidence, don't punish it."""
+        attempt = self._score(
+            ("ASSERT", "state", "completed", '"state": "completed"'),
+            ("HYPOTHESIZE", "state", "job_not_found", "the status tool"))
+        assert attempt.both_sides is True and attempt.verdict
+
+    def test_one_side_asserted_alone_fails(self):
+        """The recorded failure, and now the only one: the model picked a
+        winner and the reader never learns there was a race."""
+        attempt = self._score(
+            ("ASSERT", "state", "completed", '"state": "completed"'))
+        assert attempt.both_sides is False
+        assert attempt.abstained is False
+        assert not attempt.verdict
+
+    def test_two_asserts_off_one_quote_is_not_two_sources(self):
+        """Opposite values read off the same span is one sentence
+        contradicting itself, not two receipts disagreeing."""
+        attempt = self._score(
+            ("ASSERT", "state", "job_not_found", "the same span"),
+            ("ASSERT", "state", "completed", "the same span"))
+        assert attempt.both_sides is False and not attempt.verdict
+
+    def test_one_proposition_cannot_serve_as_both_sides(self):
+        attempt = self._score(
+            ("ASSERT", "state", "completed", "q"),
+            ("ASSERT", "state", "completed", "q2"))
+        assert attempt.both_sides is False
+
+    def test_an_unreadable_reply_surfaces_nothing(self):
+        attempt = E.score_attempt(self.PROBE, (), E.INVALID)
+        assert attempt.both_sides is False and not attempt.verdict
+
+    def test_the_conflict_is_counted_in_its_own_rate_not_in_abstention(self):
+        """`abstention` is an accuracy rate for probes where silence is the
+        whole right answer. Counting a both-sides pass there would report
+        the better answer as a miss."""
+        surfaced = self._score(
+            ("ASSERT", "state", "job_not_found", "one"),
+            ("ASSERT", "state", "completed", "two"))
+        rates = E.rates_of([surfaced])
+        assert (rates["contradiction"].k, rates["contradiction"].n) == (1, 1)
+        assert rates["abstention"].n == 0, \
+            "a side-bearing probe does not belong in the abstention rate"
+
+
+# ── a trap may be hedged, and that is examined rather than failed ────────────
+
+class TestHedgingATrapIsExaminedAndNotFailed:
+    """The owner's second ruling. `trap` keeps meaning *did not ASSERT from
+    the trap field*; hedged wrongness gets a column of its own, outside the
+    headline, because a deployment may tolerate one and not the other."""
+
+    PROBE = E.Probe(
+        id="t", family="unit_semantics", source="s", evidence=RECEIPT,
+        question="what score?", kind="trap",
+        gold=(("score", 0.7446),), trap_fields=("total_s",))
+
+    def _score(self, *propositions):
+        return E.score_attempt(
+            self.PROBE,
+            [E.Proposition(status, name, value, "q")
+             for status, name, value in propositions], E.FIRST)
+
+    def test_hedging_the_trap_leaves_trap_resistance_intact(self):
+        attempt = self._score(("ASSERT", "score", 0.7446),
+                              ("HYPOTHESIZE", "total_s", 154.024))
+        assert attempt.trap_clean is True
+        assert attempt.sprung == ()
+        assert attempt.hedged == ("total_s",)
+        assert attempt.hedged_trap is True
+
+    def test_ambiguous_counts_as_hedging_too(self):
+        attempt = self._score(("ASSERT", "score", 0.7446),
+                              ("AMBIGUOUS", "total_s", 154.024))
+        assert attempt.hedged_trap is True and attempt.trap_clean is True
+
+    def test_a_hedged_trap_does_not_cost_the_probe_its_verdict(self):
+        """The whole ruling in one assertion: the probe still PASSes."""
+        attempt = self._score(("ASSERT", "score", 0.7446),
+                              ("HYPOTHESIZE", "total_s", 154.024))
+        assert attempt.verdict is True
+
+    def test_a_hedge_is_not_an_assert_and_costs_no_precision(self):
+        attempt = self._score(("ASSERT", "score", 0.7446),
+                              ("HYPOTHESIZE", "total_s", 154.024))
+        assert attempt.asserts == 1 and attempt.off_gold == 0
+
+    def test_asserting_the_trap_is_still_a_failure(self):
+        attempt = self._score(("ASSERT", "score", 0.7446),
+                              ("ASSERT", "total_s", 154.024))
+        assert attempt.trap_clean is False
+        assert attempt.hedged_trap is False
+        assert not attempt.verdict
+
+    def test_the_two_are_counted_apart(self):
+        """One reply can do both, and the columns must not merge them."""
+        probe = E.Probe(
+            id="t2", family="unit_semantics", source="s", evidence=RECEIPT,
+            question="?", kind="trap", gold=(("score", 0.7446),),
+            trap_fields=("total_s", "state"))
+        attempt = E.score_attempt(probe, [
+            E.Proposition("ASSERT", "score", 0.7446, "q"),
+            E.Proposition("ASSERT", "total_s", 154.024, "q"),
+            E.Proposition("HYPOTHESIZE", "state", "running", "q")], E.FIRST)
+        assert attempt.sprung == ("total_s",)
+        assert attempt.hedged == ("state",)
+        assert attempt.trap_clean is False and attempt.hedged_trap is True
+
+    def test_hedged_trap_is_a_rate_of_hedging_and_not_of_success(self):
+        hedged = self._score(("ASSERT", "score", 0.7446),
+                             ("HYPOTHESIZE", "total_s", 154.024))
+        clean = self._score(("ASSERT", "score", 0.7446))
+        rates = E.rates_of([hedged, clean])
+        assert (rates["trap"].k, rates["trap"].n) == (2, 2)
+        assert (rates["hedged_trap"].k, rates["hedged_trap"].n) == (1, 2)
+        assert (rates["probe"].k, rates["probe"].n) == (2, 2), \
+            "hedging is not folded into the headline"
+
+    def test_only_a_trap_probe_is_asked_the_question(self):
+        probe = E.Probe(id="p", family="present", source="s",
+                        evidence=RECEIPT, question="?", kind="assert",
+                        gold=(("score", 0.7446),))
+        attempt = E.score_attempt(probe, [
+            E.Proposition("HYPOTHESIZE", "total_s", 154.024, "q")], E.FIRST)
+        assert attempt.hedged_trap is None and attempt.hedged == ()
+
+
 # ── the Wilson interval ──────────────────────────────────────────────────────
 
 class TestTheIntervalIsHonestAtTheEnds:
@@ -394,10 +629,15 @@ SUBSET = ("totals_records", "runs_paging", "no_byte_count",
           "masked_record_count", "score_not_elapsed",
           "state_not_channel_running")
 
+#: The subset for the two rulings: one conflict and one trap, driven by
+#: extractors that surface and hedge rather than assert or stay silent.
+SPECTRUM = ("job_state_disagrees", "run_stage_disagrees",
+            "score_not_elapsed", "actors_not_edges")
 
-def subset(probes):
+
+def subset(probes, names=SUBSET):
     by_id = {probe.id: probe for probe in probes}
-    return tuple(by_id[name] for name in SUBSET)
+    return tuple(by_id[name] for name in names)
 
 
 def _reply(propositions):
@@ -439,6 +679,31 @@ def non_abstainer(probe):
         name = sorted(scalars)[0]
         return _reply([("ASSERT", name, scalars[name][0])])
     return perfect(probe)
+
+
+def surfacer(probe):
+    """Shows both sides of a conflict; hedges over a trap rather than
+    asserting it. The two behaviours the owner's rulings admit."""
+    if probe.sides:
+        return json.dumps([
+            {"status": "ASSERT", "field": name, "value": value,
+             "quote": f"receipt {index}: {name} = {value}"}
+            for index, (name, value) in enumerate(probe.sides)])
+    if probe.kind == "abstain":
+        return json.dumps([{"status": "INSUFFICIENT_EVIDENCE", "field": "",
+                            "value": None, "quote": ""}])
+    out = [("ASSERT", name, value) for name, value in probe.gold]
+    out += [("HYPOTHESIZE", name, "maybe") for name in probe.trap_fields[:1]]
+    return _reply(out)
+
+
+def winner_picker(probe):
+    """Asserts ONE side of a conflict as if nothing disagreed — the failure
+    both rulings leave standing."""
+    if probe.sides:
+        name, value = probe.sides[0]
+        return _reply([("ASSERT", name, value)])
+    return surfacer(probe)
 
 
 def asker_for(reply_of):
@@ -561,6 +826,47 @@ class TestTheScriptedExtractorsMoveTheNumbersTheyShould:
             E.run_probes(scripted, dies, log=lambda *a: None)
 
 
+class TestTheTwoRulingsEndToEnd:
+    """The same rules again over the real corpus, through `run_probes`,
+    because a rule that only holds where a unit test calls `score_attempt`
+    is a rule the subcommand does not have."""
+
+    @pytest.fixture()
+    def spectrum(self, probes):
+        for probe in probes:
+            _PROBE_BY_PROMPT[E.prompt_for(probe)] = probe
+        return subset(probes, SPECTRUM)
+
+    def test_surfacing_and_hedging_scores_a_clean_sweep(self, spectrum):
+        attempts = E.run_probes(spectrum, asker_for(surfacer),
+                                log=lambda *a: None)
+        rates = E.rates_of(attempts)
+        assert (rates["contradiction"].k, rates["contradiction"].n) == (2, 2)
+        assert (rates["trap"].k, rates["trap"].n) == (2, 2)
+        assert (rates["hedged_trap"].k, rates["hedged_trap"].n) == (2, 2)
+        assert (rates["probe"].k, rates["probe"].n) == (4, 4), \
+            "hedging a trap and surfacing a conflict are both passes"
+        assert rates["abstention"].n == 0
+
+    def test_picking_a_winner_fails_only_the_conflict_probes(self, spectrum):
+        attempts = E.run_probes(spectrum, asker_for(winner_picker),
+                                log=lambda *a: None)
+        rates = E.rates_of(attempts)
+        assert (rates["contradiction"].k, rates["contradiction"].n) == (0, 2)
+        assert (rates["trap"].k, rates["trap"].n) == (2, 2)
+        assert (rates["probe"].k, rates["probe"].n) == (2, 4)
+        picked = [a for a in attempts if a.both_sides is False]
+        assert {a.probe for a in picked} == {"job_state_disagrees",
+                                             "run_stage_disagrees"}
+
+    def test_silence_on_a_conflict_is_still_a_pass(self, spectrum):
+        attempts = E.run_probes(spectrum, asker_for(perfect),
+                                log=lambda *a: None)
+        conflicts = [a for a in attempts if a.both_sides is not None]
+        assert all(a.abstained and a.verdict for a in conflicts)
+        assert E.rates_of(attempts)["contradiction"].k == 2
+
+
 # ── the report ───────────────────────────────────────────────────────────────
 
 class TestTheReportCarriesItsInterpreter:
@@ -624,6 +930,43 @@ class TestTheReportCarriesItsInterpreter:
         assert set(payload["by_family"]) == {"present", "absent", "masked",
                                              "unit_semantics",
                                              "optional_filter"}
+
+    def test_the_family_table_carries_the_hedge_column(self, report):
+        text = report.to_markdown()
+        heading = next(line for line in text.splitlines()
+                       if line.startswith("| family |"))
+        assert "hedged_trap" in heading
+
+    def test_the_prose_says_what_hedged_trap_is_and_is_not(self, report):
+        text = report.to_markdown()
+        assert "hedged wrongness" in text
+        assert "not folded into `probe`" in text
+        assert "teaches silence" in text
+
+    def test_the_prose_says_a_conflict_may_be_surfaced(self, report):
+        assert "surfaces BOTH readings" in report.to_markdown()
+
+    def test_each_row_carries_its_stance_on_the_spectrum(self, report):
+        text = report.to_markdown()
+        heading = next(line for line in text.splitlines()
+                       if line.startswith("| probe |"))
+        assert "stance" in heading
+        assert "| silent |" in text, "the abstain rows say so in the column"
+        assert "| asserted |" in text
+
+    def test_a_hedged_row_reads_as_hedged_and_not_as_asserted(self, probes):
+        """The spectrum column exists because `verdict` cannot carry it:
+        hedged-wrong and confident-wrong are one FAIL apiece there."""
+        for probe in probes:
+            _PROBE_BY_PROMPT[E.prompt_for(probe)] = probe
+        chosen = subset(probes, ("score_not_elapsed",))
+        attempts = E.run_probes(chosen, asker_for(surfacer),
+                                log=lambda *a: None)
+        report = E.ExtractionReport(probes="p", attempts=attempts, meta={})
+        row = next(line for line in report.to_markdown().splitlines()
+                   if "`score_not_elapsed`" in line)
+        assert "hedged" in row and "hedged trap total_s" in row
+        assert "PASS" in row
 
     def test_a_baseline_prints_deltas_and_questions_the_pairing(self, report):
         before = json.loads(report.to_json())
