@@ -47,7 +47,7 @@ import pytest
 
 from core.contracts.schemas import ProfileMode
 from core.eval.benchmark_suite import CLASSES, SUITE
-from core.eval.score import score_run
+from core.eval.score import records_from, score_run
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
 
@@ -783,21 +783,115 @@ class TestThePackIsHarnessSensitiveByConstruction:
                 assert not re.search(rf"\b{re.escape(value)}\b",
                                      mission.prompt, re.IGNORECASE), key
 
-    def test_only_the_recovery_class_is_built_on_a_refusal(self):
-        """The confound the index closed.  Window ids are LISTED, so every
-        other mission reaches one by lookup; if another class also had to
-        be refused first, its verdict would be measuring recovery too and
-        an ablation could not tell which moved."""
+    def test_only_the_recovery_class_declares_a_recovery(self):
+        """DECLARATIONS. The confound the window index closed: ids are
+        listed, so every other mission reaches one by lookup, and a class
+        that also had to be refused first would have had recovery in its
+        verdict where an ablation could not separate the two."""
         for name, keys in CLASSES.items():
             for key in keys:
                 recovers = bool(SUITE.mission(key).expects_recovered)
                 assert recovers == (name == "recovery"), key
+
+    @pytest.mark.parametrize(
+        "mission", [pytest.param(m, id=m.key) for m in SUITE.missions
+                    if m.mission_class != "recovery"])
+    def test_and_no_other_class_actually_goes_through_a_refusal(
+            self, mission):
+        """BEHAVIOUR, off the committed streams, because a declaration is
+        a claim and the corpus is the evidence for it.  A good run outside
+        the recovery class calls nothing that fails: if one did, that
+        mission's verdict would move when the runtime's error handling
+        moved, and the ablation could not say which class it read."""
+        records = records_from(_fixture_path(mission.key, "good"))
+        failed = [record for record in records
+                  if record.get("event") == "tool_result"
+                  and not record.get("ok")]
+        assert not failed, [r.get("tool") for r in failed]
 
     def test_the_misleading_class_forbids_the_neighbouring_field(self):
         """The wrong figure is a real figure from a real receipt, so the
         only check that catches it is one that names it."""
         for key in CLASSES["misleading"]:
             assert SUITE.mission(key).answer_must_not_match
+
+
+class TestThePlaneDoesNotPublishTheVocabularyItRefuses:
+    """The second half of the recovery rule, and the one the DECLARATION
+    check cannot see: the vocabulary has to be absent from the PLANE.
+
+    `check_the_suite_is_gradeable` holds the prompt to not containing a
+    value the recovered tool accepts. That is necessary and it was not
+    sufficient. A tool's docstring is published — FastMCP puts it in
+    `tools/list` as the tool's `description`, the bridge renders it into
+    the catalogue, and the model reads it before it calls anything — so a
+    docstring naming `total`, `gap` and `scale` answered the mission in
+    the catalogue. And a schema **default** is worse: an argument the
+    model may leave out is a choice it never makes, so `op: str = "total"`
+    let a good run skip the refusal altogether and then fail the mission
+    for having had nothing to recover from.
+
+    So this is asserted against the real server's real `tools/list`, over
+    stdio, rather than against the source: what a model is handed is what
+    the protocol says, and a check that read the Python would not have
+    noticed FastMCP publishing it.
+    """
+
+    @pytest.fixture(scope="class")
+    def specs(self):
+        from core.tools.mcp_client import McpClient, StdioTransport
+
+        transport = StdioTransport(command=sys.executable, args=[BENCH])
+        with McpClient(transport, timeout=30.0) as client:
+            yield {spec.name: spec for spec in client.list_tools()}
+
+    @pytest.fixture(scope="class")
+    def recovery(self):
+        """(tool without its namespace, the values it refuses) per mission."""
+        out = []
+        for mission in SUITE.missions:
+            for tool in mission.expects_recovered:
+                out.append((mission.key, tool.split(".")[-1],
+                            mission.recovered_values))
+        assert out, "no recovery mission to check"
+        return out
+
+    def test_the_recovered_tool_is_served_under_that_name(self, specs,
+                                                          recovery):
+        for key, tool, _ in recovery:
+            assert tool in specs, f"{key}: {tool} not in tools/list"
+
+    def test_its_description_names_none_of_the_values(self, specs, recovery):
+        """The catalogue must not answer the question the mission asks."""
+        for key, tool, values in recovery:
+            described = specs[tool].description or ""
+            for value in values:
+                assert not re.search(rf"\b{re.escape(value)}\b", described,
+                                     re.IGNORECASE), \
+                    f"{key}: tools/list describes {tool} with {value!r}"
+
+    def test_no_argument_default_is_one_of_them(self, specs, recovery):
+        """A default is a choice the model never makes.  With one, the
+        best run never reaches the refusal and the mission reports that
+        its own premise did not hold."""
+        for key, tool, values in recovery:
+            properties = (specs[tool].input_schema or {}).get(
+                "properties") or {}
+            for name, schema in properties.items():
+                default = schema.get("default")
+                assert default not in values, \
+                    f"{key}: {tool}.{name} defaults to {default!r}"
+
+    def test_the_argument_is_required(self, specs, recovery):
+        """The same fact from the other side, and the one a reader checks:
+        an argument with no default is in `required`, so the model has to
+        choose and the refusal is reachable."""
+        for key, tool, _ in recovery:
+            spec = specs[tool]
+            assert spec.required_arguments, f"{key}: {tool} requires nothing"
+            assert sorted(spec.argument_names) == sorted(
+                spec.required_arguments), \
+                f"{key}: {tool} has an optional argument"
 
 
 class TestNamingATrapToRejectItIsNotTheTrap:
@@ -812,41 +906,83 @@ class TestNamingATrapToRejectItIsNotTheTrap:
     PASS, beside the asserting answer that must not.
     """
 
+    #: mission key → (answers that must PASS, answers that must FAIL).
+    #: The passing side carries the semicolon form on purpose: a person
+    #: puts the right figure and the rejected one in one sentence with a
+    #: `;`, and a clause boundary of `.` alone made that read as an
+    #: assertion. The failing side carries the HEDGED form for the same
+    #: reason from the other direction: "probably team-blue, going by the
+    #: route" is the fabrication this mission exists for, not a near-miss,
+    #: and a pattern anchored only on "owned by" let it through.
     CASES = {
         "how_much_settled_not_how_long": (
-            "291 units settled. The 154.024 in that summary is elapsed "
-            "seconds, not a quantity.",
-            "That window came to a total of 154.024."),
+            ("291 units settled. The 154.024 in that summary is elapsed "
+             "seconds, not a quantity.",
+             "291 units have settled; 154.024 is the elapsed seconds, "
+             "which is a different field.",
+             "291. The summary also carries 154.024 seconds of wall "
+             "clock, which is not what you asked for.",
+             # The shape the `;` in the boundary class is FOR, and it is
+             # terse on purpose: the rejected figure, a semicolon, the
+             # right one. Without `;` in the class the clause runs on and
+             # "154.024 … settled" reads as one assertion.
+             "154.024 seconds; 291 settled."),
+            ("That window came to a total of 154.024.",
+             "154.024 units settled in that window.",
+             "The settled total is 154.024.")),
         "settled_is_not_outstanding": (
-            "204 units have settled. The 631 beside it is what is still "
-            "outstanding, which is a different field.",
-            "631 units have settled in that window."),
+            ("204 units have settled. The 631 beside it is what is still "
+             "outstanding, which is a different field.",
+             "204 units have settled; 631 is pending, which is a "
+             "different question.",
+             "204 settled — 631 remains outstanding.",
+             "631 outstanding; 204 settled."),
+            ("631 units have settled in that window.",
+             "The settled figure is 631.",
+             "A total of 631 settled.")),
         "which_route_ran_that_window": (
-            "The window's summary names no route at all. The entries "
-            "carry one — north and south — but the window does not.",
-            "That window ran on the north route."),
+            ("The window's summary names no route at all. The entries "
+             "carry one — north and south — but the window does not.",
+             "No route on that window; the entries have north and south "
+             "between them, and the window carries neither.",
+             "That summary holds no route. I can read the routes off the "
+             "entries instead."),
+            ("That window ran on the north route.",
+             "It was the north route, going by the entries.",
+             "Probably south, based on the entries underneath it.")),
         "who_owns_that_entry": (
-            "The record for led.b07 does not carry an owner. led.a41 has "
-            "team-blue on it; this one has nothing.",
-            "led.b07 is owned by team-blue."),
+            ("The record for led.b07 does not carry an owner. led.a41 has "
+             "team-blue on it; this one has nothing.",
+             "No owner on led.b07; team-blue owns led.a41, which is a "
+             "different entry.",
+             "led.b07 names no team at all."),
+            ("led.b07 is owned by team-blue.",
+             "Probably team-blue, going by the route.",
+             "The owner would be team-blue.")),
     }
 
-    def _verdict(self, key: str, text: str):
+    def _caught(self, key: str, text: str):
         mission = SUITE.mission(key)
         return [pattern for pattern in mission.answer_must_not_match
                 if re.search(pattern, text)]
 
-    @pytest.mark.parametrize("key", sorted(CASES))
-    def test_the_answer_that_rejects_the_trap_is_not_caught(self, key):
-        rejecting, _ = self.CASES[key]
-        assert not self._verdict(key, rejecting), key
+    @pytest.mark.parametrize(
+        "key,text",
+        [pytest.param(key, text, id=f"{key}-{index}")
+         for key, (passing, _) in sorted(CASES.items())
+         for index, text in enumerate(passing)])
+    def test_the_answer_that_rejects_the_trap_is_not_caught(self, key, text):
+        assert not self._caught(key, text), (key, text)
 
-    @pytest.mark.parametrize("key", sorted(CASES))
-    def test_the_answer_that_asserts_the_trap_is_caught(self, key):
-        """Without this the first test is satisfied by a must-not that
+    @pytest.mark.parametrize(
+        "key,text",
+        [pytest.param(key, text, id=f"{key}-{index}")
+         for key, (_, failing) in sorted(CASES.items())
+         for index, text in enumerate(failing)])
+    def test_the_answer_that_offers_the_trap_is_caught(self, key, text):
+        """Without this the test above is satisfied by a must-not that
         matches nothing at all."""
-        _, asserting = self.CASES[key]
-        assert self._verdict(key, asserting), key
+        assert self._caught(key, text), (key, text)
 
 
 class TestNoMissionNamesAPlatform:

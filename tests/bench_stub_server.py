@@ -94,25 +94,41 @@ WINDOW_LABELS: Dict[str, str] = {"win-0002": "window 2",
                                  "win-0003": "window 3"}
 
 #: The kinds the ledger listing accepts.  Three words, none of them the
-#: word a person uses, and **nothing lists them** — see the module
-#: docstring on why an enum and not an id.
+#: word a person uses, and **nothing lists them** — not a tool, not a
+#: docstring, and not a schema default.  See the module docstring on why an
+#: enum and not an id, and :data:`OPERATIONS` on why that sentence is a
+#: tested fact about ``tools/list`` rather than a promise in a comment.
 KINDS = ("out", "back", "all")
 
 #: The operations the calculator accepts.  Named so that neither
 #: "subtract" nor "difference" is one of them: a derived figure has to come
 #: off the plane, and the first attempt at one here is refused for every
 #: run, by a refusal that names all three.
+#:
+#: **This comment is where that is written down, and a docstring is not.**
+#: A tool's docstring is published: FastMCP puts it in ``tools/list`` as the
+#: tool's ``description``, the bridge renders it into the catalogue, and the
+#: model reads it before it calls anything.  A recovery mission measures
+#: whether a run adapts to a refusal, so a plane that *tells* it the
+#: vocabulary has answered the question in the catalogue and the mission
+#: scores nothing.  Same for a schema **default**: an argument the model
+#: can leave out is a choice it never makes, and ``op: str = "total"`` let
+#: the best run skip the refusal entirely.  Both are now held by a test
+#: against this server's own ``tools/list``.
 OPERATIONS = ("total", "gap", "scale")
 
 
 @app.tool()
-def ledger_index(kind: str = "all") -> Dict[str, Any]:
+def ledger_index(kind: str) -> Dict[str, Any]:
     """List the ledger's entries, by kind.
 
     The refusal names the fix, which is this plane's contract with a run
     that guessed: an error a caller can act on is an instruction, and a
     capability is absent only when the catalogue or a refusal says so.
     """
+    # `kind` has no default and the kinds are not named here: see `KINDS`.
+    # A default is a choice the model never makes, and a docstring is
+    # published — either would hand a recovery mission its own answer.
     if kind not in KINDS:
         raise ValueError(
             f"no such kind {kind!r}; this ledger knows 'out' (a shipment), "
@@ -171,19 +187,18 @@ def window_rollup(window: str) -> Dict[str, Any]:
 
 
 @app.tool()
-def arithmetic(numbers: List[float], op: str = "total") -> str:
-    """Combine a list of numbers on the plane.
+def arithmetic(numbers: List[float], op: str) -> str:
+    """Combine a list of numbers on the plane, under a named operation.
 
     A derived figure belongs to a computation this plane performed and not
     to prose a model wrote, which is the whole of the ``chaining`` flag.
     Typed arguments rather than an expression: a calculator that parsed a
     string would be a second language in a test fixture.
-
-    The operations are ``total``, ``gap`` and ``scale`` — see
-    :data:`OPERATIONS` — and the names are the point: neither "subtract"
-    nor "difference" is among them, so a run asked for a difference is
-    refused once, by a refusal that names all three.
     """
+    # What the operations ARE is in `OPERATIONS`, deliberately not here:
+    # this docstring is published in `tools/list` and a recovery mission
+    # cannot measure an adaptation the catalogue already made for the model.
+    # `op` has no default for the same reason — see `OPERATIONS`.
     if not numbers:
         raise ValueError("nothing to compute; `numbers` is empty")
     if op == "total":

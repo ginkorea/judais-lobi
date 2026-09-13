@@ -671,7 +671,11 @@ def _markdown(ablation: Ablation) -> str:
                 ["class", *[f"`{result.arm.name}`" for result in ran]])
             lines.append("")
             lines.append(f"All cells above: `{identity}`, all-must-pass over "
-                         f"{ablation.repeats} repeat(s).")
+                         f"{ablation.repeats} repeat(s). **A class tally can "
+                         f"hide a fix-and-break swap** — an arm that repairs "
+                         f"one mission of a class and breaks another leaves "
+                         f"the tally where it was; the paired table below is "
+                         f"where that shows.")
             lines.append("")
 
         keys = ablation.keys.get(half, ())

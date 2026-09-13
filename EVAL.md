@@ -895,13 +895,34 @@ mission that a lucky run passes without recovering from anything.
 **Both are enums, and that is the rule, not an accident.** Ids get a listing
 here — `ledger_index`, `window_index` — so finding one is a lookup and a
 mission built on an id refusal would be measuring a run that failed to check a
-catalogue, which is the missing-evidence class's business. Nothing lists the
-kinds or the operations, and nothing should: they are an argument's vocabulary
-rather than the plane's data. The window index exists *because* it was missing:
+catalogue, which is the missing-evidence class's business. They are an
+argument's vocabulary rather than the plane's data.
+
+**"Nothing lists them" is a tested fact about `tools/list`, not a promise.**
+A tool's docstring is *published*: FastMCP puts it in `tools/list` as the
+tool's `description`, the bridge renders that into the catalogue, and the model
+reads it before calling anything — so a docstring naming `total`, `gap` and
+`scale` answered the mission in the catalogue, and a schema **default**
+(`op: str = "total"`) was worse still, because an argument the model may leave
+out is a choice it never makes: the best run skipped the refusal and then
+failed for having had nothing to recover from. Both leaks were real and both
+are now closed at the source — the prose moved to a module comment, the
+defaults are gone — and held by
+`TestThePlaneDoesNotPublishTheVocabularyItRefuses`, which speaks to the running
+server over stdio and asserts, for every recovery mission, that the recovered
+tool's published description names none of its `recovered_values`, that no
+argument default is one of them, and that the argument is required. Asserted
+against the protocol rather than against the source, because what a model is
+handed is what the protocol says.
+
+The window index exists *because* it was missing:
 without it, three missions in other classes had to survive a refusal before they
 could start, so their verdicts were measuring recovery too and an ablation could
-not have said which of the two moved. A test asserts that `expects_recovered`
-appears in the recovery class and nowhere else.
+not have said which of the two moved. Two tests hold it, and they are two
+different claims: one over the **declarations** (`expects_recovered` appears in
+the recovery class and nowhere else) and one over the **committed streams** (no
+good run outside that class contains a failed `tool_result`). A declaration is
+a claim; the corpus is the evidence for it.
 
 The declaration is held to the same rule. `Mission.recovered_values` names the
 vocabulary the refusal will list, and `check_the_suite_is_gradeable` refuses a
@@ -1020,7 +1041,12 @@ Four answers, and they are four different facts:
   accepts"*. A help text that does not mention `--events` is not the help of a
   program this harness could have driven — the harness appends `--events` to
   every mission it spawns — so the probe answers **unknown** rather than
-  reporting a flag set read off the wrong program;
+  reporting a flag set read off the wrong program. A spawn line whose program
+  **prints nothing at all** for `--help` lands here too: `python -m core.cli`
+  is one, on this very repository, because that module has no `__main__` guard
+  and the installed `judais` script is the front door. Nothing crashes and no
+  arm is scored — `baseline` runs, every flagged arm skips, and the reason says
+  the line could not be asked;
 * the help **mentions the flag in prose while rejecting it** → not declared, so
   SKIPPED. This is the fourth fact and the one a naive scan gets wrong: a help
   text that says "`--protocol native` is refused on a backend that cannot speak
@@ -1057,9 +1083,11 @@ piece that may not be built yet and has to be able to say so.
   often and the one where a false certainty does the most damage.
 * **Per class, per arm**: how many missions of each *kind of problem* the arm
   passed. This is the block an ablation of a cognitive layer is actually read
-  by — an arm can leave a class's tally untouched while fixing one mission in
-  it and breaking the other, and only the paired table below says so. Absent
-  for a suite whose missions declare no classes.
+  by. **Read it beside the paired table and never on its own**: a class tally
+  can hide a fix-and-break swap — an arm that repairs one mission in a class
+  and breaks the other leaves `2/4` at `2/4`, and only the per-mission paired
+  table names the two that moved. Absent for a suite whose missions declare no
+  classes.
 * **Per mission × arm**: `PASS`/`FAIL`, or `PASS n/m` over repeats.
 * **Paired against the baseline**: how many missions the arm fixed, how many it
   broke, how many it left alone, **and which**. Paired mission by mission — the
