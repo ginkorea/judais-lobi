@@ -582,17 +582,27 @@ class TestTheArmTable:
     def test_every_arm_name_is_unique(self):
         assert len({arm.name for arm in ARMS}) == len(ARMS)
 
-    def test_the_declared_arms_that_do_not_exist_yet_are_flagged_not_hidden(
+    def test_arms_graduate_by_landing_in_the_contract_not_by_edits_here(
             self):
         """`shadow`, `compiled-context` and `graph` are ROADMAP §2.9's
-        pieces and none of their flags is in this release's published
-        surface.  They are declared anyway, so the column exists from the
-        first run and says SKIPPED until the flag lands."""
+        pieces, declared before their flags existed so the column said
+        SKIPPED from the first run.  `--cognition` then LANDED (the shadow
+        lane, same night this suite merged), which is the graduation this
+        table was designed around: the arm becomes runnable with no edit
+        to this module.  This test pins both halves — the graduated arm's
+        flag is now published surface, and the still-future arms' flags
+        are still not — so it fails the day either fact changes without
+        the table meaning what it says."""
         from core.runtime import contract
 
-        future = [arm for arm in ARMS if arm.flags]
-        assert future
-        for arm in future:
+        by_name = {arm.name: arm for arm in ARMS}
+        graduated = by_name["shadow"]
+        assert set(graduated.flags) <= set(contract.CLI_FLAGS), (
+            "shadow's flag left the contract; its column would silently "
+            "go back to SKIPPED")
+        still_future = [by_name["compiled-context"], by_name["graph"]]
+        for arm in still_future:
+            assert arm.flags, arm.name
             assert not set(arm.flags) & set(contract.CLI_FLAGS), arm.name
 
     def test_the_module_exports_what_it_documents(self):
