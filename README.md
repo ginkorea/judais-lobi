@@ -805,6 +805,7 @@ If you are **running this from another program**, read:
 
 * [`CONTRACT.md`](CONTRACT.md) — the mission stream, its events, the exit contract
 * [`PLATFORMS.md`](PLATFORMS.md) — deploying judais-lobi as a platform's agent
+* [`MODELS.md`](MODELS.md) — adapting a model to judais-lobi: serve, declare, measure, tune the knobs, fine-tune the residual
 * [`EVAL.md`](EVAL.md) — the eval harness, and how a platform writes its own suite
 
 If you want to understand the **current implementation**, inspect:

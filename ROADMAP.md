@@ -138,7 +138,7 @@ merges. Version bump every phase.
 | 18 | Compiled context + grammar compiler | §2.9.5 — constrained decoding pulled early on rc evidence |
 | 19 | Obligation control — the core experiment | §2.9.6 — the commit-or-kill decision for the whole arc |
 | 20 | Conditional expansions — graph working set, derived swarm, solver, routing | §2.9.7 — each behind its own ablation, none before Phase 19 reads positive |
-| 21 | The specialized local model | §2.9.8 — the deferred racetrack-LoRA thread, aimed at the semantic compiler |
+| 21 | Specialized local models (plural) | §2.9.8 — a per-model fine-tune loop, process documented in `MODELS.md` (owner, 13 Sep: never peg to one model) |
 
 The release numbers in the second column are February's guesses at which
 version a phase would land in, kept so the phase numbers do not move. They are
@@ -1191,10 +1191,14 @@ this is the thought experiment's remaining machinery, admitted piecewise:
   first; route only when differences are statistically meaningful — no false
   precision from tiny samples.
 
-#### 2.9.8 Phase 21 — the specialized local model
+#### 2.9.8 Phase 21 — specialized local models (plural)
 
-The deferred racetrack-LoRA thread, aimed where the evidence points: the
-semantic boundary. Convert validated runtime traces into training data —
+**Amended 13 Sep 2026 (owner):** the project does not peg itself to one
+model. Fine-tuning is a repeatable, per-model loop, and the documented
+adaptation process is `MODELS.md` — serve, declare, measure, tune the
+runtime knobs, fine-tune the residual, record every number with its
+interpreter. The racetrack-LoRA thread is one instance of that loop, aimed
+where the evidence points: the semantic boundary. Convert validated runtime traces into training data —
 proposition extraction, epistemic classification, entity normalization,
 obligation interpretation, and *abstention above all*: a useful semantic
 compiler must know when not to create a fact. Evaluate as compiler
