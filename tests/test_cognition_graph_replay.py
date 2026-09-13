@@ -178,6 +178,46 @@ class TestEveryWriteIsOneEvent:
         graph.events[0]["op"] = "nonsense"
         assert graph.events[0]["op"] == "add_edge"
 
+    def test_the_copy_goes_all_the_way_down(self):
+        """The top-level copy is the one anybody thinks to test, and it is not
+        the one that matters. An event carries its evidence as a list of
+        dicts, so ``dict(event)`` hands a reader the graph's own ref records
+        under a fresh outer dict — and editing one edits the log."""
+        graph = KnowledgeGraph()
+        graph.add_edge("alice", "knows", "bob",
+                       authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
+        graph.events[0]["evidence"][0]["locator"] = "forged"
+        graph.events[0]["evidence"].append({"kind": "x", "locator": "y"})
+        assert graph.events[0]["evidence"] == \
+            [RECEIPT.stamped(EvidenceAuthority.SOURCE).as_dict()]
+
+    def test_a_snapshot_does_not_alias_the_log_either(self):
+        """A snapshot is the thing most likely to be handed somewhere else and
+        edited. One that aliased the log would make every such edit a write to
+        this graph — and the graph would then export the forgery as its own
+        record, with the replay refusing a log nobody corrupted on purpose."""
+        graph = KnowledgeGraph()
+        graph.add_edge("alice", "knows", "bob",
+                       authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
+        before = graph.digest_json()
+        loose = graph.snapshot()
+        loose[EVENTS_KEY][0]["evidence"][0]["authority"] = "vibes"
+        loose[EVENTS_KEY][0]["src"] = "mallory"
+        assert graph.digest_json() == before
+        again = KnowledgeGraph.replay(graph.snapshot())
+        assert again.digest_json() == before
+
+    def test_the_events_accessor_round_trips_as_a_tuple(self):
+        """It hands back a tuple, so the envelope somebody builds by hand out
+        of it has a tuple in it. Refusing that would be refusing this
+        package's own accessor — the kernel accepts both and so does this."""
+        graph = _script(1)
+        wrapped = {GRAPH_SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
+                   EVENTS_KEY: graph.events}
+        assert isinstance(wrapped[EVENTS_KEY], tuple)
+        assert KnowledgeGraph.replay(wrapped).digest_json() == \
+            graph.digest_json()
+
 
 # ---------------------------------------------------------------------------
 # Replay
@@ -352,6 +392,32 @@ class TestAGraphIsExactlyItsLog:
                        authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
         snapshot = graph.snapshot()
         snapshot[EVENTS_KEY][0]["authority"] = "vibes"
+        with pytest.raises(ReplayRefused):
+            KnowledgeGraph.replay(snapshot)
+
+    @pytest.mark.parametrize("corrupt", ["vibes", 123, {}, []])
+    def test_a_corrupt_ref_stamp_is_refused_through_this_door_too(self,
+                                                                  corrupt):
+        """Inherited from the kernel rather than re-implemented: this package
+        decodes evidence with the kernel's codec, so its refusal is this
+        package's refusal. Pinned here anyway — a codec that loosened would
+        loosen this replay, and nothing in the kernel's own suite is watching
+        the graph's door."""
+        graph = KnowledgeGraph()
+        graph.add_edge("alice", "knows", "bob",
+                       authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
+        snapshot = graph.snapshot()
+        snapshot[EVENTS_KEY][0]["evidence"][0]["authority"] = corrupt
+        with pytest.raises(ReplayRefused):
+            KnowledgeGraph.replay(snapshot)
+
+    @pytest.mark.parametrize("corrupt", ["not-a-list", 7, [42], [None]])
+    def test_evidence_that_is_not_refs_is_refused(self, corrupt):
+        graph = KnowledgeGraph()
+        graph.node_kind("alice", "person",
+                        authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
+        snapshot = graph.snapshot()
+        snapshot[EVENTS_KEY][0]["evidence"] = corrupt
         with pytest.raises(ReplayRefused):
             KnowledgeGraph.replay(snapshot)
 

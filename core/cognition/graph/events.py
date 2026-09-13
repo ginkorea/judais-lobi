@@ -74,6 +74,14 @@ GRAPH_EVENT_SCHEMA_VERSION = 1
 
 #: Bump when what an op *means* changes — a merge rule, an ordering, what a
 #: read is entitled to assume — even when the dict on the wire is untouched.
+#: The sharpest case, and the kernel's reason for the same number: **a change
+#: that alters which id a given sequence of writes produces**.  Ids here come
+#: from insertion order, so a consumer holding a persisted ``e7`` can compare
+#: this against the one in the log it came from and tell whether that name
+#: still points at the same edge.
+#:
+#: 1 — the first shape.
+#:
 #: A replay does not refuse a newer one, because ops are append-only; it
 #: carries it into the message when something else goes wrong.
 GRAPH_PACKAGE_VERSION = 1
@@ -132,6 +140,13 @@ def check_snapshot(raw: Any) -> List[dict]:
     honestly report that nothing is connected to anything.  An empty list is
     the one way to say "no events", because it is the only one somebody wrote
     on purpose.
+
+    A ``tuple`` is accepted beside a ``list``, matching the kernel's rule
+    exactly: both are ordered sequences somebody wrote on purpose, and
+    :attr:`~core.cognition.graph.store.KnowledgeGraph.events` hands back a
+    tuple, so refusing one would refuse this package's own accessor wrapped in
+    an envelope by hand.  What is refused is *sequence-shaped by accident* —
+    the string, the mapping, the zero, the ``None``.
     """
     wrote = GRAPH_PACKAGE_VERSION
     if not isinstance(raw, _MappingABC):
@@ -164,7 +179,7 @@ def check_snapshot(raw: Any) -> List[dict]:
             "rebuild an empty graph that nothing downstream could tell from a "
             "graph nobody ever wrote to")
     events = raw[EVENTS_KEY]
-    if not isinstance(events, list):
+    if not isinstance(events, (list, tuple)):
         raise ReplayRefused(
             f"{EVENTS_KEY!r} is an ordered list of events, not "
             f"{type(events).__name__} ({events!r}); an empty list is how a log "
