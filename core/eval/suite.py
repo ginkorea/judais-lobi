@@ -21,7 +21,8 @@ two kinds of expectation, and they are kept apart on purpose:
   :attr:`Mission.forbids_tools`, :attr:`Mission.expects_outcome`,
   :attr:`Mission.expects_grounded`, :attr:`Mission.answer_must_match`,
   :attr:`Mission.answer_must_not_match`, :attr:`Mission.max_reply_rejected`,
-  :attr:`Mission.must_not_stage`, :attr:`Mission.expects_caveat_ok` — every
+  :attr:`Mission.must_not_stage`, :attr:`Mission.expects_caveat_ok`,
+  :attr:`Mission.expects_carried`, :attr:`Mission.expects_recovered` — every
   one of which :mod:`core.eval.score` can answer out of the NDJSON records
   the run emitted, with no opinion of its own;
 * the **reader** rubric — :attr:`Mission.must` and :attr:`Mission.must_not` —
@@ -287,6 +288,24 @@ class Mission:
     #: near-miss: ``answered_with_caveat`` beats a refusal when a step failed
     #: with usable results already in hand.  §2.5's second regression case.
     expects_caveat_ok: bool = False
+    #: Literals that must ride a **later** ``tool_call``'s ``arguments`` after
+    #: appearing in an **earlier** ``tool_result``.  The dependency check: a
+    #: release token, a job id, a version that the next call has to be shaped
+    #: by.  A call carrying the literal with no earlier receipt holding it is
+    #: reported differently from a call that never carried it at all — the
+    #: first is a value the model typed and the second is a step it skipped,
+    #: and only one of them is an agent inventing an identifier.
+    expects_carried: Tuple[str, ...] = ()
+    #: Wire names that must fail **and then succeed**: a ``tool_result`` with
+    #: ``ok: false`` followed, later in the same run, by an ``ok: true`` one
+    #: for the same name.  The long-horizon check, and the reason it is a
+    #: stream check rather than a reader's: an agent that reads a refusal
+    #: naming the fix, applies it and carries on is indistinguishable in
+    #: prose from one that got it right first time, and the two are not the
+    #: same capability.  A run that never failed is reported as having had
+    #: nothing to recover from, in as many words, so a mission whose premise
+    #: did not hold is not mistaken for an agent that gave up.
+    expects_recovered: Tuple[str, ...] = ()
 
     #: Extra CLI flags this one mission is spawned with — ``--swarm`` for a
     #: routing case, ``--gate-tool X`` for a boundary one.  Every ``--token``
@@ -646,7 +665,8 @@ def check_the_suite_is_gradeable(suite: Optional[Suite] = None) -> None:
         if not mission.because.strip():
             problems.append(f"{where}: no stated reason for existing")
 
-        for tool in (*mission.expects_tools, *mission.forbids_tools):
+        for tool in (*mission.expects_tools, *mission.forbids_tools,
+                     *mission.expects_recovered):
             if suite.tools and tool not in suite.tools:
                 problems.append(
                     f"{where}: names the tool {tool!r}, which this suite's "

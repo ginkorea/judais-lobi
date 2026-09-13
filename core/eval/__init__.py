@@ -17,13 +17,24 @@ The package is five modules and one rule:
 * :mod:`core.eval.stub_suite` — the eleven missions this repository ships,
   over its own MCP stub server, so the harness runs with no GPU and no
   platform.
+* :mod:`core.eval.benchmark_suite` — twelve more, chosen so that the way
+  they fail is a job the RUNTIME could have done: multi-hop evidence,
+  missing evidence, contradictory evidence, dependency reasoning,
+  long-horizon recovery, misleading evidence.  ROADMAP §2.9.3's benchmark
+  pack, on this machinery and not a second framework.
 * :mod:`core.eval.score` — the verdict, computed **only** from the recorded
   stream.
-* :mod:`core.eval.run` — ``python -m core.eval run|measure|score|check``.
+* :mod:`core.eval.run` — ``python -m core.eval
+  run|measure|ablation|score|check``.
 * :mod:`core.eval.measure` — the **matrix**: the suite run once per entry of
   ``MEASUREMENTS`` against one endpoint, and a table of the differences.  A
   default is decided by a comparison and never by a single score, and every
   row is recorded so the table can be produced again with no GPU.
+* :mod:`core.eval.ablation` — the **arms**: the same missions across a
+  declared set of CLI flag deltas, paired mission by mission, with a Wilson
+  interval on each arm's rate.  An arm whose flags the spawn line does not
+  accept is skipped with the reason, so a piece that has not been built yet
+  still has its column.
 
 The rule is the third bullet.  An agent's summary is evidence about its
 reporting, never about its behaviour, so every machine check is answered from
@@ -39,6 +50,8 @@ here knows a tool name, an asset id or a deployment.
 # `core.eval.measure` would shadow the submodule of that name on the package,
 # and the next `from core.eval import measure` would get a function where it
 # wanted a module. `core.eval.measure.measure` is the one way in.
+from core.eval.ablation import (ARMS, Ablation, Arm, ArmResult, Unavailable,
+                                ablate, accepted_flags, paired, wilson)
 from core.eval.measure import (MEASUREMENTS, Configured, Matrix, Measurement,
                                Unmeasurable)
 from core.eval.score import (Half, NoStream, Report, Totals, Verdict,
@@ -57,4 +70,6 @@ __all__ = [
     "Half", "NoStream", "Report", "Totals", "Verdict", "records_from",
     "score_run", "score_suite",
     "MEASUREMENTS", "Configured", "Matrix", "Measurement", "Unmeasurable",
+    "ARMS", "Ablation", "Arm", "ArmResult", "Unavailable", "ablate",
+    "accepted_flags", "paired", "wilson",
 ]

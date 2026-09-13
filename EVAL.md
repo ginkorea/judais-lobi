@@ -8,11 +8,14 @@ run emitted — `core/runtime/contract.py`'s records, the same bytes a platform'
 pane reads — and answers every question from that.
 
 Modules: `core/eval/suite.py` (what a mission is), `core/eval/stub_suite.py`
-(the eleven missions this repo ships), `core/eval/score.py` (the verdict),
-`core/eval/run.py` + `python -m core.eval` (the command line),
-`core/eval/measure.py` (the matrix — §12). Tests:
+(the eleven missions this repo ships), `core/eval/benchmark_suite.py` (twelve
+more, chosen so the way they fail is the harness's job — §13),
+`core/eval/score.py` (the verdict), `core/eval/run.py` + `python -m core.eval`
+(the command line), `core/eval/measure.py` (the matrix — §12),
+`core/eval/ablation.py` (the arms — §14). Tests:
 `tests/test_eval_suite.py`, `tests/test_eval_score.py`,
 `tests/test_eval_run.py`, `tests/test_eval_stub_suite.py`,
+`tests/test_eval_benchmark_suite.py`, `tests/test_eval_ablation.py`,
 `tests/test_eval_live.py`. Corpus: `tests/fixtures/eval/`.
 
 ---
@@ -33,7 +36,7 @@ A mission carries two kinds of expectation, kept apart on purpose:
 
 | kind | fields | who grades it |
 |---|---|---|
-| machine | `expects_tools`, `forbids_tools`, `expects_outcome`, `expects_grounded`, `answer_must_match`, `answer_must_not_match`, `max_reply_rejected`, `must_not_stage`, `expects_caveat_ok` | the scorer, from the stream |
+| machine | `expects_tools`, `forbids_tools`, `expects_outcome`, `expects_grounded`, `answer_must_match`, `answer_must_not_match`, `max_reply_rejected`, `must_not_stage`, `expects_caveat_ok`, `expects_carried`, `expects_recovered` | the scorer, from the stream |
 | reader | `must`, `must_not` | a person, from the prose |
 
 The reader's clauses are **surfaced and never auto-scored** (`Verdict.needs_reader`).
@@ -54,6 +57,8 @@ is the most valuable finding a suite produces.
 | `max_reply_rejected` | the count of `reply_rejected` |
 | `must_not_stage` | `plan` on any `step_started` |
 | `expects_caveat_ok` | widens the accepted outcome by `answered_with_caveat` |
+| `expects_carried` | a literal in a `tool_result`, and then in a **later** `tool_call.arguments` — the call was shaped by the evidence and not by the prompt. A call carrying it with no earlier receipt holding it is reported as *typed, not carried*, which is a different agent from one that never carried it at all |
+| `expects_recovered` | a `tool_result` with `ok: false` for a name, and a later one with `ok: true` for the same. A run that never failed is reported as having had nothing to recover from, so a mission whose premise did not hold is not mistaken for an agent that gave up |
 
 Grounding is **read, never recomputed**. `core/runtime/grounding.py` is the one
 owner of whether an answer is supported by its evidence, the emitter renders its
@@ -778,3 +783,213 @@ What the table says, read against the 0.16-era baseline above:
 This is the release score ROADMAP §4 asks for. It is a bar, not a verdict:
 the next model this harness is pointed at is the one this framework was built
 to run on, and these are the numbers it has to match on its own hardware.
+
+---
+
+## 13. The benchmark pack
+
+`core/eval/benchmark_suite.py` — twelve missions over
+`tests/bench_stub_server.py`, run under `tests/fixtures/eval/bench_skill.md`,
+reachable as `--suite benchmark`. ROADMAP §2.9.3 asks for it **on this
+machinery and not a second eval framework**, and that is the one rule the pack
+was built to: same `Mission`, same `Suite`, same scorer, same report.
+
+The stub suite (§7) asks *does this build still work* — one mission per flag,
+over the plane that exercises the MCP client. The benchmark pack asks the
+question the 1.0 → 2.0 arc is built on: **does the runtime make the model
+better**. That needs missions chosen so that the way they fail is a job the
+harness could have done. A question a bigger model simply knows the answer to
+measures the model; a question whose answer is three receipts deep, or absent,
+or contradicted, measures whether anything held the problem while the model
+worked.
+
+### The six classes, and why each is harness-sensitive
+
+| class | what it needs | the failure the runtime is supposed to prevent |
+|---|---|---|
+| **multi-hop evidence** | facts from ≥3 receipts, joined across steps | an answer assembled from the two receipts still in the window |
+| **missing evidence** | the asked fact is genuinely absent | a fabrication — and it reads exactly like an answer |
+| **contradictory evidence** | two receipts disagree | one side asserted alone. **Surfacing beats silence** (the owner's ruling): both figures with their sources, under a caveat, is the pass |
+| **dependency reasoning** | the right next call depends on a prior receipt (a token, an id the question never names) | a call composed out of the question — which sometimes *works*, and is still the failure |
+| **long-horizon recovery** | an early tool error whose text names the fix | the refusal reported to the person as the result, i.e. a fabricated absence |
+| **misleading evidence** | a plausible-but-wrong field beside the right one | the wrong field quoted. It is a real figure from a real receipt, so every check that asks only "did this number come from a tool" passes it |
+
+The last class is not invented. ROADMAP §2.9.2: a 20B model read a real
+platform's `total_s=154.024` — elapsed seconds — as a "total score" and served
+a 121.2% share off it. The *shape* is reproduced here with this world's own
+numbers; the deployment's figures stay in the deployment.
+
+### The missions
+
+| key | class | flag | split |
+|---|---|---|---|
+| `three_receipts_one_total` | multi-hop | chaining | train |
+| `out_and_back_on_one_route` | multi-hop | synthesis | **test** |
+| `who_owns_that_entry` | missing | absence | train |
+| `which_route_ran_that_window` | missing | absence | **test** |
+| `two_counts_for_one_entry` | contradictory | partial_synthesis | train |
+| `the_count_will_not_settle` | contradictory | partial_synthesis | **test** |
+| `release_the_entry_you_were_given` | dependency | chaining | train |
+| `release_whichever_one_came_back` | dependency | chaining | train |
+| `the_window_is_not_called_two` | recovery | orientation | train |
+| `the_kinds_are_not_the_words` | recovery | orientation | **test** |
+| `how_much_settled_not_how_long` | misleading | synthesis | train |
+| `settled_is_not_outstanding` | misleading | synthesis | train |
+
+**No new flags.** Every mission captures one of the eleven in §2, and the suite
+**declares** the five it captures rather than claiming all of them
+(`Suite.flags` — §9). A class is a way of *choosing* missions; a flag is a
+capability that can fail while the others pass, and minting one per class would
+have been six capabilities nobody could report against the suite that already
+measures them. Two new *machine checks* were needed and are in §1's table:
+`expects_carried` (dependency) and `expects_recovered` (recovery). Both are
+answered from the stream like every other one.
+
+Four of the twelve are held out — 33%, inside `TEST_SHARE` — one from each of
+four different classes, covering four of the five flags. The dependency and
+misleading classes are train-only at this size; the day either gains a third
+mission, one of them moves, with a dated line in `RUBRIC_CHANGES`.
+
+### The plane
+
+`tests/bench_stub_server.py` serves six tools over stdio: a ledger listing and
+a ledger record, an audit that is allowed to disagree with the ledger, window
+summaries, a calculator, and a release that refuses every token but the one an
+entry's own record carries. Four entries, two windows, and every figure in the
+world distinct, so a right answer and a wrong one are never the same number.
+
+Two of its vocabularies are **deliberately unguessable**: the windows are
+`win-0002`/`win-0003` where a person says "window 2", and the listing's kinds
+are `out`/`back` where a person says shipments and returns. Only a refusal
+names them, and each refusal names the fix — which is what makes the recovery
+class's first error unavoidable rather than scripted in. A plane whose
+vocabulary a model could guess would produce a recovery mission that a lucky
+run passes without recovering from anything.
+
+### The corpus
+
+`tests/fixtures/eval/benchmark/<key>.jsonl` is a real stream from a real run of
+the real loop: the CLI, the bench server over stdio, the skill manifest, the
+SAFE profile, the grounding validator, the durable store. `<key>.bad.jsonl` is
+the same mission run by an agent that commits the failure the mission exists to
+catch, and `release_the_entry_you_were_given` carries a third,
+`.invents.jsonl` — the agent that **guessed the right token**, got the release
+through, and wrote the good agent's answer word for word. It fails, and the
+reason names why: *typed, not carried*. That pair is the argument for
+`expects_carried` in one place.
+
+Regenerate with:
+
+```
+JUDAIS_LOBI_EVAL_FIXTURES=refresh .venv/bin/python -m pytest tests/test_eval_benchmark_suite.py
+```
+
+and read the diff. `tests/test_eval_benchmark_suite.py` also asserts that a
+live run and the committed stream produce the same verdict, that every bad
+stream fails **for the reason the mission names** rather than on a
+technicality, and that no prompt names anywhere real.
+
+---
+
+## 14. Ablation
+
+`python -m core.eval ablation` — the owner's instruction of 13 September 2026,
+*testing through ablation to make sure each piece contributes to the whole*.
+
+`measure` (§12) runs a fixed matrix and asks which configuration is better.
+`ablation` runs **one mission set across several arms** and asks whether a
+piece that was added contributes anything — which is the question a runtime
+under construction keeps having to answer, and it is a *paired* question rather
+than a league table.
+
+```
+python -m core.eval ablation --suite benchmark --split all \
+    --out ~/data/tmp/ablation --report ~/data/tmp/ablation/report.md \
+    --arms baseline,shadow --repeats 3 \
+    -- judais --provider local --model <the model> \
+       --mcp-stdio "python tests/bench_stub_server.py" \
+       --skill tests/fixtures/eval/bench_skill.md --mcp-timeout 120
+```
+
+### An arm is data
+
+`core/eval/ablation.py`'s `ARMS` is a tuple of `Arm(name, why, flags)`. The
+flags are appended to the caller's spawn line and **that is the only difference
+between two arms**: same missions, same order, same provider, model, plane,
+skill and suite. A toggle that lands next month is one entry in that tuple and
+no branch anywhere.
+
+| arm | flag delta | what it is for |
+|---|---|---|
+| `baseline` | *(none)* | the spawn line exactly as the caller wrote it. Every other arm is read against it |
+| `shadow` | `--cognition` | ROADMAP §2.9.4 — the epistemic prototype attached in shadow, emitting state and never gating the answer path |
+| `compiled-context` | `--compiled-context` | ROADMAP §2.9.5 — Phase 18 |
+| `graph` | `--graph-context` | ROADMAP §2.9.7 — Phase 20, conditional on Phase 19 |
+
+Three of those four flags do not exist in this release. They are declared
+anyway, so the column is in the table from the first run and says SKIPPED until
+the flag lands — rather than appearing one day with no history behind it.
+
+### The availability rule
+
+**An arm whose flags the spawn line does not accept is SKIPPED with the reason,
+and never scored.** Whether it accepts them is decided **mechanically**, by
+running the spawn line's own program with `--help` and reading the `--flags`
+out of what it prints. Nothing is hardcoded: the same table starts reporting a
+column the day the flag arrives, with no edit here.
+
+Three answers, and they are three different facts:
+
+* the help names the flag → the arm runs;
+* the help does not name it → SKIPPED, *"the installed CLI does not accept
+  `--x`"*;
+* the program could not be asked → SKIPPED, *"could not be asked what flags it
+  accepts"*. A help text that does not mention `--events` is not the help of a
+  program this harness could have driven — the harness appends `--events` to
+  every mission it spawns — so the probe answers **unknown** rather than
+  reporting a flag set read off the wrong program.
+
+An arm with no flags is always available: it is the caller's own line.
+
+This is the opposite of `measure`'s rule, which refuses a matrix that names a
+flag `contract.CLI_FLAGS` does not publish, and deliberately so. A
+*measurement* may only use flags this repository has promised, because somebody
+outside this checkout has to be able to repeat it. An *ablation* is about a
+piece that may not be built yet and has to be able to say so.
+
+### What the report contains
+
+* **The arm table**: every arm, its exact flag delta, whether it ran, and why
+  not. A comparison whose deltas are not printed is one a reader cannot check.
+* **Per arm, per half**: missions passed (all-must-pass), runs `k/n`, the rate,
+  and a **95% Wilson interval**. Wilson and not the normal approximation: at the
+  n an eval tier actually runs the normal interval goes outside [0, 1], and it
+  collapses to ±0 on a clean sweep — which is the case a benchmark hits most
+  often and the one where a false certainty does the most damage.
+* **Per mission × arm**: `PASS`/`FAIL`, or `PASS n/m` over repeats.
+* **Paired against the baseline**: how many missions the arm fixed, how many it
+  broke, how many it left alone, **and which**. Paired mission by mission — the
+  same prompt and the same plane on both sides, one flag delta between them.
+  The baseline is the first arm that *ran*, and the report names it: with
+  `--arms shadow,graph` the pairing is against `shadow` and the report says so.
+* **The model beside every number.** The provider, the model and the commit sit
+  under every table. A rate without the model that produced it is a figure
+  somebody quotes next month against a different endpoint.
+* **The directories**, so `python -m core.eval score --runs <dir>` reproduces
+  any arm's verdicts with no endpoint at all.
+
+`--report PATH` writes the Markdown there and the same ablation as JSON beside
+it; `<out>/ablation.json` is always written.
+
+### Repeats are all-must-pass
+
+`--repeats N` runs every arm N times. **A mission passes an arm only if all N
+repeats passed it.** That is the reliability idiom the rc iteration paid for: a
+20-scenario tier at a 20B is twenty dice landing 14–16, and an arm credited
+with a mission it won once in three is an arm credited with noise. A majority
+vote would have called that a pass, which is why the rule is stated on the
+table itself and asserted in `tests/test_eval_ablation.py`.
+
+The rate the interval is computed over is the **run**-level one — every mission
+of every repeat — because that is the n the interval is honest about. Both
+numbers are printed side by side and neither is derived from the other.

@@ -26,6 +26,11 @@ what the mission asks        where the answer comes from
 ``max_reply_rejected``       the count of ``reply_rejected``
 ``must_not_stage``           ``plan`` on any ``step_started``
 ``expects_caveat_ok``        widens the accepted outcome by one word
+``expects_carried``          a literal in a ``tool_result`` and then in a
+                             LATER ``tool_call.arguments`` — the call was
+                             shaped by the evidence and not by the prompt
+``expects_recovered``        a ``tool_result`` with ``ok: false`` for a name,
+                             and a later one with ``ok: true`` for the same
 ===========================  ===================================================
 
 ``must`` and ``must_not`` are **not** here.  They are surfaced on the verdict
@@ -238,6 +243,78 @@ def _tools_reached_for(records: Sequence[Mapping[str, Any]]) -> Tuple[str, ...]:
     return tuple(seen)
 
 
+def _as_text(value: Any) -> str:
+    """One tool payload as searchable text, whatever shape it arrived in.
+
+    A result's ``output`` is a string on one plane and a mapping on the
+    next, and ``arguments`` is always a mapping; a check that could only
+    read one of them would be a check that worked on ``mcp.echo`` and not
+    on a typed server.  ``default=str`` so a payload holding something JSON
+    cannot name is still searched rather than raising in the scorer.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):           # pragma: no cover - defensive
+        return str(value)
+
+
+def _carried(records: Sequence[Mapping[str, Any]], literal: str) -> str:
+    """``""`` when *literal* travelled from a receipt into a later call.
+
+    Two different failures, named apart, because they are two different
+    agents.  A literal that never rode any call's arguments is a step the
+    run skipped.  A literal that rode one with **no earlier tool result
+    holding it** is a value the model typed — which on an identifier is
+    the fabrication the whole harness exists to catch, and which reads in
+    prose exactly like the run that did it properly.
+
+    Order is the whole check: the receipt has to come first.  A call whose
+    argument is later echoed back by the plane is not evidence of anything.
+    """
+    in_evidence = False
+    typed = False
+    for record in records:
+        event = record.get("event")
+        if event == "tool_result":
+            if literal in _as_text(record.get("output")):
+                in_evidence = True
+        elif event == "tool_call":
+            if literal in _as_text(record.get("arguments")):
+                if in_evidence:
+                    return ""
+                typed = True
+    if typed:
+        return (f"{literal!r} rode a tool call's arguments, but no earlier "
+                f"tool result contained it — it was typed, not carried")
+    return (f"no tool call carried {literal!r} in its arguments; the next "
+            f"call was not shaped by what the plane returned")
+
+
+def _recovered(records: Sequence[Mapping[str, Any]], tool: str) -> str:
+    """``""`` when *tool* failed and a later call of it came back ``ok``."""
+    failed = False
+    seen = False
+    for record in _all(records, "tool_result"):
+        if record.get("tool") != tool:
+            continue
+        seen = True
+        if not record.get("ok"):
+            failed = True
+        elif failed:
+            return ""
+    if not seen:
+        return f"never called {tool}, so it neither failed nor recovered"
+    if not failed:
+        return (f"{tool} never failed, so there was nothing to recover from "
+                f"— this mission's premise did not hold on this run")
+    return (f"{tool} failed and no later call of it succeeded; the error "
+            f"named the fix and the run did not apply it")
+
+
 def _kpis(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     """The report's columns for one run, all of them off the stream."""
     started = _last(records, "mission_started") or {}
@@ -395,6 +472,17 @@ def score_run(source: Source, mission: Mission) -> Verdict:
             reasons.append(
                 f"{rejected} reply/replies the loop could not read; this "
                 f"mission allows {mission.max_reply_rejected}")
+
+    # -- the call that had to be shaped by a receipt -------------------------
+    for literal in mission.expects_carried:
+        problem = _carried(records, literal)
+        if problem:
+            reasons.append(problem)
+
+    for tool in mission.expects_recovered:
+        problem = _recovered(records, tool)
+        if problem:
+            reasons.append(problem)
 
     if mission.must_not_stage and kpis["staged"]:
         reasons.append(
