@@ -110,6 +110,17 @@ The five modules: :mod:`~core.cognition.types` (the records and the closed
 sets), :mod:`~core.cognition.matching` (unification, and nothing else),
 :mod:`~core.cognition.events` (the log and its version),
 :mod:`~core.cognition.state` (the store).
+
+**The sibling.**  :mod:`core.cognition.graph` holds entity↔entity
+*relationships* under the same constitution — pure, deterministic, replayable,
+shadow and additive.  The division is one sentence: this package owns
+attribute claims and derivation, that one owns topology, an edge lives there
+once, and its ``as_propositions`` is a derived projection for when a rule here
+needs edges as triples.  It reuses this package's
+:class:`~core.cognition.types.EvidenceAuthority` and
+:class:`~core.cognition.types.EvidenceRef` rather than minting its own, and
+nothing here imports it: the dependency runs one way, the way every other one
+in this package does.
 """
 
 from core.cognition.events import (COUNT_KEY, EVENT_OPS,
