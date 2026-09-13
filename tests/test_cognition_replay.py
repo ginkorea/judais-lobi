@@ -1392,6 +1392,46 @@ class TestTheConfidenceReadIsLinearInTheGraph:
             f"{len(calls)} grade calls over {len(state.propositions())} "
             "propositions — the walk is re-descending every path")
 
+    def test_a_cyclic_node_is_excluded_from_the_grade_memo(self):
+        """The exclusion, held by an observable answer rather than by
+        inspecting the cache.
+
+        A node walked *inside* a cycle has its route back cut — the loop
+        closes and that branch yields nothing — so it can grade lower than
+        the same node reached by a path the loop does not cross. Cache the
+        cut answer and a later premise in the same call reads it as the
+        truth.
+
+        Here `d` needs both `w` and `b`. Walking `w` descends `a → b` and
+        meets `a` again, so `b` is graded with its only route closed: no
+        grade at all. `b` is then `d`'s second premise, where its route
+        through `a` is open and gives SOURCE. Memoise the cut answer and `d`
+        loses its grade entirely.
+
+        `_leaves` carries the same exclusion for the same reason, and it is
+        not pinned here: a union of leaf refs is monotone, so the cut walk
+        returns a subset of the full one and a later caller that needed the
+        difference would have to reach the node by a path this one did not
+        cover — which this shape cannot produce. The guard stays because the
+        two walks must agree about what a cycle means, not because a test
+        caught it.
+        """
+        state = CognitiveState()
+        for name, head, body in [
+            ("w", ("?x", "w", "?y"), [("?x", "a", "?y")]),
+            ("a", ("?x", "a", "?y"), [("?x", "b", "?y")]),
+            ("b", ("?x", "b", "?y"), [("?x", "a", "?y")]),
+            ("d", ("?x", "d", "?y"), [("?x", "w", "?y"), ("?x", "b", "?y")]),
+        ]:
+            state.add_rule(name, head, body, RuleAuthority.DOMAIN)
+        state.assert_observation(("alice", "a", "acct"), evidence=[RECEIPT])
+        state.derive()
+        ids = {p.field: p.id for p in state.propositions()}
+        assert set(ids) == {"a", "w", "b", "d"}, ids
+        assert state.support(ids["d"]).grade is EvidenceAuthority.SOURCE, (
+            "the cut walk's answer for `b` was cached and read back as the "
+            "truth by the premise that could see past the cycle")
+
     def test_the_leaves_of_a_deep_diamond_are_gathered_once(self):
         state = self._diamond(12)
         top = state.claim(("alice", "s12", "acct-9"))

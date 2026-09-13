@@ -1178,7 +1178,17 @@ class CognitiveState:
                     # other disagreement and moving nothing: neither claim
                     # outranks the other and the store has no receipt to
                     # prefer either.
-                    self._disagree(pid, other)
+                    #
+                    # The pair is CANONICALISED, and that is not cosmetic.
+                    # Every other disagreement has a side that fixes the
+                    # orientation — the hypothesis goes left, the observation
+                    # right — and this one does not, so `(H1, H2)` and
+                    # `(H2, H1)` are two different dedup keys for one fact.
+                    # Nothing notices while each claim arrives once; a late
+                    # `declare_field` walks the field and re-measures every
+                    # proposition on it, meeting the pair from both ends, and
+                    # writes the same disagreement twice.
+                    self._disagree(*self._ordered(pid, other))
         elif prop.live:
             for other in others:
                 if self._props[other].status is \
@@ -1198,8 +1208,24 @@ class CognitiveState:
         self._revise(pid, status=PropositionStatus.CONTESTED)
         self._retract_dependents([pid] + clashing)
 
+    @staticmethod
+    def _ordered(left: str, right: str) -> Tuple[str, str]:
+        """One orientation for a pair with no natural one: insertion order.
+
+        Ids are handed out in insertion order, so the earlier claim goes
+        first — which makes the row a fact about the store rather than about
+        which end of the pair a walk happened to reach first.
+        """
+        return ((left, right) if int(left[1:]) <= int(right[1:])
+                else (right, left))
+
     def _disagree(self, hypothesis: str, observed: str) -> None:
-        """Record a model's claim against the store's, and change nothing."""
+        """Record a model's claim against the store's, and change nothing.
+
+        For a hypothesis against an observation the argument names say what
+        they mean. For two hypotheses the caller canonicalises first (see
+        :meth:`_ordered`), and then ``left`` is simply the earlier claim.
+        """
         self._contradict(
             "hypothesis", hypothesis, observed, (),
             f"{self._props[hypothesis].render()} was offered against "

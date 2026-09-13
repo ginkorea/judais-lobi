@@ -1410,6 +1410,65 @@ class TestCardinalityIsDeclaredNotAssumed:
         state.declare_field("admin_access", "one")
         assert state.proposition(derived).status is PropositionStatus.CONTESTED
 
+    def test_a_late_declaration_measures_in_insertion_order(self):
+        """The order is the stability claim, so a test holds it.
+
+        The walk goes oldest-first, which makes the earliest claim the one
+        still standing when the later ones are measured against it — so the
+        ledger reads as a history rather than as a fact about how a dict
+        happened to iterate. Walk it in any other order — reversed, or sorted
+        by the values themselves — and the same three claims produce a
+        different ledger: different rows, naming different sides.
+
+        The values are deliberately NOT ascending. With `1, 2, 3` the
+        insertion order and the value order agree, so a walk that sorted by
+        value would write the same ledger and this test would be holding an
+        order it was not checking.
+        """
+        state = CognitiveState()
+        first = state.assert_observation(("job-7", "total_s", 3.0),
+                                         evidence=[RECEIPT])
+        second = state.assert_observation(("job-7", "total_s", 1.0),
+                                          evidence=[OTHER])
+        third = state.assert_observation(("job-7", "total_s", 2.0),
+                                         evidence=[EXTRACTED])
+        state.declare_field("total_s", "one")
+        assert [(c.kind, c.left, c.right) for c in state.contradictions()] == [
+            ("value", first, second),
+            ("value", first, third),
+        ]
+
+    def test_a_late_declaration_over_two_guesses_writes_one_row(self):
+        """A hypothesis against a hypothesis has no side that fixes the
+        orientation — no observation to put on the right — so `(H1, H2)` and
+        `(H2, H1)` are two dedup keys for one fact. Nothing notices while
+        each claim arrives once; the walk below meets the pair from both
+        ends, which is exactly what a late declaration does."""
+        state = CognitiveState()
+        first = state.assert_hypothesis(("job-7", "total_s", 1.0),
+                                        evidence=[EXTRACTED])
+        second = state.assert_hypothesis(("job-7", "total_s", 2.0),
+                                         evidence=[EXTRACTED])
+        state.declare_field("total_s", "one")
+        clash, = state.contradictions()
+        assert (clash.kind, clash.left, clash.right) == \
+            ("hypothesis", first, second)
+
+    def test_the_orientation_does_not_depend_on_which_guess_arrived_first(self):
+        """Canonicalised on insertion order, so the row is a fact about the
+        store rather than about which end of the pair a walk reached first."""
+        seen = []
+        for values in ((1.0, 2.0), (2.0, 1.0)):
+            state = CognitiveState()
+            state.declare_field("total_s", "one")
+            ids = [state.assert_hypothesis(("job-7", "total_s", value),
+                                           evidence=[EXTRACTED])
+                   for value in values]
+            clash, = state.contradictions()
+            assert clash.left == ids[0] and clash.right == ids[1]
+            seen.append(len(state.contradictions()))
+        assert seen == [1, 1]
+
     def test_a_late_declaration_is_one_event_and_replays(self):
         state = CognitiveState()
         state.assert_observation(("job-7", "total_s", 154.024),
@@ -1576,6 +1635,52 @@ class TestSettlingAValueCollision:
         live = [p.value for p in state.propositions(live=True)]
         assert len(live) <= 1, (
             f"a field declared to hold one value holds {live}")
+
+    def test_a_revived_CONCLUSION_is_measured_too_not_only_the_kept_side(self):
+        """The other half of "a revival is an arrival", and the half a store
+        built only around the kept side misses.
+
+        `owner=bob` is DERIVED from `lead=bob`. A second lead contests the
+        first, so the conclusion falls with it. A third owner value then
+        arrives and stands, because by then there is nothing live on `owner`
+        to disagree with. Settling the LEAD collision revives the lead — and
+        with it the conclusion — and the conclusion is now a second live
+        value on a field declared to hold one. It never passed through
+        `keep`: it came back through `_revive_dependents`.
+        """
+        state = CognitiveState()
+        state.declare_field("lead", "one")
+        state.declare_field("owner", "one")
+        state.add_rule("lead_owns", ("?j", "owner", "?p"),
+                       [("?j", "lead", "?p")], RuleAuthority.DOMAIN)
+        state.derive()
+        bob = state.assert_observation(("job-7", "lead", "bob"),
+                                       evidence=[RECEIPT])
+        state.derive()
+        conclusion, = [p.id for p in state.propositions() if p.field == "owner"]
+        assert state.proposition(conclusion).status is PropositionStatus.DERIVED
+
+        carol = state.assert_observation(("job-7", "lead", "carol"),
+                                         evidence=[OTHER])
+        state.derive()
+        assert state.proposition(conclusion).status is \
+            PropositionStatus.CONTESTED, "it fell with its premise"
+
+        zed = state.assert_observation(("job-7", "owner", "zed"),
+                                       evidence=[EXTRACTED])
+        state.derive()
+        assert state.proposition(zed).live, "nothing live to disagree with it"
+
+        clash, = [c for c in state.contradictions()
+                  if c.kind == "value" and {c.left, c.right} == {bob, carol}]
+        state.settle(clash.id, keep=bob, evidence=[RECEIPT])
+        state.derive()
+
+        live = [p.value for p in state.propositions(live=True)
+                if p.field == "owner"]
+        assert len(live) <= 1, (
+            f"`owner` is declared to hold one value and holds {live}; the "
+            "conclusion came back through the revival and was never measured")
 
     def test_the_same_pair_colliding_again_is_a_new_row(self):
         """A settled row is history — it records a disagreement somebody
