@@ -133,8 +133,8 @@ merges. Version bump every phase.
 | 15 | First-party skills | ✅ 0.17.0 — packs by name; `analyst`, `research` (+ the `research` profile), `coding` (multi-file, verified) with eval suites and live proofs; memory (core/recall/working); tools over MCP + multi-server; campaigns on `Run` + `--grant`. Left: the mission-pack `templates/` roles composed as `Run`s (post-1.0) |
 | 14 | The step budget is gone (0.15) | ✅ 0.15.0 — no framework step budget; operator ceilings only; `core/runtime/supervisor.py` catches repetition (§2.6a) |
 | — | *Release 1.0.0 — the initial release* | ✅ tag c61397e 21 Aug 2026, PyPI 24 Aug; the rc iteration (rc1–rc5, 18–21 Aug) measured five framework changes against a reference platform's eval and is §2.9.2's evidence |
-| 16 | Cognition baseline — benchmark pack + the extraction number | §2.9.3 — the 2.0 gatekeeper; kill-early lives here |
-| 17 | Epistemic prototype + shadow cognition | §2.9.4 — `reasoning` records beside the stream; cognition-off byte-identical |
+| 16 | Cognition baseline — benchmark pack + the extraction number | §2.9.3 — instruments beside the build (owner re-ordered 13 Sep 2026: build first); kill-early moved to Phase 19 |
+| 17 | Epistemic prototype + shadow cognition | §2.9.4 — **in build since 13 Sep 2026**; `reasoning` records beside the stream; cognition-off byte-identical, cognition-on never blocks an answer |
 | 18 | Compiled context + grammar compiler | §2.9.5 — constrained decoding pulled early on rc evidence |
 | 19 | Obligation control — the core experiment | §2.9.6 — the commit-or-kill decision for the whole arc |
 | 20 | Conditional expansions — graph working set, derived swarm, solver, routing | §2.9.7 — each behind its own ablation, none before Phase 19 reads positive |
@@ -1058,7 +1058,18 @@ is built, and why Phase 21 (the fine-tune) is load-bearing rather than polish.
 
 #### 2.9.3 Phase 16 — the cognition baseline
 
-The gatekeeper; nothing in Phases 17–21 begins without it.
+~~The gatekeeper; nothing in Phases 17–21 begins without it.~~ **Re-ordered by
+the owner, 13 Sep 2026**: build the symbolic harness first; the measurements
+below run *alongside* the build as instruments, not in front of it as gates.
+The owner's reasoning is a ruling this arc now carries everywhere: evidence
+gating that blocks a working harness was tried in production and partially
+removed (1.1.2's `--no-grounding`; "evidence is great, but a functioning
+harness is better"). Two consequences. The cognitive layer is **shadow and
+additive from birth** — it emits state and guidance, never a new gate on the
+answer path (§2.9.4's cognition-off-byte-identical rule is the floor, and
+"cognition-on never blocks an answer" joins it). And the kill criterion moves
+from Phase 16 to Phase 19 where it always really lived: the A/B on a working
+cognitive harness, not a pre-measurement.
 
 - **Benchmark pack** on the existing `core/eval` machinery — no second eval
   framework. Mission classes that are harness-sensitive by construction:
