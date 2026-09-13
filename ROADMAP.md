@@ -133,11 +133,11 @@ merges. Version bump every phase.
 | 15 | First-party skills | ✅ 0.17.0 — packs by name; `analyst`, `research` (+ the `research` profile), `coding` (multi-file, verified) with eval suites and live proofs; memory (core/recall/working); tools over MCP + multi-server; campaigns on `Run` + `--grant`. Left: the mission-pack `templates/` roles composed as `Run`s (post-1.0) |
 | 14 | The step budget is gone (0.15) | ✅ 0.15.0 — no framework step budget; operator ceilings only; `core/runtime/supervisor.py` catches repetition (§2.6a) |
 | — | *Release 1.0.0 — the initial release* | ✅ tag c61397e 21 Aug 2026, PyPI 24 Aug; the rc iteration (rc1–rc5, 18–21 Aug) measured five framework changes against a reference platform's eval and is §2.9.2's evidence |
-| 16 | Cognition baseline — benchmark pack + the extraction number | §2.9.3 — instruments beside the build (owner re-ordered 13 Sep 2026: build first); kill-early moved to Phase 19 |
-| 17 | Epistemic prototype + shadow cognition | §2.9.4 — **in build since 13 Sep 2026**; `reasoning` records beside the stream; cognition-off byte-identical, cognition-on never blocks an answer |
+| 16 | Cognition baseline — benchmark pack + the extraction number | ✅ 1.2.0 (14 Sep 2026) — `core.eval extraction` (the semantic-reliability instrument, 49 real-receipt probes) + the 12-mission benchmark pack + `core.eval ablation` (arms as flag-deltas; the shadow arm graduated the night it was declared). The NUMBERS are still owed: the reference platform runs extraction on its pool from this tag |
+| 17 | Epistemic prototype + shadow cognition | ✅ 1.2.0 (14 Sep 2026) — `core/cognition` (kernel: authority walls, semi-naive closure, cardinality, settlement, confidence API, exact replay) + `--cognition` shadow attachment writing `reasoning.jsonl`; off byte-identical, on never blocks an answer, wall-clock cost stated |
 | 18 | Compiled context + grammar compiler | §2.9.5 — constrained decoding pulled early on rc evidence |
 | 19 | Obligation control — the core experiment | §2.9.6 — the commit-or-kill decision for the whole arc |
-| 20 | Conditional expansions — graph working set, derived swarm, solver, routing | §2.9.7 — each behind its own ablation, none before Phase 19 reads positive |
+| 20 | Conditional expansions — graph working set, derived swarm, solver, routing | §2.9.7 — the graph CORE was pulled forward by the owner and shipped in 1.2.0 (`core/cognition/graph`: authority-carrying edges, budgeted hydrate, replay); its context-feeding arm and the rest stay behind Phase 19's ablation |
 | 21 | Specialized local models (plural) | §2.9.8 — a per-model fine-tune loop, process documented in `MODELS.md` (owner, 13 Sep: never peg to one model) |
 
 The release numbers in the second column are February's guesses at which
