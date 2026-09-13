@@ -40,7 +40,12 @@ to prevent:
     an early tool error whose text names the fix.  Correct is an adapted
     retry and then completion; the failure is a run that reports the
     error as a wall.  Scored with
-    :attr:`~core.eval.suite.Mission.expects_recovered`.
+    :attr:`~core.eval.suite.Mission.expects_recovered`, and the refusal is
+    made unavoidable by an **enum** the plane never lists — the ledger's
+    kind words, the calculator's operation names.  Not by an id: ids are
+    listed here, so a mission built on an id refusal would be measuring a
+    run that failed to check a catalogue, which is the missing-evidence
+    class's business and not this one's.
 ``misleading evidence``
     a plausible-but-wrong field beside the right one — seconds of wall
     clock next to a unit count, what is outstanding next to what
@@ -58,9 +63,9 @@ inventing one per class would have been six capabilities nobody could
 report against the suite that already measures them.
 
 **The plane** is ``tests/bench_stub_server.py``: four ledger entries, an
-audit that disagrees on two of them, two windows, a calculator and a
-release that refuses any token but the one the entry's own record
-carries.  It is invented, it is generic, and every figure in it is
+audit that disagrees on two of them, two windows with an index over them,
+a calculator and a release that refuses any token but the one the entry's
+own record carries.  It is invented, it is generic, and every figure in it is
 distinct so that a right answer and a wrong one are never the same
 number.  Python and not YAML for :mod:`core.eval.stub_suite`'s reason:
 ``tests/`` is out of the wheel and a suite under it could not be checked
@@ -69,11 +74,13 @@ on a bare install.
 
 from __future__ import annotations
 
+from typing import Dict, Tuple
+
 from core.eval.suite import (Mission, RubricChange, Suite,
                              check_the_suite_is_gradeable)
 
 __all__ = ["SUITE", "MISSIONS", "TOOLS", "ASSETS", "IDENTIFIER_PATTERN",
-           "CLASSES", "RUBRIC_CHANGES"]
+           "CLASSES", "CLASS_NAMES", "RUBRIC_CHANGES"]
 
 
 #: Every wire name the bench plane serves, as the bridge names them
@@ -81,8 +88,8 @@ __all__ = ["SUITE", "MISSIONS", "TOOLS", "ASSETS", "IDENTIFIER_PATTERN",
 #: runner adds to every run.
 TOOLS = (
     "mcp.ledger_index", "mcp.ledger_entry", "mcp.audit_count",
-    "mcp.window_rollup", "mcp.arithmetic", "mcp.release_entry",
-    "mission_result",
+    "mcp.window_index", "mcp.window_rollup", "mcp.arithmetic",
+    "mcp.release_entry", "mission_result",
 )
 
 #: The ids a prompt may name, and what the plane holds for each.  Every one
@@ -103,22 +110,16 @@ ASSETS = {
 #: suite's: it exists to catch a prompt naming data the plane does not hold.
 IDENTIFIER_PATTERN = r"\bled\.[0-9a-z]{2,}\b"
 
-#: The six classes, and which missions belong to each.  Data rather than
-#: prose because the report of an ablation is read by class — "did the arm
-#: move multi-hop" is the question, and a class that lived only in a
-#: docstring could not be asked.
-CLASSES = {
-    "multi_hop": ("three_receipts_one_total", "out_and_back_on_one_route"),
-    "missing": ("who_owns_that_entry", "which_route_ran_that_window"),
-    "contradictory": ("two_counts_for_one_entry",
-                      "the_count_will_not_settle"),
-    "dependency": ("release_the_entry_you_were_given",
-                   "release_whichever_one_came_back"),
-    "recovery": ("the_window_is_not_called_two",
-                 "the_kinds_are_not_the_words"),
-    "misleading": ("how_much_settled_not_how_long",
-                   "settled_is_not_outstanding"),
-}
+#: The six class names, in the order the pack is read in.  The **names**
+#: are data here; which mission belongs to which is not — that is
+#: :attr:`core.eval.suite.Mission.mission_class`, on the mission itself,
+#: and :data:`CLASSES` below is derived from it.  A hand-written second
+#: list was the shape this repository has paid for before: two owners of
+#: one fact, and the second one drifts.
+CLASS_NAMES: Tuple[str, ...] = (
+    "multi_hop", "missing", "contradictory", "dependency", "recovery",
+    "misleading",
+)
 
 
 RUBRIC_CHANGES = (
@@ -145,6 +146,7 @@ RUBRIC_CHANGES = (
 THREE_RECEIPTS = Mission(
     key="three_receipts_one_total",
     flag="chaining",
+    mission_class="multi_hop",
     split="train",
     prompt=(
         "Across every shipment on the books, how many units are there "
@@ -179,6 +181,7 @@ THREE_RECEIPTS = Mission(
 OUT_AND_BACK = Mission(
     key="out_and_back_on_one_route",
     flag="synthesis",
+    mission_class="multi_hop",
     split="test",
     prompt=(
         "On the south route: how many units went out, how many came back, "
@@ -213,6 +216,7 @@ OUT_AND_BACK = Mission(
 WHO_OWNS = Mission(
     key="who_owns_that_entry",
     flag="absence",
+    mission_class="missing",
     split="train",
     prompt=(
         "Which team owns led.b07? I need the name for a handover note."
@@ -241,12 +245,18 @@ WHO_OWNS = Mission(
     max_reply_rejected=0,
     answer_must_match=(r"(?i)no owner|not recorded|does not (?:say|carry|"
                        r"name)|nothing .{0,30}owner",),
-    answer_must_not_match=(r"team-[a-z]+",),
+    # Assertion position. A good answer may well say "there is no owner on
+    # it — led.a41 has team-blue, this one has nothing", and naming the
+    # neighbouring entry's owner to show the gap is better than not; what
+    # is forbidden is a team ASSERTED as this entry's.
+    answer_must_not_match=(
+        r"(?i)(?:owned by|owner is|belongs to|is)\s+team-[a-z]+",),
 )
 
 WHICH_ROUTE_RAN = Mission(
     key="which_route_ran_that_window",
     flag="absence",
+    mission_class="missing",
     split="test",
     prompt=(
         "Which route ran window 2? Take it off that window's own summary, "
@@ -267,13 +277,18 @@ WHICH_ROUTE_RAN = Mission(
         "so the wrong answer is one short inference away and is never "
         "marked as an inference."
     ),
-    expects_tools=("mcp.window_rollup",),
+    expects_tools=("mcp.window_index", "mcp.window_rollup"),
     expects_outcome="answered",
     expects_grounded=True,
     max_reply_rejected=0,
     answer_must_match=(r"(?i)no route|does not (?:say|carry|name)|nothing "
                        r".{0,30}route",),
-    answer_must_not_match=(r"(?i)\b(?:north|south)\b",),
+    # Assertion position. "The entries have routes — north and south — but
+    # the window's own summary names none" is the answer this mission
+    # wants, and a bare `\b(north|south)\b` would have failed it.
+    answer_must_not_match=(
+        r"(?i)(?:ran on|was on|route (?:was|is))\s+(?:the\s+)?"
+        r"(?:north|south)\b",),
 )
 
 
@@ -282,6 +297,7 @@ WHICH_ROUTE_RAN = Mission(
 TWO_COUNTS = Mission(
     key="two_counts_for_one_entry",
     flag="partial_synthesis",
+    mission_class="contradictory",
     split="train",
     prompt=(
         "How many units are on led.c19? Somebody told me the number moved, "
@@ -317,6 +333,7 @@ TWO_COUNTS = Mission(
 WILL_NOT_SETTLE = Mission(
     key="the_count_will_not_settle",
     flag="partial_synthesis",
+    mission_class="contradictory",
     split="test",
     prompt=(
         "Is led.d55's unit count solid enough to put in a customer note?"
@@ -352,6 +369,7 @@ WILL_NOT_SETTLE = Mission(
 RELEASE_GIVEN = Mission(
     key="release_the_entry_you_were_given",
     flag="chaining",
+    mission_class="dependency",
     split="train",
     prompt=(
         "Put led.a41 through as released, and show me the plane confirmed "
@@ -383,6 +401,7 @@ RELEASE_GIVEN = Mission(
 RELEASE_THE_RETURN = Mission(
     key="release_whichever_one_came_back",
     flag="chaining",
+    mission_class="dependency",
     split="train",
     prompt=(
         "Take whichever entry on the south route came back rather than "
@@ -416,45 +435,55 @@ RELEASE_THE_RETURN = Mission(
 
 # ── long-horizon recovery ────────────────────────────────────────────────────
 
-WINDOW_NOT_TWO = Mission(
-    key="the_window_is_not_called_two",
+OPERATION_NOT_SUBTRACT = Mission(
+    key="the_operation_is_not_called_subtract",
     flag="orientation",
+    mission_class="recovery",
     split="train",
     prompt=(
-        "How long did window 2 take, and how many blocks was it?"
+        "How much more settled in window 2 than in window 3? Work it out on "
+        "the plane rather than in your head."
     ),
     must=(
-        "154.024 seconds and 7 blocks",
-        "one adapted retry after the plane said what the windows are called",
+        "87, worked on the plane",
+        "one adapted retry after the plane said what it can compute",
         "no complaint about the first attempt in the answer a person reads",
     ),
     must_not=(
-        "reporting the refusal as though the capability were absent",
-        "asking the person for the window's id",
+        "the subtraction done in prose after the refusal",
+        "reporting the refusal as though the plane could not compute",
         "a figure invented to cover the failed attempt",
     ),
     because=(
-        "Nothing in the question spells the window the way the plane does, "
-        "so the first call is refused for every run and the refusal names "
-        "the fix. ROADMAP §2.9.2 and the rc5 conduct: an error naming the "
-        "fix is an instruction, and a capability is absent only when the "
-        "catalogue or a refusal says so. `expects_recovered` scores the "
-        "adaptation off the stream, because in prose a recovered run and a "
-        "run that got it right first time are the same paragraph."
+        "The calculator's operations are `total`, `gap` and `scale`, and a "
+        "run asked for a difference reaches for neither of the two words "
+        "that exist. So the first attempt is refused for every run, and the "
+        "refusal names all three. ROADMAP §2.9.2 and the rc5 conduct: an "
+        "error naming the fix is an instruction, and a capability is absent "
+        "only when the catalogue or a refusal says so. `expects_recovered` "
+        "scores the adaptation off the stream, because in prose a recovered "
+        "run and a run that got it right first time are the same paragraph. "
+        "The vocabulary is an ENUM and not an id on purpose: ids are "
+        "listed here (`window_index`, `ledger_index`), so a mission built "
+        "on an id refusal would be measuring a run that failed to check a "
+        "catalogue, which is a different defect and one the missing-evidence "
+        "class already owns."
     ),
-    expects_tools=("mcp.window_rollup",),
-    expects_recovered=("mcp.window_rollup",),
+    expects_tools=("mcp.window_index", "mcp.window_rollup", "mcp.arithmetic"),
+    expects_recovered=("mcp.arithmetic",),
+    recovered_values=("total", "gap", "scale"),
     expects_outcome="answered",
     max_reply_rejected=0,
-    answer_must_match=(r"154(?:\.024)?", r"\b7\b"),
+    answer_must_match=(r"\b87\b",),
 )
 
 KINDS_NOT_WORDS = Mission(
     key="the_kinds_are_not_the_words",
     flag="orientation",
+    mission_class="recovery",
     split="test",
     prompt=(
-        "How many units came back on the returns, and on which route?"
+        "How many units were returned, and on which route?"
     ),
     must=(
         "31 units, on the south route",
@@ -474,6 +503,7 @@ KINDS_NOT_WORDS = Mission(
     ),
     expects_tools=("mcp.ledger_index", "mcp.ledger_entry"),
     expects_recovered=("mcp.ledger_index",),
+    recovered_values=("out", "back", "all"),
     expects_outcome="answered",
     max_reply_rejected=0,
     answer_must_match=(r"\b31\b", r"(?i)south"),
@@ -485,12 +515,13 @@ KINDS_NOT_WORDS = Mission(
 HOW_MUCH_SETTLED = Mission(
     key="how_much_settled_not_how_long",
     flag="synthesis",
+    mission_class="misleading",
     split="train",
     prompt=(
         "How much settled in window 2? One figure."
     ),
     must=(
-        "318",
+        "291",
         "the figure named as what settled, not as a total of everything in "
         "the block",
     ),
@@ -504,19 +535,32 @@ HOW_MUCH_SETTLED = Mission(
         "— elapsed seconds — as a 'total score' and served a 121.2% share "
         "off it. The wrong field is right there in the same result, it is "
         "a real figure from a real receipt, and every grounding check that "
-        "only asks 'did this number come from a tool' passes it."
+        "only asks 'did this number come from a tool' passes it. The window "
+        "settles 291 and the ledger's shipments come to 318 — different "
+        "numbers on purpose, so a run that answered from the entries "
+        "instead of the window cannot pass by arriving somewhere right."
     ),
-    expects_tools=("mcp.window_rollup",),
+    expects_tools=("mcp.window_index", "mcp.window_rollup"),
     expects_outcome="answered",
     expects_grounded=True,
     max_reply_rejected=0,
-    answer_must_match=(r"\b318\b",),
-    answer_must_not_match=(r"154",),
+    answer_must_match=(r"\b291\b",),
+    # ASSERTION POSITION, not mere presence. An answer that names the trap
+    # in order to reject it — "154.024 is the elapsed seconds, not the
+    # total" — is the BEST answer this mission can get, and a bare
+    # `\b154\b` would have failed it while passing nothing better. So what
+    # is forbidden is the figure OFFERED as the settled total, in either
+    # word order, within one clause.
+    answer_must_not_match=(
+        r"(?i)(?:settled|total)[^.\n]{0,40}\b154(?:\.024)?\b",
+        r"(?i)\b154(?:\.024)?\b[^.\n]{0,40}(?:settled|in total)",
+    ),
 )
 
 SETTLED_NOT_OUTSTANDING = Mission(
     key="settled_is_not_outstanding",
     flag="synthesis",
+    mission_class="misleading",
     split="train",
     prompt=(
         "For window 3, how much has actually settled?"
@@ -537,12 +581,20 @@ SETTLED_NOT_OUTSTANDING = Mission(
         "substantial finding. A field name is the only thing that "
         "separates them."
     ),
-    expects_tools=("mcp.window_rollup",),
+    expects_tools=("mcp.window_index", "mcp.window_rollup"),
     expects_outcome="answered",
     expects_grounded=True,
     max_reply_rejected=0,
     answer_must_match=(r"\b204\b",),
-    answer_must_not_match=(r"\b631\b", r"\b835\b"),
+    # Assertion position, as above: naming 631 as what is still
+    # outstanding is a better answer than not naming it, and only 631
+    # OFFERED as the settled figure is the failure. The sum is forbidden
+    # outright — there is no sentence in which 835 is the right number.
+    answer_must_not_match=(
+        r"(?i)(?:settled|total)[^.\n]{0,40}\b631\b",
+        r"(?i)\b631\b[^.\n]{0,40}(?:settled|in total)",
+        r"\b835\b",
+    ),
 )
 
 
@@ -551,9 +603,19 @@ MISSIONS = (
     WHO_OWNS, WHICH_ROUTE_RAN,
     TWO_COUNTS, WILL_NOT_SETTLE,
     RELEASE_GIVEN, RELEASE_THE_RETURN,
-    WINDOW_NOT_TWO, KINDS_NOT_WORDS,
+    OPERATION_NOT_SUBTRACT, KINDS_NOT_WORDS,
     HOW_MUCH_SETTLED, SETTLED_NOT_OUTSTANDING,
 )
+
+#: Class name → the keys of the missions in it, **derived** from the
+#: missions themselves.  There is one owner of which class a mission is in
+#: and it is the mission; this is a view of that, built at import so the
+#: report and the tests read the same table the missions declare.
+CLASSES: Dict[str, Tuple[str, ...]] = {
+    name: tuple(mission.key for mission in MISSIONS
+                if mission.mission_class == name)
+    for name in CLASS_NAMES
+}
 
 #: The five flags twelve missions capture, declared rather than left to the
 #: default.  A suite that declared nothing would claim all eleven and be

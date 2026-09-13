@@ -64,7 +64,8 @@ from typing import (Any, Dict, FrozenSet, List, Mapping, Optional, Sequence,
                     Tuple)
 
 from core.durable import atomic_write_text
-from core.eval.measure import _halves, _narrowed, _table, _withheld, header
+from core.eval.measure import (Unmeasurable, _halves, _narrowed, _table,
+                               _withheld, header, report_paths)
 from core.eval.run import DEFAULT_TIMEOUT_S, run_suite
 from core.eval.score import Report, score_suite
 from core.eval.suite import RubricChange, Suite, missions_in
@@ -154,6 +155,50 @@ ANCHOR_FLAG = "--events"
 #: What a flag looks like in a help text.
 _FLAG = re.compile(r"--[A-Za-z0-9][A-Za-z0-9-]*")
 
+#: Where argparse puts the help text on an option line: two spaces or more
+#: after the option and its metavar.  Everything past this on such a line
+#: is prose and is not read for flags.
+_HELP_GAP = re.compile(r"\s{2,}")
+
+
+def _declared_flags(text: str) -> FrozenSet[str]:
+    """Every flag *text* actually DECLARES, as against merely mentions.
+
+    A help text has two kinds of line and they say different things.  The
+    ``usage:`` block and the option-list lines (``  --events EVENTS``) are
+    the program stating what it accepts.  Everything else is prose — a
+    flag's own description, an epilog, an example — and a flag named
+    THERE may be one the program rejects: ``--protocol native`` is
+    refused at the door on a backend that cannot speak it, and a help
+    text that says so in a sentence would otherwise have been read as an
+    acceptance.
+
+    So the scan is anchored: the usage block, and the head of each option
+    line up to the two-space gap argparse puts before the description.
+    This is the fourth fact the availability rule has to hold — see
+    ``EVAL.md`` §14 — and the cost of it is one more way to be wrong: a
+    program whose help formats options some other way declares nothing
+    here, and an arm is skipped rather than run, which is the safe end.
+    """
+    found: set = set()
+    in_usage = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("usage:"):
+            in_usage = True
+            found |= set(_FLAG.findall(stripped))
+            continue
+        if in_usage:
+            # argparse wraps a long usage over indented continuation lines
+            # and ends the block with a blank one.
+            if stripped and line[:1].isspace():
+                found |= set(_FLAG.findall(stripped))
+                continue
+            in_usage = False
+        if stripped.startswith("-"):
+            found |= set(_FLAG.findall(_HELP_GAP.split(stripped)[0]))
+    return frozenset(found)
+
 
 def probe_argv(template: Sequence[str]) -> List[str]:
     """The program out of *template*, with ``--help`` after it.
@@ -202,7 +247,12 @@ def accepted_flags(template: Sequence[str], *, timeout_s: float = 30.0,
     a number for a configuration nobody ran — the rule
     :func:`core.eval.measure._cannot_speak` applies to a protocol.
 
-    Bounded, because everything this harness spawns is.
+    Bounded, because everything this harness spawns is.  **The exit status
+    is deliberately not read**: a program that prints its usage and exits
+    non-zero is a common and correct shape — argparse itself does it on a
+    bad argument, and a wrapper may do it on ``--help`` — and the question
+    here is what the text DECLARES, not how the process felt about being
+    asked.  stdout and stderr are read together for the same reason.
     """
     argv = probe_argv(template)
     if not argv[:-1]:
@@ -214,7 +264,7 @@ def accepted_flags(template: Sequence[str], *, timeout_s: float = 30.0,
             stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
-    found = frozenset(_FLAG.findall((done.stdout or "") + (done.stderr or "")))
+    found = _declared_flags((done.stdout or "") + "\n" + (done.stderr or ""))
     if ANCHOR_FLAG not in found:
         return None
     return found
@@ -344,6 +394,31 @@ class Ablation:
     keys: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
     #: Mission key → the flag it captures, for the per-mission table.
     flags: Mapping[str, str] = field(default_factory=dict)
+    #: Mission key → the class of problem it poses, where the suite groups
+    #: its missions into any.  Empty for a suite that does not, and then
+    #: the per-class block is not rendered at all.
+    classes: Mapping[str, str] = field(default_factory=dict)
+
+    def by_class(self, result: "ArmResult", half: str
+                 ) -> Dict[str, Tuple[int, int]]:
+        """Class name → (missions passed, missions) for one arm.
+
+        The grouping an ablation is actually read by.  A flag is a
+        capability that can fail while the others pass, so "synthesis 2/3"
+        says an arm moved something about figures and answers nothing
+        else; a class is a KIND OF PROBLEM, so "multi-hop 0/2, misleading
+        2/2" says which kind the runtime is holding and which it is not —
+        which is the question ROADMAP §2.9.3 is asked to answer.
+        """
+        passed = result.passed(half)
+        out: Dict[str, Tuple[int, int]] = {}
+        for key, value in passed.items():
+            name = self.classes.get(key)
+            if not name:
+                continue
+            done, total = out.get(name, (0, 0))
+            out[name] = (done + int(value), total + 1)
+        return out
 
     @property
     def baseline(self) -> Optional[ArmResult]:
@@ -381,6 +456,9 @@ class Ablation:
                               for half in self.keys},
                  "runs": {half: list(result.runs(half))
                           for half in self.keys},
+                 "by_class": {half: {name: list(tally) for name, tally
+                                     in self.by_class(result, half).items()}
+                              for half in self.keys} if self.classes else {},
                  "interval": {half: list(wilson(*result.runs(half)) or ())
                               for half in self.keys},
                  "paired": {half: paired(base, result, half)
@@ -474,7 +552,9 @@ def ablate(suite: Suite, template: Sequence[str], out: Path, *,
         keys={half: tuple(mission.key
                           for mission in missions_in(half, suite.missions))
               for half in _halves(split)},
-        flags={mission.key: mission.flag for mission in suite.missions})
+        flags={mission.key: mission.flag for mission in suite.missions},
+        classes={mission.key: mission.mission_class
+                 for mission in suite.missions if mission.mission_class})
 
 
 # ── the table ────────────────────────────────────────────────────────────────
@@ -501,6 +581,15 @@ def _cell(result: ArmResult, half: str, key: str, repeats: int) -> str:
     if repeats == 1 and len(seen) == 1:
         return "PASS" if passed else "FAIL"
     return f"{'PASS' if passed == len(seen) else 'FAIL'} {passed}/{len(seen)}"
+
+
+def _class_cell(ablation: Ablation, result: ArmResult, half: str, name: str
+                ) -> str:
+    tally = ablation.by_class(result, half).get(name)
+    if tally is None:
+        return "—"
+    done, total = tally
+    return f"{done}/{total}" + ("" if not total else f" ({done / total:.0%})")
 
 
 def _markdown(ablation: Ablation) -> str:
@@ -567,8 +656,25 @@ def _markdown(ablation: Ablation) -> str:
             "every repeat, which is the n the interval is computed over.")
         lines.append("")
 
-        keys = ablation.keys.get(half, ())
         ran = [result for result in ablation.arms if result.ran]
+        if ablation.classes and ran:
+            # Beside the rate table and never instead of it. The rate says
+            # how much an arm moved; this says what KIND of problem it
+            # moved, which is the only thing an ablation of a cognitive
+            # layer is run to find out.
+            names = list(dict.fromkeys(ablation.classes.values()))
+            lines.append(f"### {half} — by class")
+            lines.append("")
+            lines += _table(
+                [[name, *[_class_cell(ablation, result, half, name)
+                          for result in ran]] for name in names],
+                ["class", *[f"`{result.arm.name}`" for result in ran]])
+            lines.append("")
+            lines.append(f"All cells above: `{identity}`, all-must-pass over "
+                         f"{ablation.repeats} repeat(s).")
+            lines.append("")
+
+        keys = ablation.keys.get(half, ())
         if keys and ran:
             lines.append(f"### {half} — per mission × arm")
             lines.append("")
@@ -692,7 +798,11 @@ def from_args(suite: Suite, args: argparse.Namespace,
             suite, template, args.out, split=args.split, arms=arms,
             only=args.only, repeats=args.repeats,
             timeout_s=args.per_mission_seconds)
-    except Unavailable as exc:
+    # `Unmeasurable` as well as `Unavailable`: `--only` names a mission and
+    # the narrowing that refuses an unknown key is `measure`'s, so its
+    # refusal arrives wearing its own exception and would otherwise reach
+    # the operator as a traceback rather than as the sentence it wrote.
+    except (Unavailable, Unmeasurable) as exc:
         print(f"ablation: {exc}", file=sys.stderr)
         return 2
 
@@ -700,9 +810,9 @@ def from_args(suite: Suite, args: argparse.Namespace,
     print(text)
     if args.report is not None:
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(args.report, ablation.to_markdown())
-        atomic_write_text(args.report.with_suffix(".json"),
-                          ablation.to_json())
+        markdown, beside = report_paths(args.report)
+        atomic_write_text(markdown, ablation.to_markdown())
+        atomic_write_text(beside, ablation.to_json())
     atomic_write_text(args.out / "ablation.json", ablation.to_json())
 
     if ablation.baseline is None:

@@ -157,22 +157,31 @@ know when we wrote this" for any clause. The report prints the newest three.
 ## 5. Running it
 
 ```
-python -m core.eval check   [--suite stub|PATH]
-python -m core.eval score   (--runs DIR | --map KEY=PATH …) [--suite …] [--split train|test|all] [--json] [--allow-failures] [--report DIR]
-python -m core.eval run     --out DIR [--suite …] [--split …] [--json] [--allow-failures] [--timeout 600] -- <spawn line>
-python -m core.eval measure --out DIR [--report PATH] [--config NAME …] [--only KEY …] [--repeat N] [--per-mission-seconds 600] -- <spawn line>
+python -m core.eval check    [--suite stub|benchmark|PATH]
+python -m core.eval score    (--runs DIR | --map KEY=PATH …) [--suite …] [--split train|test|all] [--json] [--allow-failures] [--report DIR]
+python -m core.eval run      --out DIR [--suite …] [--split …] [--json] [--allow-failures] [--timeout 600] -- <spawn line>
+python -m core.eval measure  --out DIR [--report PATH] [--config NAME …] [--only KEY …] [--repeat N] [--per-mission-seconds 600] -- <spawn line>
+python -m core.eval ablation --out DIR [--report PATH] [--arms A,B] [--only KEY …] [--repeats N] [--per-mission-seconds 600] -- <spawn line>
 ```
 
-`--suite` defaults to `stub`, `--split` to `all` (both halves, reported apart),
-`--timeout` to 600 seconds — the bound on **one** mission, not on the suite.
+`--suite` takes two in-repo names and otherwise a path. **`stub`** (the
+default) is the harness grading itself — one mission per flag, §7.
+**`benchmark`** is the harness-sensitive pack — twelve missions in six classes
+whose failure modes are a runtime's job, §13, and the suite an `ablation` is
+normally pointed at. `--split` defaults to `all` (both halves, reported apart)
+and `--timeout` to 600 seconds — the bound on **one** mission, not on the
+suite.
 
 `check` refuses a suite that cannot be graded, before anybody spends a GPU on
-it: exit 1 with every problem in one message. **All three subcommands run that
+it: exit 1 with every problem in one message. **Every subcommand runs that
 check** — numbers produced against a suite that cannot be graded cannot be
-compared to anything, and a `run` against one spends a model first.
+compared to anything, and a `run` against one spends a model first. Where the
+suite groups its missions into classes, `check` prints the per-class counts
+beside the per-flag one.
 
 `measure` is `run`, once per configuration, plus the table of the
-differences — §12.
+differences — §12. `ablation` is `run`, once per arm, plus the **paired**
+difference between arms — §14.
 
 `score` scores run directories that already exist — **the no-GPU path**. A run
 directory is a `RunStore` directory: one directory per run with an
@@ -812,6 +821,7 @@ worked.
 | **contradictory evidence** | two receipts disagree | one side asserted alone. **Surfacing beats silence** (the owner's ruling): both figures with their sources, under a caveat, is the pass |
 | **dependency reasoning** | the right next call depends on a prior receipt (a token, an id the question never names) | a call composed out of the question — which sometimes *works*, and is still the failure |
 | **long-horizon recovery** | an early tool error whose text names the fix | the refusal reported to the person as the result, i.e. a fabricated absence |
+
 | **misleading evidence** | a plausible-but-wrong field beside the right one | the wrong field quoted. It is a real figure from a real receipt, so every check that asks only "did this number come from a tool" passes it |
 
 The last class is not invented. ROADMAP §2.9.2: a 20B model read a real
@@ -823,27 +833,41 @@ numbers; the deployment's figures stay in the deployment.
 
 | key | class | flag | split |
 |---|---|---|---|
-| `three_receipts_one_total` | multi-hop | chaining | train |
-| `out_and_back_on_one_route` | multi-hop | synthesis | **test** |
+| `three_receipts_one_total` | multi_hop | chaining | train |
+| `out_and_back_on_one_route` | multi_hop | synthesis | **test** |
 | `who_owns_that_entry` | missing | absence | train |
 | `which_route_ran_that_window` | missing | absence | **test** |
 | `two_counts_for_one_entry` | contradictory | partial_synthesis | train |
 | `the_count_will_not_settle` | contradictory | partial_synthesis | **test** |
 | `release_the_entry_you_were_given` | dependency | chaining | train |
 | `release_whichever_one_came_back` | dependency | chaining | train |
-| `the_window_is_not_called_two` | recovery | orientation | train |
+| `the_operation_is_not_called_subtract` | recovery | orientation | train |
 | `the_kinds_are_not_the_words` | recovery | orientation | **test** |
 | `how_much_settled_not_how_long` | misleading | synthesis | train |
 | `settled_is_not_outstanding` | misleading | synthesis | train |
 
 **No new flags.** Every mission captures one of the eleven in §2, and the suite
 **declares** the five it captures rather than claiming all of them
-(`Suite.flags` — §9). A class is a way of *choosing* missions; a flag is a
-capability that can fail while the others pass, and minting one per class would
-have been six capabilities nobody could report against the suite that already
-measures them. Two new *machine checks* were needed and are in §1's table:
-`expects_carried` (dependency) and `expects_recovered` (recovery). Both are
-answered from the stream like every other one.
+(`Suite.flags` — §9). Two new *machine checks* were needed and are in §1's
+table: `expects_carried` (dependency) and `expects_recovered` (recovery). Both
+are answered from the stream like every other one.
+
+**A class is not a second spelling of a flag, and the report carries both.**
+A flag is a capability that can fail while the others pass — it is how one
+mission is compared with another. A class is a *kind of problem* — it is how a
+benchmark is read. "synthesis 2/3" says an arm moved something about figures
+and answers nothing else; "multi_hop 0/2, misleading 2/2" says which kind of
+problem the runtime is holding and which it is not, which is the only question
+§2.9.3 asks. `Mission.mission_class` is where a mission declares its own (there
+is no second list of them anywhere), `check` prints the per-class counts, the
+`score` report carries a **by class** table beside the by-flag one, and an
+`ablation` gets a per-class row per arm. A suite that declares no classes gets
+no such block at all, so every report written before they existed is unchanged.
+
+**What is deliberately *not* in the class table**: minting a flag per class.
+That would have been six capabilities nobody could report against the suite
+that already measures them, and it would have broken the coverage rule the stub
+suite depends on.
 
 Four of the twelve are held out — 33%, inside `TEST_SHARE` — one from each of
 four different classes, covering four of the five flags. The dependency and
@@ -852,19 +876,43 @@ mission, one of them moves, with a dated line in `RUBRIC_CHANGES`.
 
 ### The plane
 
-`tests/bench_stub_server.py` serves six tools over stdio: a ledger listing and
-a ledger record, an audit that is allowed to disagree with the ledger, window
-summaries, a calculator, and a release that refuses every token but the one an
-entry's own record carries. Four entries, two windows, and every figure in the
-world distinct, so a right answer and a wrong one are never the same number.
+`tests/bench_stub_server.py` serves seven tools over stdio: a ledger listing
+and a ledger record, an audit that is allowed to disagree with the ledger, a
+window index and a window summary, a calculator, and a release that refuses
+every token but the one an entry's own record carries. Four entries, two
+windows, and **every figure in the world distinct** — the window settles 291
+where the ledger's shipments come to 318, so a run that answered the window
+question from the entries cannot pass by arriving somewhere right.
 
-Two of its vocabularies are **deliberately unguessable**: the windows are
-`win-0002`/`win-0003` where a person says "window 2", and the listing's kinds
-are `out`/`back` where a person says shipments and returns. Only a refusal
-names them, and each refusal names the fix — which is what makes the recovery
-class's first error unavoidable rather than scripted in. A plane whose
-vocabulary a model could guess would produce a recovery mission that a lucky
-run passes without recovering from anything.
+Two of its vocabularies are **deliberately unguessable**: the ledger's kinds
+are `out`/`back` where a person says shipments and returns, and the
+calculator's operations are `total`/`gap`/`scale` where a person says
+difference. Only a refusal names them, and each refusal names the fix — which
+is what makes the recovery class's first error unavoidable rather than scripted
+in. A plane whose vocabulary a model could guess would produce a recovery
+mission that a lucky run passes without recovering from anything.
+
+**Both are enums, and that is the rule, not an accident.** Ids get a listing
+here — `ledger_index`, `window_index` — so finding one is a lookup and a
+mission built on an id refusal would be measuring a run that failed to check a
+catalogue, which is the missing-evidence class's business. Nothing lists the
+kinds or the operations, and nothing should: they are an argument's vocabulary
+rather than the plane's data. The window index exists *because* it was missing:
+without it, three missions in other classes had to survive a refusal before they
+could start, so their verdicts were measuring recovery too and an ablation could
+not have said which of the two moved. A test asserts that `expects_recovered`
+appears in the recovery class and nowhere else.
+
+The declaration is held to the same rule. `Mission.recovered_values` names the
+vocabulary the refusal will list, and `check_the_suite_is_gradeable` refuses a
+recovery mission whose **prompt contains one of them** — a question that spells
+the word the plane wants has made the first call guessable, and the mission then
+scores whichever runs happened to guess wrong. It likewise refuses an
+`expects_carried` literal that is in the prompt (it could be typed), one that is
+a prefix of another declared id (the scorer matches on token boundaries, and the
+pair is one edit from a check that reads the neighbouring record as the right
+one), and a mission whose literals are *all* asset ids (a listing hands those
+over verbatim, so carrying one proves only that the run read a listing).
 
 ### The corpus
 
@@ -889,6 +937,27 @@ live run and the committed stream produce the same verdict, that every bad
 stream fails **for the reason the mission names** rather than on a
 technicality, and that no prompt names anywhere real.
 
+### The manifest solves nothing
+
+`tests/fixtures/eval/bench_skill.md` carries a closed set, an output shape and
+a grounding grammar, and **no `policy:` block**. It had one: two lines saying
+that disagreeing sources must both be quoted and that a figure only answers the
+question its own field name asks, plus a closing paragraph telling the model
+that a refusal names the next call. Those are the answers to three of the six
+classes, written where the model would read them — a pack whose manifest solves
+its own missions measures the manifest. (The framework's own conduct is in every
+mission's system turn anyway; a manifest that repeats it is a second emitter,
+which is the argument `stub_skill.md` already makes at length.)
+
+The same pull runs through `answer_must_not_match`. The best answer four of
+these missions can get **names the wrong figure in order to reject it** — "291
+settled; the 154.024 beside it is elapsed seconds" — so the forbidden patterns
+are written in **assertion position** rather than as bare presence: what fails
+is the figure offered *as* the answer, in either word order, within one clause.
+A bare `\b154\b` would have failed the best answer and passed a vaguer one.
+`TestNamingATrapToRejectItIsNotTheTrap` asserts both halves per mission: the
+rejecting answer passes, the asserting one is caught.
+
 ---
 
 ## 14. Ablation
@@ -910,6 +979,10 @@ python -m core.eval ablation --suite benchmark --split all \
        --mcp-stdio "python tests/bench_stub_server.py" \
        --skill tests/fixtures/eval/bench_skill.md --mcp-timeout 120
 ```
+
+`--only KEY` narrows to one mission, repeatable; a key the suite does not hold
+exits 2 with the sentence naming it, rather than measuring nothing and
+reporting a clean sweep.
 
 ### An arm is data
 
@@ -938,18 +1011,34 @@ running the spawn line's own program with `--help` and reading the `--flags`
 out of what it prints. Nothing is hardcoded: the same table starts reporting a
 column the day the flag arrives, with no edit here.
 
-Three answers, and they are three different facts:
+Four answers, and they are four different facts:
 
-* the help names the flag → the arm runs;
+* the help **declares** the flag → the arm runs;
 * the help does not name it → SKIPPED, *"the installed CLI does not accept
   `--x`"*;
 * the program could not be asked → SKIPPED, *"could not be asked what flags it
   accepts"*. A help text that does not mention `--events` is not the help of a
   program this harness could have driven — the harness appends `--events` to
   every mission it spawns — so the probe answers **unknown** rather than
-  reporting a flag set read off the wrong program.
+  reporting a flag set read off the wrong program;
+* the help **mentions the flag in prose while rejecting it** → not declared, so
+  SKIPPED. This is the fourth fact and the one a naive scan gets wrong: a help
+  text that says "`--protocol native` is refused on a backend that cannot speak
+  it", or names a flag in another option's description, would otherwise read as
+  an acceptance and an arm would be run against a program that turns it away at
+  the door. So the scan is **anchored**: the `usage:` block, and the head of
+  each option line up to the two-space gap argparse puts before the
+  description. Nothing else on the page is read.
 
-An arm with no flags is always available: it is the caller's own line.
+The anchor has its own cost, stated rather than hidden: a program whose help
+formats its options some other way declares nothing, the probe answers unknown,
+and its arms are skipped. That is the safe end of the trade — a skipped arm
+says so in the table, and a run scored under an arm the CLI rejected does not.
+
+An arm with no flags is always available: it is the caller's own line. The exit
+status of the probe is deliberately not read — printing usage and exiting
+non-zero is a common and correct shape — and stdout and stderr are read
+together.
 
 This is the opposite of `measure`'s rule, which refuses a matrix that names a
 flag `contract.CLI_FLAGS` does not publish, and deliberately so. A
@@ -966,6 +1055,11 @@ piece that may not be built yet and has to be able to say so.
   n an eval tier actually runs the normal interval goes outside [0, 1], and it
   collapses to ±0 on a clean sweep — which is the case a benchmark hits most
   often and the one where a false certainty does the most damage.
+* **Per class, per arm**: how many missions of each *kind of problem* the arm
+  passed. This is the block an ablation of a cognitive layer is actually read
+  by — an arm can leave a class's tally untouched while fixing one mission in
+  it and breaking the other, and only the paired table below says so. Absent
+  for a suite whose missions declare no classes.
 * **Per mission × arm**: `PASS`/`FAIL`, or `PASS n/m` over repeats.
 * **Paired against the baseline**: how many missions the arm fixed, how many it
   broke, how many it left alone, **and which**. Paired mission by mission — the
@@ -979,7 +1073,10 @@ piece that may not be built yet and has to be able to say so.
   any arm's verdicts with no endpoint at all.
 
 `--report PATH` writes the Markdown there and the same ablation as JSON beside
-it; `<out>/ablation.json` is always written.
+it — `report.md` gets `report.json`, and `--report report.json` gets
+`report.json.json`, because the JSON companion is **never** the file the
+Markdown just went to (`core.eval.measure.report_paths`, one owner, used by
+`measure` too). `<out>/ablation.json` is always written.
 
 ### Repeats are all-must-pass
 

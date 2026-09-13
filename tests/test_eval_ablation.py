@@ -46,8 +46,11 @@ FAKE = '''\
 import json, os, sys
 
 USAGE = """usage: fake [--mission] [--events EVENTS] [--cognition]
+
+options:
   --events EVENTS   where the record stream goes
-  --cognition       the arm under test
+  --cognition       the arm under test; unlike --graph-context, which this
+                    program does not accept, it is a real option here
 """
 
 argv = sys.argv[1:]
@@ -67,7 +70,7 @@ elif word == "fixed":
 elif word == "broken":
     good = not cognition
 else:
-    state = Path = os.environ["FAKE_STATE"]
+    state = os.environ["FAKE_STATE"]
     seen = {}
     if os.path.exists(state):
         seen = json.loads(open(state).read())
@@ -97,9 +100,10 @@ with handle as out:
 '''
 
 
-def _mission(key: str, word: str, split: str = "train") -> Mission:
+def _mission(key: str, word: str, split: str = "train",
+             mission_class: str = "") -> Mission:
     return Mission(
-        key=key, flag="synthesis", split=split,
+        key=key, flag="synthesis", split=split, mission_class=mission_class,
         prompt=f"{word} — give me the figure this plane holds.",
         must=("the figure, from the plane",),
         must_not=("a figure from nowhere",),
@@ -113,16 +117,24 @@ TOY = Suite(
     name="toy",
     flags=("synthesis",),
     missions=(
-        _mission("steady_a", "steady"),
-        _mission("fixed_a", "fixed"),
-        _mission("broken_a", "broken"),
-        _mission("steady_b", "steady"),
-        _mission("flaky_a", "flaky"),
-        _mission("steady_c", "steady", "test"),
-        _mission("fixed_c", "fixed", "test"),
-        _mission("broken_c", "broken", "test"),
+        _mission("steady_a", "steady", mission_class="settled"),
+        _mission("fixed_a", "fixed", mission_class="moving"),
+        _mission("broken_a", "broken", mission_class="moving"),
+        _mission("steady_b", "steady", mission_class="settled"),
+        _mission("flaky_a", "flaky", mission_class="settled"),
+        _mission("steady_c", "steady", "test", mission_class="settled"),
+        _mission("fixed_c", "fixed", "test", mission_class="moving"),
+        _mission("broken_c", "broken", "test", mission_class="moving"),
     ),
 )
+
+#: The same suite with the classes taken off, for the one property that can
+#: only be shown by their absence: a suite that declares none gets no class
+#: block at all, so every report ever written stays what it was.
+TOY_UNCLASSED = Suite(
+    name="toy_unclassed", flags=("synthesis",),
+    missions=tuple(_mission(m.key, m.prompt.split(" ")[0], m.split)
+                   for m in TOY.missions))
 
 #: The two arms this file ablates: the caller's line, and the same line
 #: plus the one flag the fake program reacts to.
@@ -185,6 +197,29 @@ class TestWhatTheSpawnLineWillAccept:
 
     def test_a_program_that_will_not_run_is_unknown(self, tmp_path):
         assert accepted_flags([str(tmp_path / "nothing-here")]) is None
+
+    def test_a_flag_named_only_in_prose_is_not_declared(self, fake):
+        """The fourth fact.  The fake's help TALKS about `--graph-context`
+        in the description of another option — the shape a real help text
+        has when it explains that a flag is refused on some backends — and
+        a scan that read whole lines would have called that an
+        acceptance and run an arm the program rejects."""
+        text = Path(fake[1]).read_text(encoding="utf-8")
+        assert "--graph-context" in text        # it IS mentioned
+        accepted = accepted_flags(fake)
+        assert accepted is not None
+        assert "--graph-context" not in accepted
+
+    def test_the_scan_reads_the_usage_block_and_the_option_lines(self):
+        declared = mod._declared_flags(
+            "usage: p [--alpha] [--beta BETA]\n"
+            "\n"
+            "options:\n"
+            "  --beta BETA    do not confuse this with --gamma\n"
+            "  -e, --events E  where records go\n"
+            "\n"
+            "Pass --delta to nobody; it does not exist.\n")
+        assert declared == frozenset({"--alpha", "--beta", "--events"})
 
 
 class TestAnArmIsSkippedRatherThanScored:
@@ -261,6 +296,27 @@ class TestTheArmsRunTheSameMissions:
             self, ablated):
         assert ablated.baseline is ablated.arms[0]
         assert f"`{ablated.baseline.arm.name}`" in ablated.to_markdown()
+
+    def test_the_baseline_is_the_first_arm_that_RAN_not_the_first_declared(
+            self, fake, tmp_path):
+        """`graph` is selected first and is skipped, so the pairing is
+        against `baseline` — the first arm that actually produced runs.
+
+        A baseline that was simply `arms[0]` would here be an arm with no
+        reports at all: every delta would come back empty and the table
+        would say the arm changed nothing, which is the most plausible
+        wrong answer an ablation can give.
+        """
+        ablated = ablate(TOY, fake, tmp_path / "out", split="train",
+                         arms=(ARMS[3], ARMS[0], TWO[1]), only=("fixed_a",),
+                         log=quiet)
+        assert ablated.arms[0].arm.name == "graph"
+        assert not ablated.arms[0].ran
+        assert ablated.baseline is not None
+        assert ablated.baseline.arm.name == "baseline"
+        shadow = ablated.arms[2]
+        assert paired(ablated.baseline, shadow, "train") == {"fixed_a": 1}
+        assert "against **`baseline`**" in ablated.to_markdown()
 
     def test_a_selection_that_leaves_the_baseline_out_says_so(
             self, fake, tmp_path):
@@ -370,6 +426,34 @@ class TestTheReportDescribesItself:
             if mission.split == "train":
                 assert f"`{mission.key}`" in text
 
+    def test_the_report_is_read_by_class_as_well_as_by_rate(self, ablated):
+        """The grouping §2.9.3 asks for.  A rate says how much an arm
+        moved; the class table says WHAT KIND of problem it moved, and
+        "synthesis 2/3" answers neither question."""
+        text = ablated.to_markdown()
+        assert "by class" in text
+        assert "| settled |" in text
+        assert "| moving |" in text
+        baseline, shadow = ablated.arms
+        # `fixed_a` and `broken_a` are both `moving`; the flag delta fixes
+        # one and breaks the other, so the class tally does not move while
+        # the missions underneath it both do. That is the finding, and it
+        # is invisible in a rate.
+        assert ablated.by_class(baseline, "train")["moving"] == (1, 2)
+        assert ablated.by_class(shadow, "train")["moving"] == (1, 2)
+        assert ablated.by_class(baseline, "train")["settled"] == (3, 3)
+
+    def test_a_suite_with_no_classes_gets_no_class_block(
+            self, fake, tmp_path):
+        """Absence, not an empty table: every report written before
+        classes existed stays what it was."""
+        ablated = ablate(TOY_UNCLASSED, fake, tmp_path / "out",
+                         split="train", arms=(ARMS[0],), only=("steady_a",),
+                         log=quiet)
+        assert ablated.classes == {}
+        assert "by class" not in ablated.to_markdown()
+        assert json.loads(ablated.to_json())["arms"][0]["by_class"] == {}
+
     def test_the_json_carries_the_deltas_and_the_intervals(self, ablated):
         body = json.loads(ablated.to_json())
         assert body["baseline"] == "baseline"
@@ -457,6 +541,33 @@ class TestTheSubcommand:
                                                    tmp_path):
         assert eval_main(["ablation", "--suite", str(suite_file), "--out",
                           str(tmp_path / "x")]) == 2
+
+    def test_an_unknown_only_key_exits_two_with_the_sentence(
+            self, fake, suite_file, tmp_path, capsys):
+        """`--only` is narrowed by `measure`'s own owner, so its refusal
+        arrives wearing `Unmeasurable`.  Caught by name, it is the
+        sentence that owner wrote; uncaught, it was a traceback."""
+        code = eval_main([
+            "ablation", "--suite", str(suite_file), "--split", "train",
+            "--out", str(tmp_path / "runs"), "--arms", "baseline",
+            "--only", "steday_a", "--", *fake])
+        assert code == 2
+        assert "steday_a" in capsys.readouterr().err
+
+    def test_a_json_report_path_does_not_overwrite_itself(
+            self, fake, suite_file, tmp_path):
+        """`--report x.json` used to name the same file twice — Markdown
+        written, then JSON over the top of it — and what a reader opened
+        was whichever write went last."""
+        report = tmp_path / "out.json"
+        code = eval_main([
+            "ablation", "--suite", str(suite_file), "--split", "train",
+            "--out", str(tmp_path / "runs"), "--arms", "baseline",
+            "--only", "steady_a", "--report", str(report), "--", *fake])
+        assert code == 0
+        assert report.read_text(encoding="utf-8").startswith("# ablation")
+        beside = tmp_path / "out.json.json"
+        assert json.loads(beside.read_text(encoding="utf-8"))["suite"] == "toy"
 
 
 class TestTheArmTable:

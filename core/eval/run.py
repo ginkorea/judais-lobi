@@ -391,6 +391,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f"mission(s), {len(held)} held out ({share:.0%}), "
               f"{len({m.flag for m in suite.missions})} flag(s) captured "
               f"of {len(suite.claims)} claimed.")
+        # Beside the flag count, where the suite groups its missions into
+        # classes: a flag is a capability and a class is a kind of problem,
+        # and a benchmark is read by the second. Silent for a suite that
+        # declares none, which is every suite written before they existed.
+        classes: Dict[str, int] = {}
+        for mission in suite.missions:
+            if mission.mission_class:
+                classes[mission.mission_class] = (
+                    classes.get(mission.mission_class, 0) + 1)
+        if classes:
+            print("classes: " + ", ".join(
+                f"{name} {count}" for name, count in classes.items()))
         return 0
 
     if args.command == "run":
