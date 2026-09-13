@@ -1579,8 +1579,8 @@ missions:
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
 
-`python -m core.eval` has several subcommands, and the three a platform starts
-with are these — only one of them needs a model:
+`python -m core.eval` has several subcommands. The three a platform starts with
+are these:
 
 ```
 python -m core.eval check --suite path/to/suite.yml
@@ -1590,7 +1590,8 @@ python -m core.eval score --suite path/to/suite.yml --runs DIR
 
 * **`check`** refuses a suite that cannot be graded, before anybody spends a GPU
   on it. Run it in CI.
-* **`run`** spawns one mission per case. **This is the one that needs a model.**
+* **`run`** spawns one mission per case. **Of those three, this is the one that
+  needs a model** — `measure` and `extraction`, below, need one too.
 * **`score`** grades run directories that already exist — **the no-GPU path**.
   Yesterday's runs can be re-scored against today's rubric, and a grounding
   change can be scored on runs it was not present for. Combined with `--replay`

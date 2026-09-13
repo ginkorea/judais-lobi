@@ -14,11 +14,12 @@ joined, closed over and cited by code that cannot.
 So the question this subcommand answers is narrow and prior to all the rest:
 handed one genuine tool receipt and one question, does the model produce
 typed propositions that are (a) parseable, (b) *grounded* — the value it
-asserts is in the receipt, under the field it names — and (c) **abstaining
-where the receipt is silent**.  The third is the one that decides the phase
-order.  A model that asserts confidently where there is nothing to assert
-does not become safe by having its output typed; it becomes harder to catch,
-because the type says a fact was extracted.
+asserts is in the receipt, under the field it names, quoted from a span that
+is really there — and (c) **abstaining where the receipt is silent**.  The
+third is the one that decides the phase order.  A model that asserts
+confidently where there is nothing to assert does not become safe by having
+its output typed; it becomes harder to catch, because the type says a fact
+was extracted.
 
 **Why this is not another eval framework.**  ROADMAP §2.9.3 says *"on the
 existing core/eval machinery — no second eval framework"*, and the seams
@@ -33,7 +34,8 @@ here are the package's own:
   :func:`core.eval.measure.commit_of`;
 * the **evidence walk** is :func:`core.runtime.grounding.harvest_fields` and
   :func:`core.runtime.grounding.json_blocks`, and the value comparison is
-  :func:`core.runtime.grounding.same_value`.  A second JSON harvester here
+  :func:`core.runtime.grounding.same_value` over
+  :func:`core.runtime.grounding.plain_figure`.  A second JSON harvester here
   would be the six-of-ten-fields defect one layer down: this measurement
   would disagree with the grounding check it exists to predict, and nobody
   reading either number would know which.
@@ -55,22 +57,32 @@ right**, **hedged right**, **hedged wrong**, **confidently wrong**, or
 **silent** — and each is reported as itself.  A pass/fail is taken only where
 one column genuinely needs one, and never further.
 
-Two consequences, both of them corrections to an earlier and worse version of
-this file:
+Four consequences, each of them a correction to an earlier and worse version
+of this file:
 
 * **Marking confidence is not the same as being wrong, and is not scored as
   if it were.**  A model that says ``HYPOTHESIZE`` over a trap field has done
   something different from one that ``ASSERT``s it: the first published its
   uncertainty and the second published a fact.  Both are wrong about the
   world; only one of them is wrong in a way a downstream store will act on.
-  So :data:`CATEGORIES` carries ``hedged_trap`` beside ``trap``, in its own
-  column with its own interval, and it is deliberately **not** folded into
-  the headline ``probe`` rate.  *Mark confidence, don't punish it.*
+  So :data:`CATEGORIES` carries ``hedged`` beside ``trap``, in its own column
+  with its own interval, and it is deliberately **not** folded into the
+  headline.  *Mark confidence, don't punish it.*
 * **Silence is not the only right answer to a conflict.**  Where two receipts
   disagree, an extractor that surfaces **both** sides, each tied to its own
   source, has served the reader better than one that says nothing — and much
   better than one that quietly picks a winner, which is the real failure.
-  See :func:`both_sides_surfaced`.
+  See :func:`both_sides_surfaced` and the ``conflict_surfaced`` rate.
+* **Transcribing a mask is honest.**  Where a receipt says a value is
+  ``"masked"``, an extractor that asserts *that* — the receipt's own token,
+  under the receipt's own key — has reported exactly what is there.  The
+  fabrication would be a concrete number in its place.  See
+  :attr:`Attempt.mask_faithful`.
+* **The headline under repeats is per PROBE, not per attempt.**  A
+  gatekeeper is a question about reliability, so with ``--repeats N`` the
+  number to quote is ``probe_reliable``: probes where *every* attempt was
+  right.  No majority voting — a store fed by a model that is right two
+  times in three is a store with a third of its propositions wrong.
 
 The reason is not generosity, it is measurement.  A gate is a deployment's
 dial; an instrument that scored only silence as safe would teach silence, and
@@ -98,6 +110,7 @@ import json
 import math
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -105,17 +118,18 @@ from typing import (Any, Callable, Dict, List, Mapping, Optional, Sequence,
                     Tuple)
 
 from core.durable import atomic_write_text
-from core.runtime.grounding import harvest_fields, json_blocks, same_value
+from core.runtime.grounding import (harvest_fields, json_blocks, plain_figure,
+                                    same_value)
 
 __all__ = [
     "ASSERT", "CONTRADICTED", "HEDGING", "STATUSES", "KINDS", "FAMILIES",
     "CATEGORIES", "FIRST", "REPAIRED", "INVALID",
-    "Probe", "ProbeMisdeclared", "Proposition", "Attempt", "Rate",
+    "Evidence", "Probe", "ProbeMisdeclared", "Proposition", "Attempt", "Rate",
     "ExtractionReport", "Unextractable",
     "PROMPT", "REPAIR", "prompt_for", "repair_for", "prompt_fingerprint",
-    "load_probes", "parse_propositions", "fields_of", "grounds",
-    "both_sides_surfaced", "score_attempt", "rates_of", "wilson",
-    "run_probes", "asker", "header", "add_parser", "from_args",
+    "load_probes", "parse_propositions", "grounds", "both_sides_surfaced",
+    "score_attempt", "rates_of", "wilson", "run_probes", "asker", "header",
+    "add_parser", "from_args",
 ]
 
 
@@ -134,19 +148,21 @@ CONTRADICTED = "CONTRADICTED"
 #: The two ways to put a fact on the record **with its uncertainty marked**.
 #: Everything in this module that distinguishes hedged wrongness from
 #: confident wrongness reads this tuple, so the distinction has one owner —
-#: see ``hedged_trap`` in :data:`CATEGORIES`.
+#: see ``hedged`` in :data:`CATEGORIES`.
 HEDGING: Tuple[str, ...] = ("HYPOTHESIZE", "AMBIGUOUS")
+
+#: The one way to say *nothing here answers this*.
+INSUFFICIENT = "INSUFFICIENT_EVIDENCE"
 
 #: The status vocabulary ROADMAP §2.9.3 names, in the order the prompt
 #: offers them.  A reply using a word that is not here is a **structural**
 #: failure and not a wrong answer: a downstream store would not know what
 #: to do with it, which is a different defect from knowing and being wrong.
-STATUSES: Tuple[str, ...] = (
-    ASSERT, *HEDGING, CONTRADICTED, "INSUFFICIENT_EVIDENCE",
-)
+STATUSES: Tuple[str, ...] = (ASSERT, *HEDGING, CONTRADICTED, INSUFFICIENT)
 
 #: The three things a probe can expect.  ``assert`` — the facts are in the
-#: receipt.  ``abstain`` — they are not, and the correct extractor says so.
+#: receipt.  ``abstain`` — they are not, and the correct extractor says so
+#: (or, where the probe declares an alternative, does the better thing).
 #: ``trap`` — they are, and beside them sits a plausible-but-wrong field
 #: that a model reaching for the shape of an answer takes instead.
 KINDS: Tuple[str, ...] = ("assert", "abstain", "trap")
@@ -175,8 +191,11 @@ FAMILIES: Mapping[str, Tuple[str, str]] = {
         "another says it completed)"),
     "masked": (
         "abstain",
-        "the record exists and its material is withheld by handling; the "
-        "asserted zero is a fabrication and so is the mask text"),
+        "the record exists and its material is withheld by handling. Two "
+        "right answers: say nothing, or transcribe the receipt's own mask "
+        "token faithfully under the key that holds it. The failure is a "
+        "concrete value — a zero, a count — where the receipt published a "
+        "mask"),
     "cause_absent": (
         "abstain",
         "a failure receipt that explicitly establishes no cause; asking "
@@ -193,9 +212,25 @@ FAMILIES: Mapping[str, Tuple[str, str]] = {
         "as a total score (tests/fixtures/field_misreadings.json)"),
     "optional_filter": (
         "trap",
-        "an optional field that hides rather than selects: the measured "
-        "20b filled `submitted_via` 8/8 and never saw the real rows"),
+        "a question about a record's own state, asked of a receipt that "
+        "also carries an optional descriptive field whose value reads like "
+        "an answer — `submitted_via: \"unknown\"` beside `state`, `mode` "
+        "beside `stage`. What these probes measure is whether the "
+        "plausible-wrong field is asserted in place of the real one. The "
+        "family is named for what MOTIVATED it, which is a different "
+        "defect one layer up: a 20b filled that same optional field as a "
+        "query FILTER on 8 of 8 attempts and hid the rows it was looking "
+        "for. Nothing here measures filling a filter — these are receipts, "
+        "not calls"),
 }
+
+#: Every key a probe's ``expect`` block may carry.  Module level because the
+#: loader reads it to refuse a key nobody implemented — a probe declaring
+#: ``trap_field`` (singular) would otherwise be scored as a probe with no
+#: trap at all, and read as a model that never falls for one.
+EXPECT_KEYS = frozenset({
+    "kind", "gold", "trap_fields", "absent_fields", "sides", "mask_tokens",
+})
 
 
 class ProbeMisdeclared(ValueError):
@@ -209,12 +244,152 @@ class ProbeMisdeclared(ValueError):
 
 
 class Unextractable(RuntimeError):
-    """The endpoint stopped answering, so there is no number to print.
+    """There is no number to print, and the reason is not the model.
 
-    Raised rather than scored.  An endpoint that fell over halfway is not
-    a model that abstained, and recording its silence as an abstention is
-    the one way this measurement could flatter a model by breaking.
+    Raised rather than scored — an endpoint that fell over halfway is not a
+    model that abstained, and recording its silence as an abstention is the
+    one way this measurement could flatter a model by breaking.  Also the
+    wall budget: a run cut short is a partial sample, not a low score.
     """
+
+
+# ── the evidence ─────────────────────────────────────────────────────────────
+
+def _squashed(text: Any) -> str:
+    """*text* with every run of whitespace collapsed to one space.
+
+    Applied to both sides of the quote check.  A quote is supposed to be a
+    **copy of a span**, and this is the one difference from a copy that is
+    not a change of content: a model re-indenting a JSON fragment it is
+    quoting has quoted it.  Anything else — a word swapped, a digit moved,
+    a span that is not in the receipt at all — still fails.
+    """
+    return " ".join(str(text).split())
+
+
+def _text_key(value: Any) -> str:
+    """A scalar as one comparable string.
+
+    :func:`core.runtime.grounding.plain_figure` first, so ``12,481`` and
+    ``12481`` are one number and a measurement of fabrication is not
+    reporting a thousands separator, then case-folded, because a status
+    word re-cased is the same fact and a number that counted ``Pass``
+    against ``pass`` would be measuring capitalisation.
+    """
+    return plain_figure(value).strip().casefold()
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """One probe's receipt, walked once.
+
+    A bundle rather than three loose arguments because every check that
+    reads a receipt needs all three — the field names, the scalars under
+    them, and the raw text the quote rule is checked against — and a
+    function that took two of them would be a function that could not
+    enforce the third.
+    """
+
+    #: The receipt verbatim, as the tool recorded it.
+    text: str
+    #: Every mapping key anywhere in it.
+    keys: frozenset
+    #: Key → every scalar seen under it, in encounter order.
+    scalars: Mapping[str, Tuple[Any, ...]]
+
+    @classmethod
+    def of(cls, text: str) -> "Evidence":
+        """Walk *text* once.
+
+        One walker, and it is not this module's:
+        :func:`core.runtime.grounding.json_blocks` parses and
+        :func:`core.runtime.grounding.harvest_fields` walks, with its
+        ``scalars`` sink so a string value — a status word, an outcome, a
+        handle — comes back as well as a figure.  See that function: the
+        second reader it was promoted for is this one.
+        """
+        keys: set = set()
+        numbers: dict = {}
+        scalars: Dict[str, List[Any]] = {}
+        for payload in json_blocks(text):
+            try:
+                harvest_fields(payload, keys, numbers, scalars=scalars)
+            except RecursionError:               # pragma: no cover - guard
+                continue
+        return cls(text=str(text), keys=frozenset(keys),
+                   scalars={name: tuple(values)
+                            for name, values in scalars.items()})
+
+    def quotes(self, quote: str) -> bool:
+        """Whether *quote* is really a span of this receipt."""
+        quote = _squashed(quote)
+        return bool(quote) and quote in _squashed(self.text)
+
+    def holds(self, field: str, value: Any) -> bool:
+        """Whether some scalar under *field* is *value*.
+
+        **Any record under that key, not a particular one.**  A listing of
+        three jobs puts three ``state`` values in one bucket, so this
+        answers *the receipt has this value under this key somewhere* and
+        not *this row has it*.  Stated rather than hidden: a probe whose
+        correct answer depends on which row a value came from is a probe
+        this check cannot grade, and the corpus does not contain one.
+        """
+        name = str(field).strip()
+        if not name or name not in self.keys:
+            return False
+        found = self.scalars.get(name)
+        if not found:
+            # The key is real and holds an object or a list. The value
+            # beside it cannot be confirmed from a scalar, and an
+            # unconfirmable assertion is not a grounded one — the
+            # difference from `FieldAttributionCheck`, which must not
+            # ACCUSE on that evidence where this must not COUNT it.
+            return False
+        return any(_same_scalar(value, seen) for seen in found)
+
+
+def _same_scalar(claimed: Any, found: Any) -> bool:
+    """Whether a model's value is the value the payload holds.
+
+    **A string in the payload is compared as a string.**  That ordering is
+    the rule, and it is there for two recorded shapes:
+    :func:`core.runtime.grounding.as_decimal` parses ``"007"`` as seven, so
+    a numeric-first comparison would ground a claimed ``7`` against an
+    identifier the payload spells ``"007"``; and it parses ``"nan"`` as a
+    decimal NaN, which is not equal to itself, so a numeric-first
+    comparison would report a faithfully copied ``"nan"`` as fabricated.
+
+    Where the payload holds a number, :func:`core.runtime.grounding
+    .same_value` answers — ``338`` and ``338.0`` are one out-weight — and
+    the text form is accepted beside it so ``12,481`` matches ``12481``.
+    """
+    if isinstance(found, str):
+        return _text_key(claimed) == _text_key(found)
+    return same_value(claimed, found) or _text_key(claimed) == _text_key(found)
+
+
+def grounds(proposition: "Proposition", evidence: Evidence) -> bool:
+    """Whether the receipt supports *proposition*, all three ways.
+
+    **The quote must be a real span.**  Global since the review of the
+    first draft, and load-bearing: a proposition carries the span it was
+    read off precisely so a reader can check it, and a quote that is not in
+    the receipt is a citation to nothing.  It is also what makes the
+    contradiction rule mean anything — two assertions of opposite values
+    are two sources only if each one's quote came out of the receipt.
+
+    **The field must exist, and must hold the value.**  A large receipt
+    answers "is this number in here" yes for a great many numbers; what a
+    downstream store joins on is the LABEL, and an extraction that put a
+    real value under the wrong key has produced a proposition that is wrong
+    in exactly the way nothing later can catch.  Weakening this to "the
+    value is somewhere in the evidence" is the mutation this check exists
+    to fail.
+    """
+    if not evidence.quotes(proposition.quote):
+        return False
+    return evidence.holds(proposition.field, proposition.value)
 
 
 # ── the probe ────────────────────────────────────────────────────────────────
@@ -252,10 +427,25 @@ class Probe:
     #: never on a family's name: see :func:`both_sides_surfaced`, which is
     #: reached exactly when this is non-empty.
     sides: Tuple[Tuple[str, Any], ...] = ()
+    #: On a ``masked`` probe, the receipt's own withholding tokens.  An
+    #: ASSERT of one of these is a faithful transcription and passes; a
+    #: concrete value in its place is the fabrication being counted.
+    mask_tokens: Tuple[str, ...] = ()
 
     @property
     def gold_fields(self) -> Tuple[str, ...]:
         return tuple(field for field, _value in self.gold)
+
+    @property
+    def watched(self) -> bool:
+        """Whether this probe declares something it is watching for.
+
+        The denominator of the ``hedged`` column: a trap field, a key the
+        receipt does not carry, or a side of a conflict.  A probe that
+        declares none of them cannot be hedged *at* anything, and counting
+        it would be dividing by attempts nobody could score.
+        """
+        return bool(self.trap_fields or self.absent_fields or self.sides)
 
 
 def load_probes(path: Path) -> Tuple[Probe, ...]:
@@ -291,6 +481,11 @@ def load_probes(path: Path) -> Tuple[Probe, ...]:
     return tuple(probes)
 
 
+def _pairs(raw: Any) -> Tuple[Tuple[str, Any], ...]:
+    return tuple((str(item.get("field") or ""), item.get("value"))
+                 for item in (raw or ()) if isinstance(item, Mapping))
+
+
 def _probe_from(raw: Mapping[str, Any], where: str) -> Probe:
     identifier = str(raw.get("id") or "").strip()
     if not identifier:
@@ -304,6 +499,11 @@ def _probe_from(raw: Mapping[str, Any], where: str) -> Probe:
     expect = raw.get("expect")
     if not isinstance(expect, Mapping):
         raise ProbeMisdeclared(f"{where}: `expect` must be an object")
+    unknown = sorted(set(expect) - EXPECT_KEYS)
+    if unknown:
+        raise ProbeMisdeclared(
+            f"{where}: `expect` carries {unknown}, which nothing reads. A "
+            f"misspelled key is a rule that silently does not apply")
     kind = str(expect.get("kind") or "").strip()
     if kind not in KINDS:
         raise ProbeMisdeclared(
@@ -313,14 +513,11 @@ def _probe_from(raw: Mapping[str, Any], where: str) -> Probe:
             f"{where}: family {family!r} is scored as "
             f"{FAMILIES[family][0]!r} and this probe declares {kind!r}")
 
-    gold = tuple((str(item.get("field") or ""), item.get("value"))
-                 for item in (expect.get("gold") or ())
-                 if isinstance(item, Mapping))
+    gold = _pairs(expect.get("gold"))
+    sides = _pairs(expect.get("sides"))
     trap_fields = tuple(str(name) for name in (expect.get("trap_fields") or ()))
     absent = tuple(str(name) for name in (expect.get("absent_fields") or ()))
-    sides = tuple((str(item.get("field") or ""), item.get("value"))
-                  for item in (expect.get("sides") or ())
-                  if isinstance(item, Mapping))
+    masks = tuple(str(token) for token in (expect.get("mask_tokens") or ()))
 
     if kind == "abstain" and gold:
         raise ProbeMisdeclared(
@@ -349,20 +546,34 @@ def _probe_from(raw: Mapping[str, Any], where: str) -> Probe:
     if sides and family != "contradiction":
         raise ProbeMisdeclared(
             f"{where}: only a contradiction probe carries sides")
-    if len({(name, str(value)) for name, value in sides}) != len(sides):
+    if len({(name, _text_key(value)) for name, value in sides}) != len(sides):
         raise ProbeMisdeclared(
             f"{where}: two sides of this contradiction are the same "
             f"(field, value) pair, so they do not conflict")
+
+    if family == "masked" and not masks:
+        raise ProbeMisdeclared(
+            f"{where}: a masked probe declares the receipt's own "
+            f"`mask_tokens`; transcribing one is a pass and nothing can "
+            f"check that against a token nobody wrote")
+    if masks and family != "masked":
+        raise ProbeMisdeclared(
+            f"{where}: only a masked probe carries mask_tokens")
 
     evidence = str(raw.get("evidence") or "")
     question = str(raw.get("question") or "").strip()
     if not evidence.strip() or not question:
         raise ProbeMisdeclared(f"{where}: a probe needs evidence and a "
                                f"question")
+    for token in masks:
+        if token not in evidence:
+            raise ProbeMisdeclared(
+                f"{where}: mask token {token!r} is not in the receipt")
     return Probe(id=identifier, family=family,
                  source=str(raw.get("source") or ""), evidence=evidence,
                  question=question, kind=kind, gold=gold,
-                 trap_fields=trap_fields, absent_fields=absent, sides=sides)
+                 trap_fields=trap_fields, absent_fields=absent, sides=sides,
+                 mask_tokens=masks)
 
 
 # ── the ask ──────────────────────────────────────────────────────────────────
@@ -387,12 +598,14 @@ exactly these four keys:
   "field"  - the receipt's own key that carries the fact, spelled the way
              the receipt spells it
   "value"  - what that key holds, copied as a string or a number
-  "quote"  - the span of the receipt this proposition is read off
+  "quote"  - the span of the receipt this proposition is read off, copied
+             from it exactly
 
 The rules:
 
 * ASSERT only a fact the receipt states, under a key the receipt actually
   carries, with the value that key actually holds.
+* Assert the fact the question asks for, and no others.
 * If the receipt does not carry the fact the question asks for, answer with
   a single proposition whose status is INSUFFICIENT_EVIDENCE. A near miss
   is not the fact: a key whose NAME resembles the question, or one that
@@ -401,8 +614,8 @@ The rules:
   give a proposition for EACH of them, with each one's own quote, and do
   not pick a winner. CONTRADICTED is the status for saying so.
 * If the receipt says a value is masked, withheld or restricted, or that
-  its own coverage was partial, do not assert what it withheld and do not
-  read an empty result as an absence.
+  its own coverage was partial, do not put a number in place of what it
+  withheld and do not read an empty result as an absence.
 * Where the receipt points at something without establishing it, say so
   with HYPOTHESIZE or AMBIGUOUS rather than saying nothing. A guess that is
   marked as a guess is useful; the same guess unmarked is not, and silence
@@ -457,6 +670,11 @@ class Proposition:
     value: Any
     quote: str
 
+    @property
+    def claim(self) -> Tuple[str, str]:
+        """What two propositions have to share to be the same claim."""
+        return (self.field.strip(), _text_key(self.value))
+
     def as_dict(self) -> Dict[str, Any]:
         return {"status": self.status, "field": self.field,
                 "value": self.value, "quote": self.quote}
@@ -477,6 +695,10 @@ def parse_propositions(reply: Any) -> Tuple[Tuple[Proposition, ...], str]:
     it is not empty, every element is an object, every ``status`` is a word
     the vocabulary holds, and every ASSERT carries a field, a value that is
     a string or a number, and the quote it was read off.
+
+    Whether that quote is really in the receipt is **not** asked here — it
+    is a question about the evidence and not about the shape, and it is
+    asked by :func:`grounds`.
 
     :mod:`core.runtime.schema_check` was tried here and does not fit: its
     subject is a tool call's arguments, it takes a mapping rather than an
@@ -531,71 +753,10 @@ def parse_propositions(reply: Any) -> Tuple[Tuple[Proposition, ...], str]:
     return tuple(out), ""
 
 
-# ── the evidence ─────────────────────────────────────────────────────────────
+# ── the conflict rule ────────────────────────────────────────────────────────
 
-def fields_of(evidence: str) -> Tuple[set, Dict[str, List[Any]]]:
-    """The receipt's keys, and every scalar each of them holds.
-
-    One walker, and it is not this module's:
-    :func:`core.runtime.grounding.json_blocks` parses and
-    :func:`core.runtime.grounding.harvest_fields` walks, with its
-    ``scalars`` sink so a string value — a status word, an outcome, a
-    handle — comes back as well as a figure.  See that function: the second
-    reader it was promoted for is this one.
-    """
-    keys: set = set()
-    numbers: dict = {}
-    scalars: Dict[str, List[Any]] = {}
-    for payload in json_blocks(evidence):
-        try:
-            harvest_fields(payload, keys, numbers, scalars=scalars)
-        except RecursionError:                   # pragma: no cover - guard
-            continue
-    return keys, scalars
-
-
-def grounds(proposition: Proposition, keys: set,
-            scalars: Mapping[str, Sequence[Any]]) -> bool:
-    """Whether the receipt holds *proposition*'s value under its field.
-
-    **Both halves, and the field half is the one that matters.**  A large
-    receipt answers "is this number in here" yes for a great many numbers;
-    what a downstream store joins on is the LABEL, and an extraction that
-    put a real value under the wrong key has produced a proposition that is
-    wrong in exactly the way nothing later can catch.  Weakening this to
-    "the value is somewhere in the evidence" is the mutation this check
-    exists to fail.
-
-    The arithmetic is :func:`core.runtime.grounding.same_value` — the
-    grounding module's rule, so a proposition this measurement calls
-    grounded is one that module would too.  One loosening on top of it,
-    stated rather than hidden: a string re-cased is the same fact, and a
-    number that counted ``Pass`` against ``pass`` would be measuring
-    capitalisation.
-    """
-    name = proposition.field.strip()
-    if not name or name not in keys:
-        return False
-    found = scalars.get(name)
-    if not found:
-        # The key is real and holds an object or a list. The value beside
-        # it cannot be confirmed from a scalar, and an unconfirmable
-        # assertion is not a grounded one — the difference from
-        # `FieldAttributionCheck`, which must not ACCUSE on that evidence
-        # where this must not COUNT it.
-        return False
-    claimed = proposition.value
-    for value in found:
-        if same_value(claimed, value):
-            return True
-        if isinstance(claimed, str) and isinstance(value, str) and \
-                claimed.strip().casefold() == value.strip().casefold():
-            return True
-    return False
-
-
-def both_sides_surfaced(probe: Probe,
-                        propositions: Sequence[Proposition]) -> bool:
+def both_sides_surfaced(probe: Probe, propositions: Sequence[Proposition],
+                        evidence: Evidence) -> bool:
     """Whether the reply put **both** sides of a conflict on the record.
 
     The second right answer to a contradiction, and the better one.  Silence
@@ -609,9 +770,10 @@ def both_sides_surfaced(probe: Probe,
     its own, at any status that puts it on the record — :data:`ASSERT`,
     :data:`CONTRADICTED` or either of :data:`HEDGING` — naming its field and
     its value; both sides surfaced is a pass; and where two of those
-    propositions are ASSERTs their quotes must differ, because two flat
-    assertions of opposite values off one span are not two sources, they are
-    one sentence contradicting itself.
+    propositions are ASSERTs their quotes must differ **and each must be a
+    real span of the receipt** (:func:`grounds` holds every ASSERT to the
+    second half), because two flat assertions of opposite values off one
+    span are not two sources, they are one sentence contradicting itself.
 
     Deliberately wider than only-``CONTRADICTED``-or-two-``ASSERT``s, and
     the reason is the spectrum rule in the module docstring: a reply that
@@ -623,11 +785,10 @@ def both_sides_surfaced(probe: Probe,
     """
     if not probe.sides:
         return False
-    marked = [p for p in propositions
-              if p.status != "INSUFFICIENT_EVIDENCE"]
+    marked = [p for p in propositions if p.status != INSUFFICIENT]
     per_side: List[List[Proposition]] = [
         [p for p in marked
-         if p.field.strip() == name and _same_text(p.value, value)]
+         if p.field.strip() == name and _text_key(p.value) == _text_key(value)]
         for name, value in probe.sides]
     if not all(per_side):
         return False
@@ -639,9 +800,11 @@ def both_sides_surfaced(probe: Probe,
         if len({id(p) for p in combination}) != len(combination):
             continue                       # one proposition serving two sides
         claimed = [p for p in combination if p.status == ASSERT]
+        if any(not evidence.quotes(p.quote) for p in claimed):
+            continue                       # a citation to nothing is no source
         if len(claimed) < 2:
             return True
-        quotes = [p.quote.strip() for p in claimed]
+        quotes = [_squashed(p.quote) for p in claimed]
         if len(set(quotes)) == len(quotes):
             return True
     return False
@@ -668,8 +831,9 @@ class Attempt:
     defects: Tuple[str, ...] = ()
     propositions: Tuple[Proposition, ...] = ()
     replies: Tuple[str, ...] = ()
-    #: How many ASSERTs the reply carried, and how many of them the receipt
-    #: actually supports at the field they named.
+    #: How many DISTINCT ASSERTs the reply carried — the same claim twice
+    #: is one claim — and how many of them the receipt supports at the
+    #: field they named, with a quote that is really in it.
     asserts: int = 0
     grounded: int = 0
     #: Gold facts asserted, out of the gold facts asked for.
@@ -680,24 +844,26 @@ class Attempt:
     #: ``None`` where the probe does not ask the question.
     abstained: Optional[bool] = None
     trap_clean: Optional[bool] = None
-    #: The trap fields this attempt **asserted** from, for the table.
-    sprung: Tuple[str, ...] = ()
-    #: The trap fields it touched at :data:`HEDGING` instead.  Reported and
-    #: never folded into :attr:`trap_clean` or :attr:`verdict`: a marked
-    #: guess over a trap field and a flat assertion of it are different
-    #: failures, and a deployment may tolerate one and not the other.
-    hedged: Tuple[str, ...] = ()
     #: ``None`` unless the probe declared conflicting :attr:`Probe.sides`.
     both_sides: Optional[bool] = None
+    #: ``None`` unless the probe declared :attr:`Probe.mask_tokens`.  True
+    #: when every ASSERT transcribed one of them, faithfully and grounded.
+    mask_faithful: Optional[bool] = None
+    #: The trap fields this attempt **asserted** from, for the table.
+    sprung: Tuple[str, ...] = ()
+    #: The watched targets it touched at :data:`HEDGING` instead — a trap
+    #: field, a key the receipt does not carry, or one side of a conflict.
+    #: Reported and never folded into :attr:`trap_clean` or
+    #: :attr:`verdict`: a marked guess and a flat assertion are different
+    #: failures, and a deployment may tolerate one and not the other.
+    hedged: Tuple[str, ...] = ()
+    #: Whether this probe declares anything to be hedged AT — the
+    #: denominator of the ``hedged`` column.
+    watched: bool = False
 
     @property
     def parsed(self) -> bool:
         return self.structural != INVALID
-
-    @property
-    def hedged_trap(self) -> Optional[bool]:
-        """Whether a trap field was touched with its uncertainty marked."""
-        return None if self.kind != "trap" else bool(self.hedged)
 
     @property
     def verdict(self) -> bool:
@@ -706,20 +872,21 @@ class Attempt:
         Per kind, and strictly where strictness is the finding: an
         ``assert`` probe wants every gold fact and nothing else; a ``trap``
         probe wants the gold facts with the trap not **asserted**; an
-        ``abstain`` probe wants no assertion — *or*, where it declared
-        conflicting sides, both of them surfaced, which is the better
-        answer and not a lesser one.
+        ``abstain`` probe wants no assertion — *or*, where the probe
+        declared one, the better alternative it declared: both sides of a
+        conflict surfaced, or a mask transcribed faithfully.
 
         Two things are deliberately **outside** this verdict, because a
-        headline that absorbed them would hide them:
-        :attr:`hedged_trap`, which is marked uncertainty and not a wrong
-        claim, and the repair count, which is a cost and not a failure.  An
-        unreadable reply is never correct — see :func:`score_attempt`.
+        headline that absorbed them would hide them: :attr:`hedged`, which
+        is marked uncertainty and not a wrong claim, and the repair count,
+        which is a cost and not a failure.  An unreadable reply is never
+        correct — see :func:`score_attempt`.
         """
         if not self.parsed:
             return False
         if self.kind == "abstain":
-            return bool(self.abstained) or bool(self.both_sides)
+            return (bool(self.abstained) or bool(self.both_sides)
+                    or bool(self.mask_faithful))
         complete = self.gold_hits == self.gold_total and not self.off_gold
         if self.kind == "trap":
             return bool(self.trap_clean) and complete
@@ -735,10 +902,10 @@ class Attempt:
             "asserts": self.asserts, "grounded": self.grounded,
             "gold_hits": self.gold_hits, "gold_total": self.gold_total,
             "off_gold": self.off_gold, "abstained": self.abstained,
-            "trap_clean": self.trap_clean, "sprung": list(self.sprung),
-            "hedged": list(self.hedged), "hedged_trap": self.hedged_trap,
-            "both_sides": self.both_sides,
-            "verdict": self.verdict,
+            "trap_clean": self.trap_clean, "both_sides": self.both_sides,
+            "mask_faithful": self.mask_faithful,
+            "sprung": list(self.sprung), "hedged": list(self.hedged),
+            "watched": self.watched, "verdict": self.verdict,
         }
 
 
@@ -755,45 +922,61 @@ def score_attempt(probe: Probe, propositions: Sequence[Proposition],
     *store* can be fed from this model, and a store cannot be fed prose, so
     :data:`INVALID` fails both.
 
-    **A hedge over a trap is recorded, not charged.**  :attr:`Attempt.sprung`
-    counts trap fields the reply ASSERTed; :attr:`Attempt.hedged` counts the
-    ones it touched at :data:`HEDGING`, and they are two different lists on
-    purpose.  Only the first moves ``trap_clean``.  A model that marks its
-    uncertainty and one that states a wrong fact flatly are not the same
-    model, and an instrument that scored them alike would be teaching the
-    first to stop marking.
+    **The same claim twice is one claim.**  Identical ``(field, value)``
+    ASSERTs are collapsed before anything is counted, so a model that
+    repeats itself neither inflates the grounded denominator nor pays twice
+    for one precision miss.
+
+    **A hedge over a watched target is recorded, not charged.**
+    :attr:`Attempt.sprung` counts trap fields the reply ASSERTed;
+    :attr:`Attempt.hedged` counts the targets it touched at :data:`HEDGING`,
+    and they are two different lists on purpose.  Only the first moves
+    ``trap_clean``.  A model that marks its uncertainty and one that states
+    a wrong fact flatly are not the same model, and an instrument that
+    scored them alike would be teaching the first to stop marking.
     """
-    keys, scalars = fields_of(probe.evidence)
-    asserted = [p for p in propositions if p.status == ASSERT]
-    grounded = sum(1 for p in asserted if grounds(p, keys, scalars))
+    evidence = Evidence.of(probe.evidence)
+    asserted: List[Proposition] = []
+    seen_claims: set = set()
+    for proposition in propositions:
+        if proposition.status != ASSERT:
+            continue
+        if proposition.claim in seen_claims:
+            continue
+        seen_claims.add(proposition.claim)
+        asserted.append(proposition)
+    grounded = sum(1 for p in asserted if grounds(p, evidence))
 
     gold_hits = 0
     for name, value in probe.gold:
-        if any(p.field.strip() == name and _same_text(p.value, value)
-               for p in asserted):
+        if any(p.claim == (name, _text_key(value)) for p in asserted):
             gold_hits += 1
-    off_gold = sum(1 for p in asserted
-                   if not any(p.field.strip() == name
-                              and _same_text(p.value, value)
-                              for name, value in probe.gold))
+    wanted = {(name, _text_key(value)) for name, value in probe.gold}
+    off_gold = sum(1 for p in asserted if p.claim not in wanted)
 
     abstained: Optional[bool] = None
-    both_sides: Optional[bool] = None
     if probe.kind == "abstain":
         abstained = structural != INVALID and not asserted
+
+    both_sides: Optional[bool] = None
     if probe.sides:
         both_sides = (structural != INVALID
-                      and both_sides_surfaced(probe, propositions))
+                      and both_sides_surfaced(probe, propositions, evidence))
+
+    mask_faithful: Optional[bool] = None
+    if probe.mask_tokens:
+        tokens = {_text_key(token) for token in probe.mask_tokens}
+        mask_faithful = bool(
+            structural != INVALID and asserted
+            and all(_text_key(p.value) in tokens and grounds(p, evidence)
+                    for p in asserted))
+
     trap_clean: Optional[bool] = None
     sprung: Tuple[str, ...] = ()
-    hedged: Tuple[str, ...] = ()
     if probe.kind == "trap":
         sprung = tuple(dict.fromkeys(
             p.field.strip() for p in asserted
             if p.field.strip() in probe.trap_fields))
-        hedged = tuple(dict.fromkeys(
-            p.field.strip() for p in propositions
-            if p.status in HEDGING and p.field.strip() in probe.trap_fields))
         trap_clean = structural != INVALID and not sprung
 
     return Attempt(
@@ -802,20 +985,43 @@ def score_attempt(probe: Probe, propositions: Sequence[Proposition],
         propositions=tuple(propositions), replies=tuple(replies),
         asserts=len(asserted), grounded=grounded, gold_hits=gold_hits,
         gold_total=len(probe.gold), off_gold=off_gold, abstained=abstained,
-        trap_clean=trap_clean, sprung=sprung, hedged=hedged,
-        both_sides=both_sides)
+        trap_clean=trap_clean, both_sides=both_sides,
+        mask_faithful=mask_faithful, sprung=sprung,
+        hedged=_hedged(probe, propositions, both_sides),
+        watched=probe.watched)
 
 
-def _same_text(claimed: Any, gold: Any) -> bool:
-    """Gold comparison: the grounding rule, plus the re-casing allowance.
+def _hedged(probe: Probe, propositions: Sequence[Proposition],
+            both_sides: Optional[bool]) -> Tuple[str, ...]:
+    """The watched targets this reply touched with its uncertainty marked.
 
-    The same pair :func:`grounds` uses, so a proposition cannot be counted
-    grounded and gold-missing for a reason that is only about case.
+    Three shapes of target, one column, because what is being counted is
+    the same behaviour in each: *the model reached for the thing the probe
+    is watching and said it was unsure.*
+
+    * a **trap field** — reaching for the plausible-wrong key;
+    * a key the probe declared **absent** — reaching for a fact the receipt
+      does not carry;
+    * one **side** of a conflict, where the other was never surfaced — the
+      lone hedged reading, which is neither the pass that surfacing both is
+      nor the confident failure that asserting one is.
+
+    None of these moves a verdict.  The column exists so that *wrong
+    carefully* and *wrong flatly* can be told apart, which a single
+    pass/fail cannot do.
     """
-    if same_value(claimed, gold):
-        return True
-    return (isinstance(claimed, str) and isinstance(gold, str)
-            and claimed.strip().casefold() == gold.strip().casefold())
+    touched: List[str] = []
+    for name in (*probe.trap_fields, *probe.absent_fields):
+        if any(p.status in HEDGING and p.field.strip() == name
+               for p in propositions):
+            touched.append(name)
+    if not both_sides:
+        for name, value in probe.sides:
+            if any(p.status in (*HEDGING, CONTRADICTED)
+                   and p.claim == (name, _text_key(value))
+                   for p in propositions):
+                touched.append(f"{name}={value}")
+    return tuple(dict.fromkeys(touched))
 
 
 # ── the rates ────────────────────────────────────────────────────────────────
@@ -888,47 +1094,66 @@ CATEGORIES: Tuple[Tuple[str, str], ...] = (
                    "the one repair"),
     ("first_try", "replies that parsed with no repair at all"),
     ("repair", "attempts that needed the repair turn (LOWER is better)"),
-    ("grounded", "ASSERTs whose value the receipt holds under the field "
-                 "they name"),
-    ("gold_precision", "ASSERTs that are a fact the probe asked for"),
+    ("grounded", "ASSERTs the receipt supports — the value under the field "
+                 "they name, quoted from a span really in it. The "
+                 "denominator is every ASSERT of every kind of probe, so a "
+                 "corpus with more assert probes in it moves this n"),
+    ("gold_precision", "ASSERTs that are a fact the probe asked for "
+                       "(assert and trap probes; an abstain probe asks for "
+                       "no fact, so its assertions are counted elsewhere)"),
     ("gold_recall", "facts the probe asked for that were asserted"),
-    ("abstention", "silent probes answered with no assertion at all "
-                   "(contradiction probes are counted in `contradiction` "
-                   "instead: silence is not their only right answer)"),
-    ("contradiction", "conflicts handled — no assertion at all, OR both "
-                      "sides surfaced with their own sources. The failure "
-                      "is asserting ONE side as if uncontested"),
+    ("abstention", "probes where SILENCE is the only right answer, answered "
+                   "with no assertion at all. Probes that declare a better "
+                   "alternative — a conflict to surface, a mask to "
+                   "transcribe — are not counted here"),
+    ("conflict_surfaced", "conflicts handled — no assertion at all, OR both "
+                          "sides surfaced with their own sources. The "
+                          "failure is asserting ONE side as if uncontested"),
     ("trap", "trap probes that did not ASSERT from the trap field"),
-    ("hedged_trap", "trap probes that touched the trap field at "
-                    "HYPOTHESIZE or AMBIGUOUS — hedged wrongness, reported "
-                    "beside `trap` and NOT folded into `probe`"),
-    ("probe", "probes answered correctly and completely, all kinds"),
+    ("hedged", "attempts that touched what their probe was watching — a "
+               "trap field, a key declared absent, one side of a conflict — "
+               "at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported "
+               "beside `trap` and NOT folded into any verdict"),
+    ("probe", "ATTEMPTS answered correctly and completely"),
+    ("probe_reliable", "PROBES whose every attempt was right. The headline "
+                       "under --repeats: a gatekeeper is a question about "
+                       "reliability, and no majority voting"),
 )
 
 
 def rates_of(attempts: Sequence[Attempt]) -> Dict[str, Rate]:
     """Every category of :data:`CATEGORIES`, over *attempts*.
 
-    Two denominators are worth naming, because both are a judgement:
+    Three denominators are worth naming, because each is a judgement:
 
-    * ``abstention`` counts only the ``abstain`` attempts whose probe has
-      **no declared sides**.  For a contradiction, surfacing both readings
-      is also correct, so scoring one in an *abstention accuracy* rate
-      would report the better answer as a miss;
-    * ``hedged_trap`` is over every trap attempt, and it is a **rate of
-      hedging, not of success**.  It sits beside ``trap`` rather than
-      inside it, and higher is neither good nor bad on its own: read it
-      against ``trap``.  A model whose trap column is low and whose hedge
+    * ``abstention`` counts only the ``abstain`` attempts whose probe
+      declares **no better alternative**.  For a contradiction, surfacing
+      both readings is also correct; for a mask, transcribing the mask
+      token is.  Scoring either in an *abstention accuracy* rate would
+      report the better answer as a miss;
+    * ``hedged`` is over attempts whose probe declares something to be
+      hedged AT, and it is a **rate of hedging, not of success**.  Read it
+      against ``trap``: a model whose trap column is low and whose hedge
       column is high is wrong carefully; one where both are low is wrong
-      confidently, and they are not the same risk.
+      confidently, and they are not the same risk;
+    * ``probe_reliable`` is over **probes**, not attempts, and a probe
+      counts only if every one of its attempts was right.  ``probe`` is the
+      attempt-level figure and its interval is optimistic under repeats,
+      because N attempts at one probe are not N independent draws.
     """
     what = dict(CATEGORIES)
     parsed = [a for a in attempts if a.parsed]
     gold_bearing = [a for a in attempts if a.kind != "abstain"]
     conflicted = [a for a in attempts if a.both_sides is not None]
     silent = [a for a in attempts
-              if a.kind == "abstain" and a.both_sides is None]
+              if a.kind == "abstain" and a.both_sides is None
+              and a.mask_faithful is None]
     traps = [a for a in attempts if a.kind == "trap"]
+    watching = [a for a in attempts if a.watched]
+
+    by_probe: Dict[str, List[Attempt]] = {}
+    for attempt in attempts:
+        by_probe.setdefault(attempt.probe, []).append(attempt)
 
     def rate(name: str, k: int, n: int) -> Rate:
         return Rate(name=name, k=k, n=n, what=what[name])
@@ -953,21 +1178,38 @@ def rates_of(attempts: Sequence[Attempt]) -> Dict[str, Rate]:
         "abstention": rate("abstention",
                            len([a for a in silent if a.abstained]),
                            len(silent)),
-        "contradiction": rate(
-            "contradiction",
+        "conflict_surfaced": rate(
+            "conflict_surfaced",
             len([a for a in conflicted if a.abstained or a.both_sides]),
             len(conflicted)),
         "trap": rate("trap", len([a for a in traps if a.trap_clean]),
                      len(traps)),
-        "hedged_trap": rate("hedged_trap",
-                            len([a for a in traps if a.hedged_trap]),
-                            len(traps)),
+        "hedged": rate("hedged", len([a for a in watching if a.hedged]),
+                       len(watching)),
         "probe": rate("probe", len([a for a in attempts if a.verdict]),
                       len(attempts)),
+        "probe_reliable": rate(
+            "probe_reliable",
+            len([tries for tries in by_probe.values()
+                 if all(a.verdict for a in tries)]),
+            len(by_probe)),
     }
 
 
 # ── the report ───────────────────────────────────────────────────────────────
+
+#: Which row a reader should quote, by whether the run repeated.  Data,
+#: because the sentence under the table names it and so does the JSON.
+HEADLINE_ONCE = "probe"
+HEADLINE_REPEATED = "probe_reliable"
+
+#: The header fields two reports must share before a delta between them is
+#: a delta about the tree rather than about the experiment.
+PAIRING: Tuple[str, ...] = (
+    "provider", "model", "temperature", "endpoint", "prompt", "probes_path",
+    "probe_count", "repeats",
+)
+
 
 @dataclass(frozen=True)
 class ExtractionReport:
@@ -982,6 +1224,12 @@ class ExtractionReport:
     def rates(self) -> Dict[str, Rate]:
         return rates_of(self.attempts)
 
+    @property
+    def headline(self) -> str:
+        """The row to quote from this run.  See :data:`HEADLINE_REPEATED`."""
+        return (HEADLINE_REPEATED if int(self.meta.get("repeats") or 1) > 1
+                else HEADLINE_ONCE)
+
     def by_family(self) -> Dict[str, Dict[str, Rate]]:
         out: Dict[str, Dict[str, Rate]] = {}
         for family in self.families or tuple(
@@ -990,19 +1238,26 @@ class ExtractionReport:
                 [a for a in self.attempts if a.family == family])
         return out
 
-    def as_dict(self) -> Dict[str, Any]:
-        return {
+    def as_dict(self, baseline: Optional[Mapping[str, Any]] = None
+                ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
             "probes": self.probes,
             "meta": dict(self.meta),
+            "headline": self.headline,
             "rates": {name: r.as_dict() for name, r in self.rates.items()},
             "by_family": {family: {name: r.as_dict()
                                    for name, r in rates.items()}
                           for family, rates in self.by_family().items()},
             "attempts": [a.as_dict() for a in self.attempts],
         }
+        if baseline is not None:
+            payload["baseline"] = _baseline_delta(self, baseline)
+        return payload
 
-    def to_json(self, indent: int = 2) -> str:
-        return json.dumps(self.as_dict(), indent=indent, sort_keys=False)
+    def to_json(self, indent: int = 2,
+                baseline: Optional[Mapping[str, Any]] = None) -> str:
+        return json.dumps(self.as_dict(baseline), indent=indent,
+                          sort_keys=False)
 
     def to_markdown(self, baseline: Optional[Mapping[str, Any]] = None
                     ) -> str:
@@ -1027,7 +1282,9 @@ def _identity(meta: Mapping[str, Any]) -> str:
             f"@ temperature {_temperature(meta)}, "
             f"endpoint `{meta.get('endpoint') or '—'}`, prompt "
             f"`{meta.get('prompt') or '—'}`, commit "
-            f"`{str(meta.get('commit') or '')[:12]}`")
+            f"`{str(meta.get('commit') or '')[:12]}`, "
+            f"{meta.get('probe_count', 0)} probe(s) × "
+            f"{meta.get('repeats', 1)} repeat(s)")
 
 
 def _markdown(report: ExtractionReport,
@@ -1042,8 +1299,9 @@ def _markdown(report: ExtractionReport,
         f"- **prompt** `{meta.get('prompt') or '—'}` (both turns, digested)",
         f"- **commit** `{meta.get('commit', 'unknown')}`",
         f"- **date** {meta.get('date', '')}",
-        f"- **probes** {meta.get('probe_count', 0)} × {meta.get('repeats', 1)}"
-        f" repeat(s) = {len(report.attempts)} attempt(s)",
+        f"- **probes** `{meta.get('probes_path') or '—'}` — "
+        f"{meta.get('probe_count', 0)} × {meta.get('repeats', 1)} repeat(s) "
+        f"= {len(report.attempts)} attempt(s)",
         "",
         "**Every number below is true of " + _identity(meta) + " and of "
         "nothing else.** A number without its interpreter beside it is not "
@@ -1055,34 +1313,55 @@ def _markdown(report: ExtractionReport,
     lines.append("## the number")
     lines.append("")
     lines += _table(
-        [[f"`{name}`", rate.text, rate.what]
+        [[("**`" + name + "`**" if name == report.headline
+           else f"`{name}`"), rate.text, rate.what]
          for name, rate in report.rates.items()],
         ["category", "k/n (95% Wilson)", "what one k is"])
+    lines.append("")
+    lines.append(
+        f"**The headline is `{report.headline}`.** "
+        + ("With repeats, the figure to quote is per PROBE and not per "
+           "attempt: a probe counts only when EVERY one of its attempts was "
+           "right, because a gatekeeper is a question about reliability and "
+           "a store fed by a model that is right two times in three is a "
+           "store with a third of its propositions wrong. No majority "
+           "voting."
+           if report.headline == HEADLINE_REPEATED else
+           "This run asked each probe once, so the attempt-level figure and "
+           "the per-probe figure are the same number. Re-run with "
+           "`--repeats N` and `probe_reliable` becomes the one to quote."))
     lines.append("")
     lines.append("Intervals are binomial over the attempts in each row. "
                  "Propositions inside one probe are not independent of each "
                  "other, so `grounded`, `gold_precision` and `gold_recall` "
                  "have an interval that is a guide to their width and not a "
-                 "test — the per-probe rows are the ones to argue from.")
+                 "test; and under `--repeats` the attempt-level `probe` "
+                 "interval is **optimistic** for the same reason — N "
+                 "attempts at one probe are not N independent draws. The "
+                 "per-probe rows are the ones to argue from.")
     lines.append("")
     lines.append(
-        "**`hedged_trap` is not a failure rate and is not folded into "
-        "`probe`.** It is the fraction of trap probes where the model "
-        "reached for the trap field and *marked that it was unsure* — "
-        "hedged wrongness, which is a different class from the confident "
-        "wrongness `trap` counts, and a deployment may tolerate one and "
-        "not the other. Read the two together: a low `trap` with a high "
-        "`hedged_trap` is a model that is wrong carefully; both low is a "
+        "**`hedged` is not a failure rate and is not folded into any "
+        "verdict.** It is the fraction of watching attempts where the model "
+        "reached for what the probe was watching — a trap field, a key the "
+        "receipt does not carry, one side of a conflict — and *marked that "
+        "it was unsure*: hedged wrongness, a different class from the "
+        "confident wrongness `trap` counts, and a deployment may tolerate "
+        "one and not the other. Read the two together: a low `trap` with a "
+        "high `hedged` is a model that is wrong carefully; both low is a "
         "model that is wrong flatly. Marking confidence is not punished "
-        "here, because an instrument that punished it would teach the "
-        "model to stop marking, and a harness that only ever rewards "
-        "silence teaches silence.")
+        "here, because an instrument that punished it would teach the model "
+        "to stop marking, and a harness that only ever rewards silence "
+        "teaches silence.")
     lines.append("")
     lines.append(
-        "`contradiction` is scored the same way round: an answer that "
-        "surfaces BOTH readings with their own sources passes exactly as "
-        "an abstention does, because it serves the reader better. The one "
-        "failure is asserting a single side as if nothing disagreed.")
+        "`conflict_surfaced` is scored the same way round: an answer that "
+        "surfaces BOTH readings with their own sources passes exactly as an "
+        "abstention does, because it serves the reader better. The one "
+        "failure is asserting a single side as if nothing disagreed. So is "
+        "a mask: transcribing the receipt's own withholding token under the "
+        "key that holds it is a faithful report, and only a concrete value "
+        "in its place is a fabrication.")
     lines.append("")
 
     lines.append("## by family")
@@ -1090,10 +1369,12 @@ def _markdown(report: ExtractionReport,
     families = report.by_family()
     lines += _table(
         [[f"`{family}`", FAMILIES.get(family, ("", ""))[0],
-          rates["probe"].text, rates["structural"].text,
-          rates["grounded"].text, rates["hedged_trap"].text]
+          rates["probe_reliable"].text, rates["probe"].text,
+          rates["structural"].text, rates["grounded"].text,
+          rates["hedged"].text]
          for family, rates in families.items()],
-        ["family", "kind", "probe", "structural", "grounded", "hedged_trap"])
+        ["family", "kind", "probe_reliable", "probe", "structural",
+         "grounded", "hedged"])
     lines.append("")
     lines += [f"- `{family}` — {FAMILIES.get(family, ('', ''))[1]}"
               for family in families]
@@ -1112,9 +1393,10 @@ def _markdown(report: ExtractionReport,
     lines.append("")
     lines.append("The `stance` column is the spectrum this instrument "
                  "refuses to collapse: `asserted` / `hedged` / `both sides` "
-                 "/ `silent` / `unreadable`. `verdict` is the one pass/fail "
-                 "each probe needs and no more than that — a gate is a "
-                 "deployment's dial and not a measurement.")
+                 "/ `transcribed mask` / `silent` / `unreadable`. `verdict` "
+                 "is the one pass/fail each probe needs and no more than "
+                 "that — a gate is a deployment's dial and not a "
+                 "measurement.")
     lines.append("")
 
     if baseline is not None:
@@ -1139,7 +1421,9 @@ def _spectrum(attempt: Attempt) -> str:
     if not attempt.parsed:
         return "unreadable"
     parts: List[str] = []
-    if attempt.asserts:
+    if attempt.mask_faithful:
+        parts.append("transcribed mask")
+    elif attempt.asserts:
         parts.append("asserted")
     if attempt.hedged:
         parts.append("hedged")
@@ -1154,32 +1438,78 @@ def _note(attempt: Attempt) -> str:
     if attempt.sprung:
         notes.append("asserted trap " + ", ".join(attempt.sprung))
     if attempt.hedged:
-        notes.append("hedged trap " + ", ".join(attempt.hedged))
+        notes.append("hedged " + ", ".join(attempt.hedged))
     if attempt.both_sides is False and attempt.asserts:
         notes.append("picked one side of a conflict")
+    if attempt.mask_faithful is False and attempt.asserts:
+        notes.append("a value where the receipt published a mask")
     if not notes and attempt.defects:
         notes.append("; ".join(attempt.defects))
     return "; ".join(notes)
+
+
+# ── the baseline ─────────────────────────────────────────────────────────────
+
+def _probe_scores(attempts: Sequence[Mapping[str, Any]]
+                  ) -> Dict[str, Tuple[int, int]]:
+    """Probe id → (attempts that passed, attempts made).
+
+    **Every** attempt, not the last one.  A baseline read with last-wins
+    would compare one die against a whole run, and under ``--repeats`` that
+    is most of the evidence thrown away.
+    """
+    out: Dict[str, List[int]] = {}
+    for entry in attempts:
+        name = str(entry.get("probe") or "")
+        if not name:
+            continue
+        row = out.setdefault(name, [0, 0])
+        row[0] += 1 if entry.get("verdict") else 0
+        row[1] += 1
+    return {name: (passed, made) for name, (passed, made) in out.items()}
+
+
+def _baseline_delta(report: ExtractionReport,
+                    baseline: Mapping[str, Any]) -> Dict[str, Any]:
+    """The paired comparison, as data — the JSON mirror of the section."""
+    before = baseline.get("meta") or {}
+    differing = [name for name in PAIRING
+                 if before.get(name) != report.meta.get(name)]
+    then = _probe_scores(baseline.get("attempts") or [])
+    now = _probe_scores([a.as_dict() for a in report.attempts])
+    shared = [name for name in now if name in then]
+    return {
+        "differs_in": differing,
+        "comparable": len(shared),
+        "probes_now": len(now),
+        "probes_then": len(then),
+        "rates": {
+            name: {"baseline": (baseline.get("rates") or {}).get(name),
+                   "now": rate.as_dict()}
+            for name, rate in report.rates.items()},
+        "changed": [{"probe": name, "baseline": list(then[name]),
+                     "now": list(now[name])}
+                    for name in shared if then[name] != now[name]],
+    }
 
 
 def _baseline_section(report: ExtractionReport,
                       baseline: Mapping[str, Any]) -> List[str]:
     """Paired deltas against an earlier report, with the pairing questioned.
 
-    A delta between two models is not a delta, so the first thing printed
-    is whether the interpreter was the same one.
+    A delta between two models — or two corpora, or two repeat counts — is
+    not a delta, so the first thing printed is whether the experiment was
+    the same one.
     """
+    delta = _baseline_delta(report, baseline)
     before = baseline.get("meta") or {}
     lines = ["## against the baseline", ""]
     lines.append(f"- **baseline** {_identity(before)}")
     lines.append(f"- **this run** {_identity(report.meta)}")
-    differing = [name for name in
-                 ("provider", "model", "temperature", "endpoint", "prompt")
-                 if before.get(name) != report.meta.get(name)]
-    if differing:
-        lines.append(f"- ⚠ the two differ in {differing} — the rows below "
-                     f"are a difference between two interpreters as much as "
-                     f"between two trees")
+    if delta["differs_in"]:
+        lines.append(f"- ⚠ the two differ in {delta['differs_in']} — the "
+                     f"rows below are a difference between two experiments "
+                     f"as much as between two trees")
     lines.append("")
 
     now = report.rates
@@ -1188,31 +1518,35 @@ def _baseline_section(report: ExtractionReport,
     for name, rate in now.items():
         old = was.get(name) or {}
         old_rate = old.get("rate")
-        delta = ("—" if old_rate is None or rate.value is None
-                 else f"{(rate.value - old_rate) * 100:+.1f} pp")
+        change = ("—" if old_rate is None or rate.value is None
+                  else f"{(rate.value - old_rate) * 100:+.1f} pp")
         rows.append([f"`{name}`",
                      "—" if old_rate is None
                      else f"{old.get('k')}/{old.get('n')} = {old_rate:.0%}",
-                     rate.text, delta])
+                     rate.text, change])
     lines += _table(rows, ["category", "baseline", "now", "delta"])
     lines.append("")
 
-    then = {entry.get("probe"): entry
-            for entry in (baseline.get("attempts") or [])}
-    flips = [(a.probe, then[a.probe].get("verdict"), a.verdict)
-             for a in report.attempts
-             if a.probe in then
-             and bool(then[a.probe].get("verdict")) != a.verdict]
-    if flips:
-        lines.append("### probes that changed verdict")
+    lines.append(f"**{delta['comparable']} of {delta['probes_now']} probes "
+                 f"are comparable** — present in both reports by id "
+                 f"(the baseline holds {delta['probes_then']}).")
+    lines.append("")
+    if not delta["comparable"]:
+        lines.append("No probe is comparable between these two reports, so "
+                     "nothing below could have changed verdict and the "
+                     "absence of a table is not agreement. Check the "
+                     "`probes` path in both headers.")
+    elif delta["changed"]:
+        lines.append("### probes whose pass rate changed")
         lines.append("")
         lines += _table(
-            [[f"`{probe}`", "PASS" if was_ok else "FAIL",
-              "PASS" if now_ok else "FAIL"]
-             for probe, was_ok, now_ok in flips],
-            ["probe", "baseline", "now"])
+            [[f"`{row['probe']}`", f"{row['baseline'][0]}/{row['baseline'][1]}",
+              f"{row['now'][0]}/{row['now'][1]}"]
+             for row in delta["changed"]],
+            ["probe", "baseline passed", "now passed"])
     else:
-        lines.append("No probe changed verdict.")
+        lines.append(f"No probe changed its pass rate across the "
+                     f"{delta['comparable']} comparable.")
     lines.append("")
     return lines
 
@@ -1230,19 +1564,44 @@ def _table(rows: Sequence[Sequence[str]], header: Sequence[str]) -> List[str]:
 Ask = Callable[[Sequence[Mapping[str, str]]], str]
 
 
+def progress(message: str) -> None:
+    """The running commentary, on **stderr**.
+
+    ``--json`` writes a document to stdout that a caller pipes into a
+    parser, and a progress line in the middle of it is a parse error fifty
+    probes in.  Stdout is the result; stderr is the narration — the same
+    division the exit contract makes for a mission's own stream.
+    """
+    print(message, file=sys.stderr)
+
+
 def run_probes(probes: Sequence[Probe], ask: Ask, *, repeats: int = 1,
-               log=print) -> Tuple[Attempt, ...]:
+               max_seconds: Optional[float] = None,
+               log=progress) -> Tuple[Attempt, ...]:
     """Ask every probe *repeats* times and score each answer.
 
     One call, then at most one repair — never a third: a loop that kept
     asking would measure how long a model takes to stumble into the shape,
     and §2.9.3's number is about the first answer and the cost of fixing
     it.
+
+    *max_seconds* bounds the whole run.  A measurement against a cold or
+    slow endpoint is otherwise unbounded, and the house rule is that no
+    command is: a run that is cut short raises :class:`Unextractable`
+    rather than reporting a partial sample as a score.
     """
     attempts: List[Attempt] = []
-    total = len(probes) * max(1, int(repeats))
-    for repeat in range(1, max(1, int(repeats)) + 1):
+    repeats = max(1, int(repeats))
+    total = len(probes) * repeats
+    started = time.monotonic()
+    for repeat in range(1, repeats + 1):
         for probe in probes:
+            if max_seconds is not None and \
+                    time.monotonic() - started > float(max_seconds):
+                raise Unextractable(
+                    f"the wall budget of {max_seconds:g} s ran out with "
+                    f"{len(attempts)} of {total} attempts scored; raise "
+                    f"--max-seconds or narrow the corpus with --only")
             messages: List[Dict[str, str]] = [
                 {"role": "user", "content": prompt_for(probe)}]
             reply = _ask(ask, messages, probe, len(attempts), total)
@@ -1265,8 +1624,8 @@ def run_probes(probes: Sequence[Probe], ask: Ask, *, repeats: int = 1,
                                     repeat=repeat, defects=defects,
                                     replies=replies)
             attempts.append(attempt)
-            log(f"  {attempt.probe} [{attempt.family}] "
-                f"{attempt.structural} — "
+            log(f"  [{len(attempts)}/{total}] {attempt.probe} "
+                f"[{attempt.family}] {attempt.structural} — "
                 f"{'PASS' if attempt.verdict else 'FAIL'}")
     return tuple(attempts)
 
@@ -1320,9 +1679,9 @@ def header(probes: Sequence[Probe], path: Path, *, provider: str = "",
            model: str = "", temperature: Optional[float] = None,
            repeats: int = 1, env: Optional[Mapping[str, str]] = None
            ) -> Dict[str, Any]:
-    """What produced these numbers.  ``measure``'s vocabulary, one field
-    wider: the temperature and the prompt digest, both of which move an
-    extraction rate and neither of which a matrix row varies."""
+    """What produced these numbers.  ``measure``'s vocabulary, wider by the
+    three fields that move an extraction rate and that a matrix row does
+    not vary: the temperature, the prompt digest, and which corpus ran."""
     from core.eval.measure import commit_of, scrubbed
 
     env = os.environ if env is None else env
@@ -1373,23 +1732,58 @@ def add_parser(subs) -> argparse.ArgumentParser:
                         help="pinned for this measurement; unset sends the "
                              "server's own default and the report says so")
     parser.add_argument("--repeats", type=int, default=1, metavar="N",
-                        help="ask every probe N times (default 1); the "
-                             "interval is over the attempts")
+                        help="ask every probe N times (default 1); with "
+                             "N > 1 the headline becomes `probe_reliable`")
     parser.add_argument("--only", action="append", default=[], metavar="ID",
                         help="measure only this probe; repeatable")
+    parser.add_argument("--max-seconds", type=float, default=None,
+                        metavar="S",
+                        help="wall-clock bound on the WHOLE run; a run cut "
+                             "short is refused rather than reported")
     parser.add_argument("--report", type=Path, metavar="PATH",
-                        help="write the table here as Markdown and the same "
-                             "report as JSON beside it")
+                        help="write <stem>.md and <stem>.json here; a .json "
+                             "path is refused, since both would be it")
     parser.add_argument("--baseline", type=Path, metavar="PATH",
                         help="an earlier report.json; its rates are printed "
                              "beside these as paired deltas")
     parser.add_argument("--json", action="store_true",
-                        help="print JSON instead of the Markdown tables")
+                        help="print JSON to stdout instead of the Markdown "
+                             "tables; progress goes to stderr either way")
     return parser
+
+
+#: What is printed, loudly, when nothing parsed at all.  Module level
+#: because the rule it states is the whole reason for the exit code: a run
+#: where every reply was unreadable is a fault in the endpoint, the prompt
+#: or the plumbing, and reporting `structural 0/49` as a model's score
+#: would be attributing somebody's outage to a model.
+ALL_INVALID = (
+    "!!! EVERY reply was unreadable. This is an endpoint, prompt or "
+    "plumbing fault and NOT a model score — do not quote these numbers. "
+    "Read the `replies` in the report: an empty string means nothing came "
+    "back, a refusal means the endpoint answered something else, and the "
+    "same prose every time means the model never saw the array "
+    "instruction."
+)
 
 
 def from_args(args: argparse.Namespace) -> int:
     """``extraction`` as :func:`core.eval.run.main` reaches it."""
+    if int(args.repeats) < 1:
+        print(f"--repeats wants a positive count, got {args.repeats}; "
+              f"zero repeats is not a measurement", file=sys.stderr)
+        return 2
+    if args.max_seconds is not None and float(args.max_seconds) <= 0:
+        print(f"--max-seconds wants a positive budget, got "
+              f"{args.max_seconds}", file=sys.stderr)
+        return 2
+    if args.report is not None and args.report.suffix == ".json":
+        print("--report takes the path WITHOUT a suffix, or with `.md`: "
+              "both a Markdown and a JSON rendering are written beside each "
+              "other, and a `.json` argument would name them both",
+              file=sys.stderr)
+        return 2
+
     try:
         probes = load_probes(args.probes)
     except ProbeMisdeclared as exc:
@@ -1431,7 +1825,8 @@ def from_args(args: argparse.Namespace) -> int:
             return 2
 
     try:
-        attempts = run_probes(probes, ask, repeats=args.repeats)
+        attempts = run_probes(probes, ask, repeats=args.repeats,
+                              max_seconds=args.max_seconds)
     except Unextractable as exc:
         print(f"extraction: {exc}", file=sys.stderr)
         return 2
@@ -1443,9 +1838,17 @@ def from_args(args: argparse.Namespace) -> int:
                     model=str(getattr(ask, "model", "") or args.model or ""),
                     temperature=args.temperature, repeats=args.repeats))
 
-    print(report.to_json() if args.json else report.to_markdown(baseline))
+    print(report.to_json(baseline=baseline) if args.json
+          else report.to_markdown(baseline))
     if args.report is not None:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(args.report, report.to_markdown(baseline))
-        atomic_write_text(args.report.with_suffix(".json"), report.to_json())
+        stem = args.report.with_suffix("")
+        stem.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(stem.with_suffix(".md"),
+                          report.to_markdown(baseline))
+        atomic_write_text(stem.with_suffix(".json"),
+                          report.to_json(baseline=baseline))
+
+    if attempts and not any(a.parsed for a in attempts):
+        print(ALL_INVALID, file=sys.stderr)
+        return 2
     return 0

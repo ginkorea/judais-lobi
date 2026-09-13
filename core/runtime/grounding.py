@@ -1742,9 +1742,7 @@ class NumericGroundingCheck(GroundingCheck):
 
     @classmethod
     def _plain(cls, text: str) -> str:
-        for separator in cls.SEPARATORS:
-            text = text.replace(separator, "")
-        return text
+        return plain_figure(text)
 
 
 #: A field name as a payload spells one and as prose quotes one:
@@ -2358,6 +2356,24 @@ class ClaimGroundingCheck(GroundingCheck):
             if same_value(claimed, found):
                 return True
         return False
+
+
+def plain_figure(text: Any) -> str:
+    """*text* with the separators a figure carries in one place and not
+    the other stripped — ``12,481`` and ``12481`` are one number.
+
+    :attr:`NumericGroundingCheck.SEPARATORS` stays the owner of *which*
+    separators those are; this is the one place they are applied, and
+    :meth:`NumericGroundingCheck._plain` is now a call to it.  Public for
+    the reason :func:`same_value` is: :mod:`core.eval.extraction` compares
+    a model's proposition against a payload and must strip exactly what
+    this module strips, or a measurement of fabrication would be reporting
+    a difference in thousands separators.
+    """
+    out = str(text)
+    for separator in NumericGroundingCheck.SEPARATORS:
+        out = out.replace(separator, "")
+    return out
 
 
 def same_value(claimed: Any, found: Any) -> bool:
