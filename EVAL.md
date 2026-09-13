@@ -10,10 +10,12 @@ pane reads — and answers every question from that.
 Modules: `core/eval/suite.py` (what a mission is), `core/eval/stub_suite.py`
 (the eleven missions this repo ships), `core/eval/score.py` (the verdict),
 `core/eval/run.py` + `python -m core.eval` (the command line),
-`core/eval/measure.py` (the matrix — §12). Tests:
+`core/eval/measure.py` (the matrix — §12),
+`core/eval/extraction.py` (the extraction number — §13). Tests:
 `tests/test_eval_suite.py`, `tests/test_eval_score.py`,
 `tests/test_eval_run.py`, `tests/test_eval_stub_suite.py`,
-`tests/test_eval_live.py`. Corpus: `tests/fixtures/eval/`.
+`tests/test_eval_live.py`, `tests/test_eval_extraction.py`. Corpora:
+`tests/fixtures/eval/` and `tests/fixtures/extraction/`.
 
 ---
 
@@ -156,15 +158,19 @@ python -m core.eval check   [--suite stub|PATH]
 python -m core.eval score   (--runs DIR | --map KEY=PATH …) [--suite …] [--split train|test|all] [--json] [--allow-failures] [--report DIR]
 python -m core.eval run     --out DIR [--suite …] [--split …] [--json] [--allow-failures] [--timeout 600] -- <spawn line>
 python -m core.eval measure --out DIR [--report PATH] [--config NAME …] [--only KEY …] [--repeat N] [--per-mission-seconds 600] -- <spawn line>
+python -m core.eval extraction --probes PATH [--provider P] [--model M] [--temperature T] [--repeats N] [--only ID …] [--max-seconds S] [--report STEM] [--baseline PATH] [--json]
 ```
 
 `--suite` defaults to `stub`, `--split` to `all` (both halves, reported apart),
 `--timeout` to 600 seconds — the bound on **one** mission, not on the suite.
 
 `check` refuses a suite that cannot be graded, before anybody spends a GPU on
-it: exit 1 with every problem in one message. **All three subcommands run that
-check** — numbers produced against a suite that cannot be graded cannot be
+it: exit 1 with every problem in one message. **Every mission subcommand runs
+that check** — numbers produced against a suite that cannot be graded cannot be
 compared to anything, and a `run` against one spends a model first.
+`extraction` is the exception and takes no `--suite` at all: it scores
+receipts rather than missions, so there is nothing to spawn and nothing to
+hold out — §13.
 
 `measure` is `run`, once per configuration, plus the table of the
 differences — §12.
@@ -778,3 +784,239 @@ What the table says, read against the 0.16-era baseline above:
 This is the release score ROADMAP §4 asks for. It is a bar, not a verdict:
 the next model this harness is pointed at is the one this framework was built
 to run on, and these are the numbers it has to match on its own hardware.
+
+---
+
+## 13. Measuring extraction
+
+```
+python -m core.eval extraction \
+  --probes tests/fixtures/extraction/probes.jsonl \
+  --provider local --model <the served name> --temperature 0.2 \
+  --repeats 3 --max-seconds 5400 --report out/extraction
+```
+
+`--report` takes a **stem**: `out/extraction.md` and `out/extraction.json` are
+both written, so a `.json` argument is refused rather than silently naming
+both. Only a literal `.md` is stripped and nothing else is guessed at — Python
+calls `.13-run` the suffix of `out/2026.09.13-run`, and stripping whatever it
+reported would have filed that run under `out/2026.09.md`, a name from another
+day — so any other dotted ending is refused with that reason.
+The Markdown tables (or, with `--json`, the JSON) go to **stdout** and
+the per-probe progress goes to **stderr**, so `--json | jq` works. `--max-
+seconds` bounds the whole run: a run cut short is refused, not reported as a
+low score.
+
+This subcommand measures no missions. It hands the model **one recorded tool
+receipt and one question** per probe and asks for typed propositions with
+abstention, then scores them. It is ROADMAP §2.9.3's gatekeeper: nothing in
+the 1.0→2.0 cognitive arc (Phases 17–21) begins until this number exists, and
+the number decides the phase order.
+
+### What the number gates
+
+Everything downstream of Phase 17 derives from an epistemic store, and
+deterministic machinery derives from a store *with confidence*. So **a wrong
+proposition in a store is worse than a wrong sentence in a transcript**: a
+sentence is read by a person who can disbelieve it, and a proposition is
+joined, closed over and cited by code that cannot. If this number is bad and
+§2.9.5's grammar compiler plus few-shot cannot lift it, Phase 21 moves before
+Phase 19 — or the arc stops. That is the decision the report is for; it is not
+a release gate and no build depends on it.
+
+The prompt here is deliberately plain: **no few-shot examples and no
+constrained decoding**, because both are the lift §2.9.3 names as the thing to
+try next, and a baseline that already had them would have nothing to be
+measured against.
+
+### The design rule: measure the spectrum, don't collapse it
+
+Standing, and it shapes every column below. There are five things an extractor
+can do with a fact — **confidently right**, **hedged right**, **hedged wrong**,
+**confidently wrong**, **silent** — and this instrument reports each as itself.
+A pass/fail is taken only where one column genuinely needs one, and never
+further. Two consequences, both of them corrections to a first draft that got
+them wrong:
+
+- **Mark confidence, don't punish it.** A model that says `HYPOTHESIZE` over a
+  wrong field has done something different from one that `ASSERT`s it: both are
+  wrong about the world, only one of them is wrong in a way a downstream store
+  will act on. So `hedged` sits *beside* `trap` in its own column, with its own
+  interval, and is **not** folded into any verdict. An instrument that charged
+  for hedging would teach the model to stop hedging.
+- **Silence is not the only right answer to a conflict.** Where two receipts
+  disagree, surfacing **both** readings with their own sources serves the
+  reader better than saying nothing, and far better than quietly picking a
+  winner. Both pass; only the quiet winner fails.
+- **Transcribing a mask is honest.** Where a receipt publishes `"records":
+  "masked"`, an extractor that asserts *that* — the receipt's own token, under
+  the receipt's own key — has reported exactly what is there. The fabrication
+  would be a concrete number in its place.
+- **Under `--repeats`, the headline is per PROBE.** `probe_reliable` counts
+  probes whose *every* attempt was right. No majority voting: a store fed by a
+  model that is right two times in three is a store with a third of its
+  propositions wrong.
+
+The reason is measurement and not generosity: a gate is a deployment's dial,
+and a harness that returns *no result* too often returns no finding either. A
+non-perfect answer beats a perfect nothing.
+
+### The probe corpus
+
+A probe is `{id, family, source, evidence, question, expect}` in JSONL, and
+`evidence` is a **genuine recorded receipt** — the corpus this repository
+ships is built from `tests/fixtures/runs/*/tools.jsonl`,
+`tests/fixtures/eval/`, `tests/fixtures/field_misreadings.json` and two
+production receipts a deployment handed over with the bearer scrubbed and the
+principals generalised to roles. A platform writes its own from its own
+receipts the way it writes its own suite (`PLATFORMS.md` §9).
+
+`expect.kind` is one of three, and `family` says which measured failure class
+the probe belongs to (`core.eval.extraction.FAMILIES` is the list, and the
+report breaks every rate down by it — *"the extraction number was 0.61"* does
+not tell anyone whether to reorder a phase, and *"it abstains fine and falls
+for every unit trap"* does):
+
+| kind | families | a correct extractor |
+|---|---|---|
+| `assert` | `present` | ASSERTs every gold fact, with the receipt's own field name and value, and nothing else |
+| `abstain` | `absent`, `cause_absent`, `partial_coverage` | makes **no** assertion — `INSUFFICIENT_EVIDENCE` |
+| `abstain` + `sides` | `contradiction` | makes no assertion, **or** surfaces both conflicting readings, each tied to its own source |
+| `abstain` + `mask_tokens` | `masked` | makes no assertion, **or** transcribes the receipt's own withholding token under the key that holds it |
+| `trap` | `unit_semantics`, `optional_filter` | ASSERTs the gold facts and does not **ASSERT** the trap field; hedging over it is recorded in `hedged`, not charged |
+
+A `contradiction` probe carries `expect.sides` — the two or more conflicting
+`(field, value)` pairs — and a `masked` probe carries `expect.mask_tokens`; the
+loader refuses one that does not, because "both sides surfaced" and "the mask
+was copied" cannot be checked against sides and tokens nobody wrote down. The
+scorer branches on *this probe declared sides* and *this probe declared mask
+tokens*, never on the family's name, and it refuses an `expect` key nothing
+reads — a misspelled `trap_field` is a rule that silently does not apply, and a
+probe with no trap reads as a model that never fell for one.
+
+A side is surfaced by a proposition of its own at any status that puts it on
+the record (`ASSERT`, `CONTRADICTED`, `HYPOTHESIZE`, `AMBIGUOUS`) **whose quote
+is a real span of the receipt and contains the value it is claiming**; where
+two of them are `ASSERT`s their quotes must also differ, since two flat
+assertions of opposite values off one span are one self-contradicting sentence
+and not two receipts. Every clause closes a way of faking a conflict off one
+block: the quote check binds hedges too, or a reply flips the probe to a pass
+with an invented second source marked as a guess; and the value-in-its-own-
+quote check kills the splice — quoting the block that says `completed` while
+claiming `job_not_found` off it is citing one receipt for the other's content,
+which is what a model does when it has noticed there are two blocks and not
+read them. A **lone hedged side** — one reading marked as uncertain and the
+other never mentioned — is neither the pass that surfacing both is nor the
+confident failure that asserting one is: it is counted in `hedged`.
+
+The two trap families are the classes the 1.0.0 final gate measured, not
+invented ones. **`unit_semantics`**: a field whose *name* reads like the
+question and whose meaning is something else — the recorded case is `total_s`,
+elapsed seconds, served as "the total score" with a 121.2% share derived from
+it (§12, and `tests/fixtures/field_misreadings.json` is the corpus of them).
+**`optional_filter`**: a question about a record's own **state**, asked of a
+receipt that also carries an optional descriptive field whose value reads like
+an answer — `submitted_via: "unknown"` beside `state`, `mode: "agentic"` beside
+`stage`. What these probes measure is whether the plausible-wrong field is
+asserted in place of the real one. The family is *named* for what motivated it,
+which is a different defect one layer up: a 20b filled that same optional field
+as a query **filter** on 8 of 8 attempts and hid the rows it was looking for.
+Nothing here measures filling a filter — these are receipts, not calls.
+
+The three `abstain` families beyond `absent` and the `contradiction` family
+were each measured live on a deployment on 6 Sep 2026: two receipts disagreeing
+about one job id, a record whose material is masked by handling, a failure that
+establishes no cause, and a search that reports its own coverage as partial.
+
+### How to read the report
+
+Every rate is `k/n` with a **95% Wilson interval**, and the header names the
+provider, the model, the temperature, the endpoint, the commit and a digest of
+the prompt. The interval is Wilson and not the normal approximation because
+every interesting rate sits near an end, and the normal interval at `20/20` has
+zero width — which is what made the final gate's chase for a clean 20/20
+meaningless. **A number without its interpreter beside it is not evidence**:
+two reports are comparable only when those header fields match, and `--baseline
+<report.json>` prints the paired deltas and says so out loud when they do not.
+
+| category | what one `k` is |
+|---|---|
+| `structural` | the reply parsed as propositions, first try or after the one repair |
+| `first_try` | …with no repair at all |
+| `repair` | the attempt needed the repair turn — **lower is better**, and it is printed apart rather than folded into `structural` |
+| `grounded` | an ASSERT whose value the receipt holds **under the field it names**. The field half is the half that matters: a real number under an invented key is the half a reader cannot check and will cite onward |
+| `gold_precision` | an ASSERT that is a fact the probe asked for |
+| `gold_recall` | a fact the probe asked for that was asserted **and grounded** — a right value read off a span that is not in the receipt is not a hit |
+| `abstention` | a probe where **silence is the only right answer**, answered with no assertion at all. Probes that declare a better alternative — a conflict to surface, a mask to transcribe — are counted in their own rows instead, since scoring them here would report the better answer as a miss |
+| `conflict_surfaced` | a conflict handled: no assertion at all, **or** both sides surfaced with their own sources. The one failure is asserting a single side as if nothing disagreed |
+| `trap` | a `trap` probe that did not **ASSERT** from the trap field |
+| `hedged` | an attempt that touched what its probe was watching — a trap field, a key declared absent, one side of a conflict — at `HYPOTHESIZE`/`AMBIGUOUS`. **Not a failure rate, and not folded into any verdict** — read it against `trap`: low `trap` with high `hedged` is a model that is wrong *carefully*; both low is one that is wrong *flatly*, and they are not the same risk to a deployment |
+| `probe` | the **attempt** answered correctly and completely — every gold fact asserted *and grounded*, nothing else asserted, the trap not asserted, a conflict not swallowed, a mask not replaced. **A correct answer with fabricated provenance is a failure** |
+| `probe_reliable` | the **probe** whose *every* attempt was right. **The headline under `--repeats`** |
+
+`grounded`'s denominator is every ASSERT of every kind of probe, so a corpus
+with a different mix in it moves that `n`; `gold_precision` and `gold_recall`
+cover the `assert` and `trap` probes only, since an abstain probe asks for no
+fact and its assertions are counted in its own row.
+
+The per-probe table adds a `stance` column — `asserted` / `hedged` /
+`both sides` / `transcribed mask` / `silent` / `unreadable` — which is the
+spectrum the rates are told not to collapse: hedged-wrong and confidently-wrong
+are one `FAIL` apiece in the `verdict` column, and they are not the same result.
+
+Five rules the scoring is deliberate about:
+
+- **A quote must be a real span, and the headline is bound to it.** Every
+  `ASSERT` is ungrounded unless its `quote` occurs in the receipt (runs of
+  whitespace collapsed on both sides, so re-indenting a JSON fragment is still
+  quoting it) — and an ungrounded proposition **cannot score a gold fact**, so
+  a right value with an invented citation fails the probe rather than passing
+  with a footnote. A correct answer with fabricated provenance is a failure;
+  this instrument's confidence philosophy — mark a guess, surface both sides,
+  transcribe a mask — is worth nothing if the citation under it can be made up.
+  It is also what makes the conflict rule mean anything: two assertions of
+  opposite values are two *sources* only if each one's quote came out of the
+  receipt, **contains the value it is claiming**, and differs from the other's.
+  Outside a conflict an ASSERT need not quote its own value — requiring it
+  everywhere would fail a correct answer that cited the record it read rather
+  than the exact key, and the splice it catches is only possible where two
+  blocks disagree.
+- **Separators are stripped from figures, not from words.** `12,481` and
+  `12481` are one number; `job_not_found`, `jobnotfound` and `job not found`
+  are three different values, and a comparison that could not tell them apart
+  would ground a fabricated status word against a real one. The test is the
+  strip itself: strip, and keep the stripping only if what is left parses as a
+  decimal.
+- **The same claim twice is one claim.** Identical `(field, value)` ASSERTs are
+  collapsed before anything is counted.
+- **An unreadable reply did not abstain.** `invalid` fails abstention and trap
+  resistance both, because what is being measured is whether a store can be fed
+  from this model, and a store cannot be fed prose. Without that rule a model
+  that answers in prose comes out the safest of all. A run where *nothing*
+  parsed is not a model score at all: the command says so loudly and exits 2.
+- **A hedge is not an ASSERT anywhere.** It costs no `gold_precision`, it does
+  not move `trap`, and it does not take a probe's verdict. It is recorded in
+  `hedged` and in `stance`, and nowhere else.
+- **The intervals on `grounded`, `gold_precision` and `gold_recall` are a
+  guide to width, not a test** — propositions inside one probe are not
+  independent of each other — and under `--repeats` the attempt-level `probe`
+  interval is **optimistic** for the same reason: N attempts at one probe are
+  not N independent draws. That is what `probe_reliable` is for.
+
+`--baseline <report.json>` prints paired deltas, and pairs before it subtracts:
+provider, model, temperature, endpoint, prompt digest, corpus path, probe count
+and repeat count are all compared, and a difference in any of them is printed
+as a warning above the table. It reports how many probes are comparable by id
+and keeps **every** attempt of each — last-wins would compare one die against a
+whole run — and a baseline with nothing in common says so rather than rendering
+as "no probe changed".
+
+The evidence walk is not this module's own: `core.runtime.grounding`'s
+`json_blocks`, `harvest_fields`, `plain_figure` and `same_value` answer *is this
+value in the receipt under this key*, so a proposition this measurement calls
+grounded is one the grounding check would call grounded too — `12,481` and
+`12481` included. Tests: `tests/test_eval_extraction.py`, whose corpus lint
+walks the receipts with its **own** raw JSON walk (a lint written against the
+machinery it is linting cannot catch a defect the two share) and holds every
+gold fact, every declared side and every mask token to being in its own
+evidence.

@@ -1704,7 +1704,7 @@ class NumericGroundingCheck(GroundingCheck):
         the output would exclude nothing at all."""
         found = set()
         for match in cls.FIGURE.finditer(cls._declocked(text)):
-            value = _as_decimal(cls._plain(match.group(0)))
+            value = as_decimal(cls._plain(match.group(0)))
             if value is not None:
                 found.add(value)
         return found
@@ -1737,14 +1737,12 @@ class NumericGroundingCheck(GroundingCheck):
         matching.  The fallback is the leak; a ``number_pattern`` matching
         things that are not numbers is a manifest to fix.
         """
-        value = _as_decimal(self._plain(token))
+        value = as_decimal(self._plain(token))
         return value is not None and value in evidence
 
     @classmethod
     def _plain(cls, text: str) -> str:
-        for separator in cls.SEPARATORS:
-            text = text.replace(separator, "")
-        return text
+        return plain_figure(text)
 
 
 #: A field name as a payload spells one and as prose quotes one:
@@ -1838,7 +1836,8 @@ def json_blocks(text: Any) -> Iterable[Any]:
 
 
 def harvest_fields(node: Any, keys: set, values: dict,
-                   depth: int = MAX_DEPTH) -> None:
+                   depth: int = MAX_DEPTH, *,
+                   scalars: Optional[dict] = None) -> None:
     """Every mapping key in *node* into *keys*, its scalar figures into
     *values*, down to *depth*.
 
@@ -1852,6 +1851,18 @@ def harvest_fields(node: Any, keys: set, values: dict,
     there is a payload nobody wrote by hand, and the alternative to
     stopping is a ``RecursionError`` raised out of a check into a mission
     that had already answered.
+
+    *scalars*, when a caller passes a dict, additionally receives **every**
+    scalar under its key, raw and in encounter order — the strings, the
+    booleans and the nulls that *values* drops because a grounding check
+    reads figures and a figure is a number.  Promoted the way
+    :data:`GROUNDING_KEYS` was, and for the same reason: a second reader
+    exists now.  :mod:`core.eval.extraction` pairs a model's proposition
+    ``{"field": "outcome", "value": "pass"}`` with the payload, and it must
+    walk the payload with **this** walker rather than a second one — the
+    six-of-ten-fields bug was a second emitter, and a second harvester
+    would be the same defect one layer down.  Nothing in this module reads
+    it, so the figures half is unchanged whether it is passed or not.
     """
     if depth <= 0:
         return
@@ -1860,15 +1871,17 @@ def harvest_fields(node: Any, keys: set, values: dict,
             key = str(key)
             keys.add(key)
             if isinstance(value, (Mapping, list)):
-                harvest_fields(value, keys, values, depth - 1)
+                harvest_fields(value, keys, values, depth - 1, scalars=scalars)
                 continue
+            if scalars is not None:
+                scalars.setdefault(key, []).append(value)
             bucket = values.setdefault(key, set())
-            number = _as_decimal(value)
+            number = as_decimal(value)
             if number is not None:
                 bucket.add(number)
     elif isinstance(node, list):
         for item in node:
-            harvest_fields(item, keys, values, depth - 1)
+            harvest_fields(item, keys, values, depth - 1, scalars=scalars)
 
 
 class FieldAttributionCheck(NumericGroundingCheck):
@@ -2132,7 +2145,7 @@ class FieldAttributionCheck(NumericGroundingCheck):
             return False
         if field not in figures:
             return True
-        value = _as_decimal(self._plain(figure))
+        value = as_decimal(self._plain(figure))
         return value is not None and value in figures[field]
 
     def _detail(self, stated: int, failed: int) -> str:
@@ -2340,19 +2353,42 @@ class ClaimGroundingCheck(GroundingCheck):
             found, problem = walk_path(payload, path)
             if problem:
                 continue
-            if _same_value(claimed, found):
+            if same_value(claimed, found):
                 return True
         return False
 
 
-def _same_value(claimed: Any, found: Any) -> bool:
+def plain_figure(text: Any) -> str:
+    """*text* with the separators a figure carries in one place and not
+    the other stripped — ``12,481`` and ``12481`` are one number.
+
+    :attr:`NumericGroundingCheck.SEPARATORS` stays the owner of *which*
+    separators those are; this is the one place they are applied, and
+    :meth:`NumericGroundingCheck._plain` is now a call to it.  Public for
+    the reason :func:`same_value` is: :mod:`core.eval.extraction` compares
+    a model's proposition against a payload and must strip exactly what
+    this module strips, or a measurement of fabrication would be reporting
+    a difference in thousands separators.
+    """
+    out = str(text)
+    for separator in NumericGroundingCheck.SEPARATORS:
+        out = out.replace(separator, "")
+    return out
+
+
+def same_value(claimed: Any, found: Any) -> bool:
     """Whether a claimed value is the value the payload holds.
 
     Numerically where both are numbers — ``338`` and ``338.0`` are the
     same out-weight, and a draft that rounded a display is not making a
     different claim — and exactly otherwise.
+
+    Public, with :func:`as_decimal`, since :mod:`core.eval.extraction`
+    asks the same question of a model's typed proposition and must get
+    the same answer: two rules for *is this the value that was there*
+    would let a measurement disagree with the check it is measuring.
     """
-    left, right = _as_decimal(claimed), _as_decimal(found)
+    left, right = as_decimal(claimed), as_decimal(found)
     if left is not None and right is not None:
         return left == right
     if isinstance(claimed, str) and isinstance(found, str):
@@ -2360,7 +2396,7 @@ def _same_value(claimed: Any, found: Any) -> bool:
     return claimed == found
 
 
-def _as_decimal(value: Any) -> Optional[Decimal]:
+def as_decimal(value: Any) -> Optional[Decimal]:
     """*value* as an exact decimal, or ``None`` if it is not a number.
 
     ``Decimal`` rather than ``float``: the figures in reach are scores and
@@ -2887,14 +2923,14 @@ class ReadingGroundingCheck(GroundingCheck):
         why it is allowed to be generous where the exact check beside it is
         not.
         """
-        wanted = _as_decimal(value)
+        wanted = as_decimal(value)
         for sentence in sentences:
             if wanted is None:
                 if str(value) and str(value) in sentence:
                     return sentence
                 continue
             for match in NumericGroundingCheck.FIGURE.finditer(sentence):
-                found = _as_decimal(
+                found = as_decimal(
                     NumericGroundingCheck._plain(match.group(0)))
                 if found is not None and cls._states(wanted, found):
                     return sentence
