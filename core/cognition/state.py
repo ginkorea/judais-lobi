@@ -76,14 +76,13 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from types import MappingProxyType
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from core.cognition.events import (EVENT_OPS, EVENT_SCHEMA_VERSION, EVENTS_KEY,
-                                   KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY,
-                                   check_snapshot, decode_evidence,
-                                   decode_pattern, encode_evidence,
-                                   encode_pattern)
+from core.cognition.events import (COUNT_KEY, EVENT_OPS, EVENT_SCHEMA_VERSION,
+                                   EVENTS_KEY, KERNEL_KEY, KERNEL_VERSION,
+                                   SCHEMA_KEY, check_snapshot, decode_evidence,
+                                   decode_pattern, deep_copy, encode_evidence,
+                                   encode_pattern, freeze)
 from core.cognition.matching import (Bindings, resolve, shares_variable, unify,
                                      unify_patterns)
 from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
@@ -111,6 +110,11 @@ from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
 #: is a claim about truth and truncating it would make the store wrong rather
 #: than incomplete.
 ENV_CAP = 256
+
+#: A memo miss. `None` is a real grade result — "this claim has none" —
+#: so a memo that used it as the miss marker would recompute every
+#: ungraded proposition on every lookup.
+_UNSET = object()
 
 #: Every field :meth:`CognitiveState.digest` renders, per section.
 #:
@@ -144,7 +148,13 @@ class CognitiveState:
 
     # ── construction ────────────────────────────────────────────────────────
 
-    def __init__(self) -> None:
+    def __init__(self, schema: int = EVENT_SCHEMA_VERSION) -> None:
+        # Which schema's SEMANTICS this store runs under. A fresh store is
+        # the current one; a store rebuilt from an older log keeps that log's,
+        # because `replay` has to reproduce what the log meant when it was
+        # written and not what those same events would mean today. See
+        # `replay` for the two places the versions actually differ.
+        self._schema = int(schema)
         self._events: List[dict] = []
         # Read-only views of the same dicts, built once at append time. The
         # log used to be deep-copied on every `.events` access — 120ms at
@@ -209,7 +219,7 @@ class CognitiveState:
         event = {"n": len(self._events) + 1, "op": op}
         event.update(fields)
         self._events.append(event)
-        self._readonly.append(MappingProxyType(event))
+        self._readonly.append(freeze(event))
         self._epoch += 1
         return event
 
@@ -265,9 +275,10 @@ class CognitiveState:
         worth more here than a paragraph explaining why this one differs.
         """
         self.derive()
-        return {SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+        return {SCHEMA_KEY: self._schema,
                 KERNEL_KEY: KERNEL_VERSION,
-                EVENTS_KEY: [dict(event) for event in self._events]}
+                COUNT_KEY: len(self._events),
+                EVENTS_KEY: [deep_copy(event) for event in self._events]}
 
     @classmethod
     def replay(cls, events: Any) -> "CognitiveState":
@@ -277,12 +288,51 @@ class CognitiveState:
         There is no second application path — a replay that reconstructed the
         indexes directly would be a second implementation of the engine, and
         the day the two disagreed the replay would be the one nobody checked.
+
+        **Replay is version-aware, and that is what keeps the append-only
+        promise honest.**  :mod:`core.cognition.events` promises that an op
+        never changes meaning, and it does not — but two *defaults* around
+        them did, and a log is only reconstructed correctly if it is read
+        under the rules in force when it was written.  A schema-1 log
+        therefore replays with schema-1 semantics, in exactly two places:
+
+        * an undeclared field is single-valued (schema 2 made it ``many``, and
+          a v1 store contested values a v2 store leaves standing), and
+        * a rule may be re-promoted laterally (schema 2 refuses it).
+
+        Both were things a v1 store really did, so a v1 log can contain their
+        consequences, and reading it under today's rules would silently
+        produce a *different* store from the one that was written.  The
+        resulting store keeps that schema — it snapshots back as what it is,
+        so a round trip is exact — and refuses the ops that did not exist
+        under it.
         """
-        records = check_snapshot(events)
-        state = cls()
-        for record in records:
-            state._apply_event(record)
+        version, records = check_snapshot(events)
+        state = cls(schema=version)
+        for index, record in enumerate(records):
+            try:
+                state._apply_event(record)
+            except ReplayRefused:
+                raise
+            except CognitionError as exc:
+                # Everything this package refuses is a CognitionError, and a
+                # replay has exactly one failure a caller is told to catch.
+                # An `AuthorityRefused` or an `UnknownId` escaping from here
+                # went straight through a handler written as documented — a
+                # crash where a refusal was promised, and a store left half
+                # built.
+                raise ReplayRefused(
+                    f"event {index + 1} ({record.get('op')!r}) cannot be "
+                    f"applied: {exc}") from exc
         return state
+
+    def _require_schema(self, needed: int, op: str) -> None:
+        if self._schema < needed:
+            raise CognitionError(
+                f"{op!r} arrived in schema {needed} and this store is "
+                f"running schema-{self._schema} semantics; a store rebuilt "
+                "from an older log keeps that log's rules, and mixing the "
+                "two would give it a history it cannot explain")
 
     def _apply_event(self, record: Mapping[str, Any]) -> None:
         op = record["op"]
@@ -472,6 +522,7 @@ class CognitiveState:
         ``"hypothesis"`` report never moved anything, so there is nothing to
         undo.
         """
+        self._require_schema(2, "settle")
         clash = self._contradictions.get(contradiction)
         if clash is None:
             raise UnknownId(f"no contradiction {contradiction!r}")
@@ -506,8 +557,17 @@ class CognitiveState:
                      evidence=_merge_evidence(self._props[loser].evidence,
                                               refs))
         self._pending_props[keep] = None
-        self._revive_dependents(keep)
+        revived = self._revive_dependents(keep)
         self._retract_dependents([loser])
+        # **A revival is an arrival.** The kept side is live again and so is
+        # everything that came back with it, and the store has not looked at
+        # any of them since. With three values on a single-valued field the
+        # third never collided — it arrived when the first two had already
+        # contested each other and there was nothing live to disagree with —
+        # so settling in favour of the first puts two live values on a field
+        # that may hold one. Measuring the revived claims is what closes it.
+        for pid in [keep] + list(revived):
+            self._collide(pid)
         return contradiction
 
     def _status_before_contest(self, pid: str) -> PropositionStatus:
@@ -524,7 +584,7 @@ class CognitiveState:
                 return revision.status
         return PropositionStatus.OBSERVED  # pragma: no cover - see _collide
 
-    def _revive_dependents(self, revived: str) -> None:
+    def _revive_dependents(self, revived: str) -> Tuple[str, ...]:
         """Bring back what fell only because the settled side had died.
 
         The mirror of :meth:`_retract_dependents`, and bounded the same way:
@@ -535,6 +595,7 @@ class CognitiveState:
         """
         work = deque([revived])
         seen = {revived}
+        restored: List[str] = []
         while work:
             back = work.popleft()
             for did in list(self._by_premise.get(back, ())):
@@ -552,6 +613,7 @@ class CognitiveState:
                         PropositionStatus.DERIVED:
                     continue
                 self._revise(conclusion, status=PropositionStatus.DERIVED)
+                restored.append(conclusion)
                 for clash in list(self._contradictions.values()):
                     if (clash.kind == "dead_premise" and not clash.settled
                             and clash.left == conclusion):
@@ -563,6 +625,7 @@ class CognitiveState:
                 if conclusion not in seen:
                     seen.add(conclusion)
                     work.append(conclusion)
+        return tuple(restored)
 
     # ── writing: fields, rules and goals ────────────────────────────────────
 
@@ -584,6 +647,7 @@ class CognitiveState:
             raise CognitionError(
                 f"{cardinality!r} is not a cardinality; "
                 f"{' or '.join(repr(c) for c in CARDINALITIES)}")
+        self._require_schema(2, "declare_field")
         if not isinstance(field, str) or not field:
             raise CognitionError("a field is a non-empty string")
         held = self._cardinality.get(field)
@@ -594,13 +658,35 @@ class CognitiveState:
                 "half way through a store's life")
         self._cardinality[field] = cardinality
         self._append("declare_field", field=field, cardinality=cardinality)
+        if cardinality == "one":
+            # **The declaration applies to what the store already holds.**
+            # Refusing to declare over an occupied field was the alternative
+            # and it makes pack-load order fragile in the one arrangement
+            # that is normal: a resume replays the session's observations and
+            # the skill's rule pack is loaded *after* it, so the declaration
+            # almost always arrives second. A pack whose collision checks
+            # depended on having been loaded first would work in development
+            # and stop working on the first resume.
+            #
+            # Insertion order, so the result is a function of the store and
+            # not of the dict's iteration: the earliest proposition is the
+            # one still standing when the later ones collide with it.
+            for pid in list(self._by_field.get(field, ())):
+                self._collide(pid)
         return field
 
     def cardinality(self, field: Optional[str]) -> str:
-        """What a field was declared, or :data:`DEFAULT_CARDINALITY`."""
+        """What a field was declared, or the default for this store's schema.
+
+        Schema 1 had no declarations and treated every field as single-valued;
+        schema 2 turned the default round (see :meth:`_collide`). A store
+        replayed from a v1 log keeps the v1 default, because a v1 log can
+        contain contradictions that only exist under it.
+        """
+        default = DEFAULT_CARDINALITY if self._schema >= 2 else "one"
         if field is None:
-            return DEFAULT_CARDINALITY
-        return self._cardinality.get(field, DEFAULT_CARDINALITY)
+            return default
+        return self._cardinality.get(field, default)
 
     # ── writing: rules and goals ────────────────────────────────────────────
 
@@ -667,7 +753,8 @@ class CognitiveState:
             raise AuthorityRefused(
                 "promote_rule names the authority that stands behind the "
                 "rule; PROPOSED is the absence of one")
-        if existing.authority is not RuleAuthority.PROPOSED:
+        if existing.authority is not RuleAuthority.PROPOSED \
+                and self._schema >= 2:
             raise AuthorityRefused(
                 f"rule {rule!r} already stands on "
                 f"{existing.authority.name}; promotion is PROPOSED to "
@@ -723,8 +810,18 @@ class CognitiveState:
         are deduplicated by ``(rule, premises, conclusion)``, so a cycle stops
         producing new ones and the loop ends.
         """
-        prop_delta = [pid for pid in propositions if pid in self._props]
-        rule_delta = [rid for rid in rules if rid in self._rules]
+        unknown = ([pid for pid in propositions if pid not in self._props]
+                   + [rid for rid in rules if rid not in self._rules])
+        if unknown:
+            # Silently dropping them was a PARTIAL application: a `derive`
+            # event naming a proposition this store never assigned is a log
+            # that does not describe this store, and closing over the rest
+            # builds something plausible out of it.
+            raise UnknownId(
+                f"apply_delta was given {unknown!r}, which this store never "
+                "assigned; a delta is not applied in part")
+        prop_delta = list(propositions)
+        rule_delta = list(rules)
         if not prop_delta and not rule_delta:
             return ()
         self._append("derive", propositions=list(propositions),
@@ -1069,6 +1166,19 @@ class CognitiveState:
             for other in others:
                 if self._props[other].live:
                     self._disagree(pid, other)
+                elif self._props[other].status is \
+                        PropositionStatus.HYPOTHESIZED:
+                    # Two model claims about one field, disagreeing. This was
+                    # dismissed as "the model being uncertain, which is not
+                    # news" — and that was wrong about what a shadow layer is
+                    # for. Two *extractors* disagreeing over one receipt is
+                    # the cheapest available sign that the extraction step is
+                    # where a mission is going wrong, and it is there before
+                    # any receipt arrives to settle it. Recorded like every
+                    # other disagreement and moving nothing: neither claim
+                    # outranks the other and the store has no receipt to
+                    # prefer either.
+                    self._disagree(pid, other)
         elif prop.live:
             for other in others:
                 if self._props[other].status is \
@@ -1110,8 +1220,13 @@ class CognitiveState:
         assert kind in CONTRADICTION_KINDS, kind
         key = (kind, left, right)
         existing = self._contradiction_keys.get(key)
-        if existing is not None:
+        if existing is not None and not self._contradictions[existing].settled:
             return existing
+        # A SETTLED row is history — it records a disagreement somebody
+        # resolved, with the evidence they resolved it on. If the same pair
+        # collides again the store is finding out something new, and folding
+        # that into the old row would overwrite the settlement with the fact
+        # that it did not hold. Fresh row; the settled one stays as it was.
         self._counters["c"] += 1
         cid = f"c{self._counters['c']}"
         self._contradictions[cid] = Contradiction(
@@ -1186,15 +1301,17 @@ class CognitiveState:
         """
         self.derive()
         target = check_pattern(pattern)
-        out = []
-        for pid, prop in self._props.items():
-            if prop.triple is None:
-                continue
-            if live and not prop.live:
-                continue
-            if unify(target, prop.triple) is not None:
-                out.append(prop)
-        return tuple(out)
+        if live:
+            # The same index choice the join makes, for the same reason: a
+            # public read that scanned every proposition would be the one
+            # place in the package where asking a narrow question costs the
+            # whole store.
+            candidates = self._matches(target, {}, None)
+        else:
+            candidates = [pid for pid, prop in self._props.items()
+                          if prop.triple is not None]
+        return tuple(self._props[pid] for pid in candidates
+                     if unify(target, self._props[pid].triple) is not None)
 
     def claim(self, triple: Sequence[Any]) -> Optional[str]:
         """The id this store holds a triple under, or ``None``.
@@ -1291,45 +1408,88 @@ class CognitiveState:
         return Support(
             proposition=pid,
             status=prop.status,
-            grade=self._grade(pid, set()),
+            grade=self._grade(pid, set(), {})[0],
             contested_by=tuple(clash.id for clash in clashes
                                if clash.kind != "hypothesis"),
             hypothesis=tuple(clash.id for clash in clashes
                              if clash.kind == "hypothesis"),
-            evidence_leaves=self._leaves(pid, set()),
+            evidence_leaves=self._leaves(pid, set(), {})[0],
         )
 
-    def _grade(self, pid: str,
-               path: set) -> Optional[EvidenceAuthority]:
+    def _grade(self, pid: str, path: set,
+               memo: Dict[str, Optional[EvidenceAuthority]]
+               ) -> Tuple[Optional[EvidenceAuthority], bool]:
+        """The grade, and whether the walk under it met a cycle.
+
+        Memoised the way :meth:`_prove` is, and for the same reason and with
+        the same exception. Proofs diamond — two rules concluding from one
+        premise, repeatedly, is 2^depth paths through 2·depth nodes — and
+        this is the call a mission loop makes every step, so re-descending
+        each path is the difference between linear and unusable. A node on a
+        cycle is NOT cached: its answer is a fact about the path that reached
+        it, and handing that to a later caller would be cache poisoning.
+        """
         prop = self._props[pid]
-        if not prop.live or pid in path:
-            return None
+        if pid in path:
+            return None, True
+        if prop.status is PropositionStatus.HYPOTHESIZED:
+            # Graded by the model step that produced it, not refused a grade.
+            # A hypothesis IS supported — by a model, badly — and reporting
+            # `None` conflated "the store will not stand behind this" with
+            # "the store has stopped believing this", which are the two
+            # things a confidence read exists to keep apart. The `hypothesis`
+            # field already says which kind of claim it is.
+            return prop.authority, False
+        if not prop.live:
+            return None, False
+        held = memo.get(pid, _UNSET)
+        if held is not _UNSET:
+            return held, False
         best: Optional[EvidenceAuthority] = None
         if prop.evidence or not self._by_conclusion.get(pid):
             best = prop.authority
+        touched_cycle = False
         for did in self._by_conclusion.get(pid, ()):
             premises = self._derivations[did].premises
             if not all(self._props[p].live for p in premises):
                 continue
-            grades = [self._grade(p, path | {pid}) for p in premises]
+            grades = []
+            for premise in premises:
+                grade, cyclic = self._grade(premise, path | {pid}, memo)
+                touched_cycle = touched_cycle or cyclic
+                grades.append(grade)
             if any(grade is None for grade in grades):
                 continue
             weakest = min(grades, key=lambda a: AUTHORITY_RANK[a])
             if best is None or AUTHORITY_RANK[weakest] > AUTHORITY_RANK[best]:
                 best = weakest
-        return best
+        if not touched_cycle:
+            memo[pid] = best
+        return best, touched_cycle
 
-    def _leaves(self, pid: str, path: set) -> Tuple[EvidenceRef, ...]:
+    def _leaves(self, pid: str, path: set,
+                memo: Dict[str, Tuple[EvidenceRef, ...]]
+                ) -> Tuple[Tuple[EvidenceRef, ...], bool]:
+        """Every ref at the bottom of the proof. Memoised like :meth:`_grade`."""
         prop = self._props[pid]
         if pid in path:
-            return ()
+            return (), True
+        held = memo.get(pid)
+        if held is not None:
+            return held, False
         out: List[EvidenceRef] = list(prop.evidence)
+        touched_cycle = False
         for did in self._by_conclusion.get(pid, ()):
             for premise in self._derivations[did].premises:
-                for ref in self._leaves(premise, path | {pid}):
+                refs, cyclic = self._leaves(premise, path | {pid}, memo)
+                touched_cycle = touched_cycle or cyclic
+                for ref in refs:
                     if ref not in out:
                         out.append(ref)
-        return tuple(out)
+        settled = tuple(out)
+        if not touched_cycle:
+            memo[pid] = settled
+        return settled, touched_cycle
 
     def summarize(self, pids: Iterable[str]) -> dict:
         """One reading over several claims, for a caller about to answer.
@@ -1491,9 +1651,12 @@ class CognitiveState:
                     oid = self._record_obligation(out, goal, rule, position,
                                                   unresolved, deps)
                     nxt.append((bindings, blockers + (oid,)))
-            if len(nxt) > ENV_CAP:
-                self.stats.envs_truncated += 1
-            envs = nxt[:ENV_CAP]
+            # No second cap here: the satisfied branch stops appending at
+            # ENV_CAP and the unsatisfied branch adds one env per env, so
+            # `nxt` cannot exceed it. A `nxt[:ENV_CAP]` slice was doing
+            # nothing and a second truncation counter beside it could never
+            # fire — a guard that cannot trip reads as protection and is not.
+            envs = nxt
             if not envs:
                 return
 

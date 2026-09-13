@@ -53,7 +53,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping as _MappingABC
 from collections.abc import Sequence as _SequenceABC
-from typing import Any, Iterable, List, Mapping, Sequence
+from types import MappingProxyType
+from typing import Any, Iterable, List, Mapping, Sequence, Tuple
 
 from core.cognition.types import EvidenceRef, ReplayRefused
 
@@ -101,6 +102,57 @@ KERNEL_KEY = "kernel"
 
 #: The key a snapshot puts the ordered event list under.
 EVENTS_KEY = "events"
+
+#: How many events the writer says it wrote. Schema 2 and later require
+#: it, and it exists because `n` cannot catch a log cut at the TAIL: drop
+#: the last three events and 1..k-1 still number perfectly. A prefix of a
+#: log is the most plausible-looking corruption there is — it is what a
+#: truncated write, a partial upload and a half-read file all produce.
+COUNT_KEY = "count"
+
+
+def _copy(value: Any, *, frozen: bool) -> Any:
+    """The one recursive walker over a record, in both directions.
+
+    **One owner, because a shallow copy is a forgery waiting to happen.**  An
+    event is a dict of plain data — but its ``evidence`` is a list of dicts
+    and its ``body`` is a list of lists, and every copy this package made
+    stopped at the top level.  So ``snapshot()[…]["evidence"][0]["kind"] =
+    …`` edited the store's own record through the copy it had just been
+    handed, and ``state.events[0]["evidence"].append(…)`` wrote straight
+    through a ``MappingProxyType`` that only froze the outermost mapping.
+    Both look like reading.
+
+    Two doors, one walk.  :func:`deep_copy` gives a mutable structure that
+    shares no nested object with the original — what a snapshot needs, since
+    a caller is expected to serialise it and may reasonably edit it first.
+    :func:`freeze` gives the same structure read-only *all the way down* —
+    tuples for sequences, ``MappingProxyType`` for mappings — which is what a
+    reader of the live log gets, because there is no legitimate reason to
+    write to history.
+
+    Scalars are returned as they are: strings, numbers, booleans and ``None``
+    are already immutable, and copying them would be work with no property
+    attached to it.
+    """
+    if isinstance(value, _MappingABC):
+        walked = {key: _copy(item, frozen=frozen)
+                  for key, item in value.items()}
+        return MappingProxyType(walked) if frozen else walked
+    if isinstance(value, (list, tuple)):
+        walked = [_copy(item, frozen=frozen) for item in value]
+        return tuple(walked) if frozen else walked
+    return value
+
+
+def deep_copy(value: Any) -> Any:
+    """A mutable copy sharing no nested object with its original."""
+    return _copy(value, frozen=False)
+
+
+def freeze(value: Any) -> Any:
+    """The same structure, read-only to the leaves. See :func:`_copy`."""
+    return _copy(value, frozen=True)
 
 
 def encode_evidence(refs: Iterable[EvidenceRef]) -> List[dict]:
@@ -167,7 +219,7 @@ def decode_pattern(raw: Sequence[Any]) -> tuple:
     return (raw[0], raw[1], raw[2])
 
 
-def check_snapshot(raw: Any) -> List[dict]:
+def check_snapshot(raw: Any) -> "Tuple[int, List[dict]]":
     """Validate a snapshot and return its events, or refuse.
 
     **A versioned mapping, and nothing else.**  An earlier shape of this
@@ -180,10 +232,21 @@ def check_snapshot(raw: Any) -> List[dict]:
     work this function can actually check.
 
     ``n`` is checked too, and that is not fussiness about a redundant field.
-    It is the only thing in the record that can catch a log *reordered*,
-    *truncated* or *duplicated* in transit — three corruptions that leave
-    every individual event perfectly well-formed, and each of which replays
-    into a plausible store that is not the one that was written.
+    It catches a log *reordered*, cut in the *middle*, or *duplicated* — three
+    corruptions that leave every individual event perfectly well-formed, and
+    each of which replays into a plausible store that is not the one that was
+    written.
+
+    :data:`COUNT_KEY` catches the fourth, which ``n`` cannot: a cut at the
+    **tail**.  Drop the last three events and 1..k-1 still number perfectly,
+    so the log reads as a complete, shorter session — and a prefix is the
+    most plausible-looking corruption there is, because it is what a truncated
+    write, a partial upload and a half-read file all produce.  Required from
+    schema 2; a schema-1 log never carried it and is not asked for it.
+
+    Returns ``(version, events)``.  The version is handed back rather than
+    checked and dropped because **replay semantics are version-aware**: see
+    :meth:`~core.cognition.state.CognitiveState.replay`.
     """
     if not isinstance(raw, _MappingABC):
         raise ReplayRefused(
@@ -219,6 +282,18 @@ def check_snapshot(raw: Any) -> List[dict]:
         raise ReplayRefused(
             f"{EVENTS_KEY!r} is an ordered list of events, not "
             f"{type(events).__name__} ({events!r})")
+    if COUNT_KEY in raw:
+        stated = raw[COUNT_KEY]
+        if not isinstance(stated, int) or isinstance(stated, bool) \
+                or stated != len(events):
+            raise ReplayRefused(
+                f"the log says it holds {stated!r} events and carries "
+                f"{len(events)}; a log cut at the tail numbers perfectly and "
+                "reads as a complete, shorter session")
+    elif version >= 2:
+        raise ReplayRefused(
+            f"a schema-{version} log states its {COUNT_KEY!r}; without it a "
+            "cut at the tail cannot be told from a shorter session")
     out: List[dict] = []
     for index, event in enumerate(events):
         if not isinstance(event, _MappingABC):
@@ -236,4 +311,4 @@ def check_snapshot(raw: Any) -> List[dict]:
                 "or had something inserted, and every event in it still looks "
                 "well-formed on its own")
         out.append(dict(event))
-    return out
+    return version, out

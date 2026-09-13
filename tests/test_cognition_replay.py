@@ -42,10 +42,11 @@ from pathlib import Path
 
 import pytest
 
-from core.cognition import (DIGEST_KEYS, EVENT_OPS, EVENT_SCHEMA_VERSION,
-                            EVENTS_KEY, KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY,
-                            CognitiveState, EvidenceAuthority, EvidenceRef,
-                            ReplayRefused, RuleAuthority)
+from core.cognition import (COUNT_KEY, DIGEST_KEYS, EVENT_OPS,
+                            EVENT_SCHEMA_VERSION, EVENTS_KEY, KERNEL_KEY,
+                            KERNEL_VERSION, SCHEMA_KEY, CognitiveState,
+                            EvidenceAuthority, EvidenceRef, ReplayRefused,
+                            RuleAuthority, deep_copy, freeze)
 from core.cognition.state import ENV_CAP
 
 PACKAGE = Path(__file__).resolve().parent.parent / "core" / "cognition"
@@ -280,6 +281,70 @@ class TestEveryWriteIsOneEvent:
             state.events[0]["op"] = "nonsense"
         assert state.events[0]["op"] == "assert_observation"
 
+    def test_a_snapshot_shares_no_nested_object_with_the_store(self):
+        """A shallow copy is a forgery waiting to happen. An event is a dict
+        of plain data — but its `evidence` is a list of dicts and its `body`
+        is a list of lists, and `dict(event)` stops at the top. So editing a
+        snapshot edited the store's own record through the copy it had just
+        been handed, and it looks exactly like reading."""
+        state = CognitiveState()
+        rid = state.add_rule("controls", ("?a", "controls", "?c"),
+                             [("?a", "admin_access", "?c")],
+                             RuleAuthority.DOMAIN)
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        snapshot = state.snapshot()
+
+        for event in snapshot[EVENTS_KEY]:
+            if event["op"] == "assert_observation":
+                event["evidence"][0]["kind"] = "forged"
+                event["triple"][0] = "mallory"
+            if event["op"] == "add_rule":
+                event["body"][0][1] = "forged_field"
+
+        assert state.proposition(
+            state.claim(("alice", "admin_access", "acct-9"))
+        ).evidence[0].kind == "receipt"
+        assert state.rule(rid).body[0][1] == "admin_access"
+        assert CognitiveState.replay(state.snapshot()).digest_json() == \
+            state.digest_json()
+
+    def test_the_live_log_is_read_only_to_the_leaves(self):
+        """`MappingProxyType` froze the outermost mapping and nothing under
+        it, so `events[0]["evidence"].append(...)` wrote straight through."""
+        state = CognitiveState()
+        rid = state.add_rule("controls", ("?a", "controls", "?c"),
+                             [("?a", "admin_access", "?c")],
+                             RuleAuthority.DOMAIN)
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        assertion, = [e for e in state.events
+                      if e["op"] == "assert_observation"]
+        rule_event, = [e for e in state.events if e["op"] == "add_rule"]
+
+        with pytest.raises((AttributeError, TypeError)):
+            assertion["evidence"].append({"kind": "forged", "locator": "x"})
+        with pytest.raises((AttributeError, TypeError)):
+            assertion["evidence"][0]["kind"] = "forged"
+        with pytest.raises((AttributeError, TypeError)):
+            rule_event["body"][0][1] = "forged_field"
+
+        assert state.rule(rid).body[0][1] == "admin_access"
+        assert len(assertion["evidence"]) == 1
+
+    def test_the_two_doors_of_the_copy_owner_agree_about_content(self):
+        """One walk, two doors — and the graph lane imports them, so what
+        they do to a record has to be the same thing said two ways."""
+        record = {"op": "x", "evidence": [{"kind": "receipt"}],
+                  "body": [["?a", "f", "?c"]], "n": 1, "text": None}
+        mutable, frozen = deep_copy(record), freeze(record)
+        mutable["evidence"][0]["kind"] = "edited"
+        assert record["evidence"][0]["kind"] == "receipt"
+        assert frozen["evidence"][0]["kind"] == "receipt"
+        assert frozen["body"] == (("?a", "f", "?c"),)
+        with pytest.raises((AttributeError, TypeError)):
+            frozen["evidence"][0]["kind"] = "edited"
+
     def test_a_consumer_reads_forward_from_a_cursor(self):
         """The loop is BOUNDED, and that is a lesson rather than a style.
 
@@ -430,7 +495,8 @@ class TestAStoreIsExactlyItsLog:
         with pytest.raises(ReplayRefused):
             CognitiveState.replay(list(state.events))
         wrapped = {SCHEMA_KEY: EVENT_SCHEMA_VERSION,
-                   EVENTS_KEY: list(state.events)}
+                   COUNT_KEY: len(state.events),
+                   EVENTS_KEY: [dict(e) for e in state.events]}
         assert CognitiveState.replay(wrapped).digest_json() == \
             state.digest_json()
 
@@ -445,12 +511,41 @@ class TestAStoreIsExactlyItsLog:
         with pytest.raises(ReplayRefused):
             CognitiveState.replay(snapshot)
 
-    def test_a_truncated_log_is_refused(self):
+    def test_a_log_cut_in_the_middle_is_refused(self):
         state = _script(8)
         snapshot = state.snapshot()
         del snapshot[EVENTS_KEY][2]
         with pytest.raises(ReplayRefused):
             CognitiveState.replay(snapshot)
+
+    def test_a_log_cut_at_the_TAIL_is_refused(self):
+        """The one `n` cannot catch, and the most plausible corruption there
+        is: drop the last three events and 1..k-1 still number perfectly, so
+        the log reads as a complete, shorter session. It is what a truncated
+        write, a partial upload and a half-read file all produce. `count` is
+        the only thing standing between that and a silently smaller store."""
+        state = _script(8)
+        snapshot = state.snapshot()
+        del snapshot[EVENTS_KEY][-3:]
+        assert [e["n"] for e in snapshot[EVENTS_KEY]] == \
+            list(range(1, len(snapshot[EVENTS_KEY]) + 1)), \
+            "the numbering is intact — that is the whole point"
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay(snapshot)
+
+    def test_a_schema_two_log_without_a_count_is_refused(self):
+        state = _script(8)
+        snapshot = state.snapshot()
+        del snapshot[COUNT_KEY]
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay(snapshot)
+
+    def test_a_schema_one_log_is_not_asked_for_a_count(self):
+        """It never carried one, and demanding it would make the
+        append-only promise false for the logs it exists to protect."""
+        assert CognitiveState.replay(
+            json_round_trip(TestTheSchemaGrewWithoutBreakingAnOldLog.V1_LOG)
+        ).propositions()
 
     def test_a_duplicated_event_is_refused(self):
         state = _script(9)
@@ -509,6 +604,21 @@ class TestAStoreIsExactlyItsLog:
             CognitiveState.replay(snapshot)
 
     @pytest.mark.parametrize("events", [None, 0, "", {}, "notalist", 7])
+    def test_a_schema_one_snapshot_without_a_list_of_events_is_refused(
+            self, events):
+        """A v1 log carries no count, so this guard is the only thing
+        standing between a broken snapshot and a silent empty store. Tested
+        at schema 1 deliberately: at schema 2 the count catches these first,
+        and a guard only ever exercised behind another one is a guard nobody
+        knows the state of."""
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay({SCHEMA_KEY: 1, EVENTS_KEY: events})
+
+    def test_a_schema_one_snapshot_missing_the_events_key_is_refused(self):
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay({SCHEMA_KEY: 1})
+
+    @pytest.mark.parametrize("events", [None, 0, "", {}, "notalist", 7])
     def test_a_snapshot_without_a_list_of_events_is_refused(self, events):
         """`raw.get(EVENTS_KEY) or []` was the shape here, and every one of
         these replayed to a silent, successful, EMPTY store — the one result
@@ -526,7 +636,7 @@ class TestAStoreIsExactlyItsLog:
         """The other half, so the refusal above is about SHAPE and not about
         emptiness: a snapshot that really carries no events replays."""
         state = CognitiveState.replay({SCHEMA_KEY: EVENT_SCHEMA_VERSION,
-                                       EVENTS_KEY: []})
+                                       COUNT_KEY: 0, EVENTS_KEY: []})
         assert state.propositions() == ()
         assert state.events == ()
 
@@ -540,12 +650,88 @@ class TestAStoreIsExactlyItsLog:
         is a Sequence, so it iterates, into characters."""
         log = {
             SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+            COUNT_KEY: 1,
             EVENTS_KEY: [{"n": 1, "op": "assert_observation",
                           "triple": ["alice", "role", "admin"], "text": None,
                           "authority": "source", "evidence": evidence}],
         }
         with pytest.raises(ReplayRefused):
             CognitiveState.replay(log)
+
+    # Ten shapes that are each a legitimate refusal SOMEWHERE in the kernel
+    # and were each the wrong exception here. A replay has exactly one
+    # failure a caller is told to catch, and an `AuthorityRefused` or an
+    # `UnknownId` escaping from it goes straight through a handler written
+    # as documented — a crash where a refusal was promised, and a store left
+    # half built.
+    BAD_EVENTS = [
+        ("observation under model authority",
+         {"op": "assert_observation", "triple": ["a", "b", "c"],
+          "authority": "model_hypothesis", "evidence": [{"kind": "r"}]}),
+        ("hypothesis under receipt authority",
+         {"op": "assert_hypothesis", "triple": ["a", "b", "c"],
+          "authority": "source", "evidence": [{"kind": "r"}]}),
+        ("an assertion with no evidence",
+         {"op": "assert_observation", "triple": ["a", "b", "c"],
+          "authority": "source", "evidence": []}),
+        ("neither a triple nor text",
+         {"op": "assert_observation", "triple": None, "text": None,
+          "authority": "source", "evidence": [{"kind": "r"}]}),
+        ("a variable asserted as a fact",
+         {"op": "assert_observation", "triple": ["?who", "b", "c"],
+          "authority": "source", "evidence": [{"kind": "r"}]}),
+        ("a non-finite value",
+         {"op": "assert_observation", "triple": ["a", "b", 1e999],
+          "authority": "source", "evidence": [{"kind": "r"}]}),
+        ("a rule with an empty body",
+         {"op": "add_rule", "name": "x", "authority": "system",
+          "head": ["a", "b", "c"], "body": []}),
+        ("a rule concluding about an unbound variable",
+         {"op": "add_rule", "name": "x", "authority": "system",
+          "head": ["?a", "b", "?mystery"], "body": [["?a", "f", "c"]]}),
+        ("promoting a rule nobody added",
+         {"op": "promote_rule", "rule": "r9", "authority": "domain"}),
+        ("refuting a proposition nobody asserted",
+         {"op": "refute", "proposition": "p9",
+          "evidence": [{"kind": "r"}]}),
+    ]
+
+    @pytest.mark.parametrize(
+        "event", [pytest.param(e, id=name) for name, e in BAD_EVENTS])
+    def test_every_refusal_inside_a_replay_comes_out_as_ReplayRefused(self, event):
+        record = dict(event)
+        record["n"] = 1
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay({SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+                                   COUNT_KEY: 1, EVENTS_KEY: [record]})
+
+    def test_the_refusal_names_which_event_could_not_be_applied(self):
+        good = {"n": 1, "op": "assert_observation",
+                "triple": ["a", "b", "c"], "text": None,
+                "authority": "source",
+                "evidence": [{"kind": "r", "locator": "1", "note": ""}]}
+        bad = {"n": 2, "op": "refute", "proposition": "p9",
+               "evidence": [{"kind": "r", "locator": "1", "note": ""}]}
+        with pytest.raises(ReplayRefused) as caught:
+            CognitiveState.replay({SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+                                   COUNT_KEY: 2, EVENTS_KEY: [good, bad]})
+        assert "event 2" in str(caught.value)
+        assert "refute" in str(caught.value)
+
+    def test_a_derive_naming_an_id_the_store_never_assigned_is_refused(self):
+        """No partial application anywhere: a `derive` naming a proposition
+        this store never assigned describes a different store, and closing
+        over the rest of it builds something plausible out of that."""
+        record = {"n": 1, "op": "derive", "propositions": ["p7"],
+                  "rules": []}
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay({SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+                                   COUNT_KEY: 1, EVENTS_KEY: [record]})
+
+    def test_apply_delta_refuses_an_unknown_id_directly_too(self):
+        state = CognitiveState()
+        with pytest.raises(Exception):
+            state.apply_delta(propositions=["p7"])
 
     def test_the_log_is_json_safe(self):
         state = _script(6)
@@ -613,18 +799,78 @@ class TestTheSchemaGrewWithoutBreakingAnOldLog:
         ref, = state.proposition(seen).evidence
         assert ref.authority is EvidenceAuthority.SOURCE
 
-    def test_a_version_one_log_has_no_field_declarations(self):
-        """Which is the same as saying every field in it carries many — the
-        behaviour a version-1 store had for the fields it never contested."""
+    def test_a_version_one_log_replays_under_version_one_SEMANTICS(self):
+        """The append-only promise covers ops; it does not cover DEFAULTS,
+        and schema 2 turned one of them round. A v1 store treated every field
+        as single-valued, so a v1 log can contain contradictions that only
+        exist under that rule — and reading it under today's default would
+        rebuild a *different* store from the one that was written, silently.
+        So the store keeps the schema it was replayed from."""
         state = CognitiveState.replay(json_round_trip(self.V1_LOG))
-        assert state.fields() == {}
-        assert state.cardinality("admin_access") == "many"
+        assert state.fields() == {}, "v1 had no declarations to carry"
+        assert state.cardinality("admin_access") == "one", \
+            "a v1 log must be read with v1's default, not today's"
 
     def test_the_ops_of_schema_one_are_still_all_there(self):
         assert set(EVENT_OPS) >= {
             "assert_observation", "assert_hypothesis", "add_rule",
             "promote_rule", "add_goal", "refute", "derive"}
         assert EVENT_SCHEMA_VERSION == 2
+
+    def test_a_v1_log_contests_two_values_a_v2_store_would_leave_alone(self):
+        """The divergence made concrete. The same two events replayed as v2
+        leave both claims standing; as v1 they contest, because that is what
+        the store that wrote them did."""
+        events = [
+            {"n": 1, "op": "assert_observation",
+             "triple": ["job-7", "total_s", 154.0], "text": None,
+             "authority": "source",
+             "evidence": [{"kind": "receipt", "locator": "a", "note": ""}]},
+            {"n": 2, "op": "assert_observation",
+             "triple": ["job-7", "total_s", 186.0], "text": None,
+             "authority": "source",
+             "evidence": [{"kind": "receipt", "locator": "b", "note": ""}]},
+        ]
+        old = CognitiveState.replay({SCHEMA_KEY: 1, EVENTS_KEY: events})
+        assert [c.kind for c in old.contradictions()] == ["value"]
+        assert old.propositions(live=True) == ()
+
+        new = CognitiveState.replay({SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+                                     COUNT_KEY: 2, EVENTS_KEY: events})
+        assert new.contradictions() == ()
+        assert len(new.propositions(live=True)) == 2
+
+    def test_a_v1_log_may_re_promote_a_rule_laterally(self):
+        """The second divergence: v1 accepted a lateral re-promotion and v2
+        refuses it, so a v1 log can contain one and must still replay."""
+        events = [
+            {"n": 1, "op": "add_rule", "name": "controls",
+             "authority": "skill", "head": ["?a", "controls", "?c"],
+             "body": [["?a", "admin_access", "?c"]]},
+            {"n": 2, "op": "promote_rule", "rule": "r1",
+             "authority": "domain"},
+        ]
+        old = CognitiveState.replay({SCHEMA_KEY: 1, EVENTS_KEY: events})
+        assert old.rule("r1").authority is RuleAuthority.DOMAIN
+
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay({SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+                                   COUNT_KEY: 2, EVENTS_KEY: events})
+
+    def test_a_replayed_v1_store_snapshots_back_as_v1(self):
+        """Round trip, so the semantics a store runs under are stable rather
+        than a fact about the moment it was read."""
+        old = CognitiveState.replay(json_round_trip(self.V1_LOG))
+        again = old.snapshot()
+        assert again[SCHEMA_KEY] == 1
+        assert CognitiveState.replay(again).digest_json() == old.digest_json()
+
+    def test_a_v1_store_refuses_the_ops_that_did_not_exist_under_it(self):
+        old = CognitiveState.replay(json_round_trip(self.V1_LOG))
+        with pytest.raises(Exception):
+            old.declare_field("total_s", "one")
+        with pytest.raises(Exception):
+            old.settle("c1", keep="p1", evidence=[RECEIPT])
 
     def test_a_snapshot_names_the_engine_that_wrote_it(self):
         """Ids are handed out by the engine's enumeration order, so two
@@ -1103,6 +1349,96 @@ class TestARepeatIsNotADelta:
         assert state.proposition(derived).field == "controls"
 
 
+class TestTheConfidenceReadIsLinearInTheGraph:
+    """`support()` is what a mission loop calls per step, so it cannot be
+    exponential in the shape of the proof — and a diamond is the shape proofs
+    actually take: two rules concluding from one premise, over and over, is
+    2^depth distinct paths through a graph with 2·depth nodes."""
+
+    @staticmethod
+    def _diamond(depth):
+        state = CognitiveState()
+        for level in range(depth):
+            for side in ("l", "r"):
+                state.add_rule(f"{side}{level}", (f"?a", f"s{level + 1}", "?c"),
+                               [("?a", f"{side}{level}x", "?c")],
+                               RuleAuthority.DOMAIN)
+                state.add_rule(f"{side}{level}x", ("?a", f"{side}{level}x",
+                                                   "?c"),
+                               [("?a", f"s{level}", "?c")], RuleAuthority.DOMAIN)
+        state.assert_observation(("alice", "s0", "acct-9"), evidence=[RECEIPT])
+        state.derive()
+        return state
+
+    def test_grading_a_deep_diamond_visits_each_node_once(self):
+        state = self._diamond(12)
+        top = state.claim(("alice", "s12", "acct-9"))
+        assert top is not None, "the chain did not close"
+
+        calls = []
+        original = CognitiveState._grade
+
+        def counted(self, pid, path, memo):
+            calls.append(pid)
+            return original(self, pid, path, memo)
+
+        CognitiveState._grade = counted
+        try:
+            support = state.support(top)
+        finally:
+            CognitiveState._grade = original
+        assert support.grade is EvidenceAuthority.SOURCE
+        assert len(calls) < 20 * len(state.propositions()), (
+            f"{len(calls)} grade calls over {len(state.propositions())} "
+            "propositions — the walk is re-descending every path")
+
+    def test_the_leaves_of_a_deep_diamond_are_gathered_once(self):
+        state = self._diamond(12)
+        top = state.claim(("alice", "s12", "acct-9"))
+        calls = []
+        original = CognitiveState._leaves
+
+        def counted(self, pid, path, memo):
+            calls.append(pid)
+            return original(self, pid, path, memo)
+
+        CognitiveState._leaves = counted
+        try:
+            leaves = state.support(top).evidence_leaves
+        finally:
+            CognitiveState._leaves = original
+        assert leaves == (RECEIPT.stamped(EvidenceAuthority.SOURCE),)
+        assert len(calls) < 20 * len(state.propositions())
+
+
+class TestAPublicReadDoesNotScanTheStore:
+    def test_query_narrows_through_the_same_index_the_join_uses(self):
+        """Otherwise `query` is the one place in the package where asking a
+        narrow question costs the whole store."""
+        state = CognitiveState()
+        for index in range(300):
+            state.assert_observation((f"actor-{index}", "admin_access",
+                                      f"acct-{index}"), evidence=[RECEIPT])
+        state.derive()
+        state.stats.reset()
+        found = state.query(("actor-7", "admin_access", "?c"))
+        assert [p.entity for p in found] == ["actor-7"]
+        assert state.stats.candidates_scanned > 0, (
+            "the read went round the index machinery entirely — which is "
+            "also how it stops being counted")
+        assert state.stats.candidates_scanned < 10, (
+            f"300 propositions in the store, one entity asked about "
+            f"({state.stats.candidates_scanned} scanned)")
+
+    def test_query_still_answers_the_wide_question(self):
+        state = CognitiveState()
+        for index in range(5):
+            state.assert_observation((f"actor-{index}", "admin_access",
+                                      "acct-9"), evidence=[RECEIPT])
+        assert len(state.query(("?a", "admin_access", "?c"))) == 5
+        assert len(state.query(("?a", "?f", "acct-9"))) == 5
+
+
 class TestOneWalkServesEveryReader:
     """The obligation walk is a pure function of the store, and a mission
     loop asks for the frontier and then for the next obligation every step.
@@ -1175,6 +1511,87 @@ class TestAProofIsADagAndNotATree:
         step, = state.prove(both.id).steps
         left, right = step.premises
         assert left.steps[0].premises[0] is right.steps[0].premises[0]
+
+    @staticmethod
+    def _render(proof, depth=0):
+        assert depth < 10, "the walk did not terminate"
+        rows = ["  " * depth + proof.proposition + ("*" if proof.cyclic else "")]
+        for step in proof.steps:
+            for premise in step.premises:
+                rows.extend(TestAProofIsADagAndNotATree._render(premise,
+                                                                depth + 1))
+        return rows
+
+    def test_a_cycle_reached_two_ways_in_one_walk_is_not_cached(self):
+        """The poisoning case, and it needs both a cycle and a node outside
+        it that reaches the cycle by two routes.
+
+        `d` is concluded twice — once from `a` and once from `b` — and `a`,
+        `b`, `c` form a loop. Walking the first route closes the cycle on
+        `a`; walking the second closes it on `b`. Where the stub falls is a
+        fact about the path, so caching the first walk's answer and handing
+        it to the second renders a cycle that never happened.
+        """
+        state = CognitiveState()
+        for name, head, body in [
+            ("a", ("?x", "a", "?y"), [("?x", "b", "?y")]),
+            ("b", ("?x", "b", "?y"), [("?x", "c", "?y")]),
+            ("c", ("?x", "c", "?y"), [("?x", "a", "?y")]),
+            ("d_from_b", ("?x", "d", "?y"), [("?x", "b", "?y")]),
+            ("d_from_a", ("?x", "d", "?y"), [("?x", "a", "?y")]),
+        ]:
+            state.add_rule(name, head, body, RuleAuthority.DOMAIN)
+        state.assert_observation(("alice", "a", "acct"), evidence=[RECEIPT])
+        state.derive()
+        ids = {p.field: p.id for p in state.propositions()}
+
+        assert self._render(state.prove(ids["d"])) == [
+            ids["d"],
+            f"  {ids['a']}",
+            f"    {ids['b']}",
+            f"      {ids['c']}",
+            f"        {ids['a']}*",
+            f"  {ids['b']}",
+            f"    {ids['c']}",
+            f"      {ids['a']}",
+            f"        {ids['b']}*",
+        ], "the stub moved — a cached cyclic node was reused across routes"
+
+    def test_a_node_on_a_cycle_is_never_memoised(self):
+        """Its shape depends on the path that reached it — that is what
+        `cyclic` records — so caching one would hand a later caller a stub
+        that was true of somebody else's walk. Pinned by rendering the cycle
+        and asserting where the stub falls, not by asserting `is not`."""
+        state = CognitiveState()
+        state.add_rule("there", ("?a", "there", "?c"),
+                       [("?a", "back", "?c")], RuleAuthority.SYSTEM)
+        state.add_rule("back", ("?a", "back", "?c"),
+                       [("?a", "there", "?c")], RuleAuthority.SYSTEM)
+        state.assert_observation(("alice", "there", "acct-9"),
+                                 evidence=[RECEIPT])
+        state.derive()
+        back = state.claim(("alice", "back", "acct-9"))
+        there = state.claim(("alice", "there", "acct-9"))
+
+        def render(proof, depth=0):
+            assert depth < 8, "the walk did not terminate"
+            mark = "*" if proof.cyclic else ""
+            rows = [f"{'  ' * depth}{proof.proposition}{mark}"]
+            for step in proof.steps:
+                for premise in step.premises:
+                    rows.extend(render(premise, depth + 1))
+            return rows
+
+        # `back` is proved from `there`, which is observed AND also derivable
+        # from `back` — so the walk meets `back` again one level down and
+        # stops there, marked.
+        assert render(state.prove(back)) == [back, f"  {there}",
+                                             f"    {back}*"]
+        # Proved from the other end, the stub falls on `there` instead: the
+        # node that is a stub is a fact about the path, which is exactly why
+        # it is not cached.
+        assert render(state.prove(there)) == [there, f"  {back}",
+                                              f"    {there}*"]
 
     def test_a_derived_proposition_is_born_at_revision_one(self):
         """It used to be created and then immediately revised to record the

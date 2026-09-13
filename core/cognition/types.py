@@ -413,6 +413,16 @@ class Frontier(tuple):
     *recorded outcome naming the budget* — the harness says so when it stops
     for steps, for tokens, for wall clock — and a frontier that quietly
     stopped being complete is the same event with nobody told.
+
+    **The flag does not survive a slice.**  ``tuple(frontier)``,
+    ``frontier[:3]`` and anything else that builds a new sequence out of this
+    one give back a plain ``tuple`` — that is what a ``tuple`` subclass does,
+    and overriding half of ``tuple`` to carry a field most of those results
+    have no claim to would be worse than saying so here.  Read
+    ``.truncated`` off the object
+    :meth:`~core.cognition.state.CognitiveState.obligations` or
+    :meth:`~core.cognition.state.CognitiveState.frontier` handed you, before
+    narrowing it.
     """
 
     # No `__slots__`: a tuple subclass cannot have a non-empty one, and the
@@ -490,7 +500,12 @@ class Contradiction:
     ``settled`` and ``kept`` are the one deliberate exception to that
     terminality, and they can only be written by
     :meth:`~core.cognition.state.CognitiveState.settle` — an explicit,
-    evidenced call naming which side stands.  **The kernel executes a
+    evidenced call naming which side stands.  ``kept`` names the claim this
+    row stopped standing against: for a ``"value"`` collision that is the
+    side the caller chose, and for a ``"dead_premise"`` row retired by the
+    same settlement it is the conclusion that came back when its premise did.
+    Both are "what survived this row", which is what a reader of a settled
+    contradiction is asking.  **The kernel executes a
     settlement; it never decides one.**  Which side to keep is a judgement
     about the world, made by whatever is attached above (a deterministic
     re-read, an operator, a later receipt), and the kernel's whole claim to

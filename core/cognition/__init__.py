@@ -112,8 +112,10 @@ sets), :mod:`~core.cognition.matching` (unification, and nothing else),
 :mod:`~core.cognition.state` (the store).
 """
 
-from core.cognition.events import (EVENT_OPS, EVENT_SCHEMA_VERSION, EVENTS_KEY,
-                                   KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY)
+from core.cognition.events import (COUNT_KEY, EVENT_OPS,
+                                   EVENT_SCHEMA_VERSION, EVENTS_KEY,
+                                   KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY,
+                                   deep_copy, freeze)
 from core.cognition.matching import resolve, unify, unify_patterns
 from core.cognition.state import DIGEST_KEYS, ENV_CAP, CognitiveState
 from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
@@ -137,6 +139,7 @@ __all__ = [
     "CognitionError",
     "CognitiveState",
     "CARDINALITIES",
+    "COUNT_KEY",
     "CONTRADICTION_KINDS",
     "Contradiction",
     "DEFAULT_CARDINALITY",
@@ -171,6 +174,8 @@ __all__ = [
     "Support",
     "TRUSTED_RULE_AUTHORITIES",
     "UnknownId",
+    "deep_copy",
+    "freeze",
     "is_variable",
     "resolve",
     "unify",

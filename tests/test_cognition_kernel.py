@@ -1092,15 +1092,40 @@ class TestAModelsClaimAgainstAReceipt:
         assert len(state.contradictions()) == 1, \
             "a ledger that grew per delivery would be counting retries"
 
-    def test_two_hypotheses_disagreeing_with_each_other_are_not_reported(self):
-        """v1 bound, said by a test so it is a decision: this report is about
-        a model's claim against the *store's*. Two guesses disagreeing is the
-        model being uncertain, which is not news."""
+    def test_two_hypotheses_disagreeing_with_each_other_are_reported(self):
+        """This was once dismissed as "the model being uncertain, which is not
+        news", and that was wrong about what a shadow layer is for.
+
+        Two *extractors* disagreeing over one receipt is the cheapest
+        available sign that the extraction step is where a mission is going
+        wrong — and it is on the record before any receipt arrives to settle
+        it. Recorded like every other disagreement and moving nothing:
+        neither claim outranks the other and the store has no receipt to
+        prefer either.
+        """
         state = CognitiveState()
         state.declare_field("total_s", "one")
-        state.assert_hypothesis(("job-7", "total_s", 186.7),
+        first = state.assert_hypothesis(("job-7", "total_s", 186.7),
+                                        evidence=[EXTRACTED])
+        second = state.assert_hypothesis(("job-7", "total_s", 200.0),
+                                         evidence=[EXTRACTED])
+        state.derive()
+        clash, = state.contradictions()
+        assert clash.kind == "hypothesis"
+        assert {clash.left, clash.right} == {first, second}
+        assert state.proposition(first).status is \
+            PropositionStatus.HYPOTHESIZED
+        assert state.proposition(second).status is \
+            PropositionStatus.HYPOTHESIZED
+        assert [p.revision for p in (state.proposition(first),
+                                     state.proposition(second))] == [1, 1]
+
+    def test_extractors_agreeing_about_a_many_field_is_not_a_disagreement(self):
+        """It honours the declaration like every other collision check."""
+        state = CognitiveState()
+        state.assert_hypothesis(("alice", "controls", "acct-1"),
                                 evidence=[EXTRACTED])
-        state.assert_hypothesis(("job-7", "total_s", 200.0),
+        state.assert_hypothesis(("alice", "controls", "acct-9"),
                                 evidence=[EXTRACTED])
         state.derive()
         assert state.contradictions() == ()
@@ -1346,6 +1371,69 @@ class TestCardinalityIsDeclaredNotAssumed:
         with pytest.raises(CognitionError):
             state.declare_field("total_s", "exactly_one")
 
+    def test_declaring_one_measures_what_the_store_already_holds(self):
+        """The reproducer, and the reason declaring over an occupied field
+        is not refused.
+
+        A resume replays the session's observations and the skill's rule pack
+        loads *after* it, so the declaration almost always arrives second.
+        A pack whose collision checks depended on having been loaded first
+        would work in development and stop working on the first resume — the
+        declaration has to apply to what is already there.
+        """
+        state = CognitiveState()
+        first = state.assert_observation(("job-7", "total_s", 154.024),
+                                         evidence=[RECEIPT])
+        second = state.assert_observation(("job-7", "total_s", 186.7),
+                                          evidence=[OTHER])
+        assert state.contradictions() == (), "nothing is declared yet"
+
+        state.declare_field("total_s", "one")
+        clash, = state.contradictions()
+        assert clash.kind == "value"
+        assert {clash.left, clash.right} == {first, second}
+        assert not state.proposition(first).live
+        assert not state.proposition(second).live
+
+    def test_a_late_declaration_retracts_what_was_derived_from_the_field(self):
+        state, _ = store_with_controls()
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("alice", "payment_link", "acct-9"),
+                                 evidence=[RECEIPT])
+        derived, = state.derive()
+        state.assert_observation(("alice", "admin_access", "acct-1"),
+                                 evidence=[OTHER])
+        state.derive()
+        assert state.proposition(derived).status is PropositionStatus.DERIVED
+
+        state.declare_field("admin_access", "one")
+        assert state.proposition(derived).status is PropositionStatus.CONTESTED
+
+    def test_a_late_declaration_is_one_event_and_replays(self):
+        state = CognitiveState()
+        state.assert_observation(("job-7", "total_s", 154.024),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("job-7", "total_s", 186.7),
+                                 evidence=[OTHER])
+        before = len(state.events)
+        state.declare_field("total_s", "one")
+        assert len(state.events) == before + 1
+        again = CognitiveState.replay(state.snapshot())
+        assert again.digest_json() == state.digest_json()
+
+    def test_declaring_many_measures_nothing(self):
+        """`many` is what an undeclared field already is, so saying it out
+        loud cannot change what the store holds."""
+        state = CognitiveState()
+        state.assert_observation(("alice", "controls", "acct-1"),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("alice", "controls", "acct-9"),
+                                 evidence=[OTHER])
+        state.declare_field("controls", "many")
+        assert state.contradictions() == ()
+        assert len(state.propositions(live=True)) == 2
+
     def test_undeclared_fields_are_absent_rather_than_listed(self):
         """Absence is how this package says "nobody has said", everywhere
         else; `cardinality()` is what turns absence into the default."""
@@ -1458,6 +1546,118 @@ class TestSettlingAValueCollision:
         assert state.proposition(slow).status is PropositionStatus.CONTESTED, \
             "the premise it rested on is the one that lost"
 
+    def test_a_third_value_does_not_survive_the_settlement(self):
+        """The reproducer, and it is not an edge case — it is what a field
+        with three candidate values does.
+
+        A and B collide and both go CONTESTED. C then arrives and collides
+        with *nothing*, because by then there is nothing live on that field to
+        disagree with, so C stands. Settling A/B in A's favour makes A live
+        again — and the store now holds two live values on a field declared
+        to hold one, which is precisely the state the whole collision
+        machinery exists to prevent. A revival is an arrival, and has to be
+        measured like one.
+        """
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        a = state.assert_observation(("job-7", "total_s", 1.0),
+                                     evidence=[RECEIPT])
+        b = state.assert_observation(("job-7", "total_s", 2.0),
+                                     evidence=[OTHER])
+        c = state.assert_observation(("job-7", "total_s", 3.0),
+                                     evidence=[EXTRACTED])
+        state.derive()
+        assert state.proposition(c).live, "C arrived with nothing to fight"
+
+        clash, = [x for x in state.contradictions()
+                  if {x.left, x.right} == {a, b}]
+        state.settle(clash.id, keep=a, evidence=[RECEIPT])
+
+        live = [p.value for p in state.propositions(live=True)]
+        assert len(live) <= 1, (
+            f"a field declared to hold one value holds {live}")
+
+    def test_the_same_pair_colliding_again_is_a_new_row(self):
+        """A settled row is history — it records a disagreement somebody
+        resolved and the evidence they resolved it on. Folding a later
+        collision of the same pair into it would overwrite the settlement
+        with the news that it did not hold."""
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        a = state.assert_observation(("job-7", "total_s", 1.0),
+                                     evidence=[RECEIPT])
+        b = state.assert_observation(("job-7", "total_s", 2.0),
+                                     evidence=[OTHER])
+        first, = [x for x in state.contradictions() if x.kind == "value"]
+        state.settle(first.id, keep=a, evidence=[EXTRACTED])
+        assert state.proposition(a).live
+        assert state.proposition(b).status is PropositionStatus.REFUTED
+
+        settled, = [x for x in state.contradictions() if x.id == first.id]
+        assert settled.settled is True and settled.kept == a, \
+            "the settled row stayed as it was"
+
+    def test_a_conclusion_that_dies_twice_gets_two_rows(self):
+        """The reachable case, and it is not exotic.
+
+        Settling revives a conclusion and retires the `dead_premise` row that
+        recorded its fall. If the premise then dies again — refuted this time
+        — the conclusion falls again, and that is NEWS: a second event, with
+        a different cause, about the same pair. Folding it into the retired
+        row would overwrite a settlement with the fact that it did not last,
+        and the ledger would show one resolved disagreement where two things
+        happened.
+        """
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        state.add_rule("slow", ("?j", "slow", True),
+                       [("?j", "total_s", 154.024)], RuleAuthority.SYSTEM)
+        kept = state.assert_observation(("job-7", "total_s", 154.024),
+                                        evidence=[RECEIPT])
+        state.derive()
+        slow, = [p.id for p in state.propositions() if p.field == "slow"]
+        state.assert_observation(("job-7", "total_s", 186.7), evidence=[OTHER])
+        state.derive()
+
+        clash, = [x for x in state.contradictions() if x.kind == "value"]
+        state.settle(clash.id, keep=kept, evidence=[EXTRACTED])
+        state.derive()
+        assert state.proposition(slow).status is PropositionStatus.DERIVED
+        retired, = [x for x in state.contradictions()
+                    if x.kind == "dead_premise"]
+        assert retired.settled is True
+
+        state.refute(kept, evidence=[OTHER])
+        assert state.proposition(slow).status is PropositionStatus.CONTESTED
+        rows = [x for x in state.contradictions() if x.kind == "dead_premise"]
+        assert len(rows) == 2, (
+            "the second fall was folded into the row that recorded the first")
+        assert rows[0].settled is True, "the settlement is still on the record"
+        assert rows[1].settled is False, "and the new fall is not resolved"
+
+    def test_a_settlement_re_enters_the_delta(self):
+        """The kept side is live again, so closure owes it the conclusions it
+        licenses — and a settlement that revived a premise without staging it
+        would leave the store believing a thing and not what follows from it."""
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        state.add_rule("slow", ("?j", "slow", True),
+                       [("?j", "total_s", 154.024)], RuleAuthority.SYSTEM)
+        kept = state.assert_observation(("job-7", "total_s", 154.024),
+                                        evidence=[RECEIPT])
+        state.derive()
+        slow, = [p.id for p in state.propositions() if p.field == "slow"]
+        state.assert_observation(("job-7", "total_s", 186.7), evidence=[OTHER])
+        state.derive()
+        assert state.proposition(slow).status is PropositionStatus.CONTESTED
+
+        clash, = [x for x in state.contradictions() if x.kind == "value"]
+        state.settle(clash.id, keep=kept, evidence=[EXTRACTED])
+        assert kept in state.pending()["propositions"] or \
+            state.proposition(slow).status is PropositionStatus.DERIVED
+        state.derive()
+        assert state.proposition(slow).status is PropositionStatus.DERIVED
+
     def test_settling_twice_is_refused(self):
         state, clash, first, second, _slow = self._contested()
         state.settle(clash.id, keep=first, evidence=[EXTRACTED])
@@ -1558,6 +1758,32 @@ class TestSupportIsComputedNotStored:
         controls, = [p for p in state.propositions() if p.field == "controls"]
         assert state.support(controls.id).grade is \
             EvidenceAuthority.DETERMINISTIC, "the better route, not the first"
+
+    def test_a_hypothesis_is_graded_by_the_model_step_that_made_it(self):
+        """`None` used to come back here, which conflated "the store will not
+        stand behind this" with "the store has stopped believing this" — the
+        two things a confidence read exists to keep apart. A hypothesis IS
+        supported: by a model, badly. The `hypothesis` field already says
+        which kind of claim it is, so the grade does not have to."""
+        state = CognitiveState()
+        pid = state.assert_hypothesis(
+            ("alice", "role", "admin"), evidence=[EXTRACTED],
+            authority=EvidenceAuthority.MODEL_EXTRACTION)
+        support = state.support(pid)
+        assert support.status is PropositionStatus.HYPOTHESIZED
+        assert support.grade is EvidenceAuthority.MODEL_EXTRACTION
+        assert support.evidence_leaves == (
+            door(EXTRACTED, EvidenceAuthority.MODEL_EXTRACTION),)
+
+    def test_a_summary_of_guesses_floors_at_the_model(self):
+        state = CognitiveState()
+        guess = state.assert_hypothesis(("alice", "role", "admin"),
+                                        evidence=[EXTRACTED])
+        seen = state.assert_observation(("bob", "role", "admin"),
+                                        evidence=[RECEIPT])
+        summary = state.summarize([seen, guess])
+        assert summary["floor_grade"] is EvidenceAuthority.MODEL_HYPOTHESIS
+        assert summary["hypothesized"] == (guess,)
 
     def test_something_the_store_no_longer_believes_has_no_grade(self):
         """Not "poorly supported" — a refusal. A caller rendering None as a
