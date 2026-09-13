@@ -35,11 +35,12 @@ from pathlib import Path
 import pytest
 
 from core.cognition.events import SCHEMA_KEY as KERNEL_SCHEMA_KEY
-from core.cognition.graph import (EVENTS_KEY, GRAPH_EVENT_OPS,
+from core.cognition.graph import (EVENTS_KEY, GRAPH_COUNT_KEY, GRAPH_EVENT_OPS,
                                   GRAPH_EVENT_SCHEMA_VERSION,
                                   GRAPH_PACKAGE_KEY, GRAPH_PACKAGE_VERSION,
                                   GRAPH_SCHEMA_KEY, KnowledgeGraph, hydrate)
-from core.cognition.types import EvidenceAuthority, EvidenceRef, ReplayRefused
+from core.cognition.types import (CognitionError, EvidenceAuthority,
+                                  EvidenceRef, ReplayRefused)
 
 PACKAGE = (Path(__file__).resolve().parent.parent / "core" / "cognition"
            / "graph")
@@ -140,7 +141,8 @@ class TestEveryWriteIsOneEvent:
         second owner of the same fact — and the two would disagree the first
         time a log was edited by hand."""
         graph = _script(2)
-        for event in graph.events:
+        assert graph.edges(), "nothing to look for"
+        for event in graph.snapshot()[EVENTS_KEY]:
             flat = json.dumps(event)
             assert not re.search(r'"(e|k)\d+"', flat), flat
 
@@ -171,25 +173,40 @@ class TestEveryWriteIsOneEvent:
         assert "core.cognition.events.EVENT_SCHEMA_VERSION" \
             not in _imported("events"), "this version is the kernel's"
 
-    def test_the_events_a_reader_gets_are_copies(self):
+    def test_the_events_a_reader_gets_are_read_only(self):
+        """There is no legitimate reason to write to history, so the attempt
+        raises rather than quietly editing a throwaway copy."""
         graph = KnowledgeGraph()
         graph.add_edge("alice", "knows", "bob",
                        authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
-        graph.events[0]["op"] = "nonsense"
+        with pytest.raises(TypeError):
+            graph.events[0]["op"] = "nonsense"
         assert graph.events[0]["op"] == "add_edge"
 
-    def test_the_copy_goes_all_the_way_down(self):
-        """The top-level copy is the one anybody thinks to test, and it is not
+    def test_the_freeze_goes_all_the_way_down(self):
+        """The top-level view is the one anybody thinks to test, and it is not
         the one that matters. An event carries its evidence as a list of
-        dicts, so ``dict(event)`` hands a reader the graph's own ref records
-        under a fresh outer dict — and editing one edits the log."""
+        dicts, so a ``dict(event)`` copy — or a proxy over only the outermost
+        mapping — hands a reader the graph's own ref records, and editing one
+        edits the log. Both shapes are refused now, to the leaves."""
         graph = KnowledgeGraph()
         graph.add_edge("alice", "knows", "bob",
                        authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
-        graph.events[0]["evidence"][0]["locator"] = "forged"
-        graph.events[0]["evidence"].append({"kind": "x", "locator": "y"})
-        assert graph.events[0]["evidence"] == \
+        with pytest.raises(TypeError):
+            graph.events[0]["evidence"][0]["locator"] = "forged"
+        with pytest.raises(AttributeError):
+            graph.events[0]["evidence"].append({"kind": "x", "locator": "y"})
+        assert [dict(ref) for ref in graph.events[0]["evidence"]] == \
             [RECEIPT.stamped(EvidenceAuthority.SOURCE).as_dict()]
+
+    def test_the_reading_door_and_the_serialising_door_are_different(self):
+        """A frozen mapping is a ``MappingProxyType`` and ``json.dumps`` will
+        not take one. That is the separation working, not a wart: ``events``
+        is for reading the record, ``snapshot`` is for writing it somewhere."""
+        graph = _script(3)
+        with pytest.raises(TypeError):
+            json.dumps(graph.events[0])
+        assert json.loads(json.dumps(graph.snapshot()))
 
     def test_a_snapshot_does_not_alias_the_log_either(self):
         """A snapshot is the thing most likely to be handed somewhere else and
@@ -213,6 +230,7 @@ class TestEveryWriteIsOneEvent:
         package's own accessor — the kernel accepts both and so does this."""
         graph = _script(1)
         wrapped = {GRAPH_SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
+                   GRAPH_COUNT_KEY: len(graph.events),
                    EVENTS_KEY: graph.events}
         assert isinstance(wrapped[EVENTS_KEY], tuple)
         assert KnowledgeGraph.replay(wrapped).digest_json() == \
@@ -296,6 +314,7 @@ class TestAGraphIsExactlyItsLog:
         with pytest.raises(ReplayRefused):
             KnowledgeGraph.replay(list(graph.events))
         wrapped = {GRAPH_SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
+                   GRAPH_COUNT_KEY: len(graph.events),
                    EVENTS_KEY: list(graph.events)}
         assert KnowledgeGraph.replay(wrapped).digest_json() == \
             graph.digest_json()
@@ -323,6 +342,7 @@ class TestAGraphIsExactlyItsLog:
         snapshot[EVENTS_KEY].insert(2, {"op": "connect_harder"})
         for index, event in enumerate(snapshot[EVENTS_KEY]):
             event["n"] = index + 1
+        snapshot[GRAPH_COUNT_KEY] = len(snapshot[EVENTS_KEY])
         with pytest.raises(ReplayRefused, match="connect_harder"):
             KnowledgeGraph.replay(snapshot)
 
@@ -355,6 +375,7 @@ class TestAGraphIsExactlyItsLog:
         snapshot[GRAPH_PACKAGE_KEY] = 9
         snapshot[EVENTS_KEY].append({"n": len(snapshot[EVENTS_KEY]) + 1,
                                      "op": "merge_nodes"})
+        snapshot[GRAPH_COUNT_KEY] = len(snapshot[EVENTS_KEY])
         with pytest.raises(ReplayRefused, match="9"):
             KnowledgeGraph.replay(snapshot)
 
@@ -460,7 +481,7 @@ class TestAnEmptyGraphIsNeverTheDefaultAnswer:
             empty.digest_json()
         assert KnowledgeGraph.replay(
             {GRAPH_SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
-             EVENTS_KEY: []}).nodes() == ()
+             GRAPH_COUNT_KEY: 0, EVENTS_KEY: []}).nodes() == ()
 
     def test_the_refusal_arrives_before_a_graph_does(self):
         """Not "a graph that turns out to be empty" — no graph at all. A
@@ -476,6 +497,77 @@ class TestAnEmptyGraphIsNeverTheDefaultAnswer:
             raise AssertionError("a None events key replayed")
 
 
+class TestEveryRefusalAReplayRaisesIsAReplayRefused:
+    """A consumer is told to catch ``ReplayRefused`` around a replay.
+
+    The doors validate, and each of their refusals is the ``CognitionError``
+    that is right for a caller making the call wrong. Reached from a *replay*
+    the same refusal means something else — the log cannot be reconstructed —
+    and arriving as a plain ``CognitionError`` it goes straight through the
+    documented handler as a crash. That is the failure the kernel's evidence
+    codec was fixed for, one layer up; every door this package owns is held to
+    the same rule here, including the name validation, which widened the hole
+    when it was added.
+    """
+
+    @pytest.mark.parametrize("field,value", [
+        ("src", ""), ("src", "?who"), ("src", None), ("src", 5),
+        ("dst", "two\nlines"), ("dst", "sur\ud800rogate"),
+        ("relation", "x" * 9999), ("authority", "vibes"),
+        ("evidence", None), ("evidence", []), ("evidence", "notalist"),
+        ("evidence", [42]),
+    ])
+    def test_a_corrupt_add_edge_refuses_rather_than_crashes(self, field,
+                                                            value):
+        graph = _script(1)
+        snapshot = graph.snapshot()
+        first = next(event for event in snapshot[EVENTS_KEY]
+                     if event["op"] == "add_edge")
+        first[field] = value
+        with pytest.raises(ReplayRefused):
+            KnowledgeGraph.replay(snapshot)
+
+    @pytest.mark.parametrize("field,value", [
+        ("kind", ""), ("node", "?who"), ("node", "two\nlines"),
+        ("evidence", None), ("evidence", []),
+    ])
+    def test_a_corrupt_node_kind_refuses_rather_than_crashes(self, field,
+                                                             value):
+        graph = KnowledgeGraph()
+        graph.node_kind("alice", "person",
+                        authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
+        snapshot = graph.snapshot()
+        snapshot[EVENTS_KEY][0][field] = value
+        with pytest.raises(ReplayRefused):
+            KnowledgeGraph.replay(snapshot)
+
+    def test_the_refusal_names_the_event_and_keeps_the_reason(self):
+        """Converting the error must not throw the diagnosis away: the
+        position says which event, and the original message says what about
+        it. A refusal that only said "cannot be reconstructed" would make a
+        corrupt log a bisection exercise."""
+        graph = _script(2)
+        snapshot = graph.snapshot()
+        snapshot[EVENTS_KEY][3]["src"] = "?who"
+        with pytest.raises(ReplayRefused) as caught:
+            KnowledgeGraph.replay(snapshot)
+        message = str(caught.value)
+        assert "event 3" in message
+        assert "as_propositions" in message, "the reason was discarded"
+        assert isinstance(caught.value.__cause__, CognitionError)
+
+    def test_a_direct_call_still_raises_the_plain_error(self):
+        """The conversion belongs to replay alone. A caller making the call
+        wrong is not reading a corrupt log, and telling it so would be a
+        worse message, not a better one."""
+        graph = KnowledgeGraph()
+        with pytest.raises(CognitionError) as caught:
+            graph.add_edge("?who", "knows", "bob",
+                           authority=EvidenceAuthority.SOURCE,
+                           evidence=[RECEIPT])
+        assert not isinstance(caught.value, ReplayRefused)
+
+
 class TestTheSequenceIsCounted:
     """Ids come from insertion order, so a log that lost a line rebuilds a
     graph whose ``e7`` is a different edge under the same name. A truncated
@@ -489,15 +581,54 @@ class TestTheSequenceIsCounted:
         with pytest.raises(ReplayRefused):
             KnowledgeGraph.replay(snapshot)
 
-    def test_a_truncated_log_is_accepted_as_a_shorter_one(self):
-        """Losing the *tail* is not the dangerous case: every id that remains
-        still means what it meant. The graph is smaller and says nothing false
-        about what it holds."""
+    def test_a_cut_at_the_tail_is_caught_by_the_count(self):
+        """The corruption ``n`` cannot see, and the most plausible-looking one
+        there is: a prefix is what a truncated write, a partial upload and a
+        half-read file all produce. ``1..k`` still numbers perfectly, so the
+        log reads as a complete, shorter session — and in a graph the edges it
+        lost are not missing rows, they are relationships a working set will
+        simply not contain, which looks exactly like a graph that never had
+        them."""
         graph = _script(8)
         snapshot = graph.snapshot()
+        assert len(snapshot[EVENTS_KEY]) > 10
         snapshot[EVENTS_KEY] = snapshot[EVENTS_KEY][:10]
-        shorter = KnowledgeGraph.replay(snapshot)
-        assert len(shorter.events) == 10
+        with pytest.raises(ReplayRefused, match="tail"):
+            KnowledgeGraph.replay(snapshot)
+
+    def test_a_count_that_is_not_a_count_is_refused(self):
+        graph = _script(8)
+        for stated in ("10", 10.0, True, None, -1):
+            snapshot = graph.snapshot()
+            snapshot[GRAPH_COUNT_KEY] = stated
+            with pytest.raises(ReplayRefused):
+                KnowledgeGraph.replay(snapshot)
+
+    def test_a_schema_one_log_is_not_asked_for_a_count(self):
+        """The migration shape, and the reason the version comes back out of
+        `check_snapshot`: a log is read under the rules it was written by. A
+        schema-1 graph log never carried a count and refusing it for the
+        absence would be refusing a log that was correct when it was made."""
+        graph = _script(9)
+        snapshot = graph.snapshot()
+        snapshot[GRAPH_SCHEMA_KEY] = 1
+        del snapshot[GRAPH_COUNT_KEY]
+        assert KnowledgeGraph.replay(snapshot).digest_json() == \
+            graph.digest_json()
+
+    def test_a_schema_two_log_without_a_count_is_refused(self):
+        graph = _script(10)
+        snapshot = graph.snapshot()
+        assert snapshot[GRAPH_SCHEMA_KEY] == 2
+        del snapshot[GRAPH_COUNT_KEY]
+        with pytest.raises(ReplayRefused, match=GRAPH_COUNT_KEY):
+            KnowledgeGraph.replay(snapshot)
+
+    def test_the_count_the_snapshot_states_is_the_one_it_carries(self):
+        graph = _script(11)
+        snapshot = graph.snapshot()
+        assert snapshot[GRAPH_COUNT_KEY] == len(snapshot[EVENTS_KEY])
+        assert snapshot[GRAPH_COUNT_KEY] == len(graph.events)
 
     def test_a_reordered_log_is_refused(self):
         graph = _script(9)

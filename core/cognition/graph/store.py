@@ -59,8 +59,8 @@ from dataclasses import dataclass
 from typing import (Any, Dict, Iterable, List, Mapping, Optional, Sequence,
                     Tuple)
 
-from core.cognition.events import EVENTS_KEY
-from core.cognition.graph.events import (GRAPH_EVENT_OPS,
+from core.cognition.events import EVENTS_KEY, deep_copy, freeze
+from core.cognition.graph.events import (COUNT_KEY, GRAPH_EVENT_OPS,
                                          GRAPH_EVENT_SCHEMA_VERSION,
                                          GRAPH_PACKAGE_VERSION, PACKAGE_KEY,
                                          SCHEMA_KEY, check_snapshot,
@@ -220,6 +220,9 @@ class KnowledgeGraph:
 
     def __init__(self) -> None:
         self._events: List[dict] = []
+        # The same events as read-only views, built once at append. See the
+        # `events` property for why a reader gets these and not copies.
+        self._readonly: List[Mapping[str, Any]] = []
 
         # Edges: `_edges` holds the live revision of every relationship,
         # `_history` every revision in order. Both keyed by the edge id, which
@@ -256,45 +259,67 @@ class KnowledgeGraph:
         event = {"n": len(self._events) + 1, "op": op}
         event.update(fields)
         self._events.append(event)
+        self._readonly.append(freeze(event))
         return event
 
     @property
-    def events(self) -> Tuple[dict, ...]:
-        """The log, oldest first. Copies, so a reader cannot edit history.
+    def events(self) -> Tuple[Mapping[str, Any], ...]:
+        """The log, oldest first, as read-only views a reader cannot edit.
 
-        **Copies all the way down**, which ``dict(event)`` is not.  An event
-        carries its evidence as a list of dicts, so a shallow copy hands a
-        reader the graph's own ref records under a new outer dict: editing
-        ``events[0]["evidence"][0]["locator"]`` then edits the log itself,
-        silently, and the next snapshot exports the forgery as the record.
-        The top-level copy is the one anybody thinks to test, and it is not
-        the one that matters.
+        Views rather than copies, and frozen to the leaves.  An event carries
+        its evidence as a list of dicts, so the ``dict(event)`` this used to
+        do handed a reader the graph's own ref records under a fresh outer
+        dict — ``events[0]["evidence"][0]["locator"] = …`` then edited the log
+        itself, silently, and the next snapshot exported the forgery as the
+        record.  The top-level copy is the one anybody thinks to test and it
+        is not the one that matters.
+
+        Frozen rather than deep-copied because there is no legitimate reason
+        to write to history, and because copying every event on every read
+        makes a read cost what the whole log costs.  Each view is built once,
+        at append.
+
+        **The trade, measured, because it is the kernel's shape adopted here
+        rather than a shape this package's own profile asked for**: freezing
+        at append puts the walk on the *write* path — ~49 µs per ``add_edge``
+        at 100k edges against ~25 µs without it — and takes it off the read
+        path entirely, where ``events`` goes from a full deep walk to ~1.7 ms
+        for the same 100k.  The kernel reads its log every step and writes it
+        once per call, so the trade is plainly right there.  A graph ingesting
+        a corpus writes far more than it reads, so it is plainly *less* right
+        here; it is adopted anyway because one owner for a copy across the two
+        packages is worth more than the microseconds, and because the ingest
+        path is not a mission path.  If that ever stops being true the fix is
+        a lazily-built cache invalidated at append — same contract, same
+        helper, no divergence in what a reader gets.
+
+        **These are for reading, not for serialising.**  A frozen mapping is a
+        ``MappingProxyType`` and ``json.dumps`` will not take one;
+        :meth:`snapshot` is the door that produces a JSON-safe structure, and
+        it is a separate door on purpose.
         """
-        return tuple(_copy(event) for event in self._events)
+        return tuple(self._readonly)
 
     def snapshot(self) -> dict:
-        """The whole graph as one JSON-safe dict: two versions and the events.
+        """The whole graph as one JSON-safe dict: two versions, a count, the
+        events.
 
         The event schema says whether a reader can parse this; the package
         version says whether the graph it rebuilds means what the writer
-        meant.  Both, because neither answers the other's question.
+        meant; the count says whether all of it arrived.  Three, because none
+        of them answers another's question.
 
-        Deep-copied for the reason :attr:`events` gives: a snapshot is the
-        thing most likely to be handed somewhere else and edited, and one that
-        aliased the log would make every such edit a write to this graph.
-
-        **Measured, because it is not free**: at 100k events the deep copy is
-        ~1.9 s against ~0.16 s for the aliasing shape.  It is paid at
-        persistence boundaries rather than per step — a mission-scale log is
-        hundreds of events and the copy is sub-millisecond — and handing out a
-        live log to save it would be trading a silent corruption for a number
-        nobody is waiting on.  If a caller ever does need the cheap read, the
-        honest shape is a separate accessor that says it aliases, not a
-        quietly shallow copy of this one.
+        Deep-copied rather than frozen: a caller is expected to serialise this
+        and may reasonably edit it first, and a snapshot that aliased the log
+        would make every such edit a write to this graph.  The walk is the
+        kernel's :func:`~core.cognition.events.deep_copy` — one owner for a
+        copy across both packages, so a shallow-copy bug cannot be fixed in
+        one sibling and left standing in the other.
         """
         return {SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
                 PACKAGE_KEY: GRAPH_PACKAGE_VERSION,
-                EVENTS_KEY: [_copy(event) for event in self._events]}
+                COUNT_KEY: len(self._events),
+                EVENTS_KEY: [deep_copy(event) for event in self._events]}
 
     @classmethod
     def replay(cls, events: Any) -> "KnowledgeGraph":
@@ -305,13 +330,41 @@ class KnowledgeGraph:
         adjacency directly would be a second implementation of the index, and
         the day the two disagreed the replay would be the one nobody checked.
         """
-        records = check_snapshot(events)
+        _version, records = check_snapshot(events)
         graph = cls()
-        for record in records:
-            graph._apply_event(record)
+        for index, record in enumerate(records):
+            graph._apply_event(record, index)
         return graph
 
-    def _apply_event(self, record: Mapping[str, Any]) -> None:
+    def _apply_event(self, record: Mapping[str, Any],
+                     index: Optional[int] = None) -> None:
+        """Apply one logged event through the public door that wrote it.
+
+        **Every refusal a replay can raise is a** :class:`ReplayRefused`.  The
+        doors validate — an empty name, a name beginning with ``?``, a control
+        character, an authority this package has no word for, evidence that is
+        not a list of refs — and each of those raises the
+        :class:`~core.cognition.types.CognitionError` that is right for a
+        caller making the call wrong.  Reached from *here* it means something
+        else: the log cannot be reconstructed.  A consumer is told to catch
+        ``ReplayRefused`` around a replay, and a corrupt log arriving as a
+        plain ``CognitionError`` goes straight through that handler as a crash
+        rather than a refusal — which is exactly the failure the kernel's
+        evidence codec was fixed for, reappearing one layer up.  So the
+        conversion is here, at the one place that knows a call is a replay,
+        rather than duplicated into every validator.
+        """
+        try:
+            self._apply(record)
+        except ReplayRefused:
+            raise
+        except CognitionError as exc:
+            where = "" if index is None else f"event {index} "
+            raise ReplayRefused(
+                f"{where}({record.get('op')!r}) cannot be reconstructed: "
+                f"{exc}") from exc
+
+    def _apply(self, record: Mapping[str, Any]) -> None:
         op = record["op"]
         if op == "add_edge":
             self.add_edge(record.get("src"), record.get("relation"),
@@ -767,22 +820,6 @@ class KnowledgeGraph:
 
 
 # ── small helpers ───────────────────────────────────────────────────────────
-
-def _copy(value: Any) -> Any:
-    """A deep copy of one JSON-shaped value.
-
-    Written out rather than reached for from :mod:`copy`, because what is
-    wanted is exactly the JSON shapes this package writes — dicts, lists and
-    scalars — and ``deepcopy`` would also faithfully reproduce anything else
-    somebody had managed to get into an event, which is not a thing to be
-    helpful about in the one function that exports the log.
-    """
-    if isinstance(value, dict):
-        return {key: _copy(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_copy(item) for item in value]
-    return value
-
 
 def _row(keys: Tuple[str, ...], built: Dict[str, Any]) -> Dict[str, Any]:
     """One digest row, checked against its declared key set.

@@ -72,6 +72,7 @@ its reads), :mod:`~core.cognition.graph.events` (the log and its own version),
 :mod:`~core.cognition.graph.hydrate` (the bounded working set).
 """
 
+from core.cognition.graph.events import COUNT_KEY as GRAPH_COUNT_KEY
 from core.cognition.graph.events import EVENTS_KEY as EVENTS_KEY
 from core.cognition.graph.events import GRAPH_EVENT_OPS, GRAPH_EVENT_SCHEMA_VERSION
 from core.cognition.graph.events import GRAPH_PACKAGE_VERSION
@@ -93,6 +94,7 @@ __all__ = [
     "DIRECTIONS",
     "EDGE_KEYS",
     "EVENTS_KEY",
+    "GRAPH_COUNT_KEY",
     "Edge",
     "GRAPH_EVENT_OPS",
     "GRAPH_EVENT_SCHEMA_VERSION",
