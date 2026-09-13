@@ -1453,6 +1453,13 @@ class MissionRunner:
         gate_wait_s: float = GATE_WAIT_S,
         started_at: Optional[float] = None,
         memory: Any = None,
+        # `--cognition`'s shadow store, or `None`. Threaded rather than
+        # left out: this constructor is a library caller's door to the
+        # same loop the CLI runs, and a parameter it cannot pass is a
+        # feature it silently does not get. Duck-typed like `recorder` —
+        # see `core.runtime.run.Store.cognition` and
+        # `core.runtime.cognition.open_shadow`, which is how one is built.
+        cognition: Any = None,
         plain_chat_fn: Optional[Callable[..., Any]] = None,
     ):
         # Here and not at module scope, and it is the one import in this
@@ -1473,7 +1480,7 @@ class MissionRunner:
         # called `mission_answer`. Nothing here decides anything — every
         # line is a parameter finding the object that owns it.
         store = Store(runs=run_store, run_id=run_id, approvals=approvals,
-                      ticket=approval)
+                      ticket=approval, cognition=cognition)
         plane = ToolPlane(bus=bus, offered=tool_names, store_tool=store_tool,
                           gated=gated, admits=admits,
                           plane_changed=plane_changed)

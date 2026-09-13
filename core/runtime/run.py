@@ -811,6 +811,16 @@ class Store:
     #: An :class:`~core.runtime.approvals.ApprovalTicket` — a decision
     #: somebody already made, resolved at the door — or ``None``.
     ticket: Optional[ApprovalTicket] = None
+    #: A :class:`core.runtime.cognition.ShadowCognition`, or ``None`` —
+    #: ``--cognition``.  Duck-typed for :attr:`recorder`'s reason, and the
+    #: reason is stronger here: the epistemic kernel is deliberately
+    #: replaceable, and a loop that imported its attachment would be a loop
+    #: that has to be edited to swap it.  It is durable state like the
+    #: other three — one ``reasoning.jsonl`` in the same run directory,
+    #: under the same ``JUDAIS_LOBI_RUNS`` — and it is **shadow**: nothing
+    #: the loop does waits on it, reads it back, or ends differently
+    #: because of it.
+    cognition: Any = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_id", str(self.run_id or ""))
@@ -2501,6 +2511,42 @@ class Run:
             transcript.reason = STUCK
         return review
 
+    def _receipt_seq(self, handle: str) -> str:
+        """What names this receipt inside this run, for the shadow.
+
+        The handle (``r3``) is the run's own sequence number for a result
+        and the one a model can quote at ``mission_result`` — and it is
+        **only unambiguous inside one store**.  A staged turn has one store
+        per stage, so its first stage's ``r1`` and its second stage's
+        ``r1`` are two different receipts, and a shadow that called them
+        one entity would report the two as contradicting each other about
+        every field where two honest results differ.  So a branch is part
+        of the name, exactly as it is part of every record those stages
+        emit.  Unbranched — a mission with no children, which is most of
+        them — the name is the handle and nothing else.
+
+        Stable across ``--resume`` for the reason the handle is: a resumed
+        run re-records the recorded results into its store in the same
+        order (:func:`core.runtime.resume._replay_result`), so ``r3`` is
+        the same receipt in the resumed process as in the first one.
+        """
+        branch = self.plane.store_branch
+        return f"{branch}.{handle}" if branch else handle
+
+    def _close_cognitive_step(self) -> None:
+        """Tell the shadow the step is over, if there is one.
+
+        Two lines, and a method rather than two copies of them, because the
+        two callers are the two ends of a step: the top of the next
+        iteration, and the ``finally`` that is the last step's only
+        boundary.  A run with ``--cognition`` off has no shadow and this is
+        a single ``is not None`` on every step — which is the whole cost of
+        the feature to a run that did not ask for it.
+        """
+        shadow = self.store.cognition
+        if shadow is not None:
+            shadow.close_step()
+
     def _reject(self, index: int, problem: str, **fields: Any) -> None:
         """One rejected reply: on the stream, and in front of the watcher.
 
@@ -2676,6 +2722,12 @@ class Run:
             # it, which is what the person asked for.
             return self._stopped(transcript, self.bounds.cancelled_stop())
         finally:
+            # The last step has no next boundary to be closed at, and every
+            # way this loop ends — an answer, a stop, a cancellation, an
+            # exception — arrives here. Before the records below rather than
+            # after, so a reader who has `mission_finished` has the whole
+            # reasoning log that produced it.
+            self._close_cognitive_step()
             if registered:
                 # This branch's store goes; the descriptor goes with the
                 # LAST branch holding it. Nothing is left on the bus for
@@ -2857,6 +2909,15 @@ class Run:
         # run whose recorded steps already met it runs no steps and ends
         # `budget_exhausted`, which is the truth about it.
         for index in self._indices(start):
+            # The step that just ended is the shadow's unit of work: one
+            # `derive` over everything the last step harvested, then the
+            # events that produced go on the disk. Here because this is the
+            # only line every continuing path comes back through — a parse
+            # error, a refused tool, a dispatch, a grounding repair — and
+            # the last step's boundary is the `finally` in `arun`, which is
+            # the only other caller. Idempotent, so the two cannot double
+            # anything: see `ShadowCognition.close_step`.
+            self._close_cognitive_step()
             # The wind-up turn has been asked and did not answer. Ending
             # here rather than inside the turn keeps every path a turn can
             # take — a parse error, a refused tool, a dispatch — exactly as
@@ -3267,6 +3328,18 @@ class Run:
             exit_code=result.exit_code,
         )
         slot.handle = stored.handle
+        # THE ONE PLACE a receipt is durably known — the bus has answered,
+        # the whole result is in the store under the handle the model can
+        # quote, and every protocol, every child of a staged turn and every
+        # replayed dispatch passes through this line. A shadow attached to
+        # `tool_result` would be attached to the stream rather than to the
+        # run; one on `RecordingBus` would miss every run nobody recorded.
+        # See `core.runtime.cognition`, which owns what a receipt is worth.
+        # The call cannot fail: every method on that object is total, and a
+        # mission is never told that cognition had a bad day.
+        if self.store.cognition is not None:
+            self.store.cognition.receipt(name, self._receipt_seq(stored.handle),
+                                         stored.text, stored.evidence)
         rendered, slot.truncated = self._render_result(
             name, result, stored.handle,
             already=self.results.first_identical(stored),

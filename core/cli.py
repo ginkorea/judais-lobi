@@ -968,7 +968,7 @@ def _bounds_of(max_steps, deadline, cancel, control, gate_wait_s, supervisor):
     )
 
 
-def _store_of(run_store, run_id, recorder, approvals, ticket):
+def _store_of(run_store, run_id, recorder, approvals, ticket, cognition=None):
     """What survives the process: the log, the recording, the decisions.
 
     The recorder is named here even though nothing in the loop reads it
@@ -977,11 +977,19 @@ def _store_of(run_store, run_id, recorder, approvals, ticket):
     makes :class:`~core.runtime.run.Store` an honest answer to "what is
     durable about this run", which is the question it exists to be the
     one owner of.
+
+    ``cognition`` is the same answer for ``--cognition``'s
+    ``reasoning.jsonl``: a fourth file in the same directory, under the same
+    variable, durable in the same sense.  Unlike the recorder the loop does
+    read this one off the object — that reading *is* the attachment, and
+    :mod:`core.runtime.cognition` says where and why.  ``None``, which is
+    the default and every run that did not ask for it, is the harness
+    exactly as it was.
     """
     from core.runtime.run import Store
 
     return Store(runs=run_store, run_id=run_id, recorder=recorder,
-                 approvals=approvals, ticket=ticket)
+                 approvals=approvals, ticket=ticket, cognition=cognition)
 
 
 def _observer_of(store, *sinks):
@@ -1118,6 +1126,7 @@ def _mission(elf, args, name, style):
         ANSWER_FUNCTION, AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL,
         NATIVE_PROTOCOL,
     )
+    from core.runtime.cognition import REASONING_LOG, open_shadow
     from core.runtime.mission_stream import (
         close_on_sigterm, exit_as_signalled, open_sink,
     )
@@ -1710,6 +1719,52 @@ def _mission(elf, args, name, style):
             f"is, because the rest is the model's exact input",
             style=style)
 
+    # The shadow, beside the recording and under the same switch: it is a
+    # file in the run directory, so a run keeping no transcript keeps no
+    # reasoning either, and `--cognition` on a silenced store is said out
+    # loud rather than left to look like it worked. Nothing downstream
+    # branches on it — it rides `Store` and the loop feeds it. See
+    # `core.runtime.cognition`: with the flag off there is no object, and
+    # with it on the only thing that changes about this run is that file.
+    shadow = None
+    if getattr(args, "cognition", False):
+        if run_store is not None and run_id:
+            try:
+                # `resumed` is what makes a short log readable: a resumed
+                # run's earlier receipts were re-recorded, not dispatched,
+                # so this shadow never saw them and says so in the log.
+                # See `core.runtime.cognition.open_shadow`.
+                shadow = open_shadow(run_store, run_id,
+                                     resumed=recorded is not None)
+            except Exception as exc:
+                # The one call into the shadow that is NOT already total:
+                # `open_shadow` reads a log a previous process wrote and
+                # refuses one it cannot trust — a version from the future,
+                # a file whose header never made it to the disk. Refusing
+                # is right, and refusing the MISSION for it would not be:
+                # this is the module whose whole claim is that a run does
+                # not change because of it. Said out loud, and the run goes
+                # on with no shadow at all rather than with half of one.
+                console.print(
+                    f"🧩 cognition: NOT running — {scrub(str(exc))}. The "
+                    f"mission runs exactly as it would have; the existing "
+                    f"{REASONING_LOG} is left untouched",
+                    style="yellow")
+            else:
+                reasoning_path = run_store.directory(run_id) / REASONING_LOG
+                console.print(
+                    f"🧩 cognition: {reasoning_path} — a shadow store of "
+                    f"what this run's receipts assert, written beside the "
+                    f"transcript and read by nothing: no prompt, no call "
+                    f"and no answer changes because of it",
+                    style=style)
+        else:
+            console.print(
+                f"🧩 cognition: asked for and NOT running — there is no run "
+                f"directory to write {REASONING_LOG} into ({RUNS_ENV} is "
+                f"off). The mission runs exactly as it would have",
+                style="yellow")
+
     def chat_fn(messages):
         # The mission loop still reads one JSON object out of the reply; the
         # backend renders any native tool_call back into that shape. So this
@@ -2156,7 +2211,8 @@ def _mission(elf, args, name, style):
                     style="yellow")
             bounds = _bounds_of(max_steps, deadline, cancel, control,
                                 gate_wait_s, supervisor)
-            store = _store_of(run_store, run_id, recorder, approvals, ticket)
+            store = _store_of(run_store, run_id, recorder, approvals, ticket,
+                              shadow)
             # ONE observer for the turn, so the two runners below cannot be
             # given different watchers, and the durable log beside it:
             # emitting is store-first, so the observer holds both.
@@ -2681,6 +2737,25 @@ def _main(AgentClass):
                              "call already in flight is not interrupted, so "
                              "the real bound is this plus one round trip "
                              "(env: MISSION_SECONDS)")
+    parser.add_argument("--cognition", action="store_true",
+                        default=bool((os.getenv("JUDAIS_LOBI_COGNITION")
+                                      or "").strip()),
+                        help="Carry a shadow cognitive state through this "
+                             "mission: every tool receipt is harvested into "
+                             "propositions with the receipt as their "
+                             "evidence, and the whole log of it is written "
+                             "as reasoning.jsonl beside the run's "
+                             "events.jsonl. SHADOW means shadow — nothing "
+                             "reads it back. No prompt, no call, no gate and "
+                             "no answer changes because it is on, and with "
+                             "it off the run is byte for byte the run it "
+                             "always was. It is not free of TIME, though: "
+                             "the harvest and one fsync run inside the step, "
+                             "about 6 ms a step here, so a mission budgeted "
+                             "tight with --mission-seconds may notice. Needs "
+                             "a run directory: with JUDAIS_LOBI_RUNS off "
+                             "there is nowhere to write it and the flag says "
+                             "so (env: JUDAIS_LOBI_COGNITION)")
     parser.add_argument("--no-grounding", action="store_true",
                         default=bool((os.getenv("MISSION_NO_GROUNDING")
                                       or "").strip()),

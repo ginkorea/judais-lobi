@@ -78,6 +78,7 @@ MCP client, a YAML reader for ``--skill``, and a JSON-schema validator).
 from core.budgets import Cancellation, Deadline
 from core.durable import RunStore
 from core.runtime import contract
+from core.runtime.cognition import open_shadow
 from core.runtime.context_window import MissionWindow
 from core.runtime.contract import SCHEMA_VERSION
 from core.runtime.prompts import GOVERNED_PLANE
@@ -130,6 +131,13 @@ __all__ = [
     # with `Personality(conduct="")`, or stack its own text on top of it.
     "GOVERNED_PLANE",
     "RunStore",         # the durable transcript, for `Store`
+    # The SHADOW cognitive state, for `Store(cognition=…)` — the one door,
+    # because "does this run already have a reasoning log?" is a question
+    # with one answer and `--resume` is the caller that needs it. A run
+    # built without it is the loop exactly as it was; see
+    # `core.runtime.cognition` for what it does and, more to the point,
+    # for the long list of what it does not.
+    "open_shadow",
     # The wire, so a consumer can check a stream without owning a copy of
     # the rules.
     "contract",
