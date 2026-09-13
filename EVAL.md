@@ -10,10 +10,12 @@ pane reads — and answers every question from that.
 Modules: `core/eval/suite.py` (what a mission is), `core/eval/stub_suite.py`
 (the eleven missions this repo ships), `core/eval/score.py` (the verdict),
 `core/eval/run.py` + `python -m core.eval` (the command line),
-`core/eval/measure.py` (the matrix — §12). Tests:
+`core/eval/measure.py` (the matrix — §12),
+`core/eval/extraction.py` (the extraction number — §13). Tests:
 `tests/test_eval_suite.py`, `tests/test_eval_score.py`,
 `tests/test_eval_run.py`, `tests/test_eval_stub_suite.py`,
-`tests/test_eval_live.py`. Corpus: `tests/fixtures/eval/`.
+`tests/test_eval_live.py`, `tests/test_eval_extraction.py`. Corpora:
+`tests/fixtures/eval/` and `tests/fixtures/extraction/`.
 
 ---
 
@@ -156,15 +158,19 @@ python -m core.eval check   [--suite stub|PATH]
 python -m core.eval score   (--runs DIR | --map KEY=PATH …) [--suite …] [--split train|test|all] [--json] [--allow-failures] [--report DIR]
 python -m core.eval run     --out DIR [--suite …] [--split …] [--json] [--allow-failures] [--timeout 600] -- <spawn line>
 python -m core.eval measure --out DIR [--report PATH] [--config NAME …] [--only KEY …] [--repeat N] [--per-mission-seconds 600] -- <spawn line>
+python -m core.eval extraction --probes PATH [--provider P] [--model M] [--temperature T] [--repeats N] [--only ID …] [--report PATH] [--baseline PATH] [--json]
 ```
 
 `--suite` defaults to `stub`, `--split` to `all` (both halves, reported apart),
 `--timeout` to 600 seconds — the bound on **one** mission, not on the suite.
 
 `check` refuses a suite that cannot be graded, before anybody spends a GPU on
-it: exit 1 with every problem in one message. **All three subcommands run that
-check** — numbers produced against a suite that cannot be graded cannot be
+it: exit 1 with every problem in one message. **Every mission subcommand runs
+that check** — numbers produced against a suite that cannot be graded cannot be
 compared to anything, and a `run` against one spends a model first.
+`extraction` is the exception and takes no `--suite` at all: it scores
+receipts rather than missions, so there is nothing to spawn and nothing to
+hold out — §13.
 
 `measure` is `run`, once per configuration, plus the table of the
 differences — §12.
@@ -778,3 +784,111 @@ What the table says, read against the 0.16-era baseline above:
 This is the release score ROADMAP §4 asks for. It is a bar, not a verdict:
 the next model this harness is pointed at is the one this framework was built
 to run on, and these are the numbers it has to match on its own hardware.
+
+---
+
+## 13. Measuring extraction
+
+```
+python -m core.eval extraction \
+  --probes tests/fixtures/extraction/probes.jsonl \
+  --provider local --model <the served name> --temperature 0.2 \
+  --repeats 3 --report out/extraction.md
+```
+
+This subcommand measures no missions. It hands the model **one recorded tool
+receipt and one question** per probe and asks for typed propositions with
+abstention, then scores them. It is ROADMAP §2.9.3's gatekeeper: nothing in
+the 1.0→2.0 cognitive arc (Phases 17–21) begins until this number exists, and
+the number decides the phase order.
+
+### What the number gates
+
+Everything downstream of Phase 17 derives from an epistemic store, and
+deterministic machinery derives from a store *with confidence*. So **a wrong
+proposition in a store is worse than a wrong sentence in a transcript**: a
+sentence is read by a person who can disbelieve it, and a proposition is
+joined, closed over and cited by code that cannot. If this number is bad and
+§2.9.5's grammar compiler plus few-shot cannot lift it, Phase 21 moves before
+Phase 19 — or the arc stops. That is the decision the report is for; it is not
+a release gate and no build depends on it.
+
+The prompt here is deliberately plain: **no few-shot examples and no
+constrained decoding**, because both are the lift §2.9.3 names as the thing to
+try next, and a baseline that already had them would have nothing to be
+measured against.
+
+### The probe corpus
+
+A probe is `{id, family, source, evidence, question, expect}` in JSONL, and
+`evidence` is a **genuine recorded receipt** — the corpus this repository
+ships is built from `tests/fixtures/runs/*/tools.jsonl`,
+`tests/fixtures/eval/`, `tests/fixtures/field_misreadings.json` and two
+production receipts a deployment handed over with the bearer scrubbed and the
+principals generalised to roles. A platform writes its own from its own
+receipts the way it writes its own suite (`PLATFORMS.md` §9).
+
+`expect.kind` is one of three, and `family` says which measured failure class
+the probe belongs to (`core.eval.extraction.FAMILIES` is the list, and the
+report breaks every rate down by it — *"the extraction number was 0.61"* does
+not tell anyone whether to reorder a phase, and *"it abstains fine and falls
+for every unit trap"* does):
+
+| kind | families | a correct extractor |
+|---|---|---|
+| `assert` | `present` | ASSERTs every gold fact, with the receipt's own field name and value, and nothing else |
+| `abstain` | `absent`, `contradiction`, `masked`, `cause_absent`, `partial_coverage` | makes **no** assertion — `INSUFFICIENT_EVIDENCE`, or `CONTRADICTED` where two receipts disagree |
+| `trap` | `unit_semantics`, `optional_filter` | ASSERTs the gold facts and leaves the trap field alone |
+
+The two trap families are the classes the 1.0.0 final gate measured, not
+invented ones. **`unit_semantics`**: a field whose *name* reads like the
+question and whose meaning is something else — the recorded case is `total_s`,
+elapsed seconds, served as "the total score" with a 121.2% share derived from
+it (§12, and `tests/fixtures/field_misreadings.json` is the corpus of them).
+**`optional_filter`**: an optional field that hides rather than selects — the
+measured 20b filled `submitted_via` on 8 of 8 attempts and never saw the real
+rows. The four `abstain` families beyond `absent` were each measured live on a
+deployment on 6 Sep 2026: two receipts disagreeing about one job id, a record
+whose material is masked by handling, a failure that establishes no cause, and
+a search that reports its own coverage as partial.
+
+### How to read the report
+
+Every rate is `k/n` with a **95% Wilson interval**, and the header names the
+provider, the model, the temperature, the endpoint, the commit and a digest of
+the prompt. The interval is Wilson and not the normal approximation because
+every interesting rate sits near an end, and the normal interval at `20/20` has
+zero width — which is what made the final gate's chase for a clean 20/20
+meaningless. **A number without its interpreter beside it is not evidence**:
+two reports are comparable only when those header fields match, and `--baseline
+<report.json>` prints the paired deltas and says so out loud when they do not.
+
+| category | what one `k` is |
+|---|---|
+| `structural` | the reply parsed as propositions, first try or after the one repair |
+| `first_try` | …with no repair at all |
+| `repair` | the attempt needed the repair turn — **lower is better**, and it is printed apart rather than folded into `structural` |
+| `grounded` | an ASSERT whose value the receipt holds **under the field it names**. The field half is the half that matters: a real number under an invented key is the half a reader cannot check and will cite onward |
+| `gold_precision` | an ASSERT that is a fact the probe asked for |
+| `gold_recall` | a fact the probe asked for that was asserted |
+| `abstention` | an `abstain` probe answered with no assertion at all |
+| `trap` | a `trap` probe answered without asserting from the trap field |
+| `probe` | the probe answered correctly and completely — strict: every gold fact, nothing else, trap untouched |
+
+Two rules the scoring is deliberate about:
+
+- **An unreadable reply did not abstain.** `invalid` fails abstention and trap
+  resistance both, because what is being measured is whether a store can be fed
+  from this model, and a store cannot be fed prose. Without that rule a model
+  that answers in prose comes out the safest of all.
+- **The intervals on `grounded`, `gold_precision` and `gold_recall` are a
+  guide to width, not a test.** Propositions inside one probe are not
+  independent of each other. The per-probe rows are the ones to argue from,
+  and `--repeats N` is how the per-probe rate stops being one die.
+
+The evidence walk is not this module's own: `core.runtime.grounding`'s
+`json_blocks`, `harvest_fields` and `same_value` answer *is this value in the
+receipt under this key*, so a proposition this measurement calls grounded is
+one the grounding check would call grounded too. Tests:
+`tests/test_eval_extraction.py`, including the corpus lint that holds every
+gold fact to being in its own evidence.

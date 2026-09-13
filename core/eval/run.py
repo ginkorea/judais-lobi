@@ -1,8 +1,9 @@
 # core/eval/run.py — spawn the missions, capture the streams, score them
 
-"""The harness's command line: ``run``, ``measure``, ``score``, ``check``.
+"""The harness's command line: ``run``, ``measure``, ``score``, ``check``,
+``extraction``.
 
-Four subcommands because there are four jobs, and only two of them need a
+Five subcommands because there are five jobs, and only three of them need a
 model:
 
 ``run``
@@ -29,6 +30,11 @@ model:
 ``check``
     :func:`~core.eval.suite.check_the_suite_is_gradeable`, before anybody
     spends a GPU on a suite that cannot be graded.
+``extraction``
+    The only subcommand that is not about missions at all: one recorded
+    tool receipt and one question per probe, and the model asked for typed
+    propositions with abstention.  ROADMAP §2.9.3's gatekeeper — see
+    :mod:`core.eval.extraction`.  It needs a model and takes no suite.
 
 **A run directory is a RunStore directory.**  That is the whole agreement
 between this harness, the recorder and a platform's archive: one directory per
@@ -329,6 +335,13 @@ def _parser() -> argparse.ArgumentParser:
     from core.eval.measure import add_parser as _add_measure
     _add_measure(subs, common)
 
+    # Same arrangement, and deliberately WITHOUT `common`: `extraction`
+    # scores receipts rather than missions, so there is no suite to load,
+    # no half to hold out and nothing to spawn. See
+    # `core.eval.extraction.add_parser`.
+    from core.eval.extraction import add_parser as _add_extraction
+    _add_extraction(subs)
+
     checker = subs.add_parser(
         "check", help="refuse a suite that cannot be graded")
     checker.add_argument("--suite", default="stub")
@@ -338,6 +351,15 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ours, template = _split_argv(sys.argv[1:] if argv is None else argv)
     args = _parser().parse_args(ours)
+
+    # Before the suite, because this one has none. Every other subcommand
+    # is about missions and is refused against a suite that cannot be
+    # graded; `extraction` reads a probe corpus and a model, and holding it
+    # to the gradeability of a suite it never opens would be a check of
+    # something else — see `core.eval.extraction`.
+    if args.command == "extraction":
+        from core.eval.extraction import from_args as _extraction
+        return _extraction(args)
 
     try:
         suite = resolve_suite(args.suite)

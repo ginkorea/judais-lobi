@@ -127,6 +127,10 @@ NOT_A_MISSION_FLAG = {
                      "page says so",
     "--help": "every CLI has one, and this page names it only to say that "
               "what is in it besides CLI_FLAGS may move",
+    "--probes": "a flag of `python -m core.eval extraction` (§9), which is a "
+                "developer's and a CI job's tool. Nothing spawns a mission "
+                "with it and no wire carries it, so it is not part of the "
+                "contract the same way --suite, --runs and --out are not",
 }
 
 #: Same, for environment variables, and scoped to the families this repository

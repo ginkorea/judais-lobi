@@ -1579,7 +1579,8 @@ missions:
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
 
-`python -m core.eval` has three subcommands, and only one of them needs a model:
+`python -m core.eval` has several subcommands, and the three a platform starts
+with are these — only one of them needs a model:
 
 ```
 python -m core.eval check --suite path/to/suite.yml
@@ -1599,9 +1600,20 @@ python -m core.eval score --suite path/to/suite.yml --runs DIR
   configuration do*, `measure` answers *which configuration is better*. It is
   what ROADMAP §3's "measure before default" is done with: nothing here becomes
   on-by-default off one number. See `EVAL.md` §12.
+* **`extraction`** is the odd one out: it scores no missions at all. It hands
+  the model one **recorded tool receipt** and one question per probe and asks
+  for typed propositions with abstention — `ASSERT` / `HYPOTHESIZE` /
+  `AMBIGUOUS` / `CONTRADICTED` / `INSUFFICIENT_EVIDENCE` — then reports how
+  often the assertions are grounded in the receipt at the field they name, how
+  often the model abstains where the receipt is silent, and how often it takes
+  a plausible-but-wrong field instead. It takes a probe corpus rather than a
+  suite (`--probes`), and the one this repository ships is
+  `tests/fixtures/extraction/probes.jsonl` — a platform writes its own from its
+  own receipts the same way it writes its own suite. **This is the one that
+  needs a model.** See `EVAL.md` §13 and ROADMAP §2.9.3.
 
-A fourth, **`live`**, lands in **0.16**: a platform's own suite driven against a
-running deployment rather than against an archive.
+A further one, **`live`**, lands in **0.16**: a platform's own suite driven
+against a running deployment rather than against an archive.
 
 Three things to know before writing a suite, all of them things a deployment
 got wrong first:

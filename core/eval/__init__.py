@@ -10,7 +10,7 @@ is ``--protocol native`` a better default, should ``reading.py`` become a
 grounding tier — had no way to be answered except by somebody's memory of a
 demo.
 
-The package is five modules and one rule:
+The package is six modules and one rule:
 
 * :mod:`core.eval.suite` — what a mission is, what a flag is, how a suite is
   refused for being ungradeable, and the dated ``RUBRIC_CHANGES`` ledger.
@@ -19,7 +19,12 @@ The package is five modules and one rule:
   platform.
 * :mod:`core.eval.score` — the verdict, computed **only** from the recorded
   stream.
-* :mod:`core.eval.run` — ``python -m core.eval run|measure|score|check``.
+* :mod:`core.eval.run` — ``python -m core.eval
+  run|measure|score|check|extraction``.
+* :mod:`core.eval.extraction` — ROADMAP §2.9.3's gatekeeper: real recorded
+  receipts in, typed propositions with abstention out, and a rate per
+  failure class with an interval on it.  The one measurement in this
+  package that is not about a mission.
 * :mod:`core.eval.measure` — the **matrix**: the suite run once per entry of
   ``MEASUREMENTS`` against one endpoint, and a table of the differences.  A
   default is decided by a comparison and never by a single score, and every
@@ -39,6 +44,12 @@ here knows a tool name, an asset id or a deployment.
 # `core.eval.measure` would shadow the submodule of that name on the package,
 # and the next `from core.eval import measure` would get a function where it
 # wanted a module. `core.eval.measure.measure` is the one way in.
+from core.eval.extraction import (CATEGORIES, FAMILIES, KINDS, STATUSES,
+                                  Attempt, ExtractionReport, Probe,
+                                  ProbeMisdeclared, Proposition, Rate,
+                                  Unextractable, load_probes,
+                                  parse_propositions, rates_of, run_probes,
+                                  score_attempt, wilson)
 from core.eval.measure import (MEASUREMENTS, Configured, Matrix, Measurement,
                                Unmeasurable)
 from core.eval.score import (Half, NoStream, Report, Totals, Verdict,
@@ -57,4 +68,8 @@ __all__ = [
     "Half", "NoStream", "Report", "Totals", "Verdict", "records_from",
     "score_run", "score_suite",
     "MEASUREMENTS", "Configured", "Matrix", "Measurement", "Unmeasurable",
+    "CATEGORIES", "FAMILIES", "KINDS", "STATUSES", "Attempt",
+    "ExtractionReport", "Probe", "ProbeMisdeclared", "Proposition", "Rate",
+    "Unextractable", "load_probes", "parse_propositions", "rates_of",
+    "run_probes", "score_attempt", "wilson",
 ]
