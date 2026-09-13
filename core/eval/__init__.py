@@ -17,10 +17,15 @@ The package is six modules and one rule:
 * :mod:`core.eval.stub_suite` — the eleven missions this repository ships,
   over its own MCP stub server, so the harness runs with no GPU and no
   platform.
+* :mod:`core.eval.benchmark_suite` — twelve more, chosen so that the way
+  they fail is a job the RUNTIME could have done: multi-hop evidence,
+  missing evidence, contradictory evidence, dependency reasoning,
+  long-horizon recovery, misleading evidence.  ROADMAP §2.9.3's benchmark
+  pack, on this machinery and not a second framework.
 * :mod:`core.eval.score` — the verdict, computed **only** from the recorded
   stream.
 * :mod:`core.eval.run` — ``python -m core.eval
-  run|measure|score|check|extraction``.
+  run|measure|ablation|score|check|extraction``.
 * :mod:`core.eval.extraction` — ROADMAP §2.9.3's gatekeeper: real recorded
   receipts in, typed propositions with abstention out, and a rate per
   failure class with an interval on it.  The one measurement in this
@@ -29,6 +34,11 @@ The package is six modules and one rule:
   ``MEASUREMENTS`` against one endpoint, and a table of the differences.  A
   default is decided by a comparison and never by a single score, and every
   row is recorded so the table can be produced again with no GPU.
+* :mod:`core.eval.ablation` — the **arms**: the same missions across a
+  declared set of CLI flag deltas, paired mission by mission, with a Wilson
+  interval on each arm's rate.  An arm whose flags the spawn line does not
+  accept is skipped with the reason, so a piece that has not been built yet
+  still has its column.
 
 The rule is the third bullet.  An agent's summary is evidence about its
 reporting, never about its behaviour, so every machine check is answered from
@@ -50,6 +60,12 @@ from core.eval.extraction import (CATEGORIES, FAMILIES, KINDS, STATUSES,
                                   Unextractable, load_probes,
                                   parse_propositions, rates_of, run_probes,
                                   score_attempt, wilson)
+# `wilson` is deliberately NOT re-exported from `ablation`: two modules
+# grew one statistic on parallel branches, the facade names ONE owner
+# (extraction's, clamped), and unifying the module-local twin is a filed
+# follow-up rather than a merge-time semantics edit.
+from core.eval.ablation import (ARMS, Ablation, Arm, ArmResult, Unavailable,
+                                ablate, accepted_flags, paired)
 from core.eval.measure import (MEASUREMENTS, Configured, Matrix, Measurement,
                                Unmeasurable)
 from core.eval.score import (Half, NoStream, Report, Totals, Verdict,
@@ -72,4 +88,6 @@ __all__ = [
     "ExtractionReport", "Probe", "ProbeMisdeclared", "Proposition", "Rate",
     "Unextractable", "load_probes", "parse_propositions", "rates_of",
     "run_probes", "score_attempt", "wilson",
+    "ARMS", "Ablation", "Arm", "ArmResult", "Unavailable", "ablate",
+    "accepted_flags", "paired",
 ]

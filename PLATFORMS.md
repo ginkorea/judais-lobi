@@ -1581,13 +1581,15 @@ missions:
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
 
-`python -m core.eval` has several subcommands. The three a platform starts with
+`python -m core.eval` has six subcommands. The three a platform starts with
 are these:
 
 ```
-python -m core.eval check --suite path/to/suite.yml
-python -m core.eval run   --suite path/to/suite.yml --out DIR -- <your spawn line>
-python -m core.eval score --suite path/to/suite.yml --runs DIR
+python -m core.eval check    --suite path/to/suite.yml
+python -m core.eval run      --suite path/to/suite.yml --out DIR -- <your spawn line>
+python -m core.eval score    --suite path/to/suite.yml --runs DIR
+python -m core.eval measure  --suite path/to/suite.yml --out DIR -- <your spawn line>
+python -m core.eval ablation --suite path/to/suite.yml --out DIR -- <your spawn line>
 ```
 
 * **`check`** refuses a suite that cannot be graded, before anybody spends a GPU
@@ -1603,6 +1605,16 @@ python -m core.eval score --suite path/to/suite.yml --runs DIR
   configuration do*, `measure` answers *which configuration is better*. It is
   what ROADMAP §3's "measure before default" is done with: nothing here becomes
   on-by-default off one number. See `EVAL.md` §12.
+* **`ablation`** runs the **same** missions across declared **arms** — an arm is
+  a name plus a set of CLI flag deltas — and reports the **paired** difference,
+  mission by mission, with a Wilson interval on each arm's rate. `measure` asks
+  which of a fixed matrix is better; `ablation` asks whether a piece that was
+  added contributes anything, which is the question a platform keeps having to
+  answer about its own switches. An arm whose flags your spawn line does not
+  accept — because the release you pinned does not have them yet — is **SKIPPED
+  with the reason**, decided by asking your own spawn line's `--help`, so an arm
+  never reports a number for a run nobody made. See `EVAL.md` §14.
+
 * **`extraction`** is the odd one out: it scores no missions at all. It hands
   the model one **recorded tool receipt** and one question per probe and asks
   for typed propositions with abstention — `ASSERT` / `HYPOTHESIZE` /
@@ -1615,8 +1627,9 @@ python -m core.eval score --suite path/to/suite.yml --runs DIR
   own receipts the same way it writes its own suite. **This is the one that
   needs a model.** See `EVAL.md` §13 and ROADMAP §2.9.3.
 
-A further one, **`live`**, lands in **0.16**: a platform's own suite driven
-against a running deployment rather than against an archive.
+`live` — a platform's own suite driven against a running deployment rather than
+against an archive — is the one that has not landed.
+
 
 Three things to know before writing a suite, all of them things a deployment
 got wrong first:

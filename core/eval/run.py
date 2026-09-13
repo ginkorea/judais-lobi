@@ -1,7 +1,7 @@
 # core/eval/run.py — spawn the missions, capture the streams, score them
 
-"""The harness's command line: ``run``, ``measure``, ``score``, ``check``,
-``extraction``.
+"""The harness's command line: ``run``, ``measure``, ``ablation``,
+``score``, ``check``, ``extraction``.
 
 Five subcommands because there are five jobs, and only three of them need a
 model:
@@ -22,6 +22,16 @@ model:
     native``, is each grounding tier worth its cost — because every one of
     those is a comparison and not a number.  It spawns through
     :func:`run_suite` below, so there is still exactly one spawner here.
+``ablation``
+    the same missions across declared **arms** — a name plus a set of CLI
+    flag deltas — and the **paired** difference between them, mission by
+    mission, with an interval on each arm's rate.  ``measure`` asks which
+    of a fixed matrix of configurations is better; this asks whether a
+    piece that was added contributes anything, which is the question a
+    runtime under construction has to keep answering.  An arm whose flags
+    the spawn line does not accept is skipped with the reason rather than
+    scored, so a toggle that has not landed yet still has its column.  It
+    spawns through :func:`run_suite` too.
 ``score``
     Scores run directories that already exist.  **This is the no-GPU path**:
     a recorded or replayed run is a directory with an ``events.jsonl`` in it,
@@ -83,7 +93,13 @@ DEFAULT_TIMEOUT_S = 600.0
 
 
 def resolve_suite(name: str, *, check: bool = False) -> Suite:
-    """``stub`` for the in-repo suite, anything else as a path to a file.
+    """A named in-repo suite, or anything else as a path to a file.
+
+    Two names, and they answer different questions.  ``stub`` is the
+    harness grading itself: one mission per flag, over the MCP stub server.
+    ``benchmark`` is :mod:`core.eval.benchmark_suite` — twelve missions
+    chosen so that the way they fail is a job a runtime could have done,
+    which is what an ``ablation`` needs to have anything to move.
 
     *check* is off here and run once in :func:`main` instead, for every
     subcommand rather than only for ``check``.  Loading with the check on as
@@ -94,6 +110,9 @@ def resolve_suite(name: str, *, check: bool = False) -> Suite:
     if name in ("stub", "", None):
         from core.eval.stub_suite import SUITE
         return SUITE
+    if name == "benchmark":
+        from core.eval.benchmark_suite import SUITE as BENCHMARK
+        return BENCHMARK
     return load_suite(name, check=check)
 
 
@@ -299,7 +318,8 @@ def _parser() -> argparse.ArgumentParser:
 
     def common(sub: argparse.ArgumentParser) -> None:
         sub.add_argument("--suite", default="stub",
-                         help="'stub' for the in-repo suite, or the path of a "
+                         help="'stub' for the in-repo suite, 'benchmark' for "
+                              "the harness-sensitive pack, or the path of a "
                               "YAML/JSON suite file")
         sub.add_argument("--split", default="all",
                          choices=["train", "test", "all"],
@@ -335,16 +355,21 @@ def _parser() -> argparse.ArgumentParser:
     from core.eval.measure import add_parser as _add_measure
     _add_measure(subs, common)
 
-    # Same arrangement, and deliberately WITHOUT `common`: `extraction`
-    # scores receipts rather than missions, so there is no suite to load,
-    # no half to hold out and nothing to spawn. See
-    # `core.eval.extraction.add_parser`.
+    # Same arrangement, same reason: the arm table and the subcommand that
+    # runs it live in one file. See `core.eval.ablation.add_parser`.
+    from core.eval.ablation import add_parser as _add_ablation
+    _add_ablation(subs, common)
+    # And deliberately WITHOUT `common`: `extraction` scores receipts
+    # rather than missions, so there is no suite to load, no half to hold
+    # out and nothing to spawn. See `core.eval.extraction.add_parser`.
     from core.eval.extraction import add_parser as _add_extraction
     _add_extraction(subs)
 
     checker = subs.add_parser(
         "check", help="refuse a suite that cannot be graded")
-    checker.add_argument("--suite", default="stub")
+    checker.add_argument("--suite", default="stub",
+                         help="'stub', 'benchmark', or the path of a suite "
+                              "file")
     return parser
 
 
@@ -386,6 +411,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f"mission(s), {len(held)} held out ({share:.0%}), "
               f"{len({m.flag for m in suite.missions})} flag(s) captured "
               f"of {len(suite.claims)} claimed.")
+        # Beside the flag count, where the suite groups its missions into
+        # classes: a flag is a capability and a class is a kind of problem,
+        # and a benchmark is read by the second. Silent for a suite that
+        # declares none, which is every suite written before they existed.
+        classes: Dict[str, int] = {}
+        for mission in suite.missions:
+            if mission.mission_class:
+                classes[mission.mission_class] = (
+                    classes.get(mission.mission_class, 0) + 1)
+        if classes:
+            print("classes: " + ", ".join(
+                f"{name} {count}" for name, count in classes.items()))
         return 0
 
     if args.command == "run":
@@ -403,6 +440,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "measure":
         from core.eval.measure import from_args
         return from_args(suite, args, template)
+
+    if args.command == "ablation":
+        from core.eval.ablation import from_args as ablation_from_args
+        return ablation_from_args(suite, args, template)
 
     runs: Dict[str, Any] = {}
     if args.runs is not None:

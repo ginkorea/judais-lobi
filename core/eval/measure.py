@@ -613,6 +613,27 @@ def _withheld(argv: Sequence[str]) -> List[str]:
 
 # ── the header ───────────────────────────────────────────────────────────────
 
+def report_paths(path: Path) -> Tuple[Path, Path]:
+    """Where ``--report`` puts the Markdown, and the JSON beside it.
+
+    **Never the same file.**  ``with_suffix(".json")`` is right for the
+    ``report.md`` everybody types and silently wrong for ``--report
+    report.json``, where it names the path already being written: the
+    Markdown would land there first and the JSON would overwrite it, and
+    what a reader opened would be whichever write went last.  A caller who
+    asks for a ``.json`` report gets ``report.json.json`` beside it — an
+    ugly name, and a name, which is better than one file pretending to be
+    two.
+
+    One owner because two subcommands write a report and the second one
+    would otherwise have its own copy of the bug.
+    """
+    beside = path.with_suffix(".json")
+    if beside == path:
+        beside = path.with_name(path.name + ".json")
+    return path, beside
+
+
 def scrubbed(url: str) -> str:
     """*url* with anything that could be a credential taken out.
 
@@ -950,8 +971,9 @@ def from_args(suite: Suite, args: argparse.Namespace,
     print(text)
     if args.report is not None:
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(args.report, matrix.to_markdown())
-        atomic_write_text(args.report.with_suffix(".json"), matrix.to_json())
+        markdown, beside = report_paths(args.report)
+        atomic_write_text(markdown, matrix.to_markdown())
+        atomic_write_text(beside, matrix.to_json())
     atomic_write_text(args.out / "matrix.json", matrix.to_json())
 
     failed = sum(1 for c in matrix.configured for report in c.reports

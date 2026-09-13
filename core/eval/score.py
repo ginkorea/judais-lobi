@@ -26,6 +26,13 @@ what the mission asks        where the answer comes from
 ``max_reply_rejected``       the count of ``reply_rejected``
 ``must_not_stage``           ``plan`` on any ``step_started``
 ``expects_caveat_ok``        widens the accepted outcome by one word
+``expects_carried``          a literal in a ``tool_result``'s ``output`` or
+                             ``error`` — never in the arguments the result
+                             echoes back — and then in a LATER
+                             ``tool_call.arguments`` of the same emitter
+``expects_recovered``        a ``tool_result`` with ``ok: false`` for a name,
+                             and a later one with ``ok: true`` for the same,
+                             from the same emitter
 ===========================  ===================================================
 
 ``must`` and ``must_not`` are **not** here.  They are surfaced on the verdict
@@ -171,14 +178,23 @@ class Verdict:
     needs_reader: Tuple[str, ...] = ()
     #: The answer as recorded, so a reader has the text beside the rubric.
     answer: str = ""
+    #: The mission's class, when its suite groups missions into any — see
+    #: :attr:`core.eval.suite.Mission.mission_class`.  ``""`` for a suite
+    #: that does not, which is every suite written before classes existed.
+    mission_class: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "key": self.key, "flag": self.flag, "split": self.split,
             "passed": self.passed, "reasons": list(self.reasons),
             "kpis": dict(self.kpis), "needs_reader": list(self.needs_reader),
             "answer": self.answer,
         }
+        # Absent rather than empty for a suite with no classes, so every
+        # report ever recorded stays byte-identical.
+        if self.mission_class:
+            out["mission_class"] = self.mission_class
+        return out
 
 
 def _last(records: Sequence[Mapping[str, Any]], event: str
@@ -236,6 +252,166 @@ def _tools_reached_for(records: Sequence[Mapping[str, Any]]) -> Tuple[str, ...]:
             if name and name not in seen:
                 seen.append(name)
     return tuple(seen)
+
+
+def _values(payload: Any) -> List[str]:
+    """Every scalar **value** in a payload, as text.  Keys are not values.
+
+    A payload arrives as a string on one plane and a mapping on the next,
+    and a check that flattened the mapping to JSON would let a *field
+    name* satisfy a literal: ``{"token": …}`` would carry ``"token"``, and
+    an argument named after the thing it holds is the commonest shape
+    there is.  So the structure is walked and only the leaves come back.
+    """
+    if payload is None:
+        return []
+    if isinstance(payload, str):
+        return [payload]
+    if isinstance(payload, (int, float, bool)):
+        return [str(payload)]
+    if isinstance(payload, Mapping):
+        return [text for value in payload.values() for text in _values(value)]
+    if isinstance(payload, Sequence):
+        return [text for item in payload for text in _values(item)]
+    return [str(payload)]                     # pragma: no cover - defensive
+
+
+def _holds(payload: Any, literal: str) -> bool:
+    """Whether *payload* carries *literal* as a whole token.
+
+    Bounded on **both** sides against the characters an identifier is made
+    of, so ``led.c19`` is not satisfied by ``led.c190`` and ``tok-a41-9``
+    is not satisfied by ``tok-a41-90``.  Substring matching was the bug:
+    the ids in a governed world are deliberately similar, and a check that
+    accepted a prefix would pass the run that reached for the neighbouring
+    record.
+    """
+    pattern = rf"(?<![\w.\-]){re.escape(literal)}(?![\w.\-])"
+    return any(re.search(pattern, text) for text in _values(payload))
+
+
+#: What a record was emitted by: a ``--swarm`` child's plan-step id, or
+#: ``None`` for the mission itself.  See ``contract.COMMON_OPTIONAL``.
+def _branch(record: Mapping[str, Any]) -> Any:
+    return record.get("branch")
+
+
+def _by_branch(records: Sequence[Mapping[str, Any]]
+               ) -> List[List[Mapping[str, Any]]]:
+    """*records* split into one sequence per emitter, order preserved.
+
+    Both stream checks below are about **one agent's** behaviour over
+    time — it read this, therefore it called that; it was refused, so it
+    tried again — and on a staged (``--swarm``) turn several children run
+    at once and interleave on one stream.  Read flat, a receipt one child
+    fetched would satisfy a call a *different* child made, and a failure
+    in one stage would be "recovered" by an unrelated success in another.
+    Neither is a thing that happened.
+
+    A run without ``--swarm`` has one group and is unaffected.
+    """
+    groups: Dict[Any, List[Mapping[str, Any]]] = {}
+    for record in records:
+        groups.setdefault(_branch(record), []).append(record)
+    return list(groups.values())
+
+
+def _carried_in(records: Sequence[Mapping[str, Any]], literal: str) -> str:
+    """:func:`_carried` over the records of ONE emitter."""
+    in_evidence = False
+    typed = False
+    for record in records:
+        event = record.get("event")
+        if event == "tool_result":
+            # The plane echoing a guess back is not evidence of anything.
+            # A result carries the arguments of the call that produced it,
+            # so a run that typed the token and was refused would otherwise
+            # find its own guess in the refusal and call it a receipt —
+            # which is laundering, and it is the exact shape this check
+            # exists to catch.
+            if _holds(record.get("arguments"), literal):
+                continue
+            # `error` as well as `output`: a refusal that names the value is
+            # how a value is legitimately learned here — the framework's own
+            # error-recovery conduct says an error naming the fix is an
+            # instruction — and a check that read only successful output
+            # would score that run as having typed it.
+            if (_holds(record.get("output"), literal)
+                    or _holds(record.get("error"), literal)):
+                in_evidence = True
+        elif event == "tool_call":
+            if _holds(record.get("arguments"), literal):
+                if in_evidence:
+                    return ""
+                typed = True
+    if typed:
+        return (f"{literal!r} rode a tool call's arguments, but no earlier "
+                f"tool result contained it — it was typed, not carried")
+    return (f"no tool call carried {literal!r} in its arguments; the next "
+            f"call was not shaped by what the plane returned")
+
+
+def _carried(records: Sequence[Mapping[str, Any]], literal: str) -> str:
+    """``""`` when *literal* travelled from a receipt into a later call.
+
+    Two different failures, named apart, because they are two different
+    agents.  A literal that never rode any call's arguments is a step the
+    run skipped.  A literal that rode one with **no earlier tool result
+    holding it** is a value the model typed — which on an identifier is
+    the fabrication the whole harness exists to catch, and which reads in
+    prose exactly like the run that did it properly.
+
+    Order is the whole check: the receipt has to come first, in the same
+    emitter's own sequence (:func:`_by_branch`), and a result that merely
+    echoes back the arguments of the call that produced it is not a
+    receipt at all.
+    """
+    problems = [_carried_in(group, literal) for group in _by_branch(records)]
+    if any(not problem for problem in problems):
+        return ""
+    typed = [problem for problem in problems if "typed, not carried" in problem]
+    return typed[0] if typed else problems[0]
+
+
+def _recovered_in(records: Sequence[Mapping[str, Any]], tool: str) -> str:
+    """:func:`_recovered` over the records of ONE emitter."""
+    failed = False
+    seen = False
+    for record in records:
+        if record.get("event") != "tool_result" or record.get("tool") != tool:
+            continue
+        seen = True
+        if not record.get("ok"):
+            failed = True
+        elif failed:
+            return ""
+    if not seen:
+        return f"never called {tool}, so it neither failed nor recovered"
+    if not failed:
+        return (f"{tool} never failed, so there was nothing to recover from "
+                f"— this mission's premise did not hold on this run")
+    return (f"{tool} failed and no later call of it succeeded; the error "
+            f"named the fix and the run did not apply it")
+
+
+def _recovered(records: Sequence[Mapping[str, Any]], tool: str) -> str:
+    """``""`` when *tool* failed and a later call of it came back ``ok``.
+
+    Within ONE emitter's own sequence (:func:`_by_branch`): a stage that
+    failed and a different stage that succeeded are two stages, not a
+    recovery, and on a staged turn they interleave on one stream.
+    """
+    problems = [_recovered_in(group, tool) for group in _by_branch(records)]
+    if any(not problem for problem in problems):
+        return ""
+    # The most informative reason wins: "it failed and never came back" is
+    # the failure this check is for, and "it was never called" is a run
+    # that did something else entirely.
+    for wanted in ("no later call of it succeeded", "nothing to recover from"):
+        for problem in problems:
+            if wanted in problem:
+                return problem
+    return problems[0]
 
 
 def _kpis(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -309,7 +485,8 @@ def score_run(source: Source, mission: Mission) -> Verdict:
         return Verdict(
             key=mission.key, flag=mission.flag, split=mission.split,
             passed=False, reasons=(f"no stream: {exc}",), kpis={},
-            needs_reader=_rubric(mission))
+            needs_reader=_rubric(mission),
+            mission_class=mission.mission_class)
 
     reasons: List[str] = []
     kpis = _kpis(records)
@@ -396,6 +573,17 @@ def score_run(source: Source, mission: Mission) -> Verdict:
                 f"{rejected} reply/replies the loop could not read; this "
                 f"mission allows {mission.max_reply_rejected}")
 
+    # -- the call that had to be shaped by a receipt -------------------------
+    for literal in mission.expects_carried:
+        problem = _carried(records, literal)
+        if problem:
+            reasons.append(problem)
+
+    for tool in mission.expects_recovered:
+        problem = _recovered(records, tool)
+        if problem:
+            reasons.append(problem)
+
     if mission.must_not_stage and kpis["staged"]:
         reasons.append(
             "the run was STAGED: a plan rode step_started for a question one "
@@ -404,7 +592,8 @@ def score_run(source: Source, mission: Mission) -> Verdict:
     return Verdict(
         key=mission.key, flag=mission.flag, split=mission.split,
         passed=not reasons, reasons=tuple(reasons), kpis=kpis,
-        needs_reader=_rubric(mission), answer=text)
+        needs_reader=_rubric(mission), answer=text,
+        mission_class=mission.mission_class)
 
 
 def _rubric(mission: Mission) -> Tuple[str, ...]:
@@ -469,21 +658,39 @@ def _totals(verdicts: Sequence[Verdict]) -> Totals:
 
 @dataclass(frozen=True)
 class Half:
-    """One split's verdicts and its columns, overall and per flag."""
+    """One split's verdicts and its columns, overall, per flag and per class.
+
+    :attr:`by_class` is empty for a suite whose missions declare none, which
+    is every suite written before classes existed, and the renderer prints
+    nothing for it — so those reports are unchanged to the byte.
+
+    Where a suite DOES declare them the two groupings answer different
+    questions and neither substitutes for the other.  A flag is a
+    capability that can fail while the others pass; a class is a *kind of
+    problem*.  "synthesis 2/3" tells you an arm moved something about
+    figures; "multi-hop 0/2, misleading 2/2" tells you which kind of
+    problem the runtime is holding and which it is not — which is the only
+    question ROADMAP §2.9.3 actually asks.
+    """
 
     split: str
     verdicts: Tuple[Verdict, ...]
     overall: Totals
     by_flag: Mapping[str, Totals]
+    by_class: Mapping[str, Totals] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "split": self.split,
             "overall": self.overall.as_dict(),
             "by_flag": {flag: totals.as_dict()
                         for flag, totals in self.by_flag.items()},
             "verdicts": [v.as_dict() for v in self.verdicts],
         }
+        if self.by_class:
+            out["by_class"] = {name: totals.as_dict()
+                               for name, totals in self.by_class.items()}
+        return out
 
 
 @dataclass(frozen=True)
@@ -539,14 +746,21 @@ def score_suite(runs: Mapping[str, Source], suite: Suite,
                 verdicts.append(Verdict(
                     key=mission.key, flag=mission.flag, split=mission.split,
                     passed=False, reasons=("not run",), kpis={},
-                    needs_reader=_rubric(mission)))
+                    needs_reader=_rubric(mission),
+                    mission_class=mission.mission_class))
                 continue
             verdicts.append(score_run(source, mission))
         by_flag: Dict[str, Totals] = {}
         for flag in dict.fromkeys(v.flag for v in verdicts):
             by_flag[flag] = _totals([v for v in verdicts if v.flag == flag])
+        by_class: Dict[str, Totals] = {}
+        for name in dict.fromkeys(v.mission_class for v in verdicts if
+                                  v.mission_class):
+            by_class[name] = _totals([v for v in verdicts
+                                      if v.mission_class == name])
         halves[half] = Half(split=half, verdicts=tuple(verdicts),
-                            overall=_totals(verdicts), by_flag=by_flag)
+                            overall=_totals(verdicts), by_flag=by_flag,
+                            by_class=by_class)
     return Report(suite=suite.name, halves=halves,
                   rubric_changes=tuple(suite.rubric_changes))
 
@@ -616,6 +830,21 @@ def _markdown(report: Report) -> str:
             ["flag", "passed", "rate", "steps", "wall s", "tokens", "human",
              "rejected"])
         lines.append("")
+        if half.by_class:
+            # Beside the flag table and never instead of it: a flag is a
+            # capability, a class is a kind of problem, and only the second
+            # says which kind the runtime is holding.
+            lines.append(f"### {name} — by class")
+            lines.append("")
+            lines += _table(
+                [[mission_class, f"{t.passed}/{t.missions}",
+                  _percent(t.success_rate), _cell(t.steps),
+                  _cell(t.elapsed_s), _cell(t.tokens),
+                  _cell(t.human_interventions), _cell(t.reply_rejected)]
+                 for mission_class, t in half.by_class.items()],
+                ["class", "passed", "rate", "steps", "wall s", "tokens",
+                 "human", "rejected"])
+            lines.append("")
         lines.append(
             f"**{name} overall** — success {_percent(totals.success_rate)}, "
             f"steps {_cell(totals.steps)}, wall {_cell(totals.elapsed_s)} s, "

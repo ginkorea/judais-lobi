@@ -21,7 +21,8 @@ two kinds of expectation, and they are kept apart on purpose:
   :attr:`Mission.forbids_tools`, :attr:`Mission.expects_outcome`,
   :attr:`Mission.expects_grounded`, :attr:`Mission.answer_must_match`,
   :attr:`Mission.answer_must_not_match`, :attr:`Mission.max_reply_rejected`,
-  :attr:`Mission.must_not_stage`, :attr:`Mission.expects_caveat_ok` — every
+  :attr:`Mission.must_not_stage`, :attr:`Mission.expects_caveat_ok`,
+  :attr:`Mission.expects_carried`, :attr:`Mission.expects_recovered` — every
   one of which :mod:`core.eval.score` can answer out of the NDJSON records
   the run emitted, with no opinion of its own;
 * the **reader** rubric — :attr:`Mission.must` and :attr:`Mission.must_not` —
@@ -253,6 +254,19 @@ class Mission:
     #: added without thinking about the split is one somebody has been
     #: iterating against, and the safe assumption is that it is contaminated.
     split: Split = "train"
+    #: The **kind of problem** this mission poses, where a suite groups its
+    #: missions into any.  Empty for a suite that does not, which is every
+    #: suite written before this field existed.
+    #:
+    #: It is not a second spelling of :attr:`flag` and does not replace it.
+    #: A flag is a *capability that can fail while the others pass* and is
+    #: how one mission is compared with another; a class is a *kind of
+    #: problem* and is how a benchmark is read.  "synthesis 2/3" says an
+    #: arm moved something about figures and answers nothing else;
+    #: "multi-hop 0/2, misleading 2/2" says which kind of problem the
+    #: runtime is holding — which is the question an ablation is run to
+    #: answer.  Both groupings appear in the report, side by side.
+    mission_class: str = ""
 
     # -- the machine checks, all scored from the stream ----------------------
 
@@ -287,6 +301,33 @@ class Mission:
     #: near-miss: ``answered_with_caveat`` beats a refusal when a step failed
     #: with usable results already in hand.  §2.5's second regression case.
     expects_caveat_ok: bool = False
+    #: Literals that must ride a **later** ``tool_call``'s ``arguments`` after
+    #: appearing in an **earlier** ``tool_result``.  The dependency check: a
+    #: release token, a job id, a version that the next call has to be shaped
+    #: by.  A call carrying the literal with no earlier receipt holding it is
+    #: reported differently from a call that never carried it at all — the
+    #: first is a value the model typed and the second is a step it skipped,
+    #: and only one of them is an agent inventing an identifier.
+    expects_carried: Tuple[str, ...] = ()
+    #: Wire names that must fail **and then succeed**: a ``tool_result`` with
+    #: ``ok: false`` followed, later in the same run, by an ``ok: true`` one
+    #: for the same name.  The long-horizon check, and the reason it is a
+    #: stream check rather than a reader's: an agent that reads a refusal
+    #: naming the fix, applies it and carries on is indistinguishable in
+    #: prose from one that got it right first time, and the two are not the
+    #: same capability.  A run that never failed is reported as having had
+    #: nothing to recover from, in as many words, so a mission whose premise
+    #: did not hold is not mistaken for an agent that gave up.
+    expects_recovered: Tuple[str, ...] = ()
+    #: The argument values the recovered tool accepts — the vocabulary the
+    #: refusal names.  Declared so that
+    #: :func:`check_the_suite_is_gradeable` can hold the prompt to the rule
+    #: the class depends on: **a recovery mission's prompt may not contain a
+    #: value the recovered tool accepts.**  A prompt that spells the word
+    #: the plane wants has removed the error the mission exists to measure,
+    #: and the mission then scores whichever runs happened to guess wrong —
+    #: which is not a capability.
+    recovered_values: Tuple[str, ...] = ()
 
     #: Extra CLI flags this one mission is spawned with — ``--swarm`` for a
     #: routing case, ``--gate-tool X`` for a boundary one.  Every ``--token``
@@ -602,6 +643,97 @@ def _invented_ids_in(suite: Suite, prompt: str, where: str) -> List[str]:
     return problems
 
 
+def _declared_ids(suite: Suite) -> Tuple[str, ...]:
+    """Every literal this suite declares anywhere: asset ids and carried
+    values.  What a prefix rule has to be checked against."""
+    ids = set(suite.assets)
+    for mission in suite.missions:
+        ids |= set(mission.expects_carried)
+    return tuple(sorted(ids))
+
+
+def _carried_is_carryable(suite: Suite, mission: "Mission", where: str
+                          ) -> List[str]:
+    """Three rules on ``expects_carried``, all of them about whether the
+    check can mean anything as declared.
+
+    * **Not in the prompt.**  A literal the question already spells is a
+      value the run can type, and the check that was supposed to prove the
+      call was shaped by a receipt proves nothing.
+    * **Not a prefix of another declared id.**  The scorer matches on token
+      boundaries, and a suite whose ``led.c19`` sat beside a ``led.c190``
+      would be one edit away from a check that reads the neighbouring
+      record as the right one.  Refused here rather than relied on there.
+    * **Not every literal an asset id.**  A listing hands those over
+      verbatim, so carrying one proves only that the run read a listing.
+      At least one literal has to be something only the *record* holds —
+      a token, a version, a job id.  (That a value is returned by a
+      listing is a fact about the plane, so this is the mechanical half:
+      the suite's own ``assets`` table is what it can be checked against.)
+    """
+    problems: List[str] = []
+    declared = _declared_ids(suite)
+    for literal in mission.expects_carried:
+        if re.search(rf"(?<![\w.\-]){re.escape(literal)}(?![\w.\-])",
+                     mission.prompt):
+            problems.append(
+                f"{where}: expects_carried {literal!r} is in the prompt. A "
+                f"value the question spells can be typed, and the check "
+                f"that was supposed to prove the call came out of a receipt "
+                f"would pass a run that never read one")
+        longer = [other for other in declared
+                  if other != literal and other.startswith(literal)]
+        if longer:
+            problems.append(
+                f"{where}: expects_carried {literal!r} is a prefix of "
+                f"{longer}. The scorer matches on token boundaries so this "
+                f"is not wrong today, and a suite that keeps the pair is one "
+                f"edit from a check that reads the neighbouring record as "
+                f"the right one")
+    if mission.expects_carried and all(
+            literal in suite.assets for literal in mission.expects_carried):
+        problems.append(
+            f"{where}: every expects_carried literal is an asset id, and a "
+            f"listing hands those over verbatim — carrying one proves only "
+            f"that the run read a listing. Name something only the record "
+            f"holds beside it")
+    return problems
+
+
+def _recovery_is_unavoidable(mission: "Mission", where: str) -> List[str]:
+    """The rule the recovery class stands on.
+
+    A mission that expects a run to recover from a refusal is measuring
+    whether the run reads its own error — which it can only do if the
+    error was unavoidable.  A prompt that already contains the value the
+    tool accepts has made the first call guessable, and the mission then
+    scores whichever runs happened to guess wrong.
+
+    :attr:`Mission.recovered_values` is how a mission declares that
+    vocabulary; a recovery mission that declares none is refused, because
+    the rule would otherwise be a sentence in a docstring that nothing
+    checks.
+    """
+    if not mission.expects_recovered:
+        return []
+    if not mission.recovered_values:
+        return [
+            f"{where}: expects_recovered names {list(mission.expects_recovered)}"
+            f" and recovered_values is empty. A recovery mission has to say "
+            f"which values the tool accepts, so the prompt can be held to "
+            f"not containing them — an error a prompt makes guessable is not "
+            f"an error the mission can measure"]
+    problems = []
+    for value in mission.recovered_values:
+        if re.search(rf"(?<![\w.\-]){re.escape(value)}(?![\w.\-])",
+                     mission.prompt, re.IGNORECASE):
+            problems.append(
+                f"{where}: the prompt contains {value!r}, which the recovered "
+                f"tool accepts. The first call is then guessable from the "
+                f"question and the refusal this mission measures is avoidable")
+    return problems
+
+
 def check_the_suite_is_gradeable(suite: Optional[Suite] = None) -> None:
     """Collect every declaration problem into one message.
 
@@ -646,7 +778,8 @@ def check_the_suite_is_gradeable(suite: Optional[Suite] = None) -> None:
         if not mission.because.strip():
             problems.append(f"{where}: no stated reason for existing")
 
-        for tool in (*mission.expects_tools, *mission.forbids_tools):
+        for tool in (*mission.expects_tools, *mission.forbids_tools,
+                     *mission.expects_recovered):
             if suite.tools and tool not in suite.tools:
                 problems.append(
                     f"{where}: names the tool {tool!r}, which this suite's "
@@ -661,6 +794,8 @@ def check_the_suite_is_gradeable(suite: Optional[Suite] = None) -> None:
                     f"question to the right call")
 
         problems += _invented_ids_in(suite, mission.prompt, where)
+        problems += _carried_is_carryable(suite, mission, where)
+        problems += _recovery_is_unavoidable(mission, where)
 
         if mission.split not in SPLITS:
             problems.append(

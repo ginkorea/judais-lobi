@@ -385,6 +385,68 @@ class TestWhatASuiteClaimsToMeasure:
         assert "flags" in str(exc.value)
 
 
+class TestTheDependencyAndRecoveryDeclarationsAreHeldToTheirOwnRules:
+    """The three refusals that keep the two stream checks meaningful.
+
+    Each of them is a way of declaring a check that would pass a run which
+    did nothing of the sort, and each was written after the reviewer built
+    the run that would have passed it.
+    """
+
+    def test_a_carried_literal_the_prompt_spells_is_refused(self):
+        """A value in the question can be typed, so the check that was
+        supposed to prove the call came out of a receipt proves nothing."""
+        problem = refused(swapped(
+            "carry_the_result_forward", expects_carried=("19",)))
+        assert "expects_carried '19' is in the prompt" in problem
+
+    def test_a_carried_literal_that_prefixes_another_declared_id_is_refused(
+            self):
+        """`led.c19` beside a `led.c190` is not wrong today — the scorer
+        matches on token boundaries — and it is one edit from a check that
+        reads the neighbouring record as the right one."""
+        thinner = rebuilt(assets={**SUITE.assets, "asset.5f21x": "a longer id"})
+        problem = refused(swapped_on(
+            thinner, "the_source_is_not_there",
+            expects_carried=("asset.5f21",)))
+        assert "is a prefix of" in problem
+        assert "asset.5f21x" in problem
+
+    def test_carrying_only_asset_ids_is_refused(self):
+        """A listing hands those over verbatim, so carrying one proves the
+        run read a listing and nothing else."""
+        problem = refused(swapped(
+            "the_source_is_not_there", expects_carried=("asset.5f21",)))
+        assert "a listing hands those over verbatim" in problem
+
+    def test_a_recovery_mission_with_no_declared_vocabulary_is_refused(self):
+        problem = refused(swapped(
+            "the_reply_is_the_right_shape", expects_recovered=("mcp.echo",)))
+        assert "recovered_values is empty" in problem
+
+    def test_a_prompt_that_spells_the_accepted_value_is_refused(self):
+        """The rule the whole recovery class stands on: an error a prompt
+        makes guessable is not an error a mission can measure."""
+        problem = refused(swapped(
+            "the_reply_is_the_right_shape", expects_recovered=("mcp.echo",),
+            recovered_values=("plane",)))
+        assert "which the recovered tool accepts" in problem
+
+    def test_a_recovery_mission_whose_prompt_avoids_them_is_accepted(self):
+        """The green beside the reds, so the rule is not simply refusing
+        everything."""
+        check_the_suite_is_gradeable(swapped(
+            "the_reply_is_the_right_shape", expects_recovered=("mcp.echo",),
+            recovered_values=("zxqv",)))
+
+
+def swapped_on(suite: Suite, key: str, **changes) -> Suite:
+    """`swapped`, against a suite that is not the in-repo one."""
+    return dataclasses.replace(suite, missions=tuple(
+        dataclasses.replace(m, **changes) if m.key == key else m
+        for m in suite.missions))
+
+
 class TestTheFlagTable:
     def test_every_flag_has_a_sentence(self):
         for name, description in FLAGS.items():
