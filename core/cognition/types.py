@@ -48,6 +48,7 @@ body.  Each is noted again at the type it constrains.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, Optional, Sequence, Tuple
@@ -172,6 +173,13 @@ STATUS_RANK = {
     PropositionStatus.HYPOTHESIZED: 1,
 }
 
+#: Every kind of :class:`Contradiction` this kernel records. Closed, and a
+#: set rather than four string literals scattered through the store, because
+#: a consumer that switches on the kind has to know when a fifth arrives —
+#: and because the one thing that separates them is whether they move a
+#: status: ``"hypothesis"`` does not, and the other three do.
+CONTRADICTION_KINDS = ("value", "refutation", "dead_premise", "hypothesis")
+
 
 # ── the records ─────────────────────────────────────────────────────────────
 
@@ -186,20 +194,50 @@ class EvidenceRef:
     no opinion about what they mean.  It has to be that way: the moment this
     package can dereference an evidence ref it has acquired I/O, and the
     shadow-attachment lane loses the ability to run it anywhere.
+
+    **``authority`` is the door's stamp, not the caller's field.**  A caller
+    builds a ref with three strings; the door it is handed to —
+    :meth:`~core.cognition.state.CognitiveState.assert_observation` or
+    :meth:`~core.cognition.state.CognitiveState.assert_hypothesis` — writes
+    the authority it accepted onto every ref before storing it, overwriting
+    whatever was there.  Without that, the merge erases the wall: one claim
+    observed *and* hypothesized ends up holding both sets of refs in one
+    tuple, and nothing in the store can say which of them a model produced.
+    With it, ``prove``'s leaves still answer "how do we know this" ref by ref
+    after any number of merges.
+
+    ``None`` means unstamped, and there are two ways to be unstamped: a
+    refutation's evidence (a refutation is not one of the two doors) and a
+    ref decoded from an older log written before the stamp existed.  Decode
+    absent as absent — never guess a door from the shape of a locator.
     """
 
     kind: str
     locator: str
     note: str = ""
+    authority: Optional[EvidenceAuthority] = None
+
+    def stamped(self, authority: EvidenceAuthority) -> "EvidenceRef":
+        """This ref as the door records it. The door's word wins."""
+        return EvidenceRef(kind=self.kind, locator=self.locator,
+                           note=self.note, authority=authority)
 
     def as_dict(self) -> dict:
-        return {"kind": self.kind, "locator": self.locator, "note": self.note}
+        return {"kind": self.kind, "locator": self.locator, "note": self.note,
+                "authority": (None if self.authority is None
+                              else self.authority.value)}
 
     @staticmethod
     def from_dict(raw: Mapping[str, Any]) -> "EvidenceRef":
+        stamp = raw.get("authority")
+        try:
+            door = None if stamp is None else EvidenceAuthority(stamp)
+        except ValueError as exc:
+            raise ReplayRefused(f"no evidence authority {stamp!r}") from exc
         return EvidenceRef(kind=str(raw.get("kind", "")),
                            locator=str(raw.get("locator", "")),
-                           note=str(raw.get("note", "")))
+                           note=str(raw.get("note", "")),
+                           authority=door)
 
 
 @dataclass(frozen=True)
@@ -350,15 +388,28 @@ class Obligation:
 class Contradiction:
     """Two claims that cannot both stand, named as an object.
 
-    ``kind`` is ``"value"`` (two live propositions give the same
-    ``(entity, field)`` different values), ``"refutation"`` (a caller refuted
-    one outright, and ``right`` is ``None`` because the other side is the
-    evidence carried here), or ``"dead_premise"`` (a derived conclusion whose
-    every proof rests on something no longer live).
+    ``kind`` is one of :data:`CONTRADICTION_KINDS`:
 
-    Neither side wins silently.  A store that picked the newer, or the
-    better-authorised, or the one with more evidence would be doing the one
-    thing it is least equipped to do — and would do it without saying so.
+    * ``"value"`` — two *live* propositions give the same ``(entity, field)``
+      different values.  Both become ``CONTESTED``.
+    * ``"refutation"`` — a caller refuted one outright; ``right`` is ``None``
+      because the other side is the evidence carried here.
+    * ``"dead_premise"`` — a derived conclusion whose every proof rests on
+      something no longer live.
+    * ``"hypothesis"`` — a model's claim disagrees with what the store
+      observed.  ``left`` is always the hypothesis and ``right`` the live
+      proposition, whichever arrived first.  **Nothing changes status**: the
+      hypothesis stays ``HYPOTHESIZED``, the observation stays live, and this
+      object is the whole of the event.  It is the signal the shadow layer
+      wants before any other — the model said one thing and the receipt said
+      another — and it is confidence marking, not a gate.  A store that
+      contested the observation here would let a wrong extraction unseat a
+      receipt, which is the laundering the walls exist to stop.
+
+    Neither side wins silently.  For the three kinds that *do* move a status,
+    a store that picked the newer, or the better-authorised, or the one with
+    more evidence would be doing the one thing it is least equipped to do —
+    and would do it without saying so.
     """
 
     id: str
@@ -383,9 +434,14 @@ class ProofStep:
 class Proof:
     """The derivation DAG under one proposition, evidence at the leaves.
 
-    ``steps`` is empty for anything observed or hypothesized — those *are*
-    leaves, and their ``evidence`` is the whole answer.  A derived
-    proposition has one step per alternative proof.
+    ``steps`` is one entry per derivation of this proposition and ``evidence``
+    is what was filed directly against it; a node is a *leaf* when it has no
+    steps, and that is a fact about the proposition rather than about its
+    status.  An ``OBSERVED`` proposition normally is one — but a rule may also
+    derive something the store observed independently, and then the node
+    carries both its receipts and its proof.  Reading "observed" as "leaf"
+    would drop that proof from the walk, which is the half of the provenance
+    the store was keeping.
 
     ``cyclic`` marks a premise already on the path from the root.  Rules can
     describe cycles (``a :- b`` and ``b :- a``); closure terminates anyway
@@ -413,16 +469,25 @@ class MatchStats:
     :meth:`~core.cognition.state.CognitiveState.digest` and from the event
     log for the same reason: a replayed store must equal its original, and
     the original was read by somebody and the replay was not.
+
+    ``envs_truncated`` is the odd one out and is here for the opposite
+    reason: it counts a place the kernel gave an *incomplete* answer on
+    purpose.  Obligation computation caps its join
+    (:data:`~core.cognition.state.ENV_CAP`), and a frontier that quietly
+    stopped being exhaustive looks exactly like a frontier that had nothing
+    more to say.  A caller that wants to know reads this.
     """
 
     delta_passes: int = 0
     rules_considered: int = 0
     body_scans: int = 0
+    envs_truncated: int = 0
 
     def reset(self) -> None:
         self.delta_passes = 0
         self.rules_considered = 0
         self.body_scans = 0
+        self.envs_truncated = 0
 
 
 # ── value and pattern validation ────────────────────────────────────────────
@@ -436,10 +501,53 @@ VALUE_TYPES = (str, int, float, bool, type(None))
 
 
 def check_value(value: Any) -> Any:
+    """A triple value, or a refusal naming why it cannot be one.
+
+    The non-finite floats are refused here and not merely discouraged, for
+    two reasons that arrive in the wrong order.  The one that bites first is
+    in memory: ``float("nan") != float("nan")``, so a claim keyed on a NaN is
+    a claim that never equals itself — assert it twice and the store mints
+    two propositions for one claim, which is the duplicate every merge rule
+    in this package exists to prevent.  The one that bites later is on the
+    wire: ``json.dumps`` writes bare ``NaN`` and ``Infinity``, which are not
+    RFC 8259 and which a non-Python reader of the log either rejects or
+    reads as something else.  Between them the two make a store that does not
+    replay to itself, and a receipt carrying a NaN is a receipt whose number
+    is missing — a fact about the world this kernel says by *absence*.
+    """
     if not isinstance(value, VALUE_TYPES):
         raise CognitionError(
             f"a triple value must be a JSON scalar, not {type(value).__name__}")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise CognitionError(
+            f"{value!r} is not a value: it never equals itself (so one claim "
+            "would become two propositions) and it is not JSON any reader "
+            "outside Python will take. A number that is not there is said "
+            "here by leaving the proposition out")
     return value
+
+
+def value_tag(value: Any) -> str:
+    """The type band a value belongs to, for claim identity and collision.
+
+    Python says ``True == 1`` and ``hash(True) == hash(1)``, so without this
+    a store told ``(job, retried, True)`` and then ``(job, retried, 1)``
+    would hold *one* claim at whichever value arrived first and report no
+    disagreement — a silent first-wins on exactly the extraction confusion
+    this kernel is built to surface.  With it the two are different claims
+    that contradict.
+
+    ``int`` and ``float`` share a band on purpose: ``1`` and ``1.0`` are the
+    same number, said twice, and a store that contested them would be
+    reporting a disagreement about a rendering.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "num"
+    return "str"
 
 
 def is_variable(term: Any) -> bool:

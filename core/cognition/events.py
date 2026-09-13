@@ -61,6 +61,20 @@ EVENTS_KEY = "events"
 
 
 def encode_evidence(refs: Iterable[EvidenceRef]) -> List[dict]:
+    """Evidence refs as dicts, the door's stamp included.
+
+    **Migration note, for the day :data:`EVENT_SCHEMA_VERSION` moves.**  The
+    ``authority`` key on a ref is the stamp the asserting door wrote, and it
+    did not exist in the first shape of this log.  A ref decoded from an
+    older record therefore has ``authority=None``, and that is the correct
+    reading: *absent*, not "probably SOURCE" and not "whatever the event's
+    own authority says."  Nothing downstream may infer a door from a
+    locator's shape — the whole value of the stamp is that it was written by
+    the door and by nothing else.  On replay the refs go back through that
+    door and are stamped again from the event's own ``authority`` field, so
+    an old log reconstructs a correctly stamped store without anybody
+    guessing; a ref read out of a log by some other consumer does not.
+    """
     return [ref.as_dict() for ref in refs]
 
 
@@ -86,27 +100,41 @@ def decode_pattern(raw: Sequence[Any]) -> tuple:
 
 
 def check_snapshot(raw: Any) -> List[dict]:
-    """Accept a snapshot dict or a bare event list; return the events.
+    """Validate a snapshot and return its events, or refuse.
 
-    A bare list is accepted because the shadow lane will read events back out
-    of a JSONL file one line at a time and should not have to rebuild the
-    envelope to hand them here.  A dict without the version key is refused:
-    an unversioned log is a log that will be misread exactly once.
+    **A versioned mapping, and nothing else.**  An earlier shape of this
+    function also took a bare list, as a convenience for a consumer reading
+    the log back out of a JSONL file line by line.  That convenience pointed
+    the version bypass at precisely the reader most likely to need the
+    version: the one holding lines off a disk, from a file some other release
+    wrote.  Wrapping a list in ``{"event_schema": N, "events": [...]}`` is one
+    expression, and stating which N it believes it is holding is the only
+    work this function can actually check.
+
+    ``n`` is checked too, and that is not fussiness about a redundant field.
+    It is the only thing in the record that can catch a log *reordered*,
+    *truncated* or *duplicated* in transit — three corruptions that leave
+    every individual event perfectly well-formed, and each of which replays
+    into a plausible store that is not the one that was written.
     """
-    if isinstance(raw, _MappingABC):
-        if SCHEMA_KEY not in raw:
-            raise ReplayRefused(
-                f"a cognition snapshot states its {SCHEMA_KEY!r}; this one "
-                "does not, and an unversioned log cannot be trusted to mean "
-                "what this kernel would read into it")
-        version = raw[SCHEMA_KEY]
-        if not isinstance(version, int) or version > EVENT_SCHEMA_VERSION:
-            raise ReplayRefused(
-                f"event schema {version!r} is newer than this kernel's "
-                f"{EVENT_SCHEMA_VERSION}")
-        events = raw.get(EVENTS_KEY) or []
-    else:
-        events = list(raw or [])
+    if not isinstance(raw, _MappingABC):
+        raise ReplayRefused(
+            f"a cognition snapshot is a mapping stating its {SCHEMA_KEY!r}, "
+            f"not a bare {type(raw).__name__}; wrap the events as "
+            f"{{{SCHEMA_KEY!r}: N, {EVENTS_KEY!r}: [...]}} so that the "
+            "version this log was written under is part of what is read")
+    if SCHEMA_KEY not in raw:
+        raise ReplayRefused(
+            f"a cognition snapshot states its {SCHEMA_KEY!r}; this one "
+            "does not, and an unversioned log cannot be trusted to mean "
+            "what this kernel would read into it")
+    version = raw[SCHEMA_KEY]
+    if not isinstance(version, int) or isinstance(version, bool) \
+            or version > EVENT_SCHEMA_VERSION:
+        raise ReplayRefused(
+            f"event schema {version!r} is newer than this kernel's "
+            f"{EVENT_SCHEMA_VERSION}")
+    events = raw.get(EVENTS_KEY) or []
     out: List[dict] = []
     for index, event in enumerate(events):
         if not isinstance(event, _MappingABC):
@@ -117,5 +145,11 @@ def check_snapshot(raw: Any) -> List[dict]:
                 f"event {index} is a {op!r}, which this kernel cannot "
                 "reconstruct; a replay that skipped it would build a state "
                 "nobody can name")
+        if event.get("n") != index + 1:
+            raise ReplayRefused(
+                f"event at position {index} says it is number "
+                f"{event.get('n')!r}; this log has been reordered, truncated "
+                "or had something inserted, and every event in it still looks "
+                "well-formed on its own")
         out.append(dict(event))
     return out

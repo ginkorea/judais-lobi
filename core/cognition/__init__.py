@@ -70,10 +70,26 @@ it.
   wrong for ``controls``; there is no cardinality declaration yet and
   :meth:`~core.cognition.state.CognitiveState._collide` carries the
   workaround and the Phase 18+ fix.
+* A hypothesis that disagrees with an observation is **reported and not
+  acted on** — a ``"hypothesis"`` contradiction, no status moved either way.
 * Obligation computation caps its join at
   :data:`~core.cognition.state.ENV_CAP` environments.  The frontier is the
   cheapest true thing to do next, not a proof that nothing else is missing.
 * There is no contradiction *resolution*.  Contesting is terminal in v1.
+* A snapshot is a versioned mapping, and a replay refuses a log it cannot
+  reconstruct exactly — including one whose sequence numbers say it has been
+  reordered, truncated or added to.
+
+**A warning for whoever writes the first rule pack**, because two of those
+bounds compound and the result is not obvious from either one alone.
+Contesting is terminal, and every field is single-valued.  So a field that is
+*naturally* multi-valued — ``controls``, ``tagged``, ``depends_on`` — does not
+merely report a spurious disagreement once: each value contests every other
+one, permanently, and every conclusion derived from any of them is retracted
+with it.  One such field can take an entity out of closure entirely and leave
+a ledger full of contradictions that describe nothing about the world.  Until
+cardinality exists, **put the multi-valued end in the entity position** —
+``(acct-1, controlled_by, alice)``, not ``(alice, controls, acct-1)``.
 
 The five modules: :mod:`~core.cognition.types` (the records and the closed
 sets), :mod:`~core.cognition.matching` (unification, and nothing else),
@@ -84,8 +100,9 @@ sets), :mod:`~core.cognition.matching` (unification, and nothing else),
 from core.cognition.events import (EVENT_OPS, EVENT_SCHEMA_VERSION, EVENTS_KEY,
                                    SCHEMA_KEY)
 from core.cognition.matching import resolve, unify, unify_patterns
-from core.cognition.state import ENV_CAP, CognitiveState
-from core.cognition.types import (AUTHORITY_RANK, HYPOTHESIS_AUTHORITIES,
+from core.cognition.state import DIGEST_KEYS, ENV_CAP, CognitiveState
+from core.cognition.types import (AUTHORITY_RANK, CONTRADICTION_KINDS,
+                                  HYPOTHESIS_AUTHORITIES,
                                   LIVE_STATUSES, OBSERVATION_AUTHORITIES,
                                   STATUS_RANK, TRUSTED_RULE_AUTHORITIES,
                                   AuthorityRefused, CognitionError,
@@ -94,14 +111,17 @@ from core.cognition.types import (AUTHORITY_RANK, HYPOTHESIS_AUTHORITIES,
                                   ObligationState, Proof, ProofStep,
                                   Proposition, PropositionStatus,
                                   ReplayRefused, Rule, RuleAuthority,
-                                  RuleMalformed, UnknownId, is_variable)
+                                  RuleMalformed, UnknownId,
+                                  is_variable, value_tag)
 
 __all__ = [
     "AUTHORITY_RANK",
     "AuthorityRefused",
     "CognitionError",
     "CognitiveState",
+    "CONTRADICTION_KINDS",
     "Contradiction",
+    "DIGEST_KEYS",
     "Derivation",
     "ENV_CAP",
     "EVENTS_KEY",
@@ -132,4 +152,5 @@ __all__ = [
     "resolve",
     "unify",
     "unify_patterns",
+    "value_tag",
 ]

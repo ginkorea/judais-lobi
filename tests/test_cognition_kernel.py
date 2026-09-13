@@ -33,21 +33,34 @@ Replay, the event log and the incrementality of closure are in
 
 import pytest
 
-from core.cognition import (AUTHORITY_RANK, HYPOTHESIS_AUTHORITIES,
+from core.cognition import (AUTHORITY_RANK, CONTRADICTION_KINDS,
+                            HYPOTHESIS_AUTHORITIES,
                             OBSERVATION_AUTHORITIES, TRUSTED_RULE_AUTHORITIES,
                             AuthorityRefused, CognitionError, CognitiveState,
                             EvidenceAuthority, EvidenceRef, ObligationState,
                             PropositionStatus, RuleAuthority, RuleMalformed,
-                            UnknownId)
+                            UnknownId, value_tag)
 
 RECEIPT = EvidenceRef(kind="receipt", locator="seq:1", note="read_file")
 OTHER = EvidenceRef(kind="receipt", locator="seq:2")
 EXTRACTED = EvidenceRef(kind="extraction", locator="turn:3")
 
 
-# The ancestry example from the roadmap's own thought experiment, and the one
-# every derivation test below is built on: two premises, two shared variables,
-# one conclusion that neither premise states.
+def door(ref, authority=EvidenceAuthority.SOURCE):
+    """A ref as the store holds it: stamped by the door that took it.
+
+    Written out at every call site below rather than hidden in a comparison
+    helper. What door a ref came through is the fact `EvidenceRef.authority`
+    exists to keep, and a test that shrugged it off with a loose comparison
+    would be the first place it went missing.
+    """
+    return ref.stamped(authority)
+
+
+# The ancestry example from the roadmap's own thought experiment: two
+# premises, two shared variables, one conclusion that neither premise states.
+# `store_with_controls` builds it, and the classes that want a *different*
+# shape — alternative proofs, cycles, mid-pass contestation — write their own.
 CONTROLS_HEAD = ("?actor", "controls", "?c")
 CONTROLS_BODY = [("?actor", "admin_access", "?c"),
                  ("?actor", "payment_link", "?c")]
@@ -124,7 +137,10 @@ class TestTheObservationDoorIsClosedToTheModel:
         prop = state.proposition(guess)
         assert prop.status is PropositionStatus.OBSERVED
         assert prop.authority is EvidenceAuthority.SOURCE
-        assert set(prop.evidence) == {EXTRACTED, RECEIPT}
+        assert set(prop.evidence) == {door(EXTRACTED,
+                                            EvidenceAuthority.MODEL_HYPOTHESIS),
+                                      door(RECEIPT)}, \
+            "the union keeps both refs AND which door each came through" 
 
     def test_a_hypothesis_does_not_demote_a_held_observation(self):
         state = CognitiveState()
@@ -426,14 +442,14 @@ class TestProveIsTheWholeTree:
         controls_proof, flag_proof = step.premises
         assert flag_proof.proposition == flag
         assert flag_proof.steps == ()
-        assert flag_proof.evidence == (RECEIPT,)
+        assert flag_proof.evidence == (door(RECEIPT),)
 
         assert controls_proof.proposition == controls.id
         inner, = controls_proof.steps
         assert (inner.rule, inner.rule_name) == (controls_rule, "controls")
         assert [leaf.proposition for leaf in inner.premises] == [admin, pay]
-        assert [leaf.evidence for leaf in inner.premises] == [(RECEIPT,),
-                                                              (OTHER,)]
+        assert [leaf.evidence for leaf in inner.premises] == [(door(RECEIPT),),
+                                                              (door(OTHER),)]
         assert all(leaf.steps == () for leaf in inner.premises)
 
     def test_a_cycle_stops_rather_than_recursing(self):
@@ -474,7 +490,7 @@ class TestAnObservationOutranksItsOwnDerivation:
                                         evidence=[OTHER])
         prop = state.proposition(seen)
         assert prop.status is PropositionStatus.OBSERVED
-        assert prop.evidence == (OTHER,)
+        assert prop.evidence == (door(OTHER),)
         assert len(state.derivations_for(seen)) == 1, \
             "the proof is still on the record; only the status outranks it"
 
@@ -523,7 +539,8 @@ class TestNothingWinsSilently:
                                          evidence=[OTHER])
         assert again == first
         assert state.contradictions() == ()
-        assert state.proposition(first).evidence == (RECEIPT, OTHER)
+        assert state.proposition(first).evidence == (door(RECEIPT),
+                                                     door(OTHER))
 
     def test_a_refutation_is_a_contradiction_object(self):
         state = CognitiveState()
@@ -602,6 +619,71 @@ class TestARetractedPremiseTakesItsConclusionWithIt:
         risky, = [p for p in state.propositions() if p.field == "risky"]
         state.refute(admin, evidence=[OTHER])
         assert state.proposition(risky.id).status is PropositionStatus.CONTESTED
+
+    def test_a_premise_contested_mid_pass_derives_nothing_after_it(self):
+        """The one this file did not cover, and the bug it did not catch.
+
+        Closure builds the delta's pool of live propositions once, at the top
+        of a pass, and then runs several rules against it. A conclusion drawn
+        by the *first* rule can collide with something in that pool and leave
+        both sides CONTESTED — so by the time the third rule reads the pool,
+        one of its members is a proposition the store has already refused to
+        believe. Handing it over anyway derived from a contested premise, and
+        because the retraction cascade had already run when the collision
+        happened, nothing came back for it: a live DERIVED proposition whose
+        only proof rests on something contested, with no `dead_premise`
+        contradiction anywhere on the record.
+
+        Here, `owner=alice` is observed; a rule derives `owner=bob` from
+        `lead=bob` in the same pass, contesting both; and a second rule over
+        `owner` must find nothing left to work with.
+
+        **The rules are flushed before the observations arrive**, and that is
+        not tidiness. A rule that is itself part of the delta is run against
+        the whole store with no pinned pool at all, so the path this test
+        exists for is only reached once the rules have stopped being new —
+        which is every pass after the first, i.e. the entire life of a
+        mission. Written the other way round the test passes against the bug.
+        """
+        state = self._two_rules_over_owner()
+        alice = state.assert_observation(("job-7", "owner", "alice"),
+                                         evidence=[RECEIPT])
+        state.assert_observation(("job-7", "lead", "bob"), evidence=[OTHER])
+        state.derive()
+
+        assert state.proposition(alice).status is PropositionStatus.CONTESTED
+        escalated = [p for p in state.propositions() if p.field == "escalated"]
+        assert escalated == [], (
+            "a conclusion was drawn from a premise the store had already "
+            f"contested: {[p.render() for p in escalated]}")
+
+    @staticmethod
+    def _two_rules_over_owner():
+        state = CognitiveState()
+        state.add_rule("lead_owns", ("?j", "owner", "?p"),
+                       [("?j", "lead", "?p")], RuleAuthority.DOMAIN)
+        state.add_rule("owned_is_escalated", ("?j", "escalated", True),
+                       [("?j", "owner", "?p")], RuleAuthority.DOMAIN)
+        state.add_rule("escalated_is_urgent", ("?j", "urgent", True),
+                       [("?j", "escalated", True)], RuleAuthority.DOMAIN)
+        state.derive()
+        return state
+
+    def test_nothing_live_ever_rests_on_something_that_is_not(self):
+        """The invariant the case above violates, stated as itself so the
+        next engine change is measured against the property and not only
+        against the one arrangement that exposed it."""
+        state = self._two_rules_over_owner()
+        state.assert_observation(("job-7", "owner", "alice"),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("job-7", "lead", "bob"), evidence=[OTHER])
+        state.derive()
+        assert state.contradictions(), "nothing collided; this proves nothing"
+        for prop in state.propositions(live=True):
+            for proof in state.derivations_for(prop.id):
+                assert all(state.proposition(premise).live
+                           for premise in proof.premises), \
+                    f"{prop.render()} stands on a premise that does not"
 
     def test_a_value_collision_retracts_what_rested_on_it(self):
         state, _ = store_with_controls()
@@ -794,7 +876,7 @@ class TestAPropositionNeverSilentlyMutates:
         history = state.history(pid)
         assert [item.revision for item in history] == [1, 2]
         assert history[0].status is PropositionStatus.OBSERVED
-        assert history[0].evidence == (RECEIPT,), \
+        assert history[0].evidence == (door(RECEIPT),), \
             "the record before the change is intact, evidence and all"
         assert history[-1].status is PropositionStatus.REFUTED
         assert [item.previous for item in history] == [None, "p1@1"]
@@ -829,3 +911,337 @@ class TestTheRanksAreTotalOrders:
         worst_receipt = min(AUTHORITY_RANK[a] for a in OBSERVATION_AUTHORITIES)
         best_model = max(AUTHORITY_RANK[a] for a in HYPOTHESIS_AUTHORITIES)
         assert worst_receipt > best_model
+
+
+# ---------------------------------------------------------------------------
+# The door's stamp
+# ---------------------------------------------------------------------------
+
+class TestTheDoorStampsTheEvidence:
+    """The wall has to survive the merge.
+
+    One claim can arrive through both doors — the model extracts it and a
+    receipt confirms it — and the store keeps one proposition holding the
+    union of both sets of refs. Without a stamp, that union is where the wall
+    goes: a single tuple of refs, no way to say which of them a model
+    produced, and `prove()`'s leaves answering "how do we know this" with an
+    undifferentiated pile. The stamp is written by the door and by nothing
+    else, so the answer survives any number of merges.
+    """
+
+    def test_an_observations_refs_carry_the_authority_it_accepted(self):
+        state = CognitiveState()
+        pid = state.assert_observation(
+            ("alice", "role", "admin"), evidence=[RECEIPT],
+            authority=EvidenceAuthority.DETERMINISTIC)
+        ref, = state.proposition(pid).evidence
+        assert ref.authority is EvidenceAuthority.DETERMINISTIC
+        assert (ref.kind, ref.locator) == (RECEIPT.kind, RECEIPT.locator)
+
+    @pytest.mark.parametrize("authority", HYPOTHESIS_AUTHORITIES)
+    def test_a_hypothesiss_refs_carry_which_model_step_made_it(self, authority):
+        state = CognitiveState()
+        pid = state.assert_hypothesis(("alice", "role", "admin"),
+                                      evidence=[EXTRACTED],
+                                      authority=authority)
+        ref, = state.proposition(pid).evidence
+        assert ref.authority is authority
+
+    def test_a_caller_cannot_write_the_stamp(self):
+        """Otherwise the wall is a method name rather than a rule: a caller
+        could file model output under SOURCE by building the ref that way and
+        still going through the honest door."""
+        state = CognitiveState()
+        forged = EvidenceRef(kind="receipt", locator="seq:1",
+                             authority=EvidenceAuthority.DETERMINISTIC)
+        pid = state.assert_hypothesis(("alice", "role", "admin"),
+                                      evidence=[forged])
+        ref, = state.proposition(pid).evidence
+        assert ref.authority is EvidenceAuthority.MODEL_HYPOTHESIS
+
+    def test_the_merge_does_not_erase_which_door(self):
+        state = CognitiveState()
+        pid = state.assert_hypothesis(
+            ("alice", "role", "admin"), evidence=[EXTRACTED],
+            authority=EvidenceAuthority.MODEL_EXTRACTION)
+        state.assert_observation(("alice", "role", "admin"),
+                                 evidence=[RECEIPT])
+        by_door = {ref.authority for ref in state.proposition(pid).evidence}
+        assert by_door == {EvidenceAuthority.MODEL_EXTRACTION,
+                           EvidenceAuthority.SOURCE}
+
+    def test_prove_shows_the_door_at_the_leaves(self):
+        state, _ = store_with_controls()
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT],
+                                 authority=EvidenceAuthority.DETERMINISTIC)
+        state.assert_observation(("alice", "payment_link", "acct-9"),
+                                 evidence=[OTHER])
+        derived, = state.derive()
+        step, = state.prove(derived).steps
+        assert [ref.authority
+                for leaf in step.premises for ref in leaf.evidence] == \
+            [EvidenceAuthority.DETERMINISTIC, EvidenceAuthority.SOURCE]
+
+    def test_a_refutations_evidence_is_unstamped(self):
+        """A refutation is not one of the two doors, and guessing a door for
+        it would be the kernel inventing provenance."""
+        state = CognitiveState()
+        pid = state.assert_observation(("job-7", "state", "running"),
+                                       evidence=[RECEIPT])
+        state.refute(pid, evidence=[OTHER])
+        clash, = state.contradictions()
+        assert [ref.authority for ref in clash.evidence] == [None]
+
+    def test_an_unstamped_ref_is_not_guessed_at(self):
+        """The migration case: a ref decoded from a log written before the
+        stamp existed reads as absent, not as a plausible door."""
+        assert EvidenceRef.from_dict({"kind": "receipt",
+                                      "locator": "seq:1"}).authority is None
+
+
+# ---------------------------------------------------------------------------
+# A model's claim against a receipt
+# ---------------------------------------------------------------------------
+
+class TestAModelsClaimAgainstAReceipt:
+    """The first signal the shadow layer wants, and the one it must not act
+    on.
+
+    A hypothesis disagreeing with an observation is exactly the event worth
+    surfacing — the model said `total_s` was a score and the receipt says it
+    is elapsed seconds — and exactly the event where doing anything about it
+    would be wrong. Contest the observation and a bad extraction has unseated
+    a receipt; promote the hypothesis and the wall is gone. So the store
+    records the pair and moves nothing: confidence marking, not gating.
+    """
+
+    def _pair(self, order):
+        state = CognitiveState()
+        moves = {
+            "observed": lambda: state.assert_observation(
+                ("job-7", "total_s", 154.024), evidence=[RECEIPT]),
+            "guessed": lambda: state.assert_hypothesis(
+                ("job-7", "total_s", 186.7), evidence=[EXTRACTED],
+                authority=EvidenceAuthority.MODEL_EXTRACTION),
+        }
+        ids = {name: moves[name]() for name in order}
+        state.derive()
+        return state, ids["observed"], ids["guessed"]
+
+    @pytest.mark.parametrize("order", [("observed", "guessed"),
+                                       ("guessed", "observed")])
+    def test_the_disagreement_is_reported_whichever_arrives_first(self, order):
+        state, seen, guessed = self._pair(order)
+        clash, = state.contradictions()
+        assert clash.kind == "hypothesis"
+        assert (clash.left, clash.right) == (guessed, seen), \
+            "left is always the hypothesis, so a consumer reads one shape"
+
+    @pytest.mark.parametrize("order", [("observed", "guessed"),
+                                       ("guessed", "observed")])
+    def test_neither_side_moves(self, order):
+        state, seen, guessed = self._pair(order)
+        assert state.proposition(seen).status is PropositionStatus.OBSERVED
+        assert state.proposition(seen).live
+        assert state.proposition(guessed).status is \
+            PropositionStatus.HYPOTHESIZED
+        assert [state.proposition(seen).revision,
+                state.proposition(guessed).revision] == [1, 1], \
+            "a report is not a revision"
+
+    def test_a_conclusion_drawn_from_the_observation_stands(self):
+        """The whole point of not contesting: the receipt keeps deriving."""
+        state = CognitiveState()
+        state.add_rule("slow", ("?j", "slow", True),
+                       [("?j", "total_s", 154.024)], RuleAuthority.SYSTEM)
+        state.assert_observation(("job-7", "total_s", 154.024),
+                                 evidence=[RECEIPT])
+        state.assert_hypothesis(("job-7", "total_s", 186.7),
+                                evidence=[EXTRACTED])
+        state.derive()
+        slow, = [p for p in state.propositions() if p.field == "slow"]
+        assert slow.status is PropositionStatus.DERIVED
+        assert [c.kind for c in state.contradictions()] == ["hypothesis"]
+
+    def test_agreeing_with_the_receipt_is_not_a_disagreement(self):
+        state = CognitiveState()
+        seen = state.assert_observation(("job-7", "total_s", 154.024),
+                                        evidence=[RECEIPT])
+        guessed = state.assert_hypothesis(("job-7", "total_s", 154.024),
+                                          evidence=[EXTRACTED])
+        assert guessed == seen, "one claim, said twice"
+        assert state.contradictions() == ()
+
+    def test_the_report_is_recorded_once_however_often_it_repeats(self):
+        state, _seen, _guessed = self._pair(("observed", "guessed"))
+        for _ in range(3):
+            state.assert_hypothesis(
+                ("job-7", "total_s", 186.7), evidence=[EXTRACTED],
+                authority=EvidenceAuthority.MODEL_EXTRACTION)
+            state.assert_observation(("job-7", "total_s", 154.024),
+                                     evidence=[RECEIPT])
+        assert len(state.contradictions()) == 1, \
+            "a ledger that grew per delivery would be counting retries"
+
+    def test_two_hypotheses_disagreeing_with_each_other_are_not_reported(self):
+        """v1 bound, said by a test so it is a decision: this report is about
+        a model's claim against the *store's*. Two guesses disagreeing is the
+        model being uncertain, which is not news."""
+        state = CognitiveState()
+        state.assert_hypothesis(("job-7", "total_s", 186.7),
+                                evidence=[EXTRACTED])
+        state.assert_hypothesis(("job-7", "total_s", 200.0),
+                                evidence=[EXTRACTED])
+        state.derive()
+        assert state.contradictions() == ()
+
+    def test_the_kinds_are_a_closed_set(self):
+        state, _, _ = self._pair(("observed", "guessed"))
+        assert all(c.kind in CONTRADICTION_KINDS
+                   for c in state.contradictions())
+        assert set(CONTRADICTION_KINDS) == {"value", "refutation",
+                                            "dead_premise", "hypothesis"}
+
+
+# ---------------------------------------------------------------------------
+# What a value is
+# ---------------------------------------------------------------------------
+
+class TestABoolIsNotANumber:
+    """`True == 1` and `hash(True) == hash(1)` in Python, so a store keying
+    claims on the raw value files them as one — at whichever arrived first,
+    reporting no disagreement. A silent first-wins on exactly the extraction
+    confusion this kernel exists to surface."""
+
+    def test_true_and_one_are_two_claims_that_contradict(self):
+        state = CognitiveState()
+        flag = state.assert_observation(("job-7", "retried", True),
+                                        evidence=[RECEIPT])
+        count = state.assert_observation(("job-7", "retried", 1),
+                                         evidence=[OTHER])
+        assert count != flag
+        clash, = state.contradictions()
+        assert clash.kind == "value"
+        assert {clash.left, clash.right} == {flag, count}
+        assert not state.proposition(flag).live
+        assert not state.proposition(count).live
+
+    def test_one_and_one_point_zero_are_the_same_number_said_twice(self):
+        state = CognitiveState()
+        first = state.assert_observation(("job-7", "retried", 1),
+                                         evidence=[RECEIPT])
+        again = state.assert_observation(("job-7", "retried", 1.0),
+                                         evidence=[OTHER])
+        assert again == first
+        assert state.contradictions() == ()
+
+    def test_the_bands_are_what_they_say(self):
+        assert value_tag(True) == "bool"
+        assert value_tag(1) == value_tag(1.0) == "num"
+        assert value_tag("1") == "str"
+        assert value_tag(None) == "null"
+
+
+class TestANumberThatIsNotThereIsSaidByAbsence:
+    """NaN and the infinities are refused at the door, for two reasons that
+    arrive in the wrong order. In memory `nan != nan`, so a claim keyed on one
+    never equals itself and asserting it twice mints two propositions for one
+    claim. On the wire `json.dumps` writes bare `NaN`, which is not RFC 8259
+    and which a non-Python reader of `reasoning.jsonl` either rejects or reads
+    as something else. Together they are a store that does not replay to
+    itself."""
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"),
+                                       float("-inf")])
+    def test_a_non_finite_value_is_refused(self, value):
+        state = CognitiveState()
+        with pytest.raises(CognitionError):
+            state.assert_observation(("job-7", "total_s", value),
+                                     evidence=[RECEIPT])
+        assert state.propositions() == ()
+        assert state.events == ()
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf")])
+    def test_a_rule_cannot_smuggle_one_in_as_a_literal(self, value):
+        state = CognitiveState()
+        with pytest.raises(CognitionError):
+            state.add_rule("nonsense", ("?j", "odd", True),
+                           [("?j", "total_s", value)], RuleAuthority.SYSTEM)
+
+    def test_the_divergence_it_used_to_cause_is_now_unreachable(self):
+        """The old shape run out to its end: one claim asserted twice becoming
+        two propositions in memory and one after a JSON round trip — a store
+        that does not equal its own replay. The refusal is what makes that
+        unreachable, so this asserts the refusal *and* that nothing which does
+        get in can behave that way."""
+        import json
+        import math
+
+        state = CognitiveState()
+        for attempt in (float("nan"), float("nan")):
+            with pytest.raises(CognitionError):
+                state.assert_observation(("job-7", "total_s", attempt),
+                                         evidence=[RECEIPT])
+        state.assert_observation(("job-7", "total_s", 154.024),
+                                 evidence=[RECEIPT])
+        digest = state.digest()
+        numbers = [row["value"] for row in digest["propositions"]
+                   if isinstance(row["value"], float)]
+        assert numbers and all(math.isfinite(value) for value in numbers)
+        assert all(value == value for value in numbers)
+        assert json.loads(json.dumps(digest)) == digest
+
+
+# ---------------------------------------------------------------------------
+# Repeats
+# ---------------------------------------------------------------------------
+
+class TestARefutationIsIdempotent:
+    def test_the_same_refutation_twice_changes_nothing_the_second_time(self):
+        state = CognitiveState()
+        pid = state.assert_observation(("job-7", "state", "running"),
+                                       evidence=[RECEIPT])
+        first = state.refute(pid, evidence=[OTHER])
+        settled = state.proposition(pid).revision
+        again = state.refute(pid, evidence=[OTHER])
+        assert again == first, "one collision, not two"
+        assert len(state.contradictions()) == 1
+        assert state.proposition(pid).revision == settled
+
+    def test_a_second_refutation_with_new_evidence_lands_on_the_claim(self):
+        state = CognitiveState()
+        pid = state.assert_observation(("job-7", "state", "running"),
+                                       evidence=[RECEIPT])
+        state.refute(pid, evidence=[OTHER])
+        state.refute(pid, evidence=[EXTRACTED])
+        assert len(state.contradictions()) == 1
+        assert len(state.proposition(pid).evidence) == 3
+
+    def test_refuting_a_hypothesis_is_legal_and_useful(self):
+        """"The model said this and it is wrong" is exactly what a shadow
+        layer wants on the record."""
+        state = CognitiveState()
+        pid = state.assert_hypothesis(("alice", "role", "admin"),
+                                      evidence=[EXTRACTED])
+        state.refute(pid, evidence=[RECEIPT])
+        assert state.proposition(pid).status is PropositionStatus.REFUTED
+        assert [c.kind for c in state.contradictions()] == ["refutation"]
+
+
+class TestPromotionIsFromProposedAndNowhereElse:
+    def test_a_lateral_re_promotion_is_refused(self):
+        """SKILL to DOMAIN re-labels who stands behind a clause that is
+        already deriving, and its existing derivations carry the old label.
+        Left open, this method is how a caller restamps somebody else's rule
+        as its own."""
+        state, rid = store_with_controls(RuleAuthority.SKILL)
+        with pytest.raises(AuthorityRefused):
+            state.promote_rule(rid, RuleAuthority.DOMAIN)
+        assert state.rule(rid).authority is RuleAuthority.SKILL
+
+    def test_promoting_twice_is_refused_the_second_time(self):
+        state, rid = store_with_controls(RuleAuthority.PROPOSED)
+        state.promote_rule(rid, RuleAuthority.DOMAIN)
+        with pytest.raises(AuthorityRefused):
+            state.promote_rule(rid, RuleAuthority.DOMAIN)

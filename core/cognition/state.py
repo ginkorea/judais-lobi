@@ -22,14 +22,38 @@ paragraph.
 only the rule bodies a delta can touch, and cascades from what that produced.
 Naive closure would return the same propositions, so correctness cannot tell
 the two apart; :class:`~core.cognition.types.MatchStats` can, and
-``tests/test_cognition_closure.py`` reads it.
+``tests/test_cognition_replay.py`` reads it.
 
-**Lazy, and why reads flush.**  An assertion stages its proposition and does
-not derive.  :meth:`derive` flushes the staging area, and every read that
-depends on closure calls it first — so a caller never sees a half-closed
-store, and a caller batching twenty receipts pays for one closure pass rather
-than twenty.  A flush with nothing staged appends no event, which is what
-keeps the log a function of the *writes* and not of who read it.
+**Lazy, and what the implicit flush costs.**  An assertion stages its
+proposition and does not derive.  :meth:`derive` flushes the staging area,
+and every read that depends on closure calls it first — so a caller never
+sees a half-closed store, and a caller batching twenty receipts pays for one
+closure pass rather than twenty.
+
+That convenience has a price, and it is named here rather than explained
+away: **when somebody reads is part of what the log says, and part of which
+id each proposition gets.**  Two callers issuing identical writes, one
+reading the frontier between them and one not, keep logs of different length
+— and because ids are handed out in insertion order, the early flush inserts
+a *derived* proposition before the next observation arrives, so the same
+claims end up under different names.
+
+What each log does still do exactly is replay to its own store; that is
+unweakened, and the property sweep covers it.  What the timing never reaches
+is *what is believed*: the same writes give the same claims, the same
+statuses and the same proofs, and the frontier is identical because
+obligation ids are content-addressed.  So a proposition id means something
+inside one store's own history and nowhere else, and anything treating the
+log as a canonical byte string (a diff, a hash, a corpus guard) has to know
+that both of these move.
+
+The alternative was an explicit-flush API, rejected because a store read
+half-closed is a wrong answer where a forgotten ``derive()`` is a silent one.
+Instead: the dependence is a pinned, tested property
+(``tests/test_cognition_replay.py``), :meth:`pending` and
+:attr:`has_pending` let a caller see the staging area, and the rule for a
+caller that wants a stable log is one line — call :meth:`derive` at one
+defined point per turn and read only after it.
 
 **The retraction rule, chosen and written down.**  When a premise dies
 (``REFUTED`` by a caller, or ``CONTESTED`` by a collision), every derived
@@ -57,7 +81,8 @@ from core.cognition.events import (EVENT_OPS, EVENT_SCHEMA_VERSION, EVENTS_KEY,
                                    encode_pattern)
 from core.cognition.matching import (Bindings, resolve, shares_variable, unify,
                                      unify_patterns)
-from core.cognition.types import (AUTHORITY_RANK, HYPOTHESIS_AUTHORITIES,
+from core.cognition.types import (AUTHORITY_RANK, CONTRADICTION_KINDS,
+                                  HYPOTHESIS_AUTHORITIES,
                                   OBSERVATION_AUTHORITIES,
                                   STATUS_RANK, AuthorityRefused,
                                   CognitionError, Contradiction, Derivation,
@@ -67,7 +92,7 @@ from core.cognition.types import (AUTHORITY_RANK, HYPOTHESIS_AUTHORITIES,
                                   ProofStep, ReplayRefused, Rule,
                                   RuleAuthority, RuleMalformed, UnknownId,
                                   check_pattern, check_value, is_variable,
-                                  render_pattern, variables_in)
+                                  render_pattern, value_tag, variables_in)
 
 #: **v1 bound.**  Obligation computation joins a rule body against the store
 #: and a rule with several matches per premise branches.  Beyond this many
@@ -79,6 +104,30 @@ from core.cognition.types import (AUTHORITY_RANK, HYPOTHESIS_AUTHORITIES,
 #: is a claim about truth and truncating it would make the store wrong rather
 #: than incomplete.
 ENV_CAP = 256
+
+#: Every field :meth:`CognitiveState.digest` renders, per section.
+#:
+#: Module level and enforced on the way out, in the idiom
+#: :data:`core.runtime.grounding.GROUNDING_KEYS` established for the same
+#: hazard: a *second* reader of a shape exists, and two hand-kept ideas of
+#: "the fields there are" drift silently.  Here the second reader is every
+#: replay assertion in the suite.  They all compare digests, so a digest that
+#: stopped rendering ``authority``, or ``previous``, or the evidence on a
+#: contradiction, would go on passing while proving strictly less — and the
+#: narrowing would show up as nothing at all.  Pinned here, and pinned again
+#: as literals in ``tests/test_cognition_replay.py``, so a field can leave
+#: the digest only in an edit that says so twice.
+DIGEST_KEYS = {
+    "propositions": frozenset({
+        "id", "revision", "previous", "entity", "field", "value", "text",
+        "status", "authority", "derivation", "evidence", "history"}),
+    "rules": frozenset({"id", "name", "authority", "head", "body"}),
+    "derivations": frozenset({"id", "rule", "premises", "conclusion"}),
+    "goals": frozenset({"id", "pattern", "note"}),
+    "contradictions": frozenset({
+        "id", "kind", "left", "right", "detail", "evidence"}),
+    "pending": frozenset({"propositions", "rules"}),
+}
 
 
 class CognitiveState:
@@ -94,7 +143,9 @@ class CognitiveState:
         # is stable across revisions — the record id is `Proposition.key`.
         self._props: Dict[str, Proposition] = {}
         self._history: Dict[str, List[Proposition]] = {}
-        self._order: Dict[str, int] = {}
+        # Claim identity. The key carries the value's TYPE BAND as well as the
+        # value, because Python hashes `True` and `1` the same and a dict
+        # would quietly file them as one claim — see `types.value_tag`.
         self._claim_key: Dict[tuple, str] = {}
 
         # Indexes. Lists, not sets: a proposition id enters each one exactly
@@ -114,6 +165,10 @@ class CognitiveState:
 
         self._goals: Dict[str, Goal] = {}
         self._contradictions: Dict[str, Contradiction] = {}
+        # `(kind, left, right)` → id. A collision found twice is one
+        # contradiction: a hypothesis re-asserted against the same
+        # observation, or a claim refuted twice, must not grow the ledger.
+        self._contradiction_keys: Dict[tuple, str] = {}
 
         self._pending_props: List[str] = []
         self._pending_rules: List[str] = []
@@ -135,8 +190,32 @@ class CognitiveState:
         """The log, oldest first. Copies, so a reader cannot edit history."""
         return tuple(dict(event) for event in self._events)
 
+    def pending(self) -> dict:
+        """The staging area: what the next flush would derive from.
+
+        Public because the implicit flush is otherwise invisible.  A caller
+        that wants a log it can compare byte for byte needs to be able to ask
+        whether there is anything outstanding before it reads.
+        """
+        return {"propositions": tuple(self._pending_props),
+                "rules": tuple(self._pending_rules)}
+
+    @property
+    def has_pending(self) -> bool:
+        """Whether the next read would append a ``derive`` event."""
+        return bool(self._pending_props or self._pending_rules)
+
     def snapshot(self) -> dict:
-        """The whole state as one JSON-safe dict: a version and its events."""
+        """The whole state as one JSON-safe dict: a version and its events.
+
+        Flushes first.  A snapshot is the one read whose whole purpose is to
+        be handed somewhere else, and a snapshot taken with work outstanding
+        replays into a store that then does that work on its reader's first
+        question — correct, and one more place where "when did somebody read"
+        decides what a log looks like.  Consistency with every other read is
+        worth more here than a paragraph explaining why this one differs.
+        """
+        self.derive()
         return {SCHEMA_KEY: EVENT_SCHEMA_VERSION,
                 EVENTS_KEY: [dict(event) for event in self._events]}
 
@@ -247,6 +326,11 @@ class CognitiveState:
                 "a proposition with no evidence is a claim with no receipt; "
                 "the store exists so that every one of them traces to "
                 "something, and there is no exception for a small one")
+        # The door stamps. Unconditionally, over whatever the caller put
+        # there: a ref's authority says which door it came through, and a
+        # caller able to write it could file model output under SOURCE by
+        # constructing the ref rather than by choosing the method.
+        refs = tuple(ref.stamped(authority) for ref in refs)
         pid, _new = self._ingest(entity, field, value, text, status, authority,
                                  refs, derivation=None, stage=True)
         self._append(op,
@@ -265,6 +349,23 @@ class CognitiveState:
         object like any other collision: one side is the proposition, the
         other side is the evidence that unseated it, and both are on the
         record.  Conclusions that rested on it are re-examined.
+
+        **Idempotent in the store.**  The same refutation sent twice — a
+        retry, a replayed step, a caller that did not keep track — writes its
+        event both times and changes nothing the second time: no fresh
+        revision, no second contradiction.  A ledger that grew a row per
+        delivery would be counting messages and reporting them as
+        disagreements.
+
+        A ``HYPOTHESIZED`` proposition may be refuted, and that is the useful
+        case rather than an oversight: "the model said this and it is wrong"
+        is exactly what a shadow layer wants on the record.  The evidence
+        refs are *not* stamped with a door, because a refutation is not one
+        of the two doors.
+
+        Anything that rested on the claim is re-examined either way; with
+        nothing changed there is nothing resting on it that was not already
+        retracted.
         """
         prop = self._props.get(proposition)
         if prop is None:
@@ -276,9 +377,14 @@ class CognitiveState:
                 "unseated the claim")
         self._append("refute", proposition=proposition,
                      evidence=encode_evidence(refs))
-        self._revise(proposition,
-                     status=PropositionStatus.REFUTED,
-                     evidence=_merge_evidence(prop.evidence, refs))
+        changes: Dict[str, Any] = {}
+        if prop.status is not PropositionStatus.REFUTED:
+            changes["status"] = PropositionStatus.REFUTED
+        merged = _merge_evidence(prop.evidence, refs)
+        if merged != prop.evidence:
+            changes["evidence"] = merged
+        if changes:
+            self._revise(proposition, **changes)
         cid = self._contradict("refutation", proposition, None, refs,
                                f"{prop.render()} refuted")
         self._retract_dependents([proposition])
@@ -333,6 +439,14 @@ class CognitiveState:
         authority for it, it matches nothing and concludes nothing.  Promoting
         *to* ``PROPOSED`` is refused, because that is not a promotion and a
         method that accepted it would be a way to spell "trust me" twice.
+
+        **Only from ``PROPOSED``.**  A rule that already has an authority is
+        not promoted by this method — ``SKILL`` to ``DOMAIN`` is a *lateral*
+        move, it re-labels who stands behind a clause that is already
+        deriving, and its derivations carry the old label.  There is no
+        re-authorisation in v1: a rule that needs a different owner is a
+        different rule, added under it.  Left open, this method would be the
+        way a caller quietly restamped somebody else's clause as its own.
         """
         existing = self._rules.get(rule)
         if existing is None:
@@ -341,6 +455,13 @@ class CognitiveState:
             raise AuthorityRefused(
                 "promote_rule names the authority that stands behind the "
                 "rule; PROPOSED is the absence of one")
+        if existing.authority is not RuleAuthority.PROPOSED:
+            raise AuthorityRefused(
+                f"rule {rule!r} already stands on "
+                f"{existing.authority.name}; promotion is PROPOSED to "
+                "trusted and nothing else, and re-labelling a clause that is "
+                "already deriving is not a promotion. Add the rule again "
+                "under the authority that wants it")
         self._rules[rule] = Rule(id=existing.id, name=existing.name,
                                  authority=authority, head=existing.head,
                                  body=existing.body)
@@ -504,11 +625,24 @@ class CognitiveState:
 
         The index is chosen by what the pattern has *ground* after the
         bindings so far are applied: entity first because it is the most
-        selective, then field, then everything.  A pinned pool short-circuits
-        the whole question — that is the delta, and it is already small.
+        selective, then field, then everything.  A pinned pool skips the
+        index — that is the delta, and it is already small — but **not the
+        liveness check**, and the difference is a bug this file had.
+
+        The pool is filtered when the pass *starts*.  Closure then runs
+        several rules against it, and a conclusion produced early in the pass
+        can collide with something and leave both sides ``CONTESTED`` — so a
+        proposition that was live when the pool was built is not necessarily
+        live when the fourth rule reaches it.  Returning it anyway derived
+        conclusions from a contested premise, and because those conclusions
+        were built *after* the retraction cascade had already run, nothing
+        came back to retract them: a live ``DERIVED`` proposition whose only
+        proof rested on something the store had already refused to believe,
+        with no ``dead_premise`` contradiction anywhere on the record.
         """
         if pool is not None:
-            return list(pool)
+            return [pid for pid in pool
+                    if self._props[pid].live and self._props[pid].triple]
         entity, field, _value = resolve(pattern, bindings)
         if not is_variable(entity):
             candidates = self._by_entity.get(entity, ())
@@ -541,8 +675,8 @@ class CognitiveState:
         rule deriving something already observed leaves it ``OBSERVED`` while
         still recording the derivation.
         """
-        key = (("triple", entity, field, value) if entity is not None
-               else ("text", text))
+        key = (("triple", entity, field, value_tag(value), value)
+               if entity is not None else ("text", text))
         held = self._claim_key.get(key)
         if held is not None:
             prop = self._props[held]
@@ -578,7 +712,6 @@ class CognitiveState:
                            evidence=tuple(evidence), derivation=derivation)
         self._props[pid] = prop
         self._history[pid] = [prop]
-        self._order[pid] = len(self._order)
         self._claim_key[key] = pid
         if entity is not None:
             self._by_entity.setdefault(entity, []).append(pid)
@@ -586,8 +719,12 @@ class CognitiveState:
             self._by_entity_field.setdefault((entity, field), []).append(pid)
         if stage:
             self._pending_props.append(pid)
-        if prop.live:
-            self._collide(pid)
+        # Every new triple proposition is measured against what the store
+        # already holds, hypotheses included — a model's claim disagreeing
+        # with a receipt is a signal whether or not it moves a status.
+        # A re-assertion never reaches here: same value is the same claim and
+        # merges above, so arriving as a new proposition IS the disagreement.
+        self._collide(pid)
         return pid, True
 
     def _revise(self, pid: str, **changes: Any) -> Proposition:
@@ -611,8 +748,27 @@ class CognitiveState:
         return fresh
 
     def _collide(self, pid: str) -> None:
-        """Contest every live proposition giving this ``(entity, field)`` a
-        different value. Both sides become ``CONTESTED``; nothing wins.
+        """Measure one proposition against everything else about its field.
+
+        Two outcomes, and only one of them moves a status.
+
+        **Live against live** is the collision this store is named for: two
+        propositions giving one ``(entity, field)`` different values, both
+        contested, nothing winning.
+
+        **A hypothesis against a live proposition** is a *report*.  The
+        hypothesis stays ``HYPOTHESIZED``, the observation stays live, and a
+        ``"hypothesis"`` contradiction names the pair — left the hypothesis,
+        right the observation, whichever arrived first, so a consumer reads
+        one shape and not two.  This is the first signal the shadow layer
+        wants (the model said one thing, the receipt said another) and it
+        must never be more than a signal: contest the observation here and a
+        wrong extraction has unseated a receipt, which is the laundering the
+        authority walls exist to prevent.  Marking confidence, not gating.
+
+        The hypothesis reports are recorded before any contesting, so that a
+        live proposition arriving into a disagreement is still live when it is
+        compared with the model's version of it.
 
         **v1 bound, and the sharpest one in the package: every field is
         treated as single-valued.**  ``(alice, controls, acct-1)`` and
@@ -625,31 +781,80 @@ class CognitiveState:
         ``functional``/``set`` flag on a field, declared by whoever declares
         the rules — is a Phase 18+ decision with a rule pack to design
         against.
+
+        **And the operational consequence, because it compounds:** contesting
+        is terminal in v1.  So a genuinely multi-valued field does not merely
+        report a spurious disagreement once — every value poisons every other
+        one, permanently, and whatever a rule derived from any of them goes
+        with it.  One such field in a rule pack can take an entity out of
+        closure altogether.  Until cardinality exists, the multi-valued end
+        goes in the entity position.
         """
         prop = self._props[pid]
         if prop.triple is None:
             return
+        mine = (value_tag(prop.value), prop.value)
         others = [other for other in
                   self._by_entity_field.get((prop.entity, prop.field), ())
-                  if other != pid and self._props[other].live
-                  and self._props[other].value != prop.value]
-        if not others:
+                  if other != pid
+                  and (value_tag(self._props[other].value),
+                       self._props[other].value) != mine]
+
+        # The report first, while both sides still hold the status they
+        # arrived with.
+        if prop.status is PropositionStatus.HYPOTHESIZED:
+            for other in others:
+                if self._props[other].live:
+                    self._disagree(pid, other)
+        elif prop.live:
+            for other in others:
+                if self._props[other].status is \
+                        PropositionStatus.HYPOTHESIZED:
+                    self._disagree(other, pid)
+
+        if not prop.live:
             return
-        for other in others:
+        clashing = [other for other in others if self._props[other].live]
+        if not clashing:
+            return
+        for other in clashing:
             self._contradict(
                 "value", pid, other, (),
                 f"{prop.render()} against {self._props[other].render()}")
             self._revise(other, status=PropositionStatus.CONTESTED)
         self._revise(pid, status=PropositionStatus.CONTESTED)
-        self._retract_dependents([pid] + others)
+        self._retract_dependents([pid] + clashing)
+
+    def _disagree(self, hypothesis: str, observed: str) -> None:
+        """Record a model's claim against the store's, and change nothing."""
+        self._contradict(
+            "hypothesis", hypothesis, observed, (),
+            f"{self._props[hypothesis].render()} was offered against "
+            f"{self._props[observed].render()}")
 
     def _contradict(self, kind: str, left: str, right: Optional[str],
                     evidence: Tuple[EvidenceRef, ...], detail: str) -> str:
+        """Record a collision once. The same pair found again is the same one.
+
+        Deduplicated on ``(kind, left, right)``.  Three of the four kinds
+        cannot recur on their own — a value collision leaves both sides
+        contested and out of the running — but a ``"hypothesis"`` report can:
+        the hypothesis stays hypothesized and the observation stays live, so
+        every re-assertion measures them against each other again.  A ledger
+        that grew a row per delivery would be counting retries and calling
+        them disagreements.
+        """
+        assert kind in CONTRADICTION_KINDS, kind
+        key = (kind, left, right)
+        existing = self._contradiction_keys.get(key)
+        if existing is not None:
+            return existing
         self._counters["c"] += 1
         cid = f"c{self._counters['c']}"
         self._contradictions[cid] = Contradiction(
             id=cid, kind=kind, left=left, right=right,
             evidence=tuple(evidence), detail=detail)
+        self._contradiction_keys[key] = cid
         return cid
 
     def _retract_dependents(self, dead: Sequence[str]) -> None:
@@ -816,8 +1021,12 @@ class CognitiveState:
                     for pid in found:
                         extended = unify(pattern, self._props[pid].triple,
                                          bindings)
-                        if extended is not None and len(nxt) < ENV_CAP:
-                            nxt.append((extended, blockers))
+                        if extended is None:
+                            continue
+                        if len(nxt) >= ENV_CAP:
+                            self.stats.envs_truncated += 1
+                            break
+                        nxt.append((extended, blockers))
                 else:
                     unresolved = resolve(pattern, bindings)
                     deps = tuple(
@@ -826,6 +1035,8 @@ class CognitiveState:
                     oid = self._record_obligation(out, goal, rule, position,
                                                   unresolved, deps)
                     nxt.append((bindings, blockers + (oid,)))
+            if len(nxt) > ENV_CAP:
+                self.stats.envs_truncated += 1
             envs = nxt[:ENV_CAP]
             if not envs:
                 return
@@ -887,9 +1098,18 @@ class CognitiveState:
         here: it counts what the engine did, not what the store holds, and a
         replayed store legitimately did less work than the one that was read
         from along the way.
+
+        **Checked against :data:`DIGEST_KEYS` on the way out.**  This method
+        is the comparator every replay assertion in the suite runs through,
+        which makes it the one place in the package where *narrowing* is
+        invisible: drop a field here and the digests still match, the tests
+        still pass, and the property they were proving has quietly become a
+        weaker one.  A field this method stops rendering therefore has to be
+        a field somebody deleted from the list above too, in the same edit,
+        with the same reason.
         """
         self.derive()
-        return {
+        digested = {
             "propositions": [
                 {"id": prop.id, "revision": prop.revision,
                  "previous": prop.previous, "entity": prop.entity,
@@ -919,12 +1139,36 @@ class CognitiveState:
             "pending": {"propositions": list(self._pending_props),
                         "rules": list(self._pending_rules)},
         }
+        _check_digest_keys(digested)
+        return digested
 
     def digest_json(self) -> str:
         return json.dumps(self.digest(), sort_keys=True)
 
 
 # ── small helpers ───────────────────────────────────────────────────────────
+
+def _check_digest_keys(digested: Mapping[str, Any]) -> None:
+    """Every section rendered, every field in it named by :data:`DIGEST_KEYS`."""
+    if set(digested) != set(DIGEST_KEYS):
+        missing = sorted(set(DIGEST_KEYS) - set(digested))
+        extra = sorted(set(digested) - set(DIGEST_KEYS))
+        raise CognitionError(
+            f"digest sections do not match DIGEST_KEYS (missing {missing}, "
+            f"unexpected {extra})")
+    for section, expected in DIGEST_KEYS.items():
+        rows = digested[section]
+        rows = [rows] if isinstance(rows, Mapping) else rows
+        for row in rows:
+            if set(row) != set(expected):
+                missing = sorted(set(expected) - set(row))
+                extra = sorted(set(row) - set(expected))
+                raise CognitionError(
+                    f"digest section {section!r} renders the wrong fields "
+                    f"(missing {missing}, unexpected {extra}); a digest that "
+                    "renders less compares less, and every replay assertion "
+                    "in the suite would go on passing")
+
 
 def _split(triple: Optional[Sequence[Any]]):
     if triple is None:

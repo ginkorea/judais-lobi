@@ -19,8 +19,15 @@ good faith.  So an unknown op is refused, and an unversioned snapshot with it.
 **That closure is semi-naive.**  A naive engine returns exactly the same
 propositions, so no assertion about the answer can tell the two apart.
 :class:`~core.cognition.types.MatchStats` can, and the incrementality tests
-read it: forty rules in the store, one delta, and the count of rules the engine
-looked at.
+read it: forty-one rules in the store, one field in the delta, and the count
+of rules the engine looked at.
+
+**That the digest still renders everything.**  Every replay assertion in this
+file compares digests, which makes
+:meth:`~core.cognition.state.CognitiveState.digest` the one place where
+*narrowing* is invisible — drop a field and the comparisons still match and
+prove strictly less.  :data:`~core.cognition.state.DIGEST_KEYS` is pinned as
+literals here for that reason.
 
 The package's standing constraints — no I/O, no clock, no import of
 :mod:`core.runtime` — are asserted at the bottom against the source, because
@@ -28,15 +35,17 @@ they are the reason the shadow-attachment lane can depend on this package and
 not the other way round.
 """
 
+import ast
 import random
 import re
 from pathlib import Path
 
 import pytest
 
-from core.cognition import (EVENT_OPS, EVENT_SCHEMA_VERSION, EVENTS_KEY,
-                            SCHEMA_KEY, CognitiveState, EvidenceRef,
-                            ReplayRefused, RuleAuthority)
+from core.cognition import (DIGEST_KEYS, EVENT_OPS, EVENT_SCHEMA_VERSION,
+                            EVENTS_KEY, SCHEMA_KEY, CognitiveState,
+                            EvidenceAuthority, EvidenceRef, ReplayRefused,
+                            RuleAuthority)
 from core.cognition.state import ENV_CAP
 
 PACKAGE = Path(__file__).resolve().parent.parent / "core" / "cognition"
@@ -44,6 +53,13 @@ PACKAGE = Path(__file__).resolve().parent.parent / "core" / "cognition"
 RECEIPT = EvidenceRef(kind="receipt", locator="seq:1")
 OTHER = EvidenceRef(kind="receipt", locator="seq:2")
 GUESS = EvidenceRef(kind="extraction", locator="turn:1")
+
+
+def json_round_trip(value):
+    """Through a real encoder and back, the way a log actually travels."""
+    import json
+
+    return json.loads(json.dumps(value))
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +124,85 @@ class TestEveryWriteIsOneEvent:
             state.derive()
         assert len(state.events) == before
 
+    @staticmethod
+    def _two_timings(read_in_the_middle):
+        state = CognitiveState()
+        state.add_rule("controls", ("?a", "controls", "?c"),
+                       [("?a", "admin_access", "?c")], RuleAuthority.DOMAIN)
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        if read_in_the_middle:
+            state.frontier()
+        state.assert_observation(("bob", "admin_access", "acct-1"),
+                                 evidence=[OTHER])
+        state.derive()
+        return state
+
+    def test_a_read_with_work_outstanding_writes_one_derive(self):
+        """The price of the implicit flush, pinned rather than wished away:
+        **when somebody reads is part of what the log says.**
+
+        Two callers issuing identical writes, one reading the frontier
+        between them and one not, keep logs of different length. Each log
+        replays to its own store exactly — that is the property the sweep
+        above proves, and it is not weakened here. What is *not* true is that
+        the two stores are the same store.
+        """
+        watched = self._two_timings(True)
+        unwatched = self._two_timings(False)
+        assert len(watched.events) == len(unwatched.events) + 1
+        assert [e["op"] for e in watched.events].count("derive") == 2
+        assert [e["op"] for e in unwatched.events].count("derive") == 1
+
+    def test_and_the_timing_reaches_the_ids_as_well_as_the_log(self):
+        """Further than the log, and this is the sharp end of it.
+
+        Ids are assigned by insertion order, and an early flush inserts a
+        *derived* proposition before the next observation arrives. So the
+        same writes read at different moments hold the same claims under
+        different names: `p2` is bob's observation in one store and alice's
+        conclusion in the other. Anything that carries a proposition id
+        across two runs — a cached obligation, a diff of two transcripts, an
+        id written into a record somewhere else — is carrying something that
+        only means anything inside one store's own history.
+        """
+        watched = self._two_timings(True)
+        unwatched = self._two_timings(False)
+        assert watched.digest_json() != unwatched.digest_json()
+        assert [(p.triple, p.status) for p in watched.propositions()] != \
+               [(p.triple, p.status) for p in unwatched.propositions()], \
+            "the difference is the order ids were handed out in"
+
+    def test_what_the_timing_does_not_reach_is_what_is_believed(self):
+        """And the half that holds: the same writes give the same claims with
+        the same statuses and the same proofs, whoever read and whenever.
+        Content is a fact about the world; ids are a fact about this store's
+        history. Obligation ids are content-addressed for exactly this
+        reason, so the frontier survives the difference intact."""
+        watched = self._two_timings(True)
+        unwatched = self._two_timings(False)
+        assert {(p.triple, p.status) for p in watched.propositions()} == \
+               {(p.triple, p.status) for p in unwatched.propositions()}
+        watched.add_goal(("?who", "controls", "acct-1"))
+        unwatched.add_goal(("?who", "controls", "acct-1"))
+        assert [o.id for o in watched.frontier()] == \
+               [o.id for o in unwatched.frontier()]
+
+    def test_the_staging_area_is_visible_before_a_read_clears_it(self):
+        """Which is why `pending()` is public: the implicit flush is
+        otherwise something a caller can only find out about afterwards."""
+        state = CognitiveState()
+        pid = state.assert_observation(("alice", "admin_access", "acct-9"),
+                                       evidence=[RECEIPT])
+        assert state.has_pending
+        assert state.pending() == {"propositions": (pid,), "rules": ()}
+        state.derive()
+        assert not state.has_pending
+
     def test_reading_does_not_grow_the_log(self):
         """Reads flush, so a read *can* write a `derive` — once. A log that
         grew with every `frontier()` call would make the record a fact about
-        who looked at the store rather than about who changed it."""
+        how often somebody looked rather than about when."""
         state = CognitiveState()
         state.add_rule("controls", ("?a", "controls", "?c"),
                        [("?a", "admin_access", "?c")], RuleAuthority.DOMAIN)
@@ -134,7 +225,21 @@ class TestEveryWriteIsOneEvent:
         snapshot = state.snapshot()
         assert snapshot[SCHEMA_KEY] == EVENT_SCHEMA_VERSION
         assert [event["op"] for event in snapshot[EVENTS_KEY]] == \
-            ["assert_observation"]
+            ["assert_observation", "derive"]
+
+    def test_the_snapshot_flushes_first(self):
+        """A snapshot is the one read whose whole purpose is to be handed
+        somewhere else. Taken with work outstanding it would replay into a
+        store that did that work on its reader's first question — correct,
+        and one more place where "when did somebody read" decides what a log
+        looks like."""
+        state = CognitiveState()
+        state.assert_observation(("alice", "role", "admin"),
+                                 evidence=[RECEIPT])
+        assert state.has_pending
+        state.snapshot()
+        assert not state.has_pending
+        assert state.pending() == {"propositions": (), "rules": ()}
 
     def test_that_version_is_the_kernels_own_number(self):
         """Not the wire contract's. They change for different reasons and at
@@ -249,10 +354,52 @@ class TestAStoreIsExactlyItsLog:
         assert digest["contradictions"], "nothing ever collided"
         assert len(digest["propositions"]) > 5
 
-    def test_replay_accepts_a_bare_event_list(self):
+    def test_a_bare_event_list_is_refused(self):
+        """It used to be accepted, as a convenience for a consumer reading
+        the log back a line at a time out of a JSONL file. That convenience
+        pointed the version bypass at precisely the reader most likely to
+        need the version: the one holding lines off a disk, written by some
+        other release. Wrapping them is one expression."""
         state = _script(1)
-        again = CognitiveState.replay(list(state.events))
-        assert again.digest_json() == state.digest_json()
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay(list(state.events))
+        wrapped = {SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+                   EVENTS_KEY: list(state.events)}
+        assert CognitiveState.replay(wrapped).digest_json() == \
+            state.digest_json()
+
+    def test_a_reordered_log_is_refused(self):
+        """`n` is the only thing in a record that can catch this. Every event
+        below is still perfectly well-formed and the store they replay into is
+        not the one that was written."""
+        state = _script(7)
+        snapshot = state.snapshot()
+        events = snapshot[EVENTS_KEY]
+        events[1], events[2] = events[2], events[1]
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay(snapshot)
+
+    def test_a_truncated_log_is_refused(self):
+        state = _script(8)
+        snapshot = state.snapshot()
+        del snapshot[EVENTS_KEY][2]
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay(snapshot)
+
+    def test_a_duplicated_event_is_refused(self):
+        state = _script(9)
+        snapshot = state.snapshot()
+        snapshot[EVENTS_KEY].insert(3, dict(snapshot[EVENTS_KEY][2]))
+        with pytest.raises(ReplayRefused):
+            CognitiveState.replay(snapshot)
+
+    def test_a_log_with_its_numbering_intact_still_replays(self):
+        """The n-check has to refuse corruption without refusing a log
+        somebody legitimately re-serialised."""
+        state = _script(10)
+        snapshot = json_round_trip(state.snapshot())
+        assert CognitiveState.replay(snapshot).digest_json() == \
+            state.digest_json()
 
     def test_replaying_a_replay_is_the_same_store(self):
         state = _script(2)
@@ -296,12 +443,83 @@ class TestAStoreIsExactlyItsLog:
             CognitiveState.replay(snapshot)
 
     def test_the_log_is_json_safe(self):
-        import json
-
         state = _script(6)
-        round_tripped = json.loads(json.dumps(state.snapshot()))
-        again = CognitiveState.replay(round_tripped)
+        again = CognitiveState.replay(json_round_trip(state.snapshot()))
         assert again.digest_json() == state.digest_json()
+
+    def test_the_door_stamp_survives_the_round_trip(self):
+        """The stamp is what stops the evidence union from erasing the wall,
+        and it travels in the log — so it has to come back through a real
+        encoder rather than only through an in-process replay."""
+        state = CognitiveState()
+        pid = state.assert_hypothesis(("alice", "role", "admin"),
+                                      evidence=[GUESS],
+                                      authority=EvidenceAuthority.MODEL_EXTRACTION)
+        state.assert_observation(("alice", "role", "admin"),
+                                 evidence=[RECEIPT])
+        again = CognitiveState.replay(json_round_trip(state.snapshot()))
+        assert {ref.authority for ref in again.proposition(pid).evidence} == \
+            {EvidenceAuthority.MODEL_EXTRACTION, EvidenceAuthority.SOURCE}
+
+
+# ---------------------------------------------------------------------------
+# What the digest renders
+# ---------------------------------------------------------------------------
+
+class TestTheDigestRendersEverything:
+    """`digest()` is the comparator every replay assertion above runs
+    through, which makes it the one place in this package where narrowing is
+    invisible: drop a field and the digests still match, the tests still
+    pass, and the property they were proving is quietly a weaker one. The key
+    sets are therefore written out here as literals — the same answer as
+    `DIGEST_KEYS`, arrived at separately — so a field can leave the digest
+    only in an edit that says so twice. Same idiom, same hazard, as
+    `GROUNDING_KEYS` and its merge rules."""
+
+    EXPECTED = {
+        "propositions": {"id", "revision", "previous", "entity", "field",
+                         "value", "text", "status", "authority", "derivation",
+                         "evidence", "history"},
+        "rules": {"id", "name", "authority", "head", "body"},
+        "derivations": {"id", "rule", "premises", "conclusion"},
+        "goals": {"id", "pattern", "note"},
+        "contradictions": {"id", "kind", "left", "right", "detail",
+                           "evidence"},
+        "pending": {"propositions", "rules"},
+    }
+
+    def test_the_sections_are_the_ones_declared(self):
+        assert set(DIGEST_KEYS) == set(self.EXPECTED)
+        assert set(_script(11).digest()) == set(self.EXPECTED)
+
+    @pytest.mark.parametrize("section", sorted(EXPECTED))
+    def test_the_declared_keys_are_these_keys(self, section):
+        assert set(DIGEST_KEYS[section]) == self.EXPECTED[section]
+
+    @pytest.mark.parametrize("section", sorted(EXPECTED))
+    def test_every_row_rendered_carries_them(self, section):
+        digest = _script(11).digest()
+        rows = digest[section]
+        rows = [rows] if isinstance(rows, dict) else rows
+        assert rows, f"the script produced no {section}; this proves nothing"
+        for row in rows:
+            assert set(row) == self.EXPECTED[section]
+
+    def test_a_narrowed_digest_is_refused_rather_than_compared(self):
+        """Not only pinned by a test — refused on the way out, so a narrowing
+        cannot pass through a store that nobody happened to run this file
+        against."""
+        state = _script(11)
+        original = dict(DIGEST_KEYS["propositions"] and DIGEST_KEYS)
+        try:
+            DIGEST_KEYS["propositions"] = frozenset(
+                set(DIGEST_KEYS["propositions"]) | {"invented"})
+            with pytest.raises(Exception):
+                state.digest()
+        finally:
+            DIGEST_KEYS.clear()
+            DIGEST_KEYS.update(original)
+        assert state.digest(), "the guard was restored"
 
 
 # ---------------------------------------------------------------------------
@@ -464,10 +682,13 @@ class TestThePackageStandsAlone:
                                 capture_output=True, text=True,
                                 cwd=str(PACKAGE.parent.parent), timeout=60)
         assert result.returncode == 0, result.stderr
-        loaded = result.stdout.strip()
-        assert "core.runtime" not in loaded, loaded
-        assert "core.tools" not in loaded, loaded
-        assert "core.cognition.state" in loaded, loaded
+        loaded = ast.literal_eval(result.stdout.strip())
+        assert set(loaded) == {
+            "core.cognition", "core.cognition.events",
+            "core.cognition.matching", "core.cognition.state",
+            "core.cognition.types",
+        }, ("the standalone claim is the whole loaded set, not the absence of "
+            f"two names somebody thought to check: {sorted(loaded)}")
 
     def test_the_join_cap_is_a_named_bound(self):
         """The frontier is the cheapest true thing to do next, not a proof
@@ -475,3 +696,38 @@ class TestThePackageStandsAlone:
         no name is a magic number somebody halves in a hurry."""
         assert ENV_CAP > 0
         assert "ENV_CAP" in (PACKAGE / "state.py").read_text(encoding="utf-8")
+
+
+class TestTheFrontierSaysWhenItStoppedBeingComplete:
+    """A truncated join and an exhausted one look identical from the outside:
+    both return a frontier and neither says anything. The counter is the
+    difference, and it is here because "the frontier is a guide, not a proof
+    of exhaustiveness" is only an honest sentence if a caller can find out
+    which of the two it is holding."""
+
+    def test_an_ordinary_frontier_truncates_nothing(self):
+        state = CognitiveState()
+        state.add_rule("controls", ("?a", "controls", "?c"),
+                       [("?a", "admin_access", "?c"),
+                        ("?a", "payment_link", "?c")], RuleAuthority.DOMAIN)
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        state.add_goal(("?who", "controls", "acct-9"))
+        state.stats.reset()
+        assert state.frontier()
+        assert state.stats.envs_truncated == 0
+
+    def test_a_join_past_the_cap_says_so(self):
+        state = CognitiveState()
+        state.add_rule("controls", ("?a", "controls", "?c"),
+                       [("?a", "admin_access", "?c"),
+                        ("?a", "payment_link", "?c")], RuleAuthority.DOMAIN)
+        for index in range(ENV_CAP + 5):
+            state.assert_observation((f"actor-{index}", "admin_access",
+                                      "acct-9"), evidence=[RECEIPT])
+        state.add_goal(("?who", "controls", "acct-9"))
+        state.stats.reset()
+        owed = state.frontier()
+        assert state.stats.envs_truncated > 0
+        assert len(owed) <= ENV_CAP, \
+            "the cap bounds the work, and the counter admits it"
