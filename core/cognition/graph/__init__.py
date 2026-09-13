@@ -72,28 +72,38 @@ its reads), :mod:`~core.cognition.graph.events` (the log and its own version),
 :mod:`~core.cognition.graph.hydrate` (the bounded working set).
 """
 
-from core.cognition.graph.events import (EVENTS_KEY, GRAPH_EVENT_OPS,
-                                         GRAPH_EVENT_SCHEMA_VERSION,
-                                         GRAPH_PACKAGE_VERSION, PACKAGE_KEY,
-                                         SCHEMA_KEY)
+from core.cognition.graph.events import EVENTS_KEY as EVENTS_KEY
+from core.cognition.graph.events import GRAPH_EVENT_OPS, GRAPH_EVENT_SCHEMA_VERSION
+from core.cognition.graph.events import GRAPH_PACKAGE_VERSION
+from core.cognition.graph.events import PACKAGE_KEY as GRAPH_PACKAGE_KEY
+# The facade spells both header keys with the package's own prefix. Inside
+# `events` they are `SCHEMA_KEY` and `PACKAGE_KEY`, the way the kernel spells
+# its own; on the way out they are qualified, because a caller that imports
+# `SCHEMA_KEY` from one sibling and then from the other gets one name holding
+# two different strings and no error anywhere — the shadow lane reads both
+# logs and is exactly the caller this would happen to.
+from core.cognition.graph.events import SCHEMA_KEY as GRAPH_SCHEMA_KEY
 from core.cognition.graph.hydrate import WorkingSet, hydrate
-from core.cognition.graph.store import (DIGEST_KEYS, DIRECTIONS, STATS_KEYS,
-                                        Edge, KnowledgeGraph, NodeKind,
-                                        NodeView)
+from core.cognition.graph.store import (DIGEST_KEYS, DIRECTIONS, EDGE_KEYS,
+                                        KIND_KEYS, NAME_CAP, STATS_KEYS, Edge,
+                                        KnowledgeGraph, NodeKind, NodeView)
 
 __all__ = [
     "DIGEST_KEYS",
     "DIRECTIONS",
+    "EDGE_KEYS",
     "EVENTS_KEY",
     "Edge",
     "GRAPH_EVENT_OPS",
     "GRAPH_EVENT_SCHEMA_VERSION",
+    "GRAPH_PACKAGE_KEY",
     "GRAPH_PACKAGE_VERSION",
+    "GRAPH_SCHEMA_KEY",
+    "KIND_KEYS",
     "KnowledgeGraph",
+    "NAME_CAP",
     "NodeKind",
     "NodeView",
-    "PACKAGE_KEY",
-    "SCHEMA_KEY",
     "STATS_KEYS",
     "WorkingSet",
     "hydrate",

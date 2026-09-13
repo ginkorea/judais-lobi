@@ -34,12 +34,11 @@ from pathlib import Path
 
 import pytest
 
-from core.cognition.events import EVENT_SCHEMA_VERSION
 from core.cognition.events import SCHEMA_KEY as KERNEL_SCHEMA_KEY
 from core.cognition.graph import (EVENTS_KEY, GRAPH_EVENT_OPS,
                                   GRAPH_EVENT_SCHEMA_VERSION,
-                                  GRAPH_PACKAGE_VERSION, PACKAGE_KEY,
-                                  SCHEMA_KEY, KnowledgeGraph, hydrate)
+                                  GRAPH_PACKAGE_KEY, GRAPH_PACKAGE_VERSION,
+                                  GRAPH_SCHEMA_KEY, KnowledgeGraph, hydrate)
 from core.cognition.types import EvidenceAuthority, EvidenceRef, ReplayRefused
 
 PACKAGE = (Path(__file__).resolve().parent.parent / "core" / "cognition"
@@ -153,9 +152,9 @@ class TestEveryWriteIsOneEvent:
         graph.add_edge("alice", "knows", "bob",
                        authority=EvidenceAuthority.SOURCE, evidence=[RECEIPT])
         snapshot = graph.snapshot()
-        assert snapshot[SCHEMA_KEY] == GRAPH_EVENT_SCHEMA_VERSION
-        assert snapshot[PACKAGE_KEY] == GRAPH_PACKAGE_VERSION
-        assert SCHEMA_KEY != PACKAGE_KEY
+        assert snapshot[GRAPH_SCHEMA_KEY] == GRAPH_EVENT_SCHEMA_VERSION
+        assert snapshot[GRAPH_PACKAGE_KEY] == GRAPH_PACKAGE_VERSION
+        assert GRAPH_SCHEMA_KEY != GRAPH_PACKAGE_KEY
         assert [event["op"] for event in snapshot[EVENTS_KEY]] == ["add_edge"]
 
     def test_that_version_is_this_packages_own_number(self):
@@ -168,10 +167,9 @@ class TestEveryWriteIsOneEvent:
                              source, re.MULTILINE)
         assert assigned, "the graph event schema version is not a literal here"
         assert int(assigned.group(1)) == GRAPH_EVENT_SCHEMA_VERSION
-        assert SCHEMA_KEY != KERNEL_SCHEMA_KEY
+        assert GRAPH_SCHEMA_KEY != KERNEL_SCHEMA_KEY
         assert "core.cognition.events.EVENT_SCHEMA_VERSION" \
             not in _imported("events"), "this version is the kernel's"
-        assert EVENT_SCHEMA_VERSION == 1  # today they agree; they need not
 
     def test_the_events_a_reader_gets_are_copies(self):
         graph = KnowledgeGraph()
@@ -257,7 +255,7 @@ class TestAGraphIsExactlyItsLog:
         graph = _script(1)
         with pytest.raises(ReplayRefused):
             KnowledgeGraph.replay(list(graph.events))
-        wrapped = {SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
+        wrapped = {GRAPH_SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
                    EVENTS_KEY: list(graph.events)}
         assert KnowledgeGraph.replay(wrapped).digest_json() == \
             graph.digest_json()
@@ -290,13 +288,13 @@ class TestAGraphIsExactlyItsLog:
 
     def test_an_unversioned_snapshot_is_refused(self):
         snapshot = _script(5).snapshot()
-        del snapshot[SCHEMA_KEY]
+        del snapshot[GRAPH_SCHEMA_KEY]
         with pytest.raises(ReplayRefused):
             KnowledgeGraph.replay(snapshot)
 
     def test_a_newer_schema_is_refused(self):
         snapshot = _script(6).snapshot()
-        snapshot[SCHEMA_KEY] = GRAPH_EVENT_SCHEMA_VERSION + 1
+        snapshot[GRAPH_SCHEMA_KEY] = GRAPH_EVENT_SCHEMA_VERSION + 1
         with pytest.raises(ReplayRefused):
             KnowledgeGraph.replay(snapshot)
 
@@ -306,7 +304,7 @@ class TestAGraphIsExactlyItsLog:
         every semantic revision a break for readers that did not need one."""
         graph = _script(6)
         snapshot = graph.snapshot()
-        snapshot[PACKAGE_KEY] = GRAPH_PACKAGE_VERSION + 3
+        snapshot[GRAPH_PACKAGE_KEY] = GRAPH_PACKAGE_VERSION + 3
         again = KnowledgeGraph.replay(snapshot)
         assert again.digest_json() == graph.digest_json()
 
@@ -314,7 +312,7 @@ class TestAGraphIsExactlyItsLog:
         """When a newer package *does* carry an op we do not have, the message
         says which version wrote it rather than leaving somebody to guess."""
         snapshot = _script(7).snapshot()
-        snapshot[PACKAGE_KEY] = 9
+        snapshot[GRAPH_PACKAGE_KEY] = 9
         snapshot[EVENTS_KEY].append({"n": len(snapshot[EVENTS_KEY]) + 1,
                                      "op": "merge_nodes"})
         with pytest.raises(ReplayRefused, match="9"):
@@ -322,7 +320,7 @@ class TestAGraphIsExactlyItsLog:
 
     def test_a_package_version_that_is_not_a_version_is_refused(self):
         snapshot = _script(8).snapshot()
-        snapshot[PACKAGE_KEY] = "one"
+        snapshot[GRAPH_PACKAGE_KEY] = "one"
         with pytest.raises(ReplayRefused):
             KnowledgeGraph.replay(snapshot)
 
@@ -332,7 +330,7 @@ class TestAGraphIsExactlyItsLog:
         the parse is even possible."""
         graph = _script(9)
         snapshot = graph.snapshot()
-        del snapshot[PACKAGE_KEY]
+        del snapshot[GRAPH_PACKAGE_KEY]
         assert KnowledgeGraph.replay(snapshot).digest_json() == \
             graph.digest_json()
 
@@ -356,6 +354,60 @@ class TestAGraphIsExactlyItsLog:
         snapshot[EVENTS_KEY][0]["authority"] = "vibes"
         with pytest.raises(ReplayRefused):
             KnowledgeGraph.replay(snapshot)
+
+
+class TestAnEmptyGraphIsNeverTheDefaultAnswer:
+    """The worst shape a replay can fail in, and the only one that fails
+    *quietly*.
+
+    ``raw.get(EVENTS_KEY) or []`` reads an absent key, a ``None``, a ``0``, an
+    empty string and an empty mapping all as "no events", and a replay of no
+    events is an empty graph — a perfectly well-formed answer that nothing
+    downstream can tell from a graph that was genuinely never written to.  A
+    truncated file, a renamed key, a half-written envelope: every one would
+    come back with no edges and no complaint, and every read afterwards would
+    honestly report that nothing is connected to anything.
+    """
+
+    def test_a_snapshot_with_no_events_key_is_refused(self):
+        graph = _script(1)
+        snapshot = graph.snapshot()
+        del snapshot[EVENTS_KEY]
+        with pytest.raises(ReplayRefused, match=EVENTS_KEY):
+            KnowledgeGraph.replay(snapshot)
+
+    @pytest.mark.parametrize("instead", [None, 0, "", {}, "add_edge"])
+    def test_events_that_are_not_a_list_are_refused(self, instead):
+        """Four of these are falsy and would have read as "no events"; the
+        fifth is a string, which is iterable and would have been walked one
+        character at a time into a refusal about the wrong thing."""
+        graph = _script(2)
+        snapshot = graph.snapshot()
+        snapshot[EVENTS_KEY] = instead
+        with pytest.raises(ReplayRefused):
+            KnowledgeGraph.replay(snapshot)
+
+    def test_an_empty_list_is_the_one_way_to_say_no_events(self):
+        """It is the only spelling somebody wrote on purpose."""
+        empty = KnowledgeGraph()
+        assert KnowledgeGraph.replay(empty.snapshot()).digest_json() == \
+            empty.digest_json()
+        assert KnowledgeGraph.replay(
+            {GRAPH_SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
+             EVENTS_KEY: []}).nodes() == ()
+
+    def test_the_refusal_arrives_before_a_graph_does(self):
+        """Not "a graph that turns out to be empty" — no graph at all. A
+        caller that stored the result of a refused replay would be holding the
+        empty graph this class exists to prevent."""
+        snapshot = _script(3).snapshot()
+        snapshot[EVENTS_KEY] = None
+        try:
+            KnowledgeGraph.replay(snapshot)
+        except ReplayRefused as exc:
+            assert EVENTS_KEY in str(exc) or "NoneType" in str(exc)
+        else:
+            raise AssertionError("a None events key replayed")
 
 
 class TestTheSequenceIsCounted:

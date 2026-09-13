@@ -37,8 +37,9 @@ from pathlib import Path
 
 import pytest
 
-from core.cognition.graph import (DIGEST_KEYS, STATS_KEYS, KnowledgeGraph,
-                                  WorkingSet, hydrate)
+from core.cognition.graph import (DIGEST_KEYS, EDGE_KEYS, KIND_KEYS, NAME_CAP,
+                                  STATS_KEYS, KnowledgeGraph, WorkingSet,
+                                  hydrate)
 from core.cognition.types import (CognitionError, EvidenceAuthority,
                                   EvidenceRef, UnknownId)
 
@@ -242,6 +243,85 @@ class TestNothingEntersWithoutAReceipt:
         assert graph.events == ()
 
 
+class TestANameIsAName:
+    """Four refusals beyond "non-empty string", each for a failure that would
+    otherwise be silent rather than loud."""
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    def test_the_kernels_variable_spelling_is_refused(self, position):
+        """``as_propositions`` projects these names into triples, so an edge
+        stored under ``?who`` would arrive at a kernel door looking like a
+        pattern — refused there, one door too late, in a message that can no
+        longer say which edge."""
+        graph = KnowledgeGraph()
+        triple = ["alice", "knows", "bob"]
+        triple[position] = "?who"
+        with pytest.raises(CognitionError, match=r"\?"):
+            graph.add_edge(*triple, authority=SOURCE, evidence=[RECEIPT])
+        assert graph.events == ()
+
+    def test_the_refusal_says_why_it_is_this_packages_business(self):
+        graph = KnowledgeGraph()
+        with pytest.raises(CognitionError, match="as_propositions"):
+            graph.add_edge("?who", "knows", "bob", authority=SOURCE,
+                           evidence=[RECEIPT])
+
+    @pytest.mark.parametrize("name", ["two\nlines", "a\tb", "bell\x07",
+                                      "null\x00byte", "del\x7f"])
+    def test_a_control_character_is_refused(self, name):
+        """A newline in a node name breaks every line-oriented rendering of a
+        working set, and a compiled context is line-oriented."""
+        graph = KnowledgeGraph()
+        with pytest.raises(CognitionError):
+            graph.add_edge(name, "knows", "bob", authority=SOURCE,
+                           evidence=[RECEIPT])
+        assert graph.events == ()
+
+    def test_a_lone_surrogate_is_refused(self):
+        """Python holds it and ``json.dumps`` writes it; ``json.loads`` will
+        not read it back. A graph that snapshots and never replays is the one
+        corruption the whole log discipline exists to make impossible — so the
+        refusal is checked *and* the round trip it protects."""
+        graph = KnowledgeGraph()
+        with pytest.raises(CognitionError):
+            graph.add_edge("bad\ud800name", "knows", "bob", authority=SOURCE,
+                           evidence=[RECEIPT])
+        assert graph.events == ()
+        graph.add_edge("平文", "knows", "bob", authority=SOURCE,
+                       evidence=[RECEIPT])
+        again = KnowledgeGraph.replay(
+            json.loads(json.dumps(graph.snapshot())))
+        assert again.digest_json() == graph.digest_json()
+
+    def test_a_name_longer_than_the_cap_is_refused(self):
+        graph = KnowledgeGraph()
+        assert NAME_CAP > 0
+        graph.add_edge("x" * NAME_CAP, "knows", "bob", authority=SOURCE,
+                       evidence=[RECEIPT])
+        with pytest.raises(CognitionError, match=str(NAME_CAP)):
+            graph.add_edge("x" * (NAME_CAP + 1), "knows", "bob",
+                           authority=SOURCE, evidence=[RECEIPT])
+
+    def test_the_rest_of_unicode_is_welcome(self):
+        """Entities in the world have names, and this package has no opinion
+        about which alphabet they are in."""
+        graph = KnowledgeGraph()
+        graph.add_edge("Ελλάδα", "γειτονεύει", "Ιταλία", authority=SOURCE,
+                       evidence=[RECEIPT])
+        graph.add_edge("naïve café", "serves", "☕", authority=SOURCE,
+                       evidence=[RECEIPT])
+        assert len(graph.edges()) == 2
+        assert graph.node("Ελλάδα").degree == 1
+
+    def test_a_kind_statement_is_held_to_the_same_names(self):
+        graph = KnowledgeGraph()
+        for pair in (("?who", "person"), ("alice", "?kind"),
+                     ("two\nlines", "person"), ("alice", "x" * 9999)):
+            with pytest.raises(CognitionError):
+                graph.node_kind(*pair, authority=SOURCE, evidence=[RECEIPT])
+        assert graph.events == ()
+
+
 class TestTheOneNodeLevelStatement:
     def test_a_kind_is_stored_with_its_authority(self):
         graph = KnowledgeGraph()
@@ -332,6 +412,40 @@ class TestAModelEdgeNeverPassesForAReference:
                          radius=3, min_authority=SOURCE)
         assert "carol" not in strict.nodes
         assert all(edge.authority is not EXTRACTED for edge in strict.edges)
+
+    def test_a_degree_is_a_summary_and_is_floored_too(self):
+        """The quietest way for a guess to reach a decision. "How connected is
+        this node" answered at ``SOURCE`` has to mean connected by things the
+        caller would accept, or the number is about a graph nobody asked for —
+        and a number needs no reading of the edges to be believed."""
+        graph = _graph(("alice", "reports_to", "bob", SOURCE),
+                       ("alice", "knows", "carol", EXTRACTED),
+                       ("dave", "knows", "alice", EXTRACTED))
+        assert graph.node("alice").degree == 3
+        floored = graph.node("alice", min_authority=SOURCE)
+        assert (floored.out_degree, floored.in_degree) == (1, 0)
+        assert floored.degree == 1
+        assert floored.relations == ("reports_to",)
+
+    def test_the_floored_relations_are_a_subsequence_of_the_others(self):
+        """A filter that also reordered would be read as a reordering."""
+        graph = _graph(("hub", "a_rel", "x", EXTRACTED),
+                       ("y", "b_rel", "hub", SOURCE),
+                       ("hub", "c_rel", "z", SOURCE))
+        loose = list(graph.node("hub").relations)
+        strict = list(graph.node("hub", min_authority=SOURCE).relations)
+        assert loose == ["a_rel", "b_rel", "c_rel"]
+        assert strict == ["b_rel", "c_rel"]
+        assert [item for item in loose if item in strict] == strict
+
+    def test_a_kind_is_floored_with_everything_else(self):
+        graph = KnowledgeGraph()
+        graph.node_kind("alice", "person", authority=SOURCE,
+                        evidence=[RECEIPT])
+        graph.node_kind("alice", "suspect", authority=EXTRACTED,
+                        evidence=[GUESS])
+        assert graph.node("alice").kinds == ("person", "suspect")
+        assert graph.node("alice", min_authority=SOURCE).kinds == ("person",)
 
     def test_an_upgraded_edge_passes_the_floor_it_used_to_fail(self):
         """The floor reads the live revision, which is the only reading that
@@ -517,6 +631,36 @@ class TestAWorkingSetIsNearestFirst:
         workset = hydrate(graph, ["a", "b"], max_nodes=9, max_edges=9,
                           radius=0)
         assert [edge.id for edge in workset.edges] == ["e1"]
+
+    def test_the_closing_pass_honours_the_authority_floor(self):
+        """The pass runs after the walk and is the last place an edge can
+        enter a working set. An arm that compiled at ``SOURCE`` and got a
+        model's guess in through the back door would have the floor defeated
+        by the feature that makes the set a graph."""
+        graph = _graph(("seed", "knows", "a", SOURCE),
+                       ("seed", "knows", "b", SOURCE),
+                       ("a", "rumour", "b", EXTRACTED))
+        loose = hydrate(graph, ["seed"], max_nodes=10, max_edges=10, radius=1)
+        assert [edge.id for edge in loose.edges] == ["e1", "e2", "e3"]
+        strict = hydrate(graph, ["seed"], max_nodes=10, max_edges=10,
+                         radius=1, min_authority=SOURCE)
+        assert [edge.id for edge in strict.edges] == ["e1", "e2"]
+        assert strict.nodes == ("seed", "a", "b"), \
+            "the two ends are still in; only the guess between them is not"
+        assert all(edge.authority is not EXTRACTED for edge in strict.edges)
+
+    def test_the_closing_pass_honours_the_relation_filter(self):
+        """Same hazard, the other argument: a relation the caller excluded
+        cannot re-enter between two outermost-ring nodes."""
+        graph = _graph(("seed", "knows", "a", SOURCE),
+                       ("seed", "knows", "b", SOURCE),
+                       ("a", "billed", "b", SOURCE))
+        loose = hydrate(graph, ["seed"], max_nodes=10, max_edges=10, radius=1)
+        assert [edge.id for edge in loose.edges] == ["e1", "e2", "e3"]
+        filtered = hydrate(graph, ["seed"], max_nodes=10, max_edges=10,
+                           radius=1, relations=["knows"])
+        assert [edge.id for edge in filtered.edges] == ["e1", "e2"]
+        assert filtered.nodes == ("seed", "a", "b")
 
     def test_the_edges_carry_their_authority(self):
         graph = _company()
@@ -721,6 +865,40 @@ class TestTheShapeOfTheWholeThing:
         graph = _company()
         assert tuple(graph.digest()) == DIGEST_KEYS
         assert json.loads(graph.digest_json()) == graph.digest()
+
+    def test_every_row_of_the_digest_is_declared_too(self):
+        """The sharper half, and the reason the top-level tuple is not enough:
+        a key *dropped* from a row breaks nothing. The comparison simply stops
+        looking at the authority, or the evidence, or the revision chain, and
+        every replay test goes on passing while the property it was written to
+        prove is no longer checked. The row is still there; it is just less of
+        an answer than it was."""
+        graph = _company()
+        graph.node_kind("alice", "person", authority=SOURCE,
+                        evidence=[RECEIPT])
+        digest = graph.digest()
+        assert digest["edges"], "nothing to check"
+        assert digest["kinds"], "nothing to check"
+        for row in digest["edges"]:
+            assert tuple(row) == EDGE_KEYS
+        for row in digest["kinds"]:
+            assert tuple(row) == KIND_KEYS
+        assert "authority" in EDGE_KEYS and "evidence" in EDGE_KEYS
+        assert "previous" in EDGE_KEYS and "history" in EDGE_KEYS
+
+    def test_the_row_carries_what_the_trust_boundary_needs(self):
+        """Named one by one, because these are the four a comparison would
+        stop making without failing: which word the edge is on, what backs it,
+        and the chain that says when either of those changed."""
+        graph = _graph(("alice", "knows", "bob", EXTRACTED))
+        graph.add_edge("alice", "knows", "bob", authority=DETERMINISTIC,
+                       evidence=[RECEIPT])
+        row = graph.digest()["edges"][0]
+        assert row["authority"] == "deterministic"
+        assert [ref["authority"] for ref in row["evidence"]] == \
+            ["model_extraction", "deterministic"]
+        assert row["previous"] == "e1@1"
+        assert row["history"] == ["e1@1", "e1@2"]
 
 
 # ---------------------------------------------------------------------------

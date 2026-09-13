@@ -37,6 +37,19 @@ edges and neither is news about the other.  Multi-edges between one pair under
 different relations are likewise distinct.  Nothing in this module ever raises
 a contradiction, because deciding that two relationships cannot both hold is a
 claim about the world and the kernel is where claims about the world live.
+
+**The division of labour is a convention, and the projection is where it is
+enforced.**  Nothing inside this store stops a caller putting an attribute in
+the ``dst`` position — ``(alice, role, "admin")`` is three strings and it will
+be stored as an edge like any other, with a node called ``admin`` and a degree
+to match.  The wall is at the door the two packages meet through:
+:meth:`KnowledgeGraph.as_propositions` hands triples to a kernel assertion,
+and everything the kernel enforces about them — the authority doors,
+single-valued fields, ground terms, its own value rules — binds there.  Saying
+so plainly is better than implying a structural guarantee this module does not
+make: a caller that stores attributes here gets a graph that works and a
+kernel that will contest them the moment they are projected, and that is the
+honest reading of "the kernel owns claims, the graph owns topology".
 """
 
 from __future__ import annotations
@@ -66,8 +79,31 @@ DIRECTIONS = ("out", "in", "both")
 #: silent change to what "the same graph" means.
 DIGEST_KEYS = ("edges", "kinds", "nodes", "stats")
 
+#: The keys of one edge inside that digest, declared for a sharper reason than
+#: the top level's.  A digest is what "these two graphs are the same one" means
+#: and what a replay is checked against, so a key *dropped* from here does not
+#: break anything: the comparison simply stops looking at ``authority``, or at
+#: ``evidence``, or at the revision chain, and every replay test goes on
+#: passing while the property it was written to prove is no longer being
+#: checked. The top-level tuple cannot catch that — the row is still there.
+EDGE_KEYS = ("id", "revision", "previous", "src", "relation", "dst",
+             "authority", "evidence", "history")
+
+#: The keys of one kind statement, for the same reason.
+KIND_KEYS = ("id", "revision", "previous", "node", "kind", "authority",
+             "evidence", "history")
+
 #: The keys :meth:`KnowledgeGraph.stats` produces, for the same reason.
 STATS_KEYS = ("nodes", "edges", "kinds", "relations", "edge_authorities")
+
+#: The longest a node name, relation or kind may be.  A cap chosen rather than
+#: discovered: nothing in this package needs a long one, ids are what get
+#: passed around, and an unbounded name is an unbounded key in six indexes, an
+#: unbounded string in every log line, and an unbounded row in a compiled
+#: context.  Generous enough that a URI or a fully-qualified identifier fits;
+#: small enough that a document pasted into the ``dst`` position is refused at
+#: the door rather than discovered in a working set.
+NAME_CAP = 512
 
 
 @dataclass(frozen=True)
@@ -440,19 +476,50 @@ class KnowledgeGraph:
             return tuple(self._kinds.values())
         return tuple(self._kinds[kid] for kid in self._node_kinds.get(node, ()))
 
-    def node(self, node: str) -> NodeView:
+    def node(self, node: str, *,
+             min_authority: Optional[EvidenceAuthority] = None) -> NodeView:
         """The index's view of one node. Refuses a node it has never seen —
         a degree of zero for a name nobody mentioned is an answer that reads
-        as data and is really a typo."""
+        as data and is really a typo.
+
+        ``min_authority`` floors this read like every other one, and it has to:
+        a degree, a relation list and a kind list are *summaries*, and a
+        summary counted over edges a caller has said it will not trust is the
+        quietest way for a model's guess to reach a decision.  "How connected
+        is this node" answered at ``SOURCE`` must mean connected by things the
+        caller would accept, or the number is about a graph nobody asked for.
+        The floor applies to kinds too, for the same reason.
+        """
         if node not in self._nodes:
             raise UnknownId(f"no node {node!r}")
+        if min_authority is None:
+            return NodeView(
+                node=node,
+                out_degree=len(self._out.get(node, ())),
+                in_degree=len(self._in.get(node, ())),
+                relations=tuple(self._node_relations[node]),
+                kinds=tuple(self._kinds[kid].kind
+                            for kid in self._node_kinds[node]))
+        floor = AUTHORITY_RANK[_check_authority(min_authority)]
+        out = [self._edges[eid] for eid in self._out.get(node, ())
+               if AUTHORITY_RANK[self._edges[eid].authority] >= floor]
+        into = [self._edges[eid] for eid in self._in.get(node, ())
+                if AUTHORITY_RANK[self._edges[eid].authority] >= floor]
+        # Order from the unfloored index, membership from what survived: the
+        # floored list has to be a *subsequence* of the unfloored one, or a
+        # caller comparing the two reads the filter as a reordering.
+        surviving = {edge.relation for edge in out}
+        surviving.update(edge.relation for edge in into)
+        relations = tuple(relation for relation in self._node_relations[node]
+                          if relation in surviving)
         return NodeView(
             node=node,
-            out_degree=len(self._out.get(node, ())),
-            in_degree=len(self._in.get(node, ())),
-            relations=tuple(self._node_relations[node]),
+            out_degree=len(out),
+            in_degree=len(into),
+            relations=relations,
             kinds=tuple(self._kinds[kid].kind
-                        for kid in self._node_kinds[node]))
+                        for kid in self._node_kinds[node]
+                        if AUTHORITY_RANK[self._kinds[kid].authority] >= floor))
 
     # ── reading: the walks ──────────────────────────────────────────────────
 
@@ -651,21 +718,21 @@ class KnowledgeGraph:
         comparison exists to catch.
         """
         return {
-            "edges": [{"id": edge.id, "revision": edge.revision,
-                       "previous": edge.previous, "src": edge.src,
-                       "relation": edge.relation, "dst": edge.dst,
-                       "authority": edge.authority.value,
-                       "evidence": encode_evidence(edge.evidence),
-                       "history": [item.key for item in self._history[edge.id]]}
-                      for edge in self._edges.values()],
-            "kinds": [{"id": item.id, "revision": item.revision,
-                       "previous": item.previous, "node": item.node,
-                       "kind": item.kind,
-                       "authority": item.authority.value,
-                       "evidence": encode_evidence(item.evidence),
-                       "history": [rev.key
-                                   for rev in self._kind_history[item.id]]}
-                      for item in self._kinds.values()],
+            "edges": [_row(EDGE_KEYS, {
+                "id": edge.id, "revision": edge.revision,
+                "previous": edge.previous, "src": edge.src,
+                "relation": edge.relation, "dst": edge.dst,
+                "authority": edge.authority.value,
+                "evidence": encode_evidence(edge.evidence),
+                "history": [item.key for item in self._history[edge.id]]})
+                for edge in self._edges.values()],
+            "kinds": [_row(KIND_KEYS, {
+                "id": item.id, "revision": item.revision,
+                "previous": item.previous, "node": item.node,
+                "kind": item.kind, "authority": item.authority.value,
+                "evidence": encode_evidence(item.evidence),
+                "history": [rev.key for rev in self._kind_history[item.id]]})
+                for item in self._kinds.values()],
             "nodes": [{"node": view.node, "out": view.out_degree,
                        "in": view.in_degree, "relations": list(view.relations),
                        "kinds": list(view.kinds)}
@@ -679,9 +746,79 @@ class KnowledgeGraph:
 
 # ── small helpers ───────────────────────────────────────────────────────────
 
+def _row(keys: Tuple[str, ...], built: Dict[str, Any]) -> Dict[str, Any]:
+    """One digest row, checked against its declared key set.
+
+    The declaration is only worth having if the code cannot drift from it, and
+    a digest row is the one place where drifting *quietly* is the whole
+    hazard: a key dropped from the rendering does not fail anything, it just
+    stops the comparison looking at that property while every replay test goes
+    on passing.  So the tuple is not documentation checked by a test — it is
+    the thing the row is built against, and a mismatch in either direction is
+    a programming error raised here.
+    """
+    if tuple(built) != keys:
+        raise CognitionError(
+            f"a digest row must carry exactly {keys}, not {tuple(built)}")
+    return built
+
+
 def _node_name(value: Any, what: str) -> str:
+    """A name this package will store, or a refusal naming the reason.
+
+    Four refusals beyond "non-empty string", each for a failure that is silent
+    rather than loud:
+
+    * **A leading ``?``.**  That spelling is the kernel's variable marker, and
+      :meth:`KnowledgeGraph.as_propositions` hands these names straight into
+      triples.  ``("?who", "knows", "bob")`` would arrive at a kernel door as
+      something that looks like a pattern; the kernel refuses it there, which
+      is one door too late — the edge is already in this graph, in six indexes
+      and in the log, and the refusal names a call the caller has forgotten.
+      Refusing at the door this package owns is the only place the message can
+      still say which edge.
+    * **Control characters.**  A newline in a node name is a name that breaks
+      every line-oriented rendering of a working set, and a compiled context is
+      line-oriented.  A name is a name, not a document.
+    * **Lone surrogates.**  A string Python will hold and ``json.dumps`` will
+      write but ``json.loads`` cannot read back is a graph that snapshots and
+      never replays — the one corruption this package's whole event-log
+      discipline is built to make impossible.
+    * **Length.**  See :data:`NAME_CAP`.
+
+    Unicode is otherwise welcome: entities in the world have names, and this
+    package has no opinion about which alphabet they are in.
+    """
     if not isinstance(value, str) or not value:
         raise CognitionError(f"{what} is a non-empty string, not {value!r}")
+    if value.startswith("?"):
+        raise CognitionError(
+            f"{what} may not begin with '?' ({value!r}): that is the kernel's "
+            "variable spelling, and as_propositions() projects these names "
+            "into triples, so an edge stored under one would arrive at an "
+            "assertion door looking like a pattern — refused there, where the "
+            "message can no longer say which edge")
+    if len(value) > NAME_CAP:
+        raise CognitionError(
+            f"{what} is {len(value)} characters; the cap is {NAME_CAP}, "
+            "because a name is a key in six indexes, a string in every log "
+            "line and a row in a compiled context, and none of those wants a "
+            "document in it")
+    for char in value:
+        code = ord(char)
+        if code < 0x20 or code == 0x7F:
+            raise CognitionError(
+                f"{what} carries the control character {char!r} ({value!r}); a "
+                "newline or a tab in a name breaks every line-oriented "
+                "rendering of a working set, and a compiled context is "
+                "line-oriented")
+        if 0xD800 <= code <= 0xDFFF:
+            raise CognitionError(
+                f"{what} carries a lone surrogate ({value!r}); Python will "
+                "hold it and json.dumps will write it, but json.loads will "
+                "not read it back — a graph that snapshots and never replays "
+                "is the one corruption this package's log discipline exists "
+                "to make impossible")
     return value
 
 

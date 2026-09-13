@@ -120,6 +120,18 @@ def check_snapshot(raw: Any) -> List[dict]:
     refused by the missing key, and that is the intended reading: a kernel log
     fed to a graph should be named as the mistake it is, not walked until it
     happens to find no ops it knows.
+
+    **The events key is required and must be a list**, and the reason is the
+    worst failure this function can have.  ``raw.get(EVENTS_KEY) or []`` reads
+    an absent key, a ``None``, a ``0``, an empty string and an empty mapping
+    all as "no events" — and a replay of no events is an *empty graph*, which
+    is a perfectly well-formed answer that nothing downstream can distinguish
+    from a graph that was genuinely never written to.  A truncated file, a
+    renamed key, a half-written envelope: every one of them would come back as
+    a graph with no edges and no complaint, and every read afterwards would
+    honestly report that nothing is connected to anything.  An empty list is
+    the one way to say "no events", because it is the only one somebody wrote
+    on purpose.
     """
     wrote = GRAPH_PACKAGE_VERSION
     if not isinstance(raw, _MappingABC):
@@ -145,7 +157,19 @@ def check_snapshot(raw: Any) -> List[dict]:
                 or wrote < 1:
             raise ReplayRefused(
                 f"{PACKAGE_KEY} is a version number, not {wrote!r}")
-    events = raw.get(EVENTS_KEY) or []
+    if EVENTS_KEY not in raw:
+        raise ReplayRefused(
+            f"a graph snapshot carries its events under {EVENTS_KEY!r}; this "
+            "one has no such key, and reading that as an empty log would "
+            "rebuild an empty graph that nothing downstream could tell from a "
+            "graph nobody ever wrote to")
+    events = raw[EVENTS_KEY]
+    if not isinstance(events, list):
+        raise ReplayRefused(
+            f"{EVENTS_KEY!r} is an ordered list of events, not "
+            f"{type(events).__name__} ({events!r}); an empty list is how a log "
+            "with nothing in it says so, and it is the only spelling somebody "
+            "wrote on purpose")
     out: List[dict] = []
     for index, event in enumerate(events):
         if not isinstance(event, _MappingABC):
