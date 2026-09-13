@@ -204,6 +204,7 @@ class TestEveryPromisedNameIsItsOwners:
         "MissionWindow": "core.runtime.context_window",
         "GOVERNED_PLANE": "core.runtime.prompts",
         "RunStore": "core.durable",
+        "open_shadow": "core.runtime.cognition",
         "SCHEMA_VERSION": "core.runtime.contract",
     }
 

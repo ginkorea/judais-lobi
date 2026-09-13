@@ -696,6 +696,13 @@ class SwarmRunner:
         control: Any = None,
         gate_wait_s: float = GATE_WAIT_S,
         memory: Any = None,
+        # `--cognition`'s shadow store, or `None`. Threaded rather than
+        # left out: this constructor is a library caller's door to the
+        # same loop the CLI runs, and a parameter it cannot pass is a
+        # feature it silently does not get. Duck-typed like `recorder` —
+        # see `core.runtime.run.Store.cognition` and
+        # `core.runtime.cognition.open_shadow`, which is how one is built.
+        cognition: Any = None,
         parallel: int = 1,
     ):
         # THE ADAPTER, and it is `MissionRunner.__init__`'s adapter with
@@ -706,7 +713,7 @@ class SwarmRunner:
         # it — and the constructor's surface is unchanged because `core/cli
         # .py` and this class's conformance suite hold it.
         store = Store(runs=run_store, run_id=run_id, approvals=approvals,
-                      ticket=approval)
+                      ticket=approval, cognition=cognition)
         # ONE plane for the whole turn, shared by every sub-mission. Each
         # used to build its own from the manifest's list, so a tool the bus
         # grew mid-turn was offered to the step that learned of it and to

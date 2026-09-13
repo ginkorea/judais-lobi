@@ -856,6 +856,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--gate-wait", "--replay", "--grant",
     "--campaign", "--campaign-plan",
     "--no-grounding",
+    "--cognition",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:
@@ -941,6 +942,17 @@ CLI_FLAGS: tuple[str, ...] = (
 #: effect on a backend whose capabilities do not declare
 #: ``supports_streaming``, which is asked before the flag is consulted.
 #:
+#: ``JUDAIS_LOBI_COGNITION`` is the environment form of ``--cognition`` —
+#: set to anything non-empty and the run carries a shadow cognitive state,
+#: fed from its own tool receipts and written as ``reasoning.jsonl`` in the
+#: run directory beside ``events.jsonl``.  **It adds nothing to this
+#: contract**: no record type, no field, no outcome, and no change to the
+#: order or content of anything on the wire.  A consumer has nothing to do
+#: about it, which is the point — it is a file a run leaves behind, and a
+#: run with it off is byte for byte the run it was before the flag existed.
+#: It needs a run directory: with ``JUDAIS_LOBI_RUNS`` off there is nowhere
+#: to write the file and the harness says so rather than pretending.
+#:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
 #: the other gets the one it passed.
@@ -963,6 +975,7 @@ ENV_VARS: tuple[str, ...] = (
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",
     "JUDAIS_LOBI_MEMORY", "JUDAIS_LOBI_MEMORY_PRINCIPAL",
+    "JUDAIS_LOBI_COGNITION",
 )
 
 

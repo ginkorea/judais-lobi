@@ -451,6 +451,7 @@ releases.
 | `--gate-tool` | — | a tool this deployment offers and gates; repeatable (§5) |
 | `--gate-wait` | `MISSION_GATE_WAIT` | how long a gate waits for a decision on `--control` |
 | `--no-grounding` | `MISSION_NO_GROUNDING` | do not check the answers and do not ask a critic: no validator, no repair turn, no caveat, and no `grounding` record on the stream. The `grounding:` block is still parsed, so an unusable one still refuses at the door. For a conversational surface; not for one whose answers are governed findings |
+| `--cognition` | `JUDAIS_LOBI_COGNITION` | carry a **shadow** cognitive state through the mission: every tool receipt is harvested into propositions whose evidence is the receipt, and the kernel's event log is written as `reasoning.jsonl` beside the run's `events.jsonl`. Nothing reads it back — no prompt, call, gate or answer changes because it is on, and with it off the run is byte for byte what it always was. Needs a run directory (`JUDAIS_LOBI_RUNS` on) |
 | `--approval` | `MISSION_APPROVAL` | spend one approved gate record on this run (§5) |
 | `--resume` | `MISSION_RESUME` | continue an unfinished run against a live model (§6) |
 | `--replay` | `MISSION_REPLAY` | run a finished recording again, dialling nothing (§6) |
@@ -1355,6 +1356,7 @@ nowhere by `JUDAIS_LOBI_RUNS=none|off`, in which case the field is absent.
 | `events.jsonl` | every record that went on the stream, as fsync'd append-only `{seq, at, record}` envelopes. **Written before the record reaches the `--events` sink**, so the sink is a client of the log and not a second copy: a pane that lost the pipe reads the same bytes off disk |
 | `model.jsonl` | one fsync'd line per model call, in call order: the request (`messages` and the rest of what went out), the reply, and the `tool_calls`/`usage` side channels read off the backend |
 | `tools.jsonl` | the tool plane as this run met it. Line one is the catalogue (`"call": 0`); every line after it is one dispatch with its arguments and its result, including the MCP `structuredContent` that never travelled on the event stream |
+| `reasoning.jsonl` | **only with `--cognition`**, and absent otherwise. The shadow cognitive state's own event log: line one states three version numbers (the file's shape, the epistemic kernel's event schema and the kernel engine that assigned the ids, none of them `schema_version`), and every line after it is one kernel event, so replaying the file rebuilds exactly what the run believed. Every proposition in it came from a tool receipt of this run and names it as evidence. **A platform has nothing to do about this file** — it is written and read back by nothing; the run it sits beside is the run it would have been without it |
 | `meta.json` | the run's own facts, replaced atomically — the objective, the flags that decide *which run this is*, and `replay_of` on a replay |
 
 `seq` is the store's numbering and **never travels on the wire**.

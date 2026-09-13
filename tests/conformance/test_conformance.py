@@ -125,7 +125,8 @@ CONFORMANCE: Dict[str, Any] = {
               "--swarm", "--history", "--gate-tool", "--approval", "--resume",
               "--temperature", "--top-p", "--seed", "--protocol",
               "--no-stream", "--gate-wait", "--replay", "--grant",
-              "--campaign", "--campaign-plan", "--no-grounding"),
+              "--campaign", "--campaign-plan", "--no-grounding",
+              "--cognition"),
 
     # The environment this platform exports into the child.
     "env": ("MCP_TOKEN", "MCP_CLIENT_NAME", "MCP_URL", "MCP_STDIO",
@@ -138,7 +139,8 @@ CONFORMANCE: Dict[str, Any] = {
             "MISSION_NO_GROUNDING",
             "JUDAIS_LOBI_PROFILE", "JUDAIS_LOBI_SANDBOX", "JUDAIS_LOBI_AUDIT",
             "JUDAIS_LOBI_RUNS", "JUDAIS_LOBI_APPROVALS",
-            "JUDAIS_LOBI_MEMORY", "JUDAIS_LOBI_MEMORY_PRINCIPAL"),
+            "JUDAIS_LOBI_MEMORY", "JUDAIS_LOBI_MEMORY_PRINCIPAL",
+            "JUDAIS_LOBI_COGNITION"),
 
     # The outcome words this platform branches on. A word it has no branch for
     # renders as whatever its default arm does, which for `budget_exhausted`

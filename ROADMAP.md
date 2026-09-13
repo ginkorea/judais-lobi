@@ -1105,9 +1105,22 @@ Python first; deliberately replaceable; no native code.
   `contradictions`, `frontier`. Incremental (`apply_delta`), never
   `recompute_world`.
 - **Shadow attachment**: tool receipts → semantic extraction → candidate
-  propositions → shadow state, persisted as `reasoning` records beside the
-  stream. Contract fit is clean: new record types are a minor release,
-  consumers drop unknown types, `SCHEMA_VERSION` 1 holds.
+  propositions → shadow state. **Built as a file, not as records on the
+  wire**: `--cognition` / `JUDAIS_LOBI_COGNITION` writes `reasoning.jsonl`
+  into the run directory beside `events.jsonl`, `model.jsonl` and
+  `tools.jsonl`, under the same `JUDAIS_LOBI_RUNS`. Contract fit is
+  therefore not merely clean, it is empty — no record type, no field, no
+  outcome, nothing for a consumer to do, and `SCHEMA_VERSION` 1 untouched.
+  A new stream record was the first design and was dropped: a shadow that
+  every pane must learn to drop is a shadow that costs a platform
+  something, and §2.9.3's ruling is that it must cost nothing. The
+  attachment is one point — the receipt's arrival in the run's result
+  store — and the flush is one `derive` per step. `reasoning.jsonl` carries
+  its own two versions (the file's shape and the kernel's event schema),
+  and neither is `SCHEMA_VERSION`. **v1 harvest is deterministic and dumb**:
+  figures out of JSON receipts, one entity per receipt, `DETERMINISTIC`
+  authority — semantic extraction is Phase 16's number and does not go in
+  this door until it has one.
 - **Cognition-off is byte-identical.** The corpus guard proves it, the same
   way §2.6.4's before-branch guard proved `Run`. Clean ablation is a 2.0
   requirement, not a nicety.
