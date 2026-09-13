@@ -180,6 +180,21 @@ STATUS_RANK = {
 #: status: ``"hypothesis"`` does not, and the other three do.
 CONTRADICTION_KINDS = ("value", "refutation", "dead_premise", "hypothesis")
 
+#: How many values one field may carry for one entity at a time.
+#:
+#: **``"many"`` is the default for a field nobody declared**, and that choice
+#: is the opposite of the one v1 shipped with.  A false ``CONTESTED`` is
+#: destructive: contesting is terminal, it takes both sides out of closure,
+#: and it takes every conclusion that rested on either of them.  A *missed*
+#: contradiction costs a signal nobody got.  Under the owner's ruling — the
+#: cognitive layer is shadow and additive, and a working harness beats a
+#: strict one — the destructive default is the wrong way round, and a rule
+#: pack that wants the check says so, field by field.
+CARDINALITIES = ("one", "many")
+
+#: What an undeclared field is. See :data:`CARDINALITIES` for the argument.
+DEFAULT_CARDINALITY = "many"
+
 
 # ── the records ─────────────────────────────────────────────────────────────
 
@@ -384,6 +399,67 @@ class Obligation:
         return f"({e}, {f}, {v!r})"
 
 
+class Frontier(tuple):
+    """Obligations, and whether the join that produced them was cut short.
+
+    A ``tuple`` subclass rather than a wrapper, because the obligations are
+    what a caller wants nine times out of ten and making them reach through
+    an attribute for the common case would be a worse API for the sake of a
+    flag.
+
+    The flag is here because a truncated join and an exhausted one look
+    identical from the outside: both return obligations and neither says
+    anything.  This repository's rule is that a budget exhausted is a
+    *recorded outcome naming the budget* — the harness says so when it stops
+    for steps, for tokens, for wall clock — and a frontier that quietly
+    stopped being complete is the same event with nobody told.
+    """
+
+    # No `__slots__`: a tuple subclass cannot have a non-empty one, and the
+    # flag has to live somewhere.
+
+    def __new__(cls, items=(), truncated: bool = False) -> "Frontier":
+        made = super().__new__(cls, items)
+        made.truncated = bool(truncated)
+        return made
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (f"Frontier({tuple(self)!r}, "
+                f"truncated={self.truncated!r})")
+
+
+@dataclass(frozen=True)
+class Support:
+    """How well one proposition is held up, computed when it is asked for.
+
+    ``grade`` is the headline and the reason this is a *read* rather than a
+    field on :class:`Proposition`: it is the best authority any live proof of
+    the claim can offer — the maximum, over proofs still standing, of the
+    weakest premise in that proof — and it is computed from the DAG every
+    time.  A stored grade goes stale the moment anything underneath it moves,
+    and the move that matters is the good one: a premise first extracted from
+    prose and later confirmed by a receipt lifts everything derived from it,
+    and a store reporting the old number would be understating its own
+    evidence for as long as nobody re-derived.
+
+    ``contested_by`` and ``hypothesis`` are contradiction ids — the first the
+    collisions that moved this claim's status, the second the model claims
+    that disagree with it and deliberately moved nothing.  Kept apart because
+    they mean opposite things to a reader: one says the store cannot stand
+    behind this, the other says the store can and something else did not.
+
+    ``evidence_leaves`` is every ref at the bottom of the proof, deduplicated
+    and in discovery order, each still carrying the door it came through.
+    """
+
+    proposition: str
+    status: PropositionStatus
+    grade: Optional[EvidenceAuthority]
+    contested_by: Tuple[str, ...] = ()
+    hypothesis: Tuple[str, ...] = ()
+    evidence_leaves: Tuple[EvidenceRef, ...] = ()
+
+
 @dataclass(frozen=True)
 class Contradiction:
     """Two claims that cannot both stand, named as an object.
@@ -410,6 +486,15 @@ class Contradiction:
     a store that picked the newer, or the better-authorised, or the one with
     more evidence would be doing the one thing it is least equipped to do —
     and would do it without saying so.
+
+    ``settled`` and ``kept`` are the one deliberate exception to that
+    terminality, and they can only be written by
+    :meth:`~core.cognition.state.CognitiveState.settle` — an explicit,
+    evidenced call naming which side stands.  **The kernel executes a
+    settlement; it never decides one.**  Which side to keep is a judgement
+    about the world, made by whatever is attached above (a deterministic
+    re-read, an operator, a later receipt), and the kernel's whole claim to
+    being trustworthy rests on not making it.
     """
 
     id: str
@@ -418,6 +503,8 @@ class Contradiction:
     right: Optional[str] = None
     evidence: Tuple[EvidenceRef, ...] = ()
     detail: str = ""
+    settled: bool = False
+    kept: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -476,17 +563,27 @@ class MatchStats:
     (:data:`~core.cognition.state.ENV_CAP`), and a frontier that quietly
     stopped being exhaustive looks exactly like a frontier that had nothing
     more to say.  A caller that wants to know reads this.
+
+    ``candidates_scanned`` is the finest of them and the one a *performance*
+    claim has to be made against.  ``rules_considered`` says which rules the
+    engine looked at; this says how many propositions it then had to walk to
+    answer them, which is where the difference between a join that starts
+    from the delta and one that starts from an unconstrained premise shows
+    up.  A wall-clock assertion would be a test that fails on a busy machine;
+    this is the same claim with a number that is the machine's business.
     """
 
     delta_passes: int = 0
     rules_considered: int = 0
     body_scans: int = 0
+    candidates_scanned: int = 0
     envs_truncated: int = 0
 
     def reset(self) -> None:
         self.delta_passes = 0
         self.rules_considered = 0
         self.body_scans = 0
+        self.candidates_scanned = 0
         self.envs_truncated = 0
 
 

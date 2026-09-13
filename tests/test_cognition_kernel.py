@@ -502,6 +502,9 @@ class TestAnObservationOutranksItsOwnDerivation:
 class TestNothingWinsSilently:
     def _collision(self):
         state = CognitiveState()
+        # A job has one elapsed time. Declared, because an undeclared field
+        # is `many` and nothing about a triple says which a field is.
+        state.declare_field("total_s", "one")
         first = state.assert_observation(("job-7", "total_s", 154.024),
                                          evidence=[RECEIPT])
         second = state.assert_observation(("job-7", "total_s", 186.7),
@@ -533,6 +536,7 @@ class TestNothingWinsSilently:
 
     def test_the_same_value_twice_is_one_claim_and_no_clash(self):
         state = CognitiveState()
+        state.declare_field("total_s", "one")
         first = state.assert_observation(("job-7", "total_s", 154.024),
                                          evidence=[RECEIPT])
         again = state.assert_observation(("job-7", "total_s", 154.024),
@@ -660,6 +664,7 @@ class TestARetractedPremiseTakesItsConclusionWithIt:
     @staticmethod
     def _two_rules_over_owner():
         state = CognitiveState()
+        state.declare_field("owner", "one")
         state.add_rule("lead_owns", ("?j", "owner", "?p"),
                        [("?j", "lead", "?p")], RuleAuthority.DOMAIN)
         state.add_rule("owned_is_escalated", ("?j", "escalated", True),
@@ -687,6 +692,7 @@ class TestARetractedPremiseTakesItsConclusionWithIt:
 
     def test_a_value_collision_retracts_what_rested_on_it(self):
         state, _ = store_with_controls()
+        state.declare_field("admin_access", "one")
         state.assert_observation(("alice", "admin_access", "acct-9"),
                                  evidence=[RECEIPT])
         state.assert_observation(("alice", "payment_link", "acct-9"),
@@ -1018,6 +1024,7 @@ class TestAModelsClaimAgainstAReceipt:
 
     def _pair(self, order):
         state = CognitiveState()
+        state.declare_field("total_s", "one")
         moves = {
             "observed": lambda: state.assert_observation(
                 ("job-7", "total_s", 154.024), evidence=[RECEIPT]),
@@ -1053,6 +1060,7 @@ class TestAModelsClaimAgainstAReceipt:
     def test_a_conclusion_drawn_from_the_observation_stands(self):
         """The whole point of not contesting: the receipt keeps deriving."""
         state = CognitiveState()
+        state.declare_field("total_s", "one")
         state.add_rule("slow", ("?j", "slow", True),
                        [("?j", "total_s", 154.024)], RuleAuthority.SYSTEM)
         state.assert_observation(("job-7", "total_s", 154.024),
@@ -1089,6 +1097,7 @@ class TestAModelsClaimAgainstAReceipt:
         a model's claim against the *store's*. Two guesses disagreeing is the
         model being uncertain, which is not news."""
         state = CognitiveState()
+        state.declare_field("total_s", "one")
         state.assert_hypothesis(("job-7", "total_s", 186.7),
                                 evidence=[EXTRACTED])
         state.assert_hypothesis(("job-7", "total_s", 200.0),
@@ -1116,6 +1125,7 @@ class TestABoolIsNotANumber:
 
     def test_true_and_one_are_two_claims_that_contradict(self):
         state = CognitiveState()
+        state.declare_field("retried", "one")
         flag = state.assert_observation(("job-7", "retried", True),
                                         evidence=[RECEIPT])
         count = state.assert_observation(("job-7", "retried", 1),
@@ -1129,6 +1139,7 @@ class TestABoolIsNotANumber:
 
     def test_one_and_one_point_zero_are_the_same_number_said_twice(self):
         state = CognitiveState()
+        state.declare_field("retried", "one")
         first = state.assert_observation(("job-7", "retried", 1),
                                          evidence=[RECEIPT])
         again = state.assert_observation(("job-7", "retried", 1.0),
@@ -1245,3 +1256,411 @@ class TestPromotionIsFromProposedAndNowhereElse:
         state.promote_rule(rid, RuleAuthority.DOMAIN)
         with pytest.raises(AuthorityRefused):
             state.promote_rule(rid, RuleAuthority.DOMAIN)
+
+
+# ---------------------------------------------------------------------------
+# Cardinality
+# ---------------------------------------------------------------------------
+
+class TestCardinalityIsDeclaredNotAssumed:
+    """Whether two values of one field can both be true is a claim about the
+    *field*, and nothing in a triple says which kind it is. `total_s` has one
+    value; `controls` has as many as it has. So somebody declares, and an
+    undeclared field carries many.
+
+    The default is the argument. Contesting is terminal: it takes both sides
+    out of closure and everything derived from either of them, permanently.
+    So a false contradiction on a multi-valued field does not merely report a
+    disagreement that is not there — it can take an entity out of the store's
+    reasoning altogether. A missed one costs a signal nobody got. Under the
+    owner's ruling that this layer is shadow and additive, the destructive
+    failure is the one to default away from.
+    """
+
+    def test_an_undeclared_field_carries_many_values(self):
+        state = CognitiveState()
+        first = state.assert_observation(("alice", "controls", "acct-1"),
+                                         evidence=[RECEIPT])
+        second = state.assert_observation(("alice", "controls", "acct-9"),
+                                          evidence=[OTHER])
+        assert state.contradictions() == ()
+        assert state.proposition(first).live
+        assert state.proposition(second).live
+        assert state.cardinality("controls") == "many"
+
+    def test_a_declared_single_valued_field_contests(self):
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        first = state.assert_observation(("job-7", "total_s", 154.024),
+                                         evidence=[RECEIPT])
+        second = state.assert_observation(("job-7", "total_s", 186.7),
+                                          evidence=[OTHER])
+        assert [c.kind for c in state.contradictions()] == ["value"]
+        assert not state.proposition(first).live
+        assert not state.proposition(second).live
+
+    def test_a_many_field_does_not_poison_what_rests_on_it(self):
+        """The compounding failure the default exists to avoid: a spurious
+        collision does not merely report itself, it retracts every conclusion
+        drawn from either side."""
+        state, _ = store_with_controls()
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("alice", "payment_link", "acct-9"),
+                                 evidence=[RECEIPT])
+        derived, = state.derive()
+        state.assert_observation(("alice", "admin_access", "acct-1"),
+                                 evidence=[OTHER])
+        state.derive()
+        assert state.proposition(derived).status is PropositionStatus.DERIVED
+
+    def test_a_model_claim_about_a_many_field_is_not_a_disagreement(self):
+        """The hypothesis report rests on the same "these cannot both be
+        true", so it honours the same declaration."""
+        state = CognitiveState()
+        state.assert_observation(("alice", "controls", "acct-1"),
+                                 evidence=[RECEIPT])
+        state.assert_hypothesis(("alice", "controls", "acct-9"),
+                                evidence=[EXTRACTED])
+        state.derive()
+        assert state.contradictions() == ()
+
+    def test_declaring_the_same_thing_twice_is_a_no_op(self):
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        state.declare_field("total_s", "one")
+        assert state.fields() == {"total_s": "one"}
+
+    def test_changing_a_declaration_is_refused(self):
+        """Propositions have already been measured against the old answer.
+        Changing it quietly leaves a store whose ledger cannot be explained
+        by its own rules."""
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        with pytest.raises(CognitionError):
+            state.declare_field("total_s", "many")
+        assert state.cardinality("total_s") == "one"
+
+    def test_a_cardinality_nobody_defined_is_refused(self):
+        state = CognitiveState()
+        with pytest.raises(CognitionError):
+            state.declare_field("total_s", "exactly_one")
+
+    def test_undeclared_fields_are_absent_rather_than_listed(self):
+        """Absence is how this package says "nobody has said", everywhere
+        else; `cardinality()` is what turns absence into the default."""
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        state.assert_observation(("alice", "controls", "acct-1"),
+                                 evidence=[RECEIPT])
+        assert "controls" not in state.fields()
+        assert state.cardinality("controls") == "many"
+
+
+# ---------------------------------------------------------------------------
+# Settlement
+# ---------------------------------------------------------------------------
+
+class TestSettlingAValueCollision:
+    """The one deliberate exception to contesting being terminal, and the
+    line it does not cross.
+
+    The kernel *executes* a settlement — revive the kept side, refute the
+    other, mark the contradiction — and never *decides* one. Which side
+    stands is a judgement about the world, made by whatever is attached
+    above. The moment this method took a policy argument, a store that
+    refuses to pick between two receipts would be picking between them on a
+    heuristic, in a place nobody would look.
+    """
+
+    def _contested(self):
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        state.add_rule("slow", ("?j", "slow", True),
+                       [("?j", "total_s", 154.024)], RuleAuthority.SYSTEM)
+        first = state.assert_observation(("job-7", "total_s", 154.024),
+                                         evidence=[RECEIPT])
+        state.derive()
+        slow, = [p.id for p in state.propositions() if p.field == "slow"]
+        second = state.assert_observation(("job-7", "total_s", 186.7),
+                                          evidence=[OTHER])
+        state.derive()
+        clash, = [c for c in state.contradictions() if c.kind == "value"]
+        return state, clash, first, second, slow
+
+    def test_the_kept_side_comes_back_to_what_it_was(self):
+        state, clash, first, second, _slow = self._contested()
+        assert state.proposition(first).status is PropositionStatus.CONTESTED
+        state.settle(clash.id, keep=first, evidence=[EXTRACTED])
+        assert state.proposition(first).status is PropositionStatus.OBSERVED
+        assert state.proposition(first).live
+
+    def test_a_derived_side_comes_back_DERIVED_and_not_observed(self):
+        """The status is read out of the revision history, not guessed.
+
+        Every other case here settles in favour of an observation, so an
+        engine that simply wrote OBSERVED back would pass all of them — and
+        would quietly promote a conclusion into a receipt, which is the
+        authority wall failing in the one place nobody would look for it. A
+        conclusion contested by a collision has to return to DERIVED.
+        """
+        state = CognitiveState()
+        state.declare_field("owner", "one")
+        state.add_rule("lead_owns", ("?j", "owner", "?p"),
+                       [("?j", "lead", "?p")], RuleAuthority.DOMAIN)
+        state.derive()
+        state.assert_observation(("job-7", "lead", "bob"), evidence=[RECEIPT])
+        derived, = state.derive()
+        assert state.proposition(derived).status is PropositionStatus.DERIVED
+        state.assert_observation(("job-7", "owner", "alice"),
+                                 evidence=[OTHER])
+        state.derive()
+        assert state.proposition(derived).status is PropositionStatus.CONTESTED
+
+        clash, = [c for c in state.contradictions() if c.kind == "value"]
+        state.settle(clash.id, keep=derived, evidence=[EXTRACTED])
+        prop = state.proposition(derived)
+        assert prop.status is PropositionStatus.DERIVED, \
+            "a conclusion came back as an observation"
+        assert prop.live
+        assert prop.evidence == (), \
+            "and it did not acquire receipts it never had"
+
+    def test_the_other_side_is_refuted_rather_than_forgotten(self):
+        state, clash, first, second, _slow = self._contested()
+        state.settle(clash.id, keep=first, evidence=[EXTRACTED])
+        assert state.proposition(second).status is PropositionStatus.REFUTED
+        assert not state.proposition(second).live
+
+    def test_the_contradiction_says_it_was_settled_and_which_way(self):
+        state, clash, first, _second, _slow = self._contested()
+        cid = state.settle(clash.id, keep=first, evidence=[EXTRACTED])
+        settled, = [c for c in state.contradictions() if c.id == cid]
+        assert settled.settled is True
+        assert settled.kept == first
+        assert EXTRACTED.kind in {ref.kind for ref in settled.evidence}
+
+    def test_what_fell_with_the_kept_side_comes_back_with_it(self):
+        """The conclusion was retracted only because its premise died. It has
+        a live proof again the moment the premise does."""
+        state, clash, first, _second, slow = self._contested()
+        assert state.proposition(slow).status is PropositionStatus.CONTESTED
+        state.settle(clash.id, keep=first, evidence=[EXTRACTED])
+        assert state.proposition(slow).status is PropositionStatus.DERIVED
+        dead = [c for c in state.contradictions() if c.kind == "dead_premise"]
+        assert dead and all(c.settled for c in dead)
+
+    def test_keeping_the_other_side_derives_what_that_side_licenses(self):
+        state, clash, first, second, slow = self._contested()
+        state.settle(clash.id, keep=second, evidence=[EXTRACTED])
+        assert state.proposition(second).status is PropositionStatus.OBSERVED
+        assert state.proposition(first).status is PropositionStatus.REFUTED
+        assert state.proposition(slow).status is PropositionStatus.CONTESTED, \
+            "the premise it rested on is the one that lost"
+
+    def test_settling_twice_is_refused(self):
+        state, clash, first, second, _slow = self._contested()
+        state.settle(clash.id, keep=first, evidence=[EXTRACTED])
+        with pytest.raises(CognitionError):
+            state.settle(clash.id, keep=second, evidence=[EXTRACTED])
+
+    def test_settling_in_favour_of_a_stranger_is_refused(self):
+        state, clash, _first, _second, slow = self._contested()
+        with pytest.raises(CognitionError):
+            state.settle(clash.id, keep=slow, evidence=[EXTRACTED])
+
+    def test_a_settlement_needs_evidence(self):
+        state, clash, first, _second, _slow = self._contested()
+        with pytest.raises(CognitionError):
+            state.settle(clash.id, keep=first)
+
+    @pytest.mark.parametrize("kind", ["refutation", "hypothesis"])
+    def test_only_a_value_collision_has_two_sides_to_choose_between(self, kind):
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        pid = state.assert_observation(("job-7", "total_s", 154.024),
+                                       evidence=[RECEIPT])
+        if kind == "refutation":
+            state.refute(pid, evidence=[OTHER])
+        else:
+            state.assert_hypothesis(("job-7", "total_s", 186.7),
+                                    evidence=[EXTRACTED])
+            state.derive()
+        clash, = [c for c in state.contradictions() if c.kind == kind]
+        with pytest.raises(CognitionError):
+            state.settle(clash.id, keep=pid, evidence=[EXTRACTED])
+
+    def test_settling_something_nobody_recorded_is_refused(self):
+        state = CognitiveState()
+        with pytest.raises(UnknownId):
+            state.settle("c1", keep="p1", evidence=[EXTRACTED])
+
+
+# ---------------------------------------------------------------------------
+# Confidence
+# ---------------------------------------------------------------------------
+
+class TestSupportIsComputedNotStored:
+    """`grade` is the best any live proof can do — the maximum, over proofs
+    still standing, of the weakest premise in that proof — and it is read off
+    the DAG every time it is asked for.
+
+    The case that decides this is the happy one. A premise first extracted
+    from prose and later confirmed by a receipt lifts everything derived from
+    it, and nothing re-derives, because nothing needs to. A stored grade
+    would still be reporting the old number: the store understating its own
+    evidence, quietly, for as long as nobody ran closure again.
+    """
+
+    def _chain(self):
+        state, _ = store_with_controls()
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT],
+                                 authority=EvidenceAuthority.DETERMINISTIC)
+        weak = state.assert_observation(("alice", "payment_link", "acct-9"),
+                                        evidence=[OTHER])
+        derived, = state.derive()
+        return state, weak, derived
+
+    def test_a_leaf_is_graded_by_its_own_authority(self):
+        state, weak, _derived = self._chain()
+        assert state.support(weak).grade is EvidenceAuthority.SOURCE
+
+    def test_a_conclusion_is_graded_by_its_weakest_premise(self):
+        state, _weak, derived = self._chain()
+        assert state.support(derived).grade is EvidenceAuthority.SOURCE
+
+    def test_promoting_a_premise_lifts_the_conclusion_with_no_re_derivation(self):
+        """The stale-grade case, which is what makes this a read. The stored
+        authority on the proposition is still SOURCE — nothing re-derived —
+        and the support computed now is not."""
+        state, weak, derived = self._chain()
+        state.assert_observation(("alice", "payment_link", "acct-9"),
+                                 evidence=[RECEIPT],
+                                 authority=EvidenceAuthority.DETERMINISTIC)
+        state.derive()
+        assert state.proposition(derived).authority is EvidenceAuthority.SOURCE
+        assert state.support(derived).grade is EvidenceAuthority.DETERMINISTIC
+        assert state.support(weak).grade is EvidenceAuthority.DETERMINISTIC
+
+    def test_the_best_live_proof_decides_it(self):
+        state = CognitiveState()
+        state.add_rule("by_admin", ("?a", "controls", "?c"),
+                       [("?a", "admin_access", "?c")], RuleAuthority.DOMAIN)
+        state.add_rule("by_owner", ("?a", "controls", "?c"),
+                       [("?a", "owns", "?c")], RuleAuthority.DOMAIN)
+        state.assert_observation(("alice", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("alice", "owns", "acct-9"),
+                                 evidence=[OTHER],
+                                 authority=EvidenceAuthority.DETERMINISTIC)
+        state.derive()
+        controls, = [p for p in state.propositions() if p.field == "controls"]
+        assert state.support(controls.id).grade is \
+            EvidenceAuthority.DETERMINISTIC, "the better route, not the first"
+
+    def test_something_the_store_no_longer_believes_has_no_grade(self):
+        """Not "poorly supported" — a refusal. A caller rendering None as a
+        low number has turned a refusal into an opinion."""
+        state = CognitiveState()
+        pid = state.assert_observation(("job-7", "state", "running"),
+                                       evidence=[RECEIPT])
+        state.refute(pid, evidence=[OTHER])
+        assert state.support(pid).grade is None
+
+    def test_support_names_the_collisions_and_keeps_them_apart(self):
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        seen = state.assert_observation(("job-7", "total_s", 154.024),
+                                        evidence=[RECEIPT])
+        state.assert_hypothesis(("job-7", "total_s", 186.7),
+                                evidence=[EXTRACTED])
+        state.derive()
+        support = state.support(seen)
+        assert support.contested_by == ()
+        assert len(support.hypothesis) == 1, \
+            "a model disagreeing is not the store being unable to stand up"
+
+    def test_the_leaves_carry_the_doors_they_came_through(self):
+        state, _weak, derived = self._chain()
+        doors = {ref.authority
+                 for ref in state.support(derived).evidence_leaves}
+        assert doors == {EvidenceAuthority.DETERMINISTIC,
+                         EvidenceAuthority.SOURCE}
+
+    def test_a_summary_is_only_as_good_as_its_worst_claim(self):
+        state, weak, derived = self._chain()
+        strong, = [p.id for p in state.propositions()
+                   if p.field == "admin_access"]
+        summary = state.summarize([strong, weak, derived])
+        assert summary["floor_grade"] is EvidenceAuthority.SOURCE
+        assert summary["contested"] == ()
+        assert summary["hypothesized"] == ()
+
+    def test_a_summary_names_what_is_wrong_rather_than_counting_it(self):
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        first = state.assert_observation(("job-7", "total_s", 154.024),
+                                         evidence=[RECEIPT])
+        second = state.assert_observation(("job-7", "total_s", 186.7),
+                                          evidence=[OTHER])
+        guess = state.assert_hypothesis(("job-7", "owner", "alice"),
+                                        evidence=[EXTRACTED])
+        summary = state.summarize([first, second, guess])
+        assert set(summary["contested"]) == {first, second}
+        assert summary["hypothesized"] == (guess,)
+
+    def test_support_for_something_nobody_asserted_is_refused(self):
+        with pytest.raises(UnknownId):
+            CognitiveState().support("p1")
+
+
+# ---------------------------------------------------------------------------
+# The public doors onto what the store holds
+# ---------------------------------------------------------------------------
+
+class TestTheStoreAnswersAboutItself:
+    """Without these, every caller writes its own scan — and the first one to
+    get the liveness filter wrong builds a plausible answer out of retracted
+    claims, or keeps a second copy of the triple-to-id fact the merge rules
+    are written against."""
+
+    def test_query_matches_a_pattern_over_live_propositions(self):
+        state = CognitiveState()
+        state.assert_observation(("alice", "controls", "acct-1"),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("alice", "controls", "acct-9"),
+                                 evidence=[OTHER])
+        dead = state.assert_observation(("bob", "controls", "acct-1"),
+                                        evidence=[RECEIPT])
+        state.refute(dead, evidence=[OTHER])
+        found = state.query(("?who", "controls", "?what"))
+        assert [p.entity for p in found] == ["alice", "alice"]
+        assert len(state.query(("?who", "controls", "?what"), live=False)) == 3
+
+    def test_claim_turns_a_triple_back_into_this_stores_id(self):
+        state = CognitiveState()
+        pid = state.assert_observation(("alice", "controls", "acct-1"),
+                                       evidence=[RECEIPT])
+        assert state.claim(("alice", "controls", "acct-1")) == pid
+        assert state.claim(("alice", "controls", "acct-9")) is None
+
+    def test_claim_keeps_the_type_band_the_merge_rules_use(self):
+        state = CognitiveState()
+        flag = state.assert_observation(("job-7", "retried", True),
+                                        evidence=[RECEIPT])
+        assert state.claim(("job-7", "retried", True)) == flag
+        assert state.claim(("job-7", "retried", 1)) is None
+
+    def test_contradictions_for_names_both_sides(self):
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        first = state.assert_observation(("job-7", "total_s", 154.024),
+                                         evidence=[RECEIPT])
+        second = state.assert_observation(("job-7", "total_s", 186.7),
+                                          evidence=[OTHER])
+        other = state.assert_observation(("job-8", "total_s", 3.0),
+                                         evidence=[RECEIPT])
+        assert [c.id for c in state.contradictions_for(first)] == \
+               [c.id for c in state.contradictions_for(second)]
+        assert state.contradictions_for(other) == ()

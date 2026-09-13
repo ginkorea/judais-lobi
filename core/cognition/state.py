@@ -31,12 +31,14 @@ sees a half-closed store, and a caller batching twenty receipts pays for one
 closure pass rather than twenty.
 
 That convenience has a price, and it is named here rather than explained
-away: **when somebody reads is part of what the log says, and part of which
-id each proposition gets.**  Two callers issuing identical writes, one
+away: **id assignment is a function of the interleaving of writes and
+flushes, not of the writes.**  Two callers issuing identical assertions, one
 reading the frontier between them and one not, keep logs of different length
 — and because ids are handed out in insertion order, the early flush inserts
 a *derived* proposition before the next observation arrives, so the same
-claims end up under different names.
+claims end up under different names.  The engine's own enumeration order is
+the second half of the same fact, and
+:data:`~core.cognition.events.KERNEL_VERSION` is what records it.
 
 What each log does still do exactly is replay to its own store; that is
 unweakened, and the property sweep covers it.  What the timing never reaches
@@ -73,26 +75,31 @@ derivation, and that is the case the extra status would mostly have been for.
 from __future__ import annotations
 
 import json
+from collections import deque
+from types import MappingProxyType
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from core.cognition.events import (EVENT_OPS, EVENT_SCHEMA_VERSION, EVENTS_KEY,
-                                   SCHEMA_KEY, check_snapshot, decode_evidence,
+                                   KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY,
+                                   check_snapshot, decode_evidence,
                                    decode_pattern, encode_evidence,
                                    encode_pattern)
 from core.cognition.matching import (Bindings, resolve, shares_variable, unify,
                                      unify_patterns)
-from core.cognition.types import (AUTHORITY_RANK, CONTRADICTION_KINDS,
+from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
+                                  CONTRADICTION_KINDS, DEFAULT_CARDINALITY,
                                   HYPOTHESIS_AUTHORITIES,
                                   OBSERVATION_AUTHORITIES,
                                   STATUS_RANK, AuthorityRefused,
                                   CognitionError, Contradiction, Derivation,
-                                  EvidenceAuthority, EvidenceRef, Goal,
-                                  MatchStats, Obligation, ObligationState,
-                                  Proof, Proposition, PropositionStatus,
-                                  ProofStep, ReplayRefused, Rule,
-                                  RuleAuthority, RuleMalformed, UnknownId,
-                                  check_pattern, check_value, is_variable,
-                                  render_pattern, value_tag, variables_in)
+                                  EvidenceAuthority, EvidenceRef, Frontier,
+                                  Goal, MatchStats, Obligation,
+                                  ObligationState, Proof, Proposition,
+                                  PropositionStatus, ProofStep, ReplayRefused,
+                                  Rule, RuleAuthority, RuleMalformed, Support,
+                                  UnknownId, check_pattern, check_value,
+                                  is_variable, render_pattern, value_tag,
+                                  variables_in)
 
 #: **v1 bound.**  Obligation computation joins a rule body against the store
 #: and a rule with several matches per premise branches.  Beyond this many
@@ -124,8 +131,10 @@ DIGEST_KEYS = {
     "rules": frozenset({"id", "name", "authority", "head", "body"}),
     "derivations": frozenset({"id", "rule", "premises", "conclusion"}),
     "goals": frozenset({"id", "pattern", "note"}),
+    "fields": frozenset({"field", "cardinality"}),
     "contradictions": frozenset({
-        "id", "kind", "left", "right", "detail", "evidence"}),
+        "id", "kind", "left", "right", "detail", "evidence", "settled",
+        "kept"}),
     "pending": frozenset({"propositions", "rules"}),
 }
 
@@ -137,6 +146,12 @@ class CognitiveState:
 
     def __init__(self) -> None:
         self._events: List[dict] = []
+        # Read-only views of the same dicts, built once at append time. The
+        # log used to be deep-copied on every `.events` access — 120ms at
+        # 100k events, and quadratic for a consumer that reads after each
+        # write. A proxy costs nothing to make and cannot be edited, which
+        # was the only reason to copy.
+        self._readonly: List[Mapping[str, Any]] = []
 
         # Propositions: `_props` holds the live revision of every claim,
         # `_history` every revision in order. Both keyed by the claim id, which
@@ -164,17 +179,28 @@ class CognitiveState:
         self._by_conclusion: Dict[str, List[str]] = {}
 
         self._goals: Dict[str, Goal] = {}
+        self._cardinality: Dict[str, str] = {}
         self._contradictions: Dict[str, Contradiction] = {}
         # `(kind, left, right)` → id. A collision found twice is one
         # contradiction: a hypothesis re-asserted against the same
         # observation, or a claim refuted twice, must not grow the ledger.
         self._contradiction_keys: Dict[tuple, str] = {}
 
-        self._pending_props: List[str] = []
-        self._pending_rules: List[str] = []
+        # Ordered SETS, spelled as dicts. They were lists, and every one of
+        # the four things done to them — append-if-absent, remove, iterate —
+        # is O(n) on a list, so a flush of n staged propositions cost O(n²)
+        # and a ten-thousand-receipt store never finished building.
+        self._pending_props: Dict[str, None] = {}
+        self._pending_rules: Dict[str, None] = {}
 
         self._counters = {"p": 0, "r": 0, "d": 0, "g": 0, "c": 0}
         self.stats = MatchStats()
+        # Bumped by anything that could change what the goals owe. The
+        # obligation walk is a pure function of the store, so one computation
+        # serves every reader at the same epoch — `frontier()` followed by
+        # `next_obligation()` used to walk the rules twice for one answer.
+        self._epoch = 0
+        self._obligations: Optional[Tuple[int, Frontier]] = None
 
     # ── the event log ───────────────────────────────────────────────────────
 
@@ -183,12 +209,35 @@ class CognitiveState:
         event = {"n": len(self._events) + 1, "op": op}
         event.update(fields)
         self._events.append(event)
+        self._readonly.append(MappingProxyType(event))
+        self._epoch += 1
         return event
 
     @property
-    def events(self) -> Tuple[dict, ...]:
-        """The log, oldest first. Copies, so a reader cannot edit history."""
-        return tuple(dict(event) for event in self._events)
+    def events(self) -> Tuple[Mapping[str, Any], ...]:
+        """The log, oldest first, as read-only views a reader cannot edit.
+
+        Views rather than copies.  Copying every event on every access read
+        the whole log to answer a question about it, which is fine once and
+        quadratic for the consumer this exists for — one that reads after
+        each write.  :meth:`events_since` is the call that consumer should
+        make; this one is for the reader that wants all of it.
+        """
+        return tuple(self._readonly)
+
+    def events_since(self, n: int) -> Tuple[Mapping[str, Any], ...]:
+        """Events numbered above ``n``, oldest first.
+
+        The cursor is the ``n`` on the last event a caller has seen, so the
+        first call is ``events_since(0)`` and each next one passes back the
+        last ``n`` it got — the same shape the run store's ``seq`` uses, for
+        the same reason and with the same failure to avoid: a reader that
+        re-reads the whole log to find the tail turns an append into an O(n)
+        operation and a session into a quadratic one.
+        """
+        if n < 0:
+            raise CognitionError(f"a cursor is not negative: {n!r}")
+        return tuple(self._readonly[n:])
 
     def pending(self) -> dict:
         """The staging area: what the next flush would derive from.
@@ -217,6 +266,7 @@ class CognitiveState:
         """
         self.derive()
         return {SCHEMA_KEY: EVENT_SCHEMA_VERSION,
+                KERNEL_KEY: KERNEL_VERSION,
                 EVENTS_KEY: [dict(event) for event in self._events]}
 
     @classmethod
@@ -258,6 +308,12 @@ class CognitiveState:
                           note=record.get("note", ""))
         elif op == "refute":
             self.refute(record.get("proposition"),
+                        evidence=decode_evidence(record.get("evidence", ())))
+        elif op == "declare_field":
+            self.declare_field(record.get("field"),
+                               record.get("cardinality"))
+        elif op == "settle":
+            self.settle(record.get("contradiction"), record.get("keep"),
                         evidence=decode_evidence(record.get("evidence", ())))
         elif op == "derive":
             self.apply_delta(propositions=record.get("propositions", ()),
@@ -390,6 +446,162 @@ class CognitiveState:
         self._retract_dependents([proposition])
         return cid
 
+    def settle(self, contradiction: str, keep: str,
+               evidence: Iterable[EvidenceRef] = ()) -> str:
+        """Pick a side of a value collision, with evidence. Returns the id.
+
+        **The one deliberate exception to contesting being terminal**, and it
+        is reachable only through this call.  The kept side returns to the
+        status it held before the collision and re-enters the delta, so
+        closure re-derives whatever rested on it; the other side becomes
+        ``REFUTED``; the contradiction is marked ``settled`` and names which
+        side was kept.  Conclusions that were retracted only because the kept
+        side died come back with it.
+
+        **The kernel executes a settlement and never decides one.**  Which
+        side stands is a judgement about the world — a deterministic re-read,
+        an operator, a later receipt — and it is made by whatever is attached
+        above.  That separation is the whole reason a store that refuses to
+        pick can be trusted: the moment this method took a policy argument,
+        the kernel would be choosing between two receipts on a heuristic, in
+        a place nobody would look.
+
+        Only ``"value"`` collisions can be settled.  A refutation names one
+        proposition and has no second side to choose; a ``"dead_premise"``
+        retraction is settled by settling whatever killed the premise; a
+        ``"hypothesis"`` report never moved anything, so there is nothing to
+        undo.
+        """
+        clash = self._contradictions.get(contradiction)
+        if clash is None:
+            raise UnknownId(f"no contradiction {contradiction!r}")
+        if clash.kind != "value":
+            raise CognitionError(
+                f"{contradiction!r} is a {clash.kind!r}, and settling means "
+                "choosing between two claims that cannot both stand; only a "
+                "value collision has two such sides")
+        if clash.settled:
+            raise CognitionError(
+                f"{contradiction!r} was already settled in favour of "
+                f"{clash.kept!r}; a second settlement would be the store "
+                "changing its mind with no record of having done so")
+        if keep not in (clash.left, clash.right):
+            raise CognitionError(
+                f"{keep!r} is not party to {contradiction!r} "
+                f"({clash.left!r} against {clash.right!r})")
+        refs = tuple(evidence)
+        if not refs:
+            raise CognitionError(
+                "a settlement with no evidence is a preference; name what "
+                "decided it")
+        loser = clash.right if keep == clash.left else clash.left
+        self._append("settle", contradiction=contradiction, keep=keep,
+                     evidence=encode_evidence(refs))
+        self._contradictions[contradiction] = Contradiction(
+            id=clash.id, kind=clash.kind, left=clash.left, right=clash.right,
+            evidence=_merge_evidence(clash.evidence, refs),
+            detail=clash.detail, settled=True, kept=keep)
+        self._revise(keep, status=self._status_before_contest(keep))
+        self._revise(loser, status=PropositionStatus.REFUTED,
+                     evidence=_merge_evidence(self._props[loser].evidence,
+                                              refs))
+        self._pending_props[keep] = None
+        self._revive_dependents(keep)
+        self._retract_dependents([loser])
+        return contradiction
+
+    def _status_before_contest(self, pid: str) -> PropositionStatus:
+        """The last status this claim held that was not ``CONTESTED``.
+
+        Read out of the revision history rather than guessed from the shape
+        of the proposition, which is what the history is for: an observation
+        that was contested comes back ``OBSERVED``, a conclusion comes back
+        ``DERIVED``, and neither is inferred from whether it happens to have
+        a derivation attached now.
+        """
+        for revision in reversed(self._history[pid]):
+            if revision.status is not PropositionStatus.CONTESTED:
+                return revision.status
+        return PropositionStatus.OBSERVED  # pragma: no cover - see _collide
+
+    def _revive_dependents(self, revived: str) -> None:
+        """Bring back what fell only because the settled side had died.
+
+        The mirror of :meth:`_retract_dependents`, and bounded the same way:
+        a conclusion comes back only if some derivation of it now has every
+        premise live, and the ``dead_premise`` contradiction that recorded
+        its fall is marked settled so the ledger does not keep asserting
+        something the store has stopped believing.
+        """
+        work = deque([revived])
+        seen = {revived}
+        while work:
+            back = work.popleft()
+            for did in list(self._by_premise.get(back, ())):
+                conclusion = self._derivations[did].conclusion
+                prop = self._props[conclusion]
+                if prop.status is not PropositionStatus.CONTESTED:
+                    continue
+                alive = any(
+                    all(self._props[premise].live
+                        for premise in self._derivations[other].premises)
+                    for other in self._by_conclusion.get(conclusion, ()))
+                if not alive:
+                    continue
+                if self._status_before_contest(conclusion) is not \
+                        PropositionStatus.DERIVED:
+                    continue
+                self._revise(conclusion, status=PropositionStatus.DERIVED)
+                for clash in list(self._contradictions.values()):
+                    if (clash.kind == "dead_premise" and not clash.settled
+                            and clash.left == conclusion):
+                        self._contradictions[clash.id] = Contradiction(
+                            id=clash.id, kind=clash.kind, left=clash.left,
+                            right=clash.right, evidence=clash.evidence,
+                            detail=clash.detail, settled=True,
+                            kept=conclusion)
+                if conclusion not in seen:
+                    seen.add(conclusion)
+                    work.append(conclusion)
+
+    # ── writing: fields, rules and goals ────────────────────────────────────
+
+    def declare_field(self, field: str, cardinality: str) -> str:
+        """Say whether one entity may hold one value of this field, or many.
+
+        ``"one"`` turns on collision detection for the field;  ``"many"`` is
+        what every undeclared field already is.  See :meth:`_collide` for why
+        that is the default and why the asymmetry decides it.
+
+        Re-declaring the same cardinality is a no-op.  Re-declaring a
+        *different* one is refused: propositions have already been contested
+        (or not) under the old answer, and quietly changing it would leave a
+        store whose ledger cannot be explained by its own rules.  A field
+        that needs a different answer is a modelling change, and it belongs
+        in a fresh store rather than half-applied to this one.
+        """
+        if cardinality not in CARDINALITIES:
+            raise CognitionError(
+                f"{cardinality!r} is not a cardinality; "
+                f"{' or '.join(repr(c) for c in CARDINALITIES)}")
+        if not isinstance(field, str) or not field:
+            raise CognitionError("a field is a non-empty string")
+        held = self._cardinality.get(field)
+        if held is not None and held != cardinality:
+            raise CognitionError(
+                f"{field!r} was declared {held!r} and propositions have been "
+                f"measured against that; it cannot become {cardinality!r} "
+                "half way through a store's life")
+        self._cardinality[field] = cardinality
+        self._append("declare_field", field=field, cardinality=cardinality)
+        return field
+
+    def cardinality(self, field: Optional[str]) -> str:
+        """What a field was declared, or :data:`DEFAULT_CARDINALITY`."""
+        if field is None:
+            return DEFAULT_CARDINALITY
+        return self._cardinality.get(field, DEFAULT_CARDINALITY)
+
     # ── writing: rules and goals ────────────────────────────────────────────
 
     def add_rule(self, name: str, head: Sequence[Any],
@@ -428,7 +640,7 @@ class CognitiveState:
                      head=encode_pattern(head_pattern),
                      body=[encode_pattern(item) for item in body_patterns])
         if rule.participates_in_closure:
-            self._pending_rules.append(rid)
+            self._pending_rules[rid] = None
         return rid
 
     def promote_rule(self, rule: str, authority: RuleAuthority) -> str:
@@ -466,8 +678,7 @@ class CognitiveState:
                                  authority=authority, head=existing.head,
                                  body=existing.body)
         self._append("promote_rule", rule=rule, authority=authority.value)
-        if rule not in self._pending_rules:
-            self._pending_rules.append(rule)
+        self._pending_rules[rule] = None
         return rule
 
     def add_goal(self, pattern: Sequence[Any], note: str = "") -> str:
@@ -519,11 +730,9 @@ class CognitiveState:
         self._append("derive", propositions=list(propositions),
                      rules=list(rules))
         for pid in propositions:
-            if pid in self._pending_props:
-                self._pending_props.remove(pid)
+            self._pending_props.pop(pid, None)
         for rid in rules:
-            if rid in self._pending_rules:
-                self._pending_rules.remove(rid)
+            self._pending_rules.pop(rid, None)
 
         derived: List[str] = []
         while prop_delta or rule_delta:
@@ -567,43 +776,75 @@ class CognitiveState:
         so it is always a candidate — correct, and the reason a rule pack of
         wholly-variable premises would lose the benefit of this index.
         """
-        out: List[str] = []
+        out: Dict[str, None] = {}
         for name in list(fields) + [None]:
             for rid in self._rules_by_field.get(name, ()):
-                if rid not in out:
-                    out.append(rid)
+                out[rid] = None
         return sorted(out, key=lambda rid: int(rid[1:]))
 
     def _run(self, rule: Rule, position: Optional[int],
              pool: Optional[Sequence[str]]) -> List[str]:
-        """Join one rule body and ingest every conclusion it licenses."""
+        """Join one rule body and ingest every conclusion it licenses.
+
+        **The pinned premise is evaluated first**, and the rest follow in body
+        order with its bindings already in hand.  Body order alone was wrong
+        by an order of magnitude whenever the pin was not premise zero: the
+        join started from an unconstrained early premise and scanned whole
+        columns of the store before ever reaching the two or three
+        propositions that had actually changed.  Starting from the delta
+        makes the work proportional to the delta, which is the entire claim
+        semi-naive closure makes.
+
+        Premises are still *recorded* in body order — a derivation names its
+        premises the way the rule reads, not the way the engine happened to
+        walk them — so the evaluation order is invisible in the result.  What
+        it does change is the order conclusions are enumerated in, and
+        therefore which ``pN`` each gets; that is the whole of why
+        :data:`~core.cognition.events.KERNEL_VERSION` exists.
+        """
         self.stats.body_scans += 1
-        envs: List[Tuple[Bindings, Tuple[str, ...]]] = [({}, ())]
-        for index, pattern in enumerate(rule.body):
-            draw = pool if (position is not None and index == position) else None
-            nxt: List[Tuple[Bindings, Tuple[str, ...]]] = []
-            for bindings, premises in envs:
+        width = len(rule.body)
+        if position is None:
+            order = range(width)
+        else:
+            order = [position] + [i for i in range(width) if i != position]
+        envs: List[Tuple[Bindings, Dict[int, str]]] = [({}, {})]
+        for index in order:
+            pattern = rule.body[index]
+            draw = pool if index == position else None
+            nxt: List[Tuple[Bindings, Dict[int, str]]] = []
+            for bindings, chosen in envs:
                 for pid in self._matches(pattern, bindings, draw):
                     extended = unify(pattern, self._props[pid].triple, bindings)
                     if extended is not None:
-                        nxt.append((extended, premises + (pid,)))
+                        picked = dict(chosen)
+                        picked[index] = pid
+                        nxt.append((extended, picked))
             envs = nxt
             if not envs:
                 return []
         out: List[str] = []
-        for bindings, premises in envs:
+        for bindings, chosen in envs:
+            premises = tuple(chosen[i] for i in range(width))
             conclusion = resolve(rule.head, bindings)
             authority = min((self._props[pid].authority for pid in premises),
                             key=lambda a: AUTHORITY_RANK[a])
             key = (rule.id, premises, conclusion)
             if key in self._derivation_keys:
                 continue
+            # The derivation id is allocated BEFORE the proposition and
+            # handed to it, so a derived proposition is born at revision 1.
+            # It used to be born, then immediately revised to record the
+            # proof that had just made it — two revisions for one event, and
+            # a history saying the store changed its mind about something it
+            # had held for no time at all. `types.py` states the rule this
+            # broke in as many words: a proof is not a change of belief.
+            self._counters["d"] += 1
+            did = f"d{self._counters['d']}"
             pid, is_new = self._ingest(conclusion[0], conclusion[1],
                                        conclusion[2], None,
                                        PropositionStatus.DERIVED, authority,
-                                       (), derivation=None, stage=False)
-            self._counters["d"] += 1
-            did = f"d{self._counters['d']}"
+                                       (), derivation=did, stage=False)
             self._derivations[did] = Derivation(id=did, rule=rule.id,
                                                 premises=premises,
                                                 conclusion=pid)
@@ -613,8 +854,6 @@ class CognitiveState:
                 bucket = self._by_premise.setdefault(premise, [])
                 if did not in bucket:
                     bucket.append(did)
-            if self._props[pid].derivation is None:
-                self._revise(pid, derivation=did)
             if is_new:
                 out.append(pid)
         return out
@@ -641,17 +880,32 @@ class CognitiveState:
         with no ``dead_premise`` contradiction anywhere on the record.
         """
         if pool is not None:
-            return [pid for pid in pool
-                    if self._props[pid].live and self._props[pid].triple]
+            found = [pid for pid in pool
+                     if self._props[pid].live and self._props[pid].triple]
+            self.stats.candidates_scanned += len(found)
+            return found
         entity, field, _value = resolve(pattern, bindings)
-        if not is_variable(entity):
+        entity_known = not is_variable(entity)
+        field_known = not is_variable(field)
+        if entity_known and field_known:
+            # The pair index. It was maintained from the first commit and
+            # read by nothing — `_collide` used it and the join did not — so
+            # a premise with both terms bound scanned the whole entity's
+            # column to find the one field it wanted. With the pinned premise
+            # now evaluated first, this is the common case rather than the
+            # rare one: the delta binds the entity, and every premise after
+            # it arrives here already ground.
+            candidates = self._by_entity_field.get((entity, field), ())
+        elif entity_known:
             candidates = self._by_entity.get(entity, ())
-        elif not is_variable(field):
+        elif field_known:
             candidates = self._by_field.get(field, ())
         else:
             candidates = list(self._props)
-        return [pid for pid in candidates
-                if self._props[pid].live and self._props[pid].triple]
+        found = [pid for pid in candidates
+                 if self._props[pid].live and self._props[pid].triple]
+        self.stats.candidates_scanned += len(found)
+        return found
 
     # ── the store's internals ───────────────────────────────────────────────
 
@@ -696,9 +950,17 @@ class CognitiveState:
             was_live = prop.live
             if changes:
                 self._revise(held, **changes)
-            if stage and held not in self._pending_props:
-                self._pending_props.append(held)
             became_live = self._props[held].live and not was_live
+            # **Only a claim that just became live is a delta.** A
+            # re-assertion of something the store already holds live —
+            # the same triple, the same value, a second receipt — changes
+            # nothing closure could act on, and staging it made the next
+            # flush re-run every rule over that field for no conclusion. It
+            # cannot lose a derivation: a conclusion is deduplicated by
+            # (rule, premises, conclusion), so the re-run could only ever
+            # have produced proofs the store already had.
+            if stage and became_live:
+                self._pending_props[held] = None
             if became_live:
                 self._collide(held)
             return held, became_live
@@ -718,7 +980,7 @@ class CognitiveState:
             self._by_field.setdefault(field, []).append(pid)
             self._by_entity_field.setdefault((entity, field), []).append(pid)
         if stage:
-            self._pending_props.append(pid)
+            self._pending_props[pid] = None
         # Every new triple proposition is measured against what the store
         # already holds, hypotheses included — a model's claim disagreeing
         # with a receipt is a signal whether or not it moves a status.
@@ -770,28 +1032,29 @@ class CognitiveState:
         live proposition arriving into a disagreement is still live when it is
         compared with the model's version of it.
 
-        **v1 bound, and the sharpest one in the package: every field is
-        treated as single-valued.**  ``(alice, controls, acct-1)`` and
-        ``(alice, controls, acct-2)`` collide, which is right for
-        ``total_s`` and wrong for ``controls``.  There is no cardinality
-        declaration in v1 because inventing one before a rule pack exists
-        would be guessing at its shape; the workaround a rule pack has today
-        is to put the multi-valued end in the *entity* position
-        (``(acct-1, controlled_by, alice)``), and the real fix — a
-        ``functional``/``set`` flag on a field, declared by whoever declares
-        the rules — is a Phase 18+ decision with a rule pack to design
-        against.
+        **Only for a field somebody declared single-valued.**  Both outcomes
+        above rest on "these two cannot both be true", which is a claim about
+        the *field* — right for ``total_s`` and wrong for ``controls`` — and
+        nothing in a triple says which it is.  So
+        :meth:`declare_field` says, and a field nobody declared is
+        :data:`~core.cognition.types.DEFAULT_CARDINALITY`, which is ``many``.
 
-        **And the operational consequence, because it compounds:** contesting
-        is terminal in v1.  So a genuinely multi-valued field does not merely
-        report a spurious disagreement once — every value poisons every other
-        one, permanently, and whatever a rule derived from any of them goes
-        with it.  One such field in a rule pack can take an entity out of
-        closure altogether.  Until cardinality exists, the multi-valued end
-        goes in the entity position.
+        That default is the opposite of the one the first version shipped
+        with, and the argument for turning it round is asymmetry.  Contesting
+        is terminal: it takes both sides out of closure and everything
+        derived from either of them, permanently — so a *false* contradiction
+        on a multi-valued field does not merely report a disagreement that
+        is not there, it can take an entity out of the store's reasoning
+        altogether.  A *missed* contradiction costs a signal nobody got.
+        Under the owner's ruling — this layer is shadow and additive, and a
+        working harness beats a strict one — the destructive failure is the
+        one to default away from.  A pack that wants the check declares it,
+        field by field, and gets it exactly where it means something.
         """
         prop = self._props[pid]
         if prop.triple is None:
+            return
+        if self.cardinality(prop.field) != "one":
             return
         mine = (value_tag(prop.value), prop.value)
         others = [other for other in
@@ -859,10 +1122,10 @@ class CognitiveState:
 
     def _retract_dependents(self, dead: Sequence[str]) -> None:
         """The retraction rule, cascading. See the module docstring."""
-        work = list(dead)
+        work = deque(dead)
         seen = set(work)
         while work:
-            gone = work.pop(0)
+            gone = work.popleft()
             for did in list(self._by_premise.get(gone, ())):
                 conclusion = self._derivations[did].conclusion
                 prop = self._props[conclusion]
@@ -910,17 +1173,70 @@ class CognitiveState:
                and (not live or prop.live)]
         return tuple(out)
 
+    def query(self, pattern: Sequence[Any], *,
+              live: bool = True) -> Tuple[Proposition, ...]:
+        """Propositions matching a pattern, insertion order.
+
+        The public door onto the matching the closure engine already does.
+        Without it every caller that wants "what does the store hold about
+        this entity" writes its own scan, and the first one to get the
+        liveness filter wrong gets a plausible answer built out of retracted
+        claims.  ``live=False`` asks for the dead ones too, which is a
+        question about history rather than about belief.
+        """
+        self.derive()
+        target = check_pattern(pattern)
+        out = []
+        for pid, prop in self._props.items():
+            if prop.triple is None:
+                continue
+            if live and not prop.live:
+                continue
+            if unify(target, prop.triple) is not None:
+                out.append(prop)
+        return tuple(out)
+
+    def claim(self, triple: Sequence[Any]) -> Optional[str]:
+        """The id this store holds a triple under, or ``None``.
+
+        The store owns the triple-to-id fact — it is the key the merge rules
+        are written against — and a caller that rebuilt it from a scan would
+        be keeping a second copy of the one thing that decides whether two
+        assertions are one claim.  The harvester the shadow lane will write
+        needs exactly this and nothing more.
+        """
+        self.derive()
+        entity, field, value = _split(triple)
+        if entity is None:
+            raise CognitionError("claim() takes a triple; text has no key")
+        return self._claim_key.get(
+            ("triple", entity, field, value_tag(value), value))
+
     def rule(self, rid: str) -> Rule:
+        self.derive()
         existing = self._rules.get(rid)
         if existing is None:
             raise UnknownId(f"no rule {rid!r}")
         return existing
 
     def rules(self) -> Tuple[Rule, ...]:
+        self.derive()
         return tuple(self._rules.values())
 
     def goals(self) -> Tuple[Goal, ...]:
+        self.derive()
         return tuple(self._goals.values())
+
+    def fields(self) -> Mapping[str, str]:
+        """Every field somebody declared, and what they declared it.
+
+        Undeclared fields are absent rather than listed as ``"many"``:
+        absence is how this package says "nobody has said", everywhere else,
+        and :meth:`cardinality` is the call that turns absence into the
+        default.
+        """
+        self.derive()
+        return dict(self._cardinality)
 
     def derivations(self) -> Tuple[Derivation, ...]:
         self.derive()
@@ -937,35 +1253,169 @@ class CognitiveState:
         self.derive()
         return tuple(self._contradictions.values())
 
-    def prove(self, pid: str) -> Proof:
-        """The derivation DAG under a proposition, evidence at the leaves."""
+    def contradictions_for(self, pid: str) -> Tuple[Contradiction, ...]:
+        """Every collision naming one proposition, on either side."""
         self.derive()
         if pid not in self._props:
             raise UnknownId(f"no proposition {pid!r}")
-        return self._prove(pid, ())
+        return tuple(clash for clash in self._contradictions.values()
+                     if pid in (clash.left, clash.right))
 
-    def _prove(self, pid: str, path: Tuple[str, ...]) -> Proof:
+    # ── confidence ──────────────────────────────────────────────────────────
+
+    def support(self, pid: str) -> Support:
+        """How well one claim is held up, computed from the DAG right now.
+
+        ``grade`` is the best any *live* proof can do: the maximum, over
+        proofs still standing, of the weakest premise in that proof.  It is
+        computed rather than stored, and the case that decides it is the
+        happy one.  A proposition derived from something the model extracted
+        carries ``MODEL_EXTRACTION``; a receipt arrives later and promotes
+        that premise to ``SOURCE``; every conclusion under it is now
+        better-supported than it was, and nothing re-derived, because
+        nothing needed to.  A stored grade would still be reporting the old
+        number — the store understating its own evidence, quietly, for as
+        long as nobody happened to run closure again.
+
+        A claim with no live proof and no live status has no grade at all
+        (``None``).  That is not "poorly supported": it is the store
+        declining to grade something it has stopped believing, and a caller
+        that renders ``None`` as a low number has turned a refusal into an
+        opinion.
+        """
+        self.derive()
+        if pid not in self._props:
+            raise UnknownId(f"no proposition {pid!r}")
+        prop = self._props[pid]
+        clashes = self.contradictions_for(pid)
+        return Support(
+            proposition=pid,
+            status=prop.status,
+            grade=self._grade(pid, set()),
+            contested_by=tuple(clash.id for clash in clashes
+                               if clash.kind != "hypothesis"),
+            hypothesis=tuple(clash.id for clash in clashes
+                             if clash.kind == "hypothesis"),
+            evidence_leaves=self._leaves(pid, set()),
+        )
+
+    def _grade(self, pid: str,
+               path: set) -> Optional[EvidenceAuthority]:
+        prop = self._props[pid]
+        if not prop.live or pid in path:
+            return None
+        best: Optional[EvidenceAuthority] = None
+        if prop.evidence or not self._by_conclusion.get(pid):
+            best = prop.authority
+        for did in self._by_conclusion.get(pid, ()):
+            premises = self._derivations[did].premises
+            if not all(self._props[p].live for p in premises):
+                continue
+            grades = [self._grade(p, path | {pid}) for p in premises]
+            if any(grade is None for grade in grades):
+                continue
+            weakest = min(grades, key=lambda a: AUTHORITY_RANK[a])
+            if best is None or AUTHORITY_RANK[weakest] > AUTHORITY_RANK[best]:
+                best = weakest
+        return best
+
+    def _leaves(self, pid: str, path: set) -> Tuple[EvidenceRef, ...]:
+        prop = self._props[pid]
+        if pid in path:
+            return ()
+        out: List[EvidenceRef] = list(prop.evidence)
+        for did in self._by_conclusion.get(pid, ()):
+            for premise in self._derivations[did].premises:
+                for ref in self._leaves(premise, path | {pid}):
+                    if ref not in out:
+                        out.append(ref)
+        return tuple(out)
+
+    def summarize(self, pids: Iterable[str]) -> dict:
+        """One reading over several claims, for a caller about to answer.
+
+        ``floor_grade`` is the *weakest* grade in the set, because a claim
+        assembled out of several propositions is only as good as its worst
+        one — the same rule a single derivation already follows for its
+        premises, applied one level up. ``contested`` and ``hypothesized``
+        name the ids rather than counting them: a count tells a reader
+        something is wrong and a name tells them where.
+        """
+        self.derive()
+        supports = [self.support(pid) for pid in pids]
+        graded = [item.grade for item in supports if item.grade is not None]
+        return {
+            "floor_grade": (min(graded, key=lambda a: AUTHORITY_RANK[a])
+                            if graded else None),
+            "contested": tuple(item.proposition for item in supports
+                               if item.status is PropositionStatus.CONTESTED),
+            "hypothesized": tuple(
+                item.proposition for item in supports
+                if item.status is PropositionStatus.HYPOTHESIZED),
+        }
+
+    def prove(self, pid: str) -> Proof:
+        """The derivation DAG under a proposition, evidence at the leaves.
+
+        **A DAG, not a tree.**  A proposition reached by two routes is one
+        :class:`~core.cognition.types.Proof` object appearing twice, not two
+        equal ones built twice — which matters because proofs diamond: two
+        rules conclude from a shared premise, that premise has its own two
+        proofs, and a walk that rebuilt each node per path did exponential
+        work to produce a structure the reader treats as shared anyway.
+
+        Nodes on a cycle are *not* memoised.  Their shape depends on the path
+        that reached them — that is what ``cyclic`` records — so caching one
+        would hand a later caller a stub that was true of somebody else's
+        walk.
+        """
+        self.derive()
+        if pid not in self._props:
+            raise UnknownId(f"no proposition {pid!r}")
+        proof, _cyclic = self._prove(pid, (), {})
+        return proof
+
+    def _prove(self, pid: str, path: Tuple[str, ...],
+               memo: Dict[str, Proof]) -> Tuple[Proof, bool]:
         prop = self._props[pid]
         if pid in path:
             return Proof(proposition=pid, status=prop.status,
                          authority=prop.authority, evidence=prop.evidence,
-                         steps=(), cyclic=True)
+                         steps=(), cyclic=True), True
+        held = memo.get(pid)
+        if held is not None:
+            return held, False
         steps = []
+        touched_cycle = False
         for did in self._by_conclusion.get(pid, ()):
             derivation = self._derivations[did]
             rule = self._rules[derivation.rule]
-            steps.append(ProofStep(
-                derivation=did, rule=rule.id, rule_name=rule.name,
-                premises=tuple(self._prove(premise, path + (pid,))
-                               for premise in derivation.premises)))
-        return Proof(proposition=pid, status=prop.status,
+            premises = []
+            for premise in derivation.premises:
+                proof, cyclic = self._prove(premise, path + (pid,), memo)
+                touched_cycle = touched_cycle or cyclic
+                premises.append(proof)
+            steps.append(ProofStep(derivation=did, rule=rule.id,
+                                   rule_name=rule.name,
+                                   premises=tuple(premises)))
+        made = Proof(proposition=pid, status=prop.status,
                      authority=prop.authority, evidence=prop.evidence,
                      steps=tuple(steps))
+        if not touched_cycle:
+            memo[pid] = made
+        return made, touched_cycle
 
     # ── obligations ─────────────────────────────────────────────────────────
 
-    def obligations(self) -> Tuple[Obligation, ...]:
+    def obligations(self) -> Frontier:
         """Every requirement the goals imply, ``RESOLVED`` ones included.
+
+        **Computed once per epoch.**  The walk is a pure function of the
+        store, so a caller asking for the frontier and then for the next
+        obligation used to pay for it twice — and a mission loop asks every
+        step.  The cache is invalidated by anything that changes the store;
+        it is not an optimisation a caller has to know about, and there is no
+        way to see a stale answer through it.
 
         Computed from goals, trusted rules and what the store holds — read the
         class docstring for why nothing authors these.  A goal the store
@@ -979,6 +1429,9 @@ class CognitiveState:
         :meth:`next_obligation`'s tie-break meaningful.
         """
         self.derive()
+        if self._obligations is not None and self._obligations[0] == self._epoch:
+            return self._obligations[1]
+        before = self.stats.envs_truncated
         out: Dict[str, Obligation] = {}
         for goal in self._goals.values():
             if self._satisfied(goal.pattern, {}):
@@ -992,7 +1445,10 @@ class CognitiveState:
             for rule in matching:
                 head = unify_patterns(rule.head, goal.pattern) or {}
                 self._obligations_for(out, goal, rule, head)
-        return tuple(out.values())
+        computed = Frontier(out.values(),
+                            truncated=self.stats.envs_truncated > before)
+        self._obligations = (self._epoch, computed)
+        return computed
 
     def _obligations_for(self, out: Dict[str, Obligation], goal: Goal,
                          rule: Rule, head: Bindings) -> None:
@@ -1059,10 +1515,19 @@ class CognitiveState:
                               state=state, depends_on=depends_on)
         return oid
 
-    def frontier(self) -> Tuple[Obligation, ...]:
-        """The unresolved obligations — the proof frontier, in order."""
-        return tuple(item for item in self.obligations()
-                     if item.state != ObligationState.RESOLVED)
+    def frontier(self) -> Frontier:
+        """The unresolved obligations — the proof frontier, in order.
+
+        Carries :attr:`~core.cognition.types.Frontier.truncated` through from
+        the walk: a frontier that was cut short at :data:`ENV_CAP` says so,
+        because a truncated frontier and a complete one are otherwise the
+        same object and the difference is whether "nothing else is missing"
+        is a finding or an artefact.
+        """
+        computed = self.obligations()
+        return Frontier((item for item in computed
+                         if item.state != ObligationState.RESOLVED),
+                        truncated=computed.truncated)
 
     def next_obligation(self) -> Optional[Obligation]:
         """The cheapest true thing to do next, or ``None``.
@@ -1131,10 +1596,13 @@ class CognitiveState:
                             for item in self._derivations.values()],
             "goals": [{"id": goal.id, "pattern": encode_pattern(goal.pattern),
                        "note": goal.note} for goal in self._goals.values()],
+            "fields": [{"field": name, "cardinality": how}
+                       for name, how in self._cardinality.items()],
             "contradictions": [
                 {"id": item.id, "kind": item.kind, "left": item.left,
                  "right": item.right, "detail": item.detail,
-                 "evidence": encode_evidence(item.evidence)}
+                 "evidence": encode_evidence(item.evidence),
+                 "settled": item.settled, "kept": item.kept}
                 for item in self._contradictions.values()],
             "pending": {"propositions": list(self._pending_props),
                         "rules": list(self._pending_rules)},

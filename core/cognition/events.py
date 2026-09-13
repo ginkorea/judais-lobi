@@ -17,12 +17,30 @@ but what a consumer *renders* is the record type, not this.  Two versions
 because they change for different reasons and at different rates, and a single
 number would have made every kernel experiment a wire break.
 
-**Compatibility, stated now so the next lane does not have to invent it.**
-Adding an optional field to an event, or a new ``op``, raises this number.
-A replay refuses a log whose version is higher than the one it knows
+**Compatibility, in the shape ``CONTRACT.md`` states its own.**  Adding an
+``op``, or an optional field to one, raises :data:`EVENT_SCHEMA_VERSION` by a
+minor step; renaming, removing, or changing the meaning of a *required* field
+is the kind of change that breaks a log, and nothing in this package may make
+one.  **An op is never removed and never changes meaning** — that is the whole
+of why a version-1 log still replays under version 2, and it is a promise and
+not an implementation detail: ``declare_field`` and ``settle`` are new in 2,
+every version-1 op reads exactly as it did, and the day one of them would have
+to mean something else it gets a new name instead.
+
+A replay refuses a log whose version is *higher* than the one it knows
 (:class:`~core.cognition.types.ReplayRefused`) rather than skipping what it
 does not recognise — see that exception for why this is the opposite rule from
 the wire's.
+
+**The kernel version travels beside the schema version**, and they answer
+different questions.  The schema says what the records mean.
+:data:`KERNEL_VERSION` says which *engine* wrote them — and that matters
+because ids in this package are assigned by insertion order, so two engines
+that agree about every claim can still hand out different names for them.  A
+consumer that persisted a proposition id is holding something that belongs to
+one engine's run; this field is how it finds out.  Replay does not refuse an
+unfamiliar kernel version (that would make old logs unreplayable for a reason
+that has nothing to do with reading them), it records it.
 
 **Ids are not in the log, except as references.**  ``assert_observation``
 carries no proposition id: ids are assigned by insertion order, so the log
@@ -34,16 +52,34 @@ exists and naming it is the only way to say which one.
 from __future__ import annotations
 
 from collections.abc import Mapping as _MappingABC
+from collections.abc import Sequence as _SequenceABC
 from typing import Any, Iterable, List, Mapping, Sequence
 
 from core.cognition.types import EvidenceRef, ReplayRefused
 
 #: Bump on any change to the shape of an event or the set of ops.
-EVENT_SCHEMA_VERSION = 1
+#:
+#: 1 — the first shape.
+#: 2 — ``declare_field`` and ``settle``. Every version-1 op unchanged.
+EVENT_SCHEMA_VERSION = 2
 
-#: Every ``op`` this kernel writes and can read back. A log carrying anything
-#: else is refused rather than partially applied.
+#: Which engine assigned the ids in a log. Not a distribution version and not
+#: this package's public API version: it is bumped when a change alters what
+#: ids a given sequence of writes produces, so that a consumer holding a
+#: persisted proposition id can tell whether it still means anything.
+#:
+#: 1 — the first engine.
+#: 2 — semi-naive closure evaluates the pinned delta premise first, which
+#:     changes the order derived conclusions are enumerated in, and therefore
+#:     which ``pN`` each one gets. Same claims, different names.
+KERNEL_VERSION = 2
+
+#: Every ``op`` this kernel writes and can read back, oldest first. **Append
+#: only**: an op is never removed and never changes meaning, which is what
+#: makes an older log replayable under a newer schema. A log carrying a name
+#: that is not here is refused rather than partially applied.
 EVENT_OPS = (
+    # — schema 1 —
     "assert_observation",
     "assert_hypothesis",
     "add_rule",
@@ -51,10 +87,17 @@ EVENT_OPS = (
     "add_goal",
     "refute",
     "derive",
+    # — schema 2 —
+    "declare_field",
+    "settle",
 )
 
 #: The key a snapshot puts its version under.
 SCHEMA_KEY = "event_schema"
+
+#: The key a snapshot puts the engine's version under. Absent in a version-1
+#: log, and absent is the correct reading: an engine nobody recorded.
+KERNEL_KEY = "kernel"
 
 #: The key a snapshot puts the ordered event list under.
 EVENTS_KEY = "events"
@@ -79,7 +122,32 @@ def encode_evidence(refs: Iterable[EvidenceRef]) -> List[dict]:
 
 
 def decode_evidence(raw: Sequence[Mapping[str, Any]]) -> tuple:
-    return tuple(EvidenceRef.from_dict(item) for item in raw or ())
+    """Evidence refs out of a log, or :class:`ReplayRefused`.
+
+    The shapes are checked here rather than left to fail wherever they land,
+    because the failure a caller is told to expect is the contract.
+    ``CONTRACT.md``-style documentation says to catch
+    :class:`~core.cognition.types.ReplayRefused` around a replay; a log with
+    ``"evidence": "notalist"`` used to come back out as an ``AttributeError``
+    from inside ``from_dict``, and ``[7]`` as a ``TypeError`` — both straight
+    through a handler written exactly as documented, as a crash rather than a
+    refusal.  A string is the nastiest of them: it is a ``Sequence``, so it
+    iterates, and it iterates into *characters*.
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, _SequenceABC):
+        raise ReplayRefused(
+            f"evidence is a list of refs, not {type(raw).__name__} "
+            f"({raw!r})")
+    out = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, _MappingABC):
+            raise ReplayRefused(
+                f"evidence[{index}] is a ref record, not "
+                f"{type(item).__name__} ({item!r})")
+        out.append(EvidenceRef.from_dict(item))
+    return tuple(out)
 
 
 def encode_pattern(pattern: Sequence[Any]) -> list:
@@ -134,7 +202,23 @@ def check_snapshot(raw: Any) -> List[dict]:
         raise ReplayRefused(
             f"event schema {version!r} is newer than this kernel's "
             f"{EVENT_SCHEMA_VERSION}")
-    events = raw.get(EVENTS_KEY) or []
+    # `raw.get(EVENTS_KEY) or []` was the shape here, and it turned three
+    # different broken snapshots — the key missing, the key `None`, the key
+    # `0`/`""`/`{}` — into a silent, successful replay of an EMPTY store. A
+    # store that reconstructs to nothing is the one result no consumer can
+    # tell from a store that legitimately holds nothing, and the caller's
+    # `except ReplayRefused` never fires. A snapshot without a list of events
+    # is not a snapshot.
+    if EVENTS_KEY not in raw:
+        raise ReplayRefused(
+            f"a cognition snapshot carries its {EVENTS_KEY!r}; this one has "
+            f"only {sorted(raw)!r}, and replaying it would build an empty "
+            "store that looks exactly like a store with nothing in it")
+    events = raw[EVENTS_KEY]
+    if not isinstance(events, (list, tuple)):
+        raise ReplayRefused(
+            f"{EVENTS_KEY!r} is an ordered list of events, not "
+            f"{type(events).__name__} ({events!r})")
     out: List[dict] = []
     for index, event in enumerate(events):
         if not isinstance(event, _MappingABC):
