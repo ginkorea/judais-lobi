@@ -1,0 +1,6089 @@
+{
+  "probes": "probes.jsonl",
+  "meta": {
+    "commit": "75ec03a8925a937387f91f31fe12a6555f97a088",
+    "date": "2026-09-13",
+    "provider": "local",
+    "model": "openai/gpt-oss-20b",
+    "temperature": 0.2,
+    "endpoint": "http://127.0.0.1:8011/v1",
+    "constrained": true,
+    "prompt": "15521d17315f",
+    "scorer": 2,
+    "probes_path": "tests/fixtures/extraction/probes.jsonl",
+    "probe_count": 49,
+    "repeats": 3,
+    "python": "3.14.7"
+  },
+  "headline": "probe_reliable",
+  "rates": {
+    "structural": {
+      "name": "structural",
+      "k": 146,
+      "n": 147,
+      "rate": 0.9932,
+      "low": 0.9625,
+      "high": 0.9988,
+      "what": "replies that parsed as propositions, first try or after the one repair"
+    },
+    "first_try": {
+      "name": "first_try",
+      "k": 146,
+      "n": 147,
+      "rate": 0.9932,
+      "low": 0.9625,
+      "high": 0.9988,
+      "what": "replies that parsed with no repair at all"
+    },
+    "repair": {
+      "name": "repair",
+      "k": 0,
+      "n": 147,
+      "rate": 0.0,
+      "low": 0.0,
+      "high": 0.0255,
+      "what": "attempts that needed the repair turn (LOWER is better)"
+    },
+    "grounded": {
+      "name": "grounded",
+      "k": 131,
+      "n": 132,
+      "rate": 0.9924,
+      "low": 0.9583,
+      "high": 0.9987,
+      "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+    },
+    "gold_precision": {
+      "name": "gold_precision",
+      "k": 122,
+      "n": 123,
+      "rate": 0.9919,
+      "low": 0.9554,
+      "high": 0.9986,
+      "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+    },
+    "gold_recall": {
+      "name": "gold_recall",
+      "k": 122,
+      "n": 126,
+      "rate": 0.9683,
+      "low": 0.9212,
+      "high": 0.9876,
+      "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+    },
+    "abstention": {
+      "name": "abstention",
+      "k": 23,
+      "n": 27,
+      "rate": 0.8519,
+      "low": 0.6752,
+      "high": 0.9408,
+      "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+    },
+    "conflict_surfaced": {
+      "name": "conflict_surfaced",
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "low": 0.6097,
+      "high": 1.0,
+      "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+    },
+    "trap": {
+      "name": "trap",
+      "k": 35,
+      "n": 36,
+      "rate": 0.9722,
+      "low": 0.8583,
+      "high": 0.9951,
+      "what": "trap probes that did not ASSERT from the trap field"
+    },
+    "hedged": {
+      "name": "hedged",
+      "k": 1,
+      "n": 63,
+      "rate": 0.0159,
+      "low": 0.0028,
+      "high": 0.0846,
+      "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+    },
+    "probe": {
+      "name": "probe",
+      "k": 139,
+      "n": 147,
+      "rate": 0.9456,
+      "low": 0.8963,
+      "high": 0.9722,
+      "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+    },
+    "probe_reliable": {
+      "name": "probe_reliable",
+      "k": 44,
+      "n": 49,
+      "rate": 0.898,
+      "low": 0.7824,
+      "high": 0.9556,
+      "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+    },
+    "constrained_invalid": {
+      "name": "constrained_invalid",
+      "k": 1,
+      "n": 147,
+      "rate": 0.0068,
+      "low": 0.0012,
+      "high": 0.0375,
+      "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+    }
+  },
+  "by_family": {
+    "present": {
+      "structural": {
+        "name": "structural",
+        "k": 72,
+        "n": 72,
+        "rate": 1.0,
+        "low": 0.9493,
+        "high": 1.0,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 72,
+        "n": 72,
+        "rate": 1.0,
+        "low": 0.9493,
+        "high": 1.0,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 72,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.0507,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 90,
+        "n": 90,
+        "rate": 1.0,
+        "low": 0.9591,
+        "high": 1.0,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 90,
+        "n": 90,
+        "rate": 1.0,
+        "low": 0.9591,
+        "high": 1.0,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 90,
+        "n": 90,
+        "rate": 1.0,
+        "low": 0.9591,
+        "high": 1.0,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 72,
+        "n": 72,
+        "rate": 1.0,
+        "low": 0.9493,
+        "high": 1.0,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "low": 0.862,
+        "high": 1.0,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 0,
+        "n": 72,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.0507,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    },
+    "absent": {
+      "structural": {
+        "name": "structural",
+        "k": 15,
+        "n": 15,
+        "rate": 1.0,
+        "low": 0.7961,
+        "high": 1.0,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 15,
+        "n": 15,
+        "rate": 1.0,
+        "low": 0.7961,
+        "high": 1.0,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 15,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.2039,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 1,
+        "n": 1,
+        "rate": 1.0,
+        "low": 0.2065,
+        "high": 1.0,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 14,
+        "n": 15,
+        "rate": 0.9333,
+        "low": 0.7018,
+        "high": 0.9881,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 0,
+        "n": 15,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.2039,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 14,
+        "n": 15,
+        "rate": 0.9333,
+        "low": 0.7018,
+        "high": 0.9881,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 4,
+        "n": 5,
+        "rate": 0.8,
+        "low": 0.3755,
+        "high": 0.9638,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 0,
+        "n": 15,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.2039,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    },
+    "contradiction": {
+      "structural": {
+        "name": "structural",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 2,
+        "n": 2,
+        "rate": 1.0,
+        "low": 0.3424,
+        "high": 1.0,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 1,
+        "n": 6,
+        "rate": 0.1667,
+        "low": 0.0301,
+        "high": 0.5635,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 2,
+        "n": 2,
+        "rate": 1.0,
+        "low": 0.3424,
+        "high": 1.0,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    },
+    "masked": {
+      "structural": {
+        "name": "structural",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 3,
+        "n": 3,
+        "rate": 1.0,
+        "low": 0.4385,
+        "high": 1.0,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 2,
+        "n": 2,
+        "rate": 1.0,
+        "low": 0.3424,
+        "high": 1.0,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    },
+    "cause_absent": {
+      "structural": {
+        "name": "structural",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 0,
+        "n": 1,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.7935,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 5,
+        "n": 6,
+        "rate": 0.8333,
+        "low": 0.4365,
+        "high": 0.9699,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 5,
+        "n": 6,
+        "rate": 0.8333,
+        "low": 0.4365,
+        "high": 0.9699,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 1,
+        "n": 2,
+        "rate": 0.5,
+        "low": 0.0945,
+        "high": 0.9055,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    },
+    "partial_coverage": {
+      "structural": {
+        "name": "structural",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 6,
+        "n": 6,
+        "rate": 1.0,
+        "low": 0.6097,
+        "high": 1.0,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 2,
+        "n": 2,
+        "rate": 1.0,
+        "low": 0.3424,
+        "high": 1.0,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 4,
+        "n": 6,
+        "rate": 0.6667,
+        "low": 0.3,
+        "high": 0.9032,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 4,
+        "n": 6,
+        "rate": 0.6667,
+        "low": 0.3,
+        "high": 0.9032,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 1,
+        "n": 2,
+        "rate": 0.5,
+        "low": 0.0945,
+        "high": 0.9055,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 0,
+        "n": 6,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.3903,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    },
+    "unit_semantics": {
+      "structural": {
+        "name": "structural",
+        "k": 17,
+        "n": 18,
+        "rate": 0.9444,
+        "low": 0.7424,
+        "high": 0.9901,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 17,
+        "n": 18,
+        "rate": 0.9444,
+        "low": 0.7424,
+        "high": 0.9901,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 18,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.1759,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 15,
+        "n": 15,
+        "rate": 1.0,
+        "low": 0.7961,
+        "high": 1.0,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 15,
+        "n": 15,
+        "rate": 1.0,
+        "low": 0.7961,
+        "high": 1.0,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 15,
+        "n": 18,
+        "rate": 0.8333,
+        "low": 0.6078,
+        "high": 0.9416,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 17,
+        "n": 18,
+        "rate": 0.9444,
+        "low": 0.7424,
+        "high": 0.9901,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 0,
+        "n": 18,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.1759,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 15,
+        "n": 18,
+        "rate": 0.8333,
+        "low": 0.6078,
+        "high": 0.9416,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 5,
+        "n": 6,
+        "rate": 0.8333,
+        "low": 0.4365,
+        "high": 0.9699,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 1,
+        "n": 18,
+        "rate": 0.0556,
+        "low": 0.0099,
+        "high": 0.2576,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    },
+    "optional_filter": {
+      "structural": {
+        "name": "structural",
+        "k": 18,
+        "n": 18,
+        "rate": 1.0,
+        "low": 0.8241,
+        "high": 1.0,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 18,
+        "n": 18,
+        "rate": 1.0,
+        "low": 0.8241,
+        "high": 1.0,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 18,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.1759,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 18,
+        "n": 18,
+        "rate": 1.0,
+        "low": 0.8241,
+        "high": 1.0,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 17,
+        "n": 18,
+        "rate": 0.9444,
+        "low": 0.7424,
+        "high": 0.9901,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 17,
+        "n": 18,
+        "rate": 0.9444,
+        "low": 0.7424,
+        "high": 0.9901,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 18,
+        "n": 18,
+        "rate": 1.0,
+        "low": 0.8241,
+        "high": 1.0,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 0,
+        "n": 18,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.1759,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 17,
+        "n": 18,
+        "rate": 0.9444,
+        "low": 0.7424,
+        "high": 0.9901,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 5,
+        "n": 6,
+        "rate": 0.8333,
+        "low": 0.4365,
+        "high": 0.9699,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 0,
+        "n": 18,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.1759,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    }
+  },
+  "attempts": [
+    {
+      "probe": "totals_records",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "records",
+          "value": 12481,
+          "quote": "\"records\": 12481"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"records\",\"value\":12481,\"quote\":\"\\\"records\\\": 12481\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "totals_blocks",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "blocks",
+          "value": 7,
+          "quote": "\"blocks\": 7"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"blocks\",\"value\":7,\"quote\":\"\\\"blocks\\\": 7\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "totals_run_id",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "run_id",
+          "value": "r-3",
+          "quote": "\"run_id\": \"r-3\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"run_id\",\"value\":\"r-3\",\"quote\":\"\\\"run_id\\\": \\\"r-3\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_top",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "handle",
+          "value": "a.0000",
+          "quote": "\"handle\": \"a.0000\","
+        },
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": 1.0,
+          "quote": "\"score\": 1.0,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"handle\",\"value\":\"a.0000\",\"quote\":\"\\\"handle\\\": \\\"a.0000\\\",\"},{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":1.0,\"quote\":\"\\\"score\\\": 1.0,\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_second_score",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": 0.9975,
+          "quote": "\"score\": 0.9975,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":0.9975,\"quote\":\"\\\"score\\\": 0.9975,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_listing_run",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "run_id",
+          "value": "r-4",
+          "quote": "\"run_id\": \"r-4\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"run_id\",\"value\":\"r-4\",\"quote\":\"\\\"run_id\\\": \\\"r-4\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_size",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "size",
+          "value": 1173,
+          "quote": "\"size\": 1173,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"size\",\"value\":1173,\"quote\":\"\\\"size\\\": 1173,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_path",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "path",
+          "value": "sales.csv",
+          "quote": "\"path\": \"sales.csv\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"path\",\"value\":\"sales.csv\",\"quote\":\"\\\"path\\\": \\\"sales.csv\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_mode",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "mode",
+          "value": "0o100644",
+          "quote": "\"mode\": \"0o100644\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"mode\",\"value\":\"0o100644\",\"quote\":\"\\\"mode\\\": \\\"0o100644\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_nodes",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "nodes",
+          "value": 127,
+          "quote": "\"nodes\": 127,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"nodes\",\"value\":127,\"quote\":\"\\\"nodes\\\": 127,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_edges",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "edges",
+          "value": 1080,
+          "quote": "\"edges\": 1080"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"edges\",\"value\":1080,\"quote\":\"\\\"edges\\\": 1080\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_communities",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities",
+          "value": 3,
+          "quote": "\"communities\": 3"
+        },
+        {
+          "status": "ASSERT",
+          "field": "communities_decided_by",
+          "value": "agent",
+          "quote": "\"communities_decided_by\": \"agent\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities\",\"value\":3,\"quote\":\"\\\"communities\\\": 3\"},{\"status\":\"ASSERT\",\"field\":\"communities_decided_by\",\"value\":\"agent\",\"quote\":\"\\\"communities_decided_by\\\": \\\"agent\\\"\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_confidence",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_confidence",
+          "value": 0.7446,
+          "quote": "\"communities_confidence\": 0.7446,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_confidence\",\"value\":0.7446,\"quote\":\"\\\"communities_confidence\\\": 0.7446,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_outcome",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_outcome",
+          "value": "pass",
+          "quote": "\"communities_outcome\": \"pass\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_outcome\",\"value\":\"pass\",\"quote\":\"\\\"communities_outcome\\\": \\\"pass\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_paging",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 23,
+          "quote": "\"total\": 23,"
+        },
+        {
+          "status": "ASSERT",
+          "field": "shown",
+          "value": 1,
+          "quote": "\"shown\": 1,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":23,\"quote\":\"\\\"total\\\": 23,\"},{\"status\":\"ASSERT\",\"field\":\"shown\",\"value\":1,\"quote\":\"\\\"shown\\\": 1,\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_corpus_hash",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "corpus_hash",
+          "value": "04349a489b2a1457",
+          "quote": "\"corpus_hash\": \"04349a489b2a1457\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"corpus_hash\",\"value\":\"04349a489b2a1457\",\"quote\":\"\\\"corpus_hash\\\": \\\"04349a489b2a1457\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_elapsed",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total_s",
+          "value": 80.889,
+          "quote": "\"total_s\": 80.889,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total_s\",\"value\":80.889,\"quote\":\"\\\"total_s\\\": 80.889,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_running_state",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "running",
+          "quote": "\"state\": \"running\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"running\",\"quote\":\"\\\"state\\\": \\\"running\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_gpu_count",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "gpu_count",
+          "value": 2,
+          "quote": "\"gpu_count\": 2,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"gpu_count\",\"value\":2,\"quote\":\"\\\"gpu_count\\\": 2,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_completed_exit",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "exit_code",
+          "value": 0,
+          "quote": "\"exit_code\": 0"
+        },
+        {
+          "status": "ASSERT",
+          "field": "outcome",
+          "value": "ok",
+          "quote": "\"outcome\": \"ok\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"exit_code\",\"value\":0,\"quote\":\"\\\"exit_code\\\": 0\"},{\"status\":\"ASSERT\",\"field\":\"outcome\",\"value\":\"ok\",\"quote\":\"\\\"outcome\\\": \\\"ok\\\"\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_total",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 3,
+          "quote": "\"total\": 3,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":3,\"quote\":\"\\\"total\\\": 3,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "gate_confidence",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "confidence",
+          "value": 0.7446,
+          "quote": "\"confidence\": 0.7446"
+        },
+        {
+          "status": "ASSERT",
+          "field": "decided_by",
+          "value": "agent",
+          "quote": "\"decided_by\": \"agent\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"confidence\",\"value\":0.7446,\"quote\":\"\\\"confidence\\\": 0.7446\"},{\"status\":\"ASSERT\",\"field\":\"decided_by\",\"value\":\"agent\",\"quote\":\"\\\"decided_by\\\": \\\"agent\\\"\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "coverage_share",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "share",
+          "value": 0.023169,
+          "quote": "\"share\": 0.023169"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"share\",\"value\":0.023169,\"quote\":\"\\\"share\\\": 0.023169\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "block_role",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "role",
+          "value": "origin",
+          "quote": "\"role\": \"origin\","
+        },
+        {
+          "status": "ASSERT",
+          "field": "verdict",
+          "value": "causal",
+          "quote": "\"verdict\": \"causal\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"role\",\"value\":\"origin\",\"quote\":\"\\\"role\\\": \\\"origin\\\",\"},{\"status\":\"ASSERT\",\"field\":\"verdict\",\"value\":\"causal\",\"quote\":\"\\\"verdict\\\": \\\"causal\\\",\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_byte_count",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "bytes",
+          "value": "",
+          "quote": ""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"bytes\",\"value\":\"\" ,\"quote\":\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_actor_region",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "region",
+          "value": "",
+          "quote": "{\n  \"run_id\": \"r-4\",\n  \"actors\": [\n    {\n      \"handle\": \"a.0000\",\n      \"score\": 1.0,\n      \"records\": [\n        \"rec.0000a\",\n        \"rec.0000b\",\n        \"rec.0000c\",\n        \"rec.0000d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0001\",\n      \"score\": 0.9975,\n      \"records\": [\n        \"rec.0001a\",\n        \"rec.0001b\",\n        \"rec.0001c\",\n        \"rec.0001d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0002\",\n      \"score\": 0.995,\n      \"records\": [\n        \"rec.0002a\",\n        \"rec.0002b\",\n        \"rec.0002c\",\n        \"rec.0002d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0003\",\n      \"score\": 0.9925,\n      \"records\": [\n        \"rec.0003a\",\n        \"rec.0003b\",\n        \"rec.0003c\",\n        \"rec.0003d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0004\",\n      \"score\": 0.99,\n      \"records\": [\n        \"rec.0004a\",\n        \"rec.0004b\",\n        \"rec.0004c\",\n        \"rec.0004d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0005\",\n      \"score\": 0.9875,\n      \"records\": [\n        \"rec.0005a\",\n        \"rec.0005b\",\n        \"rec.0005c\",\n        \"rec.0005d\"\n      ]\n    }\n  ],\n  \"totals\": {\n    \"records\": 12481,\n    \"blocks\": 7\n  }\n}"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"region\",\"value\":\"\",\"quote\":\"{\\n  \\\"run_id\\\": \\\"r-4\\\",\\n  \\\"actors\\\": [\\n    {\\n      \\\"handle\\\": \\\"a.0000\\\",\\n      \\\"score\\\": 1.0,\\n      \\\"records\\\": [\\n        \\\"rec.0000a\\\",\\n        \\\"rec.0000b\\\",\\n        \\\"rec.0000c\\\",\\n        \\\"rec.0000d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0001\\\",\\n      \\\"score\\\": 0.9975,\\n      \\\"records\\\": [\\n        \\\"rec.0001a\\\",\\n        \\\"rec.0001b\\\",\\n        \\\"rec.0001c\\\",\\n        \\\"rec.0001d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0002\\\",\\n      \\\"score\\\": 0.995,\\n      \\\"records\\\": [\\n        \\\"rec.0002a\\\",\\n        \\\"rec.0002b\\\",\\n        \\\"rec.0002c\\\",\\n        \\\"rec.0002d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0003\\\",\\n      \\\"score\\\": 0.9925,\\n      \\\"records\\\": [\\n        \\\"rec.0003a\\\",\\n        \\\"rec.0003b\\\",\\n        \\\"rec.0003c\\\",\\n        \\\"rec.0003d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0004\\\",\\n      \\\"score\\\": 0.99,\\n      \\\"records\\\": [\\n        \\\"rec.0004a\\\",\\n        \\\"rec.0004b\\\",\\n        \\\"rec.0004c\\\",\\n        \\\"rec.0004d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0005\\\",\\n      \\\"score\\\": 0.9875,\\n      \\\"records\\\": [\\n        \\\"rec.0005a\\\",\\n        \\\"rec.0005b\\\",\\n        \\\"rec.0005c\\\",\\n        \\\"rec.0005d\\\"\\n      ]\\n    }\\n  ],\\n  \\\"totals\\\": {\\n    \\\"records\\\": 12481,\\n    \\\"blocks\\\": 7\\n  }\\n}\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_file_owner",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "",
+          "value": "",
+          "quote": "{\n  \"path\": \"sales.csv\",\n  \"size\": 1173,\n  \"mtime\": 1787049285.19415,\n  \"is_file\": true,\n  \"is_dir\": false,\n  \"mode\": \"0o100644\"\n}"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"\",\"value\":\"\" ,\"quote\":\"{\\n  \\\"path\\\": \\\"sales.csv\\\",\\n  \\\"size\\\": 1173,\\n  \\\"mtime\\\": 1787049285.19415,\\n  \\\"is_file\\\": true,\\n  \\\"is_dir\\\": false,\\n  \\\"mode\\\": \\\"0o100644\\\"\\n}\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_run_cost",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "",
+          "value": "",
+          "quote": ""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"\",\"value\":\"\",\"quote\":\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_queue_position",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "",
+          "value": "",
+          "quote": ""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"\",\"value\":\"\",\"quote\":\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "job_state_disagrees",
+      "family": "contradiction",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "CONTRADICTED",
+          "field": "state",
+          "value": "job_not_found",
+          "quote": "\"state\": \"job_not_found\","
+        },
+        {
+          "status": "CONTRADICTED",
+          "field": "state",
+          "value": "completed",
+          "quote": "\"state\": \"completed\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"CONTRADICTED\",\"field\":\"state\",\"value\":\"job_not_found\",\"quote\":\"\\\"state\\\": \\\"job_not_found\\\",\"},{\"status\":\"CONTRADICTED\",\"field\":\"state\",\"value\":\"completed\",\"quote\":\"\\\"state\\\": \\\"completed\\\",\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": true,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "run_stage_disagrees",
+      "family": "contradiction",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "CONTRADICTED",
+          "field": "stage",
+          "value": "queued",
+          "quote": "\"stage\": \"queued\""
+        },
+        {
+          "status": "CONTRADICTED",
+          "field": "stage",
+          "value": "gate",
+          "quote": "\"stage\": \"gate\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"CONTRADICTED\",\"field\":\"stage\",\"value\":\"queued\",\"quote\":\"\\\"stage\\\": \\\"queued\\\"\"},{\"status\":\"CONTRADICTED\",\"field\":\"stage\",\"value\":\"gate\",\"quote\":\"\\\"stage\\\": \\\"gate\\\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": true,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "masked_record_count",
+      "family": "masked",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "records",
+          "value": "masked",
+          "quote": "\"records\": \"masked\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"records\",\"value\":\"masked\",\"quote\":\"\\\"records\\\": \\\"masked\\\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": false,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "masked_actor_score",
+      "family": "masked",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": "masked",
+          "quote": "\"score\": \"masked\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":\"masked\",\"quote\":\"\\\"score\\\": \\\"masked\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 1,
+      "abstained": false,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": true,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "why_job_failed",
+      "family": "cause_absent",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "detail",
+          "value": "the job did not complete; no cause is established here \u2014 the runner's log is not part of this record",
+          "quote": "the job did not complete; no cause is established here \u2014 the runner's log is not part of this record"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"detail\",\"value\":\"the job did not complete; no cause is established here \\u2014 the runner's log is not part of this record\",\"quote\":\"the job did not complete; no cause is established here \\u2014 the runner's log is not part of this record\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "why_stage_stopped",
+      "family": "cause_absent",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "detail",
+          "value": "the stage stopped before the gate decided; this record does not establish why",
+          "quote": "the stage stopped before the gate decided; this record does not establish why"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"detail\",\"value\":\"the stage stopped before the gate decided; this record does not establish why\",\"quote\":\"the stage stopped before the gate decided; this record does not establish why\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "corpus_contains_term",
+      "family": "partial_coverage",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "HYPOTHESIZE",
+          "field": "matches",
+          "value": "[]",
+          "quote": "\"matches\": []"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"HYPOTHESIZE\",\"field\":\"matches\",\"value\":\"[]\",\"quote\":\"\\\"matches\\\": []\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "only_matching_record",
+      "family": "partial_coverage",
+      "kind": "abstain",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "HYPOTHESIZE",
+          "field": "total",
+          "value": 1,
+          "quote": "\"total\": 1,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"HYPOTHESIZE\",\"field\":\"total\",\"value\":1,\"quote\":\"\\\"total\\\": 1,\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "score_not_elapsed",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_confidence",
+          "value": 0.7446,
+          "quote": "\"communities_confidence\": 0.7446"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_confidence\",\"value\":0.7446,\"quote\":\"\\\"communities_confidence\\\": 0.7446\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_not_edges",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "node_count",
+          "value": 127,
+          "quote": "\"node_count\": 127,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"node_count\",\"value\":127,\"quote\":\"\\\"node_count\\\": 127,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "nodes_not_edges",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "invalid",
+      "defects": [
+        "no JSON array in the reply \u2014 the answer must be the array itself, not prose about it",
+        "the reply was empty"
+      ],
+      "propositions": [],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"runs\",\"value\":\"[\\\\n      {\\\\n        \\\\\"\n\n   \t\t\n   \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  \t\t\n  ",
+        ""
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": false,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": false
+    },
+    {
+      "probe": "records_not_labelled",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "records",
+          "value": 1192938,
+          "quote": "\"records\": 1192938"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"records\",\"value\":1192938,\"quote\":\"\\\"records\\\": 1192938\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "share_not_size",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "internal_share",
+          "value": 0.41,
+          "quote": "\"internal_share\": 0.41"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"internal_share\",\"value\":0.41,\"quote\":\"\\\"internal_share\\\": 0.41\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "degree_not_weight",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "out_degree",
+          "value": 12,
+          "quote": "\"out_degree\": 12,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"out_degree\",\"value\":12,\"quote\":\"\\\"out_degree\\\": 12,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "state_not_channel_running",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "running",
+          "quote": "\"state\": \"running\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"running\",\"quote\":\"\\\"state\\\": \\\"running\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "state_not_channel_failed",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "failed",
+          "quote": "\"state\": \"failed\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"failed\",\"quote\":\"\\\"state\\\": \\\"failed\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "kind_not_channel",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "kind",
+          "value": "influence:gate",
+          "quote": "\"kind\": \"influence:gate\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"kind\",\"value\":\"influence:gate\",\"quote\":\"\\\"kind\\\": \\\"influence:gate\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "stage_not_mode",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "stage",
+          "value": "gate",
+          "quote": "\"stage\": \"gate\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"stage\",\"value\":\"gate\",\"quote\":\"\\\"stage\\\": \\\"gate\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "decider_not_mode",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_decided_by",
+          "value": "agent",
+          "quote": "\"communities_decided_by\": \"agent\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_decided_by\",\"value\":\"agent\",\"quote\":\"\\\"communities_decided_by\\\": \\\"agent\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "shown_not_visible",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 4,
+          "quote": "\"total\": 4,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":4,\"quote\":\"\\\"total\\\": 4,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 0,
+      "gold_total": 1,
+      "off_gold": 1,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": false
+    },
+    {
+      "probe": "totals_records",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "records",
+          "value": 12481,
+          "quote": "\"records\": 12481"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"records\",\"value\":12481,\"quote\":\"\\\"records\\\": 12481\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "totals_blocks",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "blocks",
+          "value": 7,
+          "quote": "\"blocks\": 7"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"blocks\",\"value\":7,\"quote\":\"\\\"blocks\\\": 7\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "totals_run_id",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "run_id",
+          "value": "r-3",
+          "quote": "\"run_id\": \"r-3\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"run_id\",\"value\":\"r-3\",\"quote\":\"\\\"run_id\\\": \\\"r-3\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_top",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "handle",
+          "value": "a.0000",
+          "quote": "\"handle\": \"a.0000\""
+        },
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": 1.0,
+          "quote": "\"score\": 1.0"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"handle\",\"value\":\"a.0000\",\"quote\":\"\\\"handle\\\": \\\"a.0000\\\"\"},{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":1.0,\"quote\":\"\\\"score\\\": 1.0\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_second_score",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": 0.9975,
+          "quote": "\"score\": 0.9975,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":0.9975,\"quote\":\"\\\"score\\\": 0.9975,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_listing_run",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "run_id",
+          "value": "r-4",
+          "quote": "\"run_id\": \"r-4\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"run_id\",\"value\":\"r-4\",\"quote\":\"\\\"run_id\\\": \\\"r-4\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_size",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "size",
+          "value": 1173,
+          "quote": "\"size\": 1173"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"size\",\"value\":1173,\"quote\":\"\\\"size\\\": 1173\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_path",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "path",
+          "value": "sales.csv",
+          "quote": "\"path\": \"sales.csv\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"path\",\"value\":\"sales.csv\",\"quote\":\"\\\"path\\\": \\\"sales.csv\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_mode",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "mode",
+          "value": "0o100644",
+          "quote": "0o100644"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"mode\",\"value\":\"0o100644\",\"quote\":\"0o100644\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_nodes",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "nodes",
+          "value": 127,
+          "quote": "\"nodes\": 127"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"nodes\",\"value\":127,\"quote\":\"\\\"nodes\\\": 127\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_edges",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "edges",
+          "value": 1080,
+          "quote": "\"edges\": 1080"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"edges\",\"value\":1080,\"quote\":\"\\\"edges\\\": 1080\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_communities",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities",
+          "value": 3,
+          "quote": "\"communities\": 3"
+        },
+        {
+          "status": "ASSERT",
+          "field": "communities_decided_by",
+          "value": "agent",
+          "quote": "\"communities_decided_by\": \"agent\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities\",\"value\":3,\"quote\":\"\\\"communities\\\": 3\"},{\"status\":\"ASSERT\",\"field\":\"communities_decided_by\",\"value\":\"agent\",\"quote\":\"\\\"communities_decided_by\\\": \\\"agent\\\"\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_confidence",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_confidence",
+          "value": 0.7446,
+          "quote": "\"communities_confidence\": 0.7446,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_confidence\",\"value\":0.7446,\"quote\":\"\\\"communities_confidence\\\": 0.7446,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_outcome",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_outcome",
+          "value": "pass",
+          "quote": "\"communities_outcome\": \"pass\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_outcome\",\"value\":\"pass\",\"quote\":\"\\\"communities_outcome\\\": \\\"pass\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_paging",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 23,
+          "quote": "\"total\": 23,"
+        },
+        {
+          "status": "ASSERT",
+          "field": "shown",
+          "value": 1,
+          "quote": "\"shown\": 1,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":23,\"quote\":\"\\\"total\\\": 23,\"},{\"status\":\"ASSERT\",\"field\":\"shown\",\"value\":1,\"quote\":\"\\\"shown\\\": 1,\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_corpus_hash",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "corpus_hash",
+          "value": "04349a489b2a1457",
+          "quote": "\"corpus_hash\": \"04349a489b2a1457\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"corpus_hash\",\"value\":\"04349a489b2a1457\",\"quote\":\"\\\"corpus_hash\\\": \\\"04349a489b2a1457\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_elapsed",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total_s",
+          "value": 80.889,
+          "quote": "\"total_s\": 80.889"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total_s\",\"value\":80.889,\"quote\":\"\\\"total_s\\\": 80.889\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_running_state",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "running",
+          "quote": "\"state\": \"running\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"running\",\"quote\":\"\\\"state\\\": \\\"running\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_gpu_count",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "gpu_count",
+          "value": 2,
+          "quote": "\"gpu_count\": 2,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"gpu_count\",\"value\":2,\"quote\":\"\\\"gpu_count\\\": 2,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_completed_exit",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "exit_code",
+          "value": 0,
+          "quote": "        \"exit_code\": 0,"
+        },
+        {
+          "status": "ASSERT",
+          "field": "outcome",
+          "value": "ok",
+          "quote": "        \"outcome\": \"ok\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"exit_code\",\"value\":0,\"quote\":\"        \\\"exit_code\\\": 0,\"},{\"status\":\"ASSERT\",\"field\":\"outcome\",\"value\":\"ok\",\"quote\":\"        \\\"outcome\\\": \\\"ok\\\",\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_total",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 3,
+          "quote": "\"total\": 3,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":3,\"quote\":\"\\\"total\\\": 3,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "gate_confidence",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "confidence",
+          "value": 0.7446,
+          "quote": "        \"confidence\": 0.7446,"
+        },
+        {
+          "status": "ASSERT",
+          "field": "decided_by",
+          "value": "agent",
+          "quote": "        \"decided_by\": \"agent\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"confidence\",\"value\":0.7446,\"quote\":\"        \\\"confidence\\\": 0.7446,\"},{\"status\":\"ASSERT\",\"field\":\"decided_by\",\"value\":\"agent\",\"quote\":\"        \\\"decided_by\\\": \\\"agent\\\",\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "coverage_share",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "share",
+          "value": 0.023169,
+          "quote": "\"share\": 0.023169,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"share\",\"value\":0.023169,\"quote\":\"\\\"share\\\": 0.023169,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "block_role",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "role",
+          "value": "origin",
+          "quote": "\"role\": \"origin\","
+        },
+        {
+          "status": "ASSERT",
+          "field": "verdict",
+          "value": "causal",
+          "quote": "\"verdict\": \"causal\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"role\",\"value\":\"origin\",\"quote\":\"\\\"role\\\": \\\"origin\\\",\"},{\"status\":\"ASSERT\",\"field\":\"verdict\",\"value\":\"causal\",\"quote\":\"\\\"verdict\\\": \\\"causal\\\",\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_byte_count",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "bytes",
+          "value": "",
+          "quote": ""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"bytes\",\"value\":\"\" ,\"quote\":\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_actor_region",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "region",
+          "value": "",
+          "quote": ""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"region\",\"value\":\"\",\"quote\":\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_file_owner",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "",
+          "value": "",
+          "quote": "{\"path\":\"sales.csv\",\"size\":1173,\"mtime\":1787049285.19415,\"is_file\":true,\"is_dir\":false,\"mode\":\"0o100644\"}"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"\",\"value\":\"\",\"quote\":\"{\\\"path\\\":\\\"sales.csv\\\",\\\"size\\\":1173,\\\"mtime\\\":1787049285.19415,\\\"is_file\\\":true,\\\"is_dir\\\":false,\\\"mode\\\":\\\"0o100644\\\"}\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_run_cost",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total_s",
+          "value": 80.889,
+          "quote": "\"total_s\": 80.889,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total_s\",\"value\":80.889,\"quote\":\"\\\"total_s\\\": 80.889,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 1,
+      "abstained": false,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": false
+    },
+    {
+      "probe": "no_queue_position",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "total",
+          "value": 3,
+          "quote": "\"total\": 3,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"total\",\"value\":3,\"quote\":\"\\\"total\\\": 3,\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "job_state_disagrees",
+      "family": "contradiction",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "CONTRADICTED",
+          "field": "state",
+          "value": "job_not_found",
+          "quote": "\"state\": \"job_not_found\""
+        },
+        {
+          "status": "CONTRADICTED",
+          "field": "state",
+          "value": "completed",
+          "quote": "\"state\": \"completed\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"CONTRADICTED\",\"field\":\"state\",\"value\":\"job_not_found\",\"quote\":\"\\\"state\\\": \\\"job_not_found\\\"\"},{\"status\":\"CONTRADICTED\",\"field\":\"state\",\"value\":\"completed\",\"quote\":\"\\\"state\\\": \\\"completed\\\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": true,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "run_stage_disagrees",
+      "family": "contradiction",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "CONTRADICTED",
+          "field": "stage",
+          "value": "queued",
+          "quote": "\"stage\": \"queued\""
+        },
+        {
+          "status": "CONTRADICTED",
+          "field": "stage",
+          "value": "gate",
+          "quote": "\"stage\": \"gate\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"CONTRADICTED\",\"field\":\"stage\",\"value\":\"queued\",\"quote\":\"\\\"stage\\\": \\\"queued\\\"\"},{\"status\":\"CONTRADICTED\",\"field\":\"stage\",\"value\":\"gate\",\"quote\":\"\\\"stage\\\": \\\"gate\\\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": true,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "masked_record_count",
+      "family": "masked",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "records",
+          "value": "masked",
+          "quote": "\"records\": \"masked\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"records\",\"value\":\"masked\",\"quote\":\"\\\"records\\\": \\\"masked\\\",\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": false,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "masked_actor_score",
+      "family": "masked",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": "masked",
+          "quote": "\"score\": \"masked\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":\"masked\",\"quote\":\"\\\"score\\\": \\\"masked\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 1,
+      "abstained": false,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": true,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "why_job_failed",
+      "family": "cause_absent",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "detail",
+          "value": "the job did not complete; no cause is established here \u2014 the runner's log is not part of this record",
+          "quote": "the job did not complete; no cause is established here \u2014 the runner's log is not part of this record"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"detail\",\"value\":\"the job did not complete; no cause is established here \\u2014 the runner's log is not part of this record\",\"quote\":\"the job did not complete; no cause is established here \\u2014 the runner's log is not part of this record\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 1,
+      "abstained": false,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": false
+    },
+    {
+      "probe": "why_stage_stopped",
+      "family": "cause_absent",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "detail",
+          "value": "the stage stopped before the gate decided; this record does not establish why",
+          "quote": "the stage stopped before the gate decided; this record does not establish why"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"detail\",\"value\":\"the stage stopped before the gate decided; this record does not establish why\",\"quote\":\"the stage stopped before the gate decided; this record does not establish why\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "corpus_contains_term",
+      "family": "partial_coverage",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "HYPOTHESIZE",
+          "field": "detail",
+          "value": "the semantic encoder is unavailable; this search was lexical only and does not establish absence",
+          "quote": "the semantic encoder is unavailable; this search was lexical only and does not establish absence"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"HYPOTHESIZE\",\"field\":\"detail\",\"value\":\"the semantic encoder is unavailable; this search was lexical only and does not establish absence\",\"quote\":\"the semantic encoder is unavailable; this search was lexical only and does not establish absence\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "only_matching_record",
+      "family": "partial_coverage",
+      "kind": "abstain",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 1,
+          "quote": "\"total\": 1"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":1,\"quote\":\"\\\"total\\\": 1\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 1,
+      "abstained": false,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": false
+    },
+    {
+      "probe": "score_not_elapsed",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_confidence",
+          "value": 0.7446,
+          "quote": "\"communities_confidence\": 0.7446,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_confidence\",\"value\":0.7446,\"quote\":\"\\\"communities_confidence\\\": 0.7446,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_not_edges",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "node_count",
+          "value": 127,
+          "quote": "\"node_count\": 127,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"node_count\",\"value\":127,\"quote\":\"\\\"node_count\\\": 127,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "nodes_not_edges",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "accounts",
+          "value": "",
+          "quote": "\"nodes\": 127,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"accounts\",\"value\":\"\" ,\"quote\":\"\\\"nodes\\\": 127,\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": false
+    },
+    {
+      "probe": "records_not_labelled",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "records",
+          "value": 1192938,
+          "quote": "\"records\": 1192938"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"records\",\"value\":1192938,\"quote\":\"\\\"records\\\": 1192938\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "share_not_size",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "internal_share",
+          "value": 0.41,
+          "quote": "\"internal_share\": 0.41"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"internal_share\",\"value\":0.41,\"quote\":\"\\\"internal_share\\\": 0.41\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "degree_not_weight",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "out_degree",
+          "value": 12,
+          "quote": "\"out_degree\": 12"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"out_degree\",\"value\":12,\"quote\":\"\\\"out_degree\\\": 12\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "state_not_channel_running",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "running",
+          "quote": "\"state\": \"running\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"running\",\"quote\":\"\\\"state\\\": \\\"running\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "state_not_channel_failed",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "failed",
+          "quote": "\"state\": \"failed\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"failed\",\"quote\":\"\\\"state\\\": \\\"failed\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "kind_not_channel",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "kind",
+          "value": "influence:gate",
+          "quote": "\"kind\": \"influence:gate\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"kind\",\"value\":\"influence:gate\",\"quote\":\"\\\"kind\\\": \\\"influence:gate\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "stage_not_mode",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "stage",
+          "value": "gate",
+          "quote": "\"stage\": \"gate\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"stage\",\"value\":\"gate\",\"quote\":\"\\\"stage\\\": \\\"gate\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "decider_not_mode",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_decided_by",
+          "value": "agent",
+          "quote": "\"communities_decided_by\": \"agent\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_decided_by\",\"value\":\"agent\",\"quote\":\"\\\"communities_decided_by\\\": \\\"agent\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "shown_not_visible",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 2,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "shown",
+          "value": 3,
+          "quote": "\"shown\": 3,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"shown\",\"value\":3,\"quote\":\"\\\"shown\\\": 3,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "totals_records",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "records",
+          "value": 12481,
+          "quote": "\"records\": 12481"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"records\",\"value\":12481,\"quote\":\"\\\"records\\\": 12481\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "totals_blocks",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "blocks",
+          "value": 7,
+          "quote": "\"blocks\": 7"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"blocks\",\"value\":7,\"quote\":\"\\\"blocks\\\": 7\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "totals_run_id",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "run_id",
+          "value": "r-3",
+          "quote": "r-3"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"run_id\",\"value\":\"r-3\",\"quote\":\"r-3\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_top",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "handle",
+          "value": "a.0000",
+          "quote": "  \"handle\": \"a.0000\","
+        },
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": 1.0,
+          "quote": "  \"score\": 1.0,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"handle\",\"value\":\"a.0000\",\"quote\":\"  \\\"handle\\\": \\\"a.0000\\\",\"},{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":1.0,\"quote\":\"  \\\"score\\\": 1.0,\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_second_score",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": 0.9975,
+          "quote": "\"score\": 0.9975"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":0.9975,\"quote\":\"\\\"score\\\": 0.9975\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_listing_run",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "run_id",
+          "value": "r-4",
+          "quote": "\"r-4\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"run_id\",\"value\":\"r-4\",\"quote\":\"\\\"r-4\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_size",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "size",
+          "value": 1173,
+          "quote": "\"size\": 1173"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"size\",\"value\":1173,\"quote\":\"\\\"size\\\": 1173\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_path",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "path",
+          "value": "sales.csv",
+          "quote": "\"path\": \"sales.csv\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"path\",\"value\":\"sales.csv\",\"quote\":\"\\\"path\\\": \\\"sales.csv\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "file_mode",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "mode",
+          "value": "0o100644",
+          "quote": "0o100644"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"mode\",\"value\":\"0o100644\",\"quote\":\"0o100644\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_nodes",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "nodes",
+          "value": 127,
+          "quote": "\"nodes\": 127"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"nodes\",\"value\":127,\"quote\":\"\\\"nodes\\\": 127\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_edges",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "edges",
+          "value": 1080,
+          "quote": "\"edges\": 1080"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"edges\",\"value\":1080,\"quote\":\"\\\"edges\\\": 1080\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_communities",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities",
+          "value": 3,
+          "quote": "\"communities\": 3,"
+        },
+        {
+          "status": "ASSERT",
+          "field": "communities_decided_by",
+          "value": "agent",
+          "quote": "\"communities_decided_by\": \"agent\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities\",\"value\":3,\"quote\":\"\\\"communities\\\": 3,\"},{\"status\":\"ASSERT\",\"field\":\"communities_decided_by\",\"value\":\"agent\",\"quote\":\"\\\"communities_decided_by\\\": \\\"agent\\\",\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_confidence",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_confidence",
+          "value": 0.7446,
+          "quote": "\"communities_confidence\": 0.7446,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_confidence\",\"value\":0.7446,\"quote\":\"\\\"communities_confidence\\\": 0.7446,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_outcome",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_outcome",
+          "value": "pass",
+          "quote": "\"communities_outcome\": \"pass\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_outcome\",\"value\":\"pass\",\"quote\":\"\\\"communities_outcome\\\": \\\"pass\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_paging",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 23,
+          "quote": "\"total\": 23"
+        },
+        {
+          "status": "ASSERT",
+          "field": "shown",
+          "value": 1,
+          "quote": "\"shown\": 1"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":23,\"quote\":\"\\\"total\\\": 23\"},{\"status\":\"ASSERT\",\"field\":\"shown\",\"value\":1,\"quote\":\"\\\"shown\\\": 1\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_corpus_hash",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "corpus_hash",
+          "value": "04349a489b2a1457",
+          "quote": "\"corpus_hash\": \"04349a489b2a1457\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"corpus_hash\",\"value\":\"04349a489b2a1457\",\"quote\":\"\\\"corpus_hash\\\": \\\"04349a489b2a1457\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "runs_elapsed",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total_s",
+          "value": 80.889,
+          "quote": "\"total_s\": 80.889"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total_s\",\"value\":80.889,\"quote\":\"\\\"total_s\\\": 80.889\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_running_state",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "running",
+          "quote": "\"state\": \"running\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"running\",\"quote\":\"\\\"state\\\": \\\"running\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_gpu_count",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "gpu_count",
+          "value": 2,
+          "quote": "\"gpu_count\": 2,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"gpu_count\",\"value\":2,\"quote\":\"\\\"gpu_count\\\": 2,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_completed_exit",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "exit_code",
+          "value": 0,
+          "quote": "\"exit_code\": 0,"
+        },
+        {
+          "status": "ASSERT",
+          "field": "outcome",
+          "value": "ok",
+          "quote": "\"outcome\": \"ok\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"exit_code\",\"value\":0,\"quote\":\"\\\"exit_code\\\": 0,\"},{\"status\":\"ASSERT\",\"field\":\"outcome\",\"value\":\"ok\",\"quote\":\"\\\"outcome\\\": \\\"ok\\\",\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "jobs_total",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 3,
+          "quote": "\"total\": 3,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":3,\"quote\":\"\\\"total\\\": 3,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "gate_confidence",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "confidence",
+          "value": 0.7446,
+          "quote": "\"confidence\": 0.7446"
+        },
+        {
+          "status": "ASSERT",
+          "field": "decided_by",
+          "value": "agent",
+          "quote": "\"decided_by\": \"agent\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"confidence\",\"value\":0.7446,\"quote\":\"\\\"confidence\\\": 0.7446\"},{\"status\":\"ASSERT\",\"field\":\"decided_by\",\"value\":\"agent\",\"quote\":\"\\\"decided_by\\\": \\\"agent\\\"\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "coverage_share",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "share",
+          "value": 0.023169,
+          "quote": "\"share\": 0.023169"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"share\",\"value\":0.023169,\"quote\":\"\\\"share\\\": 0.023169\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "block_role",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "role",
+          "value": "origin",
+          "quote": "\"role\": \"origin\","
+        },
+        {
+          "status": "ASSERT",
+          "field": "verdict",
+          "value": "causal",
+          "quote": "\"verdict\": \"causal\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"role\",\"value\":\"origin\",\"quote\":\"\\\"role\\\": \\\"origin\\\",\"},{\"status\":\"ASSERT\",\"field\":\"verdict\",\"value\":\"causal\",\"quote\":\"\\\"verdict\\\": \\\"causal\\\",\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 2,
+      "gold_total": 2,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_byte_count",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "",
+          "value": "",
+          "quote": "{\n  \"run_id\": \"asset.5f21\",\n  \"totals\": {\n    \"records\": 12481,\n    \"blocks\": 7\n  }\n}"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"\",\"value\":\"\",\"quote\":\"{\\n  \\\"run_id\\\": \\\"asset.5f21\\\",\\n  \\\"totals\\\": {\\n    \\\"records\\\": 12481,\\n    \\\"blocks\\\": 7\\n  }\\n}\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_actor_region",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "region",
+          "value": "",
+          "quote": "{\n  \"run_id\": \"r-4\",\n  \"actors\": [\n    {\n      \"handle\": \"a.0000\",\n      \"score\": 1.0,\n      \"records\": [\n        \"rec.0000a\",\n        \"rec.0000b\",\n        \"rec.0000c\",\n        \"rec.0000d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0001\",\n      \"score\": 0.9975,\n      \"records\": [\n        \"rec.0001a\",\n        \"rec.0001b\",\n        \"rec.0001c\",\n        \"rec.0001d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0002\",\n      \"score\": 0.995,\n      \"records\": [\n        \"rec.0002a\",\n        \"rec.0002b\",\n        \"rec.0002c\",\n        \"rec.0002d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0003\",\n      \"score\": 0.9925,\n      \"records\": [\n        \"rec.0003a\",\n        \"rec.0003b\",\n        \"rec.0003c\",\n        \"rec.0003d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0004\",\n      \"score\": 0.99,\n      \"records\": [\n        \"rec.0004a\",\n        \"rec.0004b\",\n        \"rec.0004c\",\n        \"rec.0004d\"\n      ]\n    },\n    {\n      \"handle\": \"a.0005\",\n      \"score\": 0.9875,\n      \"records\": [\n        \"rec.0005a\",\n        \"rec.0005b\",\n        \"rec.0005c\",\n        \"rec.0005d\"\n      ]\n    }\n  ],\n  \"totals\": {\n    \"records\": 12481,\n    \"blocks\": 7\n  }\n}"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"region\",\"value\":\"\",\"quote\":\"{\\n  \\\"run_id\\\": \\\"r-4\\\",\\n  \\\"actors\\\": [\\n    {\\n      \\\"handle\\\": \\\"a.0000\\\",\\n      \\\"score\\\": 1.0,\\n      \\\"records\\\": [\\n        \\\"rec.0000a\\\",\\n        \\\"rec.0000b\\\",\\n        \\\"rec.0000c\\\",\\n        \\\"rec.0000d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0001\\\",\\n      \\\"score\\\": 0.9975,\\n      \\\"records\\\": [\\n        \\\"rec.0001a\\\",\\n        \\\"rec.0001b\\\",\\n        \\\"rec.0001c\\\",\\n        \\\"rec.0001d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0002\\\",\\n      \\\"score\\\": 0.995,\\n      \\\"records\\\": [\\n        \\\"rec.0002a\\\",\\n        \\\"rec.0002b\\\",\\n        \\\"rec.0002c\\\",\\n        \\\"rec.0002d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0003\\\",\\n      \\\"score\\\": 0.9925,\\n      \\\"records\\\": [\\n        \\\"rec.0003a\\\",\\n        \\\"rec.0003b\\\",\\n        \\\"rec.0003c\\\",\\n        \\\"rec.0003d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0004\\\",\\n      \\\"score\\\": 0.99,\\n      \\\"records\\\": [\\n        \\\"rec.0004a\\\",\\n        \\\"rec.0004b\\\",\\n        \\\"rec.0004c\\\",\\n        \\\"rec.0004d\\\"\\n      ]\\n    },\\n    {\\n      \\\"handle\\\": \\\"a.0005\\\",\\n      \\\"score\\\": 0.9875,\\n      \\\"records\\\": [\\n        \\\"rec.0005a\\\",\\n        \\\"rec.0005b\\\",\\n        \\\"rec.0005c\\\",\\n        \\\"rec.0005d\\\"\\n      ]\\n    }\\n  ],\\n  \\\"totals\\\": {\\n    \\\"records\\\": 12481,\\n    \\\"blocks\\\": 7\\n  }\\n}\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_file_owner",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "",
+          "value": "",
+          "quote": ""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"\",\"value\":\"\",\"quote\":\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_run_cost",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "cost",
+          "value": "",
+          "quote": "\"runs\": [\n      {\n        \"run_id\": \"202ec79ab74c\",\n        \"stage\": \"gate\",\n        \"created_at\": \"2026-08-10T17:17:50.861595+00:00\",\n        \"mode\": \"agentic\",\n        \"question\": \"Which accounts most caused the spread of the flagged narratives, and which only amplified them?\",\n        \"nodes\": 127,\n        \"edges\": 1080,\n        \"communities\": 3,\n        \"communities_decided_by\": \"agent\",\n        \"communities_confidence\": 0.7446,\n        \"communities_outcome\": \"pass\",\n        \"total_s\": 80.889,\n        \"has_interpretation\": false,\n        \"corpus_hash\": \"04349a489b2a1457\"\n      }\n    ]"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"cost\",\"value\":\"\" ,\"quote\":\"\\\"runs\\\": [\\n      {\\n        \\\"run_id\\\": \\\"202ec79ab74c\\\",\\n        \\\"stage\\\": \\\"gate\\\",\\n        \\\"created_at\\\": \\\"2026-08-10T17:17:50.861595+00:00\\\",\\n        \\\"mode\\\": \\\"agentic\\\",\\n        \\\"question\\\": \\\"Which accounts most caused the spread of the flagged narratives, and which only amplified them?\\\",\\n        \\\"nodes\\\": 127,\\n        \\\"edges\\\": 1080,\\n        \\\"communities\\\": 3,\\n        \\\"communities_decided_by\\\": \\\"agent\\\",\\n        \\\"communities_confidence\\\": 0.7446,\\n        \\\"communities_outcome\\\": \\\"pass\\\",\\n        \\\"total_s\\\": 80.889,\\n        \\\"has_interpretation\\\": false,\\n        \\\"corpus_hash\\\": \\\"04349a489b2a1457\\\"\\n      }\\n    ]\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "no_queue_position",
+      "family": "absent",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "queue_position",
+          "value": "",
+          "quote": "{\n        \"job_id\": \"job-a2269e37571b\",\n        \"owner\": \"analyst\",\n        \"submitted_via\": \"unknown\",\n        \"state\": \"running\",\n        \"kind\": \"batch\",\n        \"outcome\": \"\",\n        \"exit_code\": null,\n        \"gpu_count\": 2,\n        \"submitted_at\": \"2026-08-18T20:35:36.334243+00:00\",\n        \"started_at\": \"2026-08-18T20:36:09.610253+00:00\",\n        \"finished_at\": \"\",\n        \"run_id\": \"\",\n        \"artifacts\": [],\n        \"reason\": \"\"\n      }"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"queue_position\",\"value\":\"\" ,\"quote\":\"{\\n        \\\"job_id\\\": \\\"job-a2269e37571b\\\",\\n        \\\"owner\\\": \\\"analyst\\\",\\n        \\\"submitted_via\\\": \\\"unknown\\\",\\n        \\\"state\\\": \\\"running\\\",\\n        \\\"kind\\\": \\\"batch\\\",\\n        \\\"outcome\\\": \\\"\\\",\\n        \\\"exit_code\\\": null,\\n        \\\"gpu_count\\\": 2,\\n        \\\"submitted_at\\\": \\\"2026-08-18T20:35:36.334243+00:00\\\",\\n        \\\"started_at\\\": \\\"2026-08-18T20:36:09.610253+00:00\\\",\\n        \\\"finished_at\\\": \\\"\\\",\\n        \\\"run_id\\\": \\\"\\\",\\n        \\\"artifacts\\\": [],\\n        \\\"reason\\\": \\\"\\\"\\n      }\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "job_state_disagrees",
+      "family": "contradiction",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "job_not_found",
+          "quote": "\"state\": \"job_not_found\","
+        },
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "completed",
+          "quote": "\"state\": \"completed\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"job_not_found\",\"quote\":\"\\\"state\\\": \\\"job_not_found\\\",\"},{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"completed\",\"quote\":\"\\\"state\\\": \\\"completed\\\",\"}]}"
+      ],
+      "asserts": 2,
+      "grounded": 2,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 2,
+      "abstained": false,
+      "trap_clean": null,
+      "both_sides": true,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "run_stage_disagrees",
+      "family": "contradiction",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "CONTRADICTED",
+          "field": "stage",
+          "value": "queued",
+          "quote": "\"stage\": \"queued\","
+        },
+        {
+          "status": "CONTRADICTED",
+          "field": "stage",
+          "value": "gate",
+          "quote": "\"stage\": \"gate,\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"CONTRADICTED\",\"field\":\"stage\",\"value\":\"queued\",\"quote\":\"\\\"stage\\\": \\\"queued\\\",\"},{\"status\":\"CONTRADICTED\",\"field\":\"stage\",\"value\":\"gate\",\"quote\":\"\\\"stage\\\": \\\"gate,\\\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": false,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [
+        "stage=queued",
+        "stage=gate"
+      ],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "masked_record_count",
+      "family": "masked",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "records",
+          "value": "masked",
+          "quote": "\"records\": \"masked\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"records\",\"value\":\"masked\",\"quote\":\"\\\"records\\\": \\\"masked\\\"\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": false,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "masked_actor_score",
+      "family": "masked",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "score",
+          "value": "masked",
+          "quote": "\"score\": \"masked\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"score\",\"value\":\"masked\",\"quote\":\"\\\"score\\\": \\\"masked\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 1,
+      "abstained": false,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": true,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "why_job_failed",
+      "family": "cause_absent",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "detail",
+          "value": "the job did not complete; no cause is established here \u2014 the runner's log is not part of this record",
+          "quote": "the job did not complete; no cause is established here \u2014 the runner's log is not part of this record"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"detail\",\"value\":\"the job did not complete; no cause is established here \\u2014 the runner's log is not part of this record\",\"quote\":\"the job did not complete; no cause is established here \\u2014 the runner's log is not part of this record\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "why_stage_stopped",
+      "family": "cause_absent",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "detail",
+          "value": "the stage stopped before the gate decided; this record does not establish why",
+          "quote": "the stage stopped before the gate decided; this record does not establish why"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"detail\",\"value\":\"the stage stopped before the gate decided; this record does not establish why\",\"quote\":\"the stage stopped before the gate decided; this record does not establish why\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "corpus_contains_term",
+      "family": "partial_coverage",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "HYPOTHESIZE",
+          "field": "detail",
+          "value": "the semantic encoder is unavailable; this search was lexical only and does not establish absence",
+          "quote": "the semantic encoder is unavailable; this search was lexical only and does not establish absence"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"HYPOTHESIZE\",\"field\":\"detail\",\"value\":\"the semantic encoder is unavailable; this search was lexical only and does not establish absence\",\"quote\":\"the semantic encoder is unavailable; this search was lexical only and does not establish absence\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 0,
+      "abstained": true,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "only_matching_record",
+      "family": "partial_coverage",
+      "kind": "abstain",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "total",
+          "value": 1,
+          "quote": "\"total\": 1"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"total\",\"value\":1,\"quote\":\"\\\"total\\\": 1\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 0,
+      "gold_total": 0,
+      "off_gold": 1,
+      "abstained": false,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": true,
+      "verdict": false
+    },
+    {
+      "probe": "score_not_elapsed",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_confidence",
+          "value": 0.7446,
+          "quote": "\"communities_confidence\": 0.7446,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_confidence\",\"value\":0.7446,\"quote\":\"\\\"communities_confidence\\\": 0.7446,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "actors_not_edges",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "node_count",
+          "value": 127,
+          "quote": "\"node_count\": 127,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"node_count\",\"value\":127,\"quote\":\"\\\"node_count\\\": 127,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "nodes_not_edges",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "INSUFFICIENT_EVIDENCE",
+          "field": "total",
+          "value": 23,
+          "quote": "\"total\": 23"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"INSUFFICIENT_EVIDENCE\",\"field\":\"total\",\"value\":23,\"quote\":\"\\\"total\\\": 23\"}]}"
+      ],
+      "asserts": 0,
+      "grounded": 0,
+      "gold_hits": 0,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": false
+    },
+    {
+      "probe": "records_not_labelled",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "records",
+          "value": 1192938,
+          "quote": "\"records\": 1192938"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"records\",\"value\":1192938,\"quote\":\"\\\"records\\\": 1192938\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "share_not_size",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "internal_share",
+          "value": 0.41,
+          "quote": "\"internal_share\": 0.41,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"internal_share\",\"value\":0.41,\"quote\":\"\\\"internal_share\\\": 0.41,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "degree_not_weight",
+      "family": "unit_semantics",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "out_degree",
+          "value": 12,
+          "quote": "\"out_degree\": 12,"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"out_degree\",\"value\":12,\"quote\":\"\\\"out_degree\\\": 12,\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "state_not_channel_running",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "running",
+          "quote": "\"state\": \"running\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"running\",\"quote\":\"\\\"state\\\": \\\"running\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "state_not_channel_failed",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "state",
+          "value": "failed",
+          "quote": "\"state\": \"failed\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"state\",\"value\":\"failed\",\"quote\":\"\\\"state\\\": \\\"failed\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "kind_not_channel",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "kind",
+          "value": "influence:gate",
+          "quote": "\"kind\": \"influence:gate\","
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"kind\",\"value\":\"influence:gate\",\"quote\":\"\\\"kind\\\": \\\"influence:gate\\\",\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "stage_not_mode",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "stage",
+          "value": "gate",
+          "quote": "\"stage\": \"gate\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"stage\",\"value\":\"gate\",\"quote\":\"\\\"stage\\\": \\\"gate\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "decider_not_mode",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "communities_decided_by",
+          "value": "agent",
+          "quote": "\"communities_decided_by\": \"agent\""
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"communities_decided_by\",\"value\":\"agent\",\"quote\":\"\\\"communities_decided_by\\\": \\\"agent\\\"\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    },
+    {
+      "probe": "shown_not_visible",
+      "family": "optional_filter",
+      "kind": "trap",
+      "repeat": 3,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "shown",
+          "value": 3,
+          "quote": "\"shown\": 3"
+        }
+      ],
+      "replies": [
+        "{\"propositions\":[{\"status\":\"ASSERT\",\"field\":\"shown\",\"value\":3,\"quote\":\"\\\"shown\\\": 3\"}]}"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": true,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": true,
+      "constrained": true,
+      "verdict": true
+    }
+  ]
+}

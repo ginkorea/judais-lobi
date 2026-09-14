@@ -7,6 +7,100 @@
       "model": "openai/gpt-oss-20b",
       "measurements": [
         {
+          "digest": "689e088a71a58a42a6c67cc1de1c29409c5af7b7d99d1762885b469f28ed50e2",
+          "source": "extraction",
+          "report": "extraction-2026-09-14-v130-constrained.json",
+          "date": "2026-09-13",
+          "temperature": 0.2,
+          "constrained": true,
+          "prompt": "15521d17315f",
+          "scorer": 2,
+          "endpoint": "http://loopback",
+          "commit": "75ec03a8925a937387f91f31fe12a6555f97a088",
+          "headline": "probe_reliable",
+          "note": "",
+          "figures": [
+            {
+              "name": "structural",
+              "k": 146,
+              "n": 147,
+              "what": "replies that parsed as propositions, first try or after the one repair"
+            },
+            {
+              "name": "first_try",
+              "k": 146,
+              "n": 147,
+              "what": "replies that parsed with no repair at all"
+            },
+            {
+              "name": "repair",
+              "k": 0,
+              "n": 147,
+              "what": "attempts that needed the repair turn (LOWER is better)"
+            },
+            {
+              "name": "grounded",
+              "k": 131,
+              "n": 132,
+              "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+            },
+            {
+              "name": "gold_precision",
+              "k": 122,
+              "n": 123,
+              "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+            },
+            {
+              "name": "gold_recall",
+              "k": 122,
+              "n": 126,
+              "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+            },
+            {
+              "name": "abstention",
+              "k": 23,
+              "n": 27,
+              "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+            },
+            {
+              "name": "conflict_surfaced",
+              "k": 6,
+              "n": 6,
+              "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+            },
+            {
+              "name": "trap",
+              "k": 35,
+              "n": 36,
+              "what": "trap probes that did not ASSERT from the trap field"
+            },
+            {
+              "name": "hedged",
+              "k": 1,
+              "n": 63,
+              "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+            },
+            {
+              "name": "probe",
+              "k": 139,
+              "n": 147,
+              "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+            },
+            {
+              "name": "probe_reliable",
+              "k": 44,
+              "n": 49,
+              "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+            },
+            {
+              "name": "constrained_invalid",
+              "k": 1,
+              "n": 147,
+              "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+            }
+          ]
+        },
+        {
           "digest": "73a533e0fe7f6b89ac06b1a2ee550426abb68f6d51b3d67f8f77409794ce9595",
           "source": "extraction",
           "report": "extraction-2026-09-14.json",
