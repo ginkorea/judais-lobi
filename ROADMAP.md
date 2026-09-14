@@ -1376,6 +1376,18 @@ README's closing section quotes are all here, under the same names.
   travels with every proposition and every rule; a model may propose, and
   proposing does not establish. This is the same boundary the grounding
   validator already enforces for answers, extended to beliefs.
+- **The harness lifts; it never holds back.** (Owner, 14 Sep 2026: "the
+  goal is to compensate for the lack of capability of the model by
+  improving the harness with less computationally expensive AI — not to
+  make the harness itself the object holding back the capability … ensure
+  we are delivering capability and not delivering constrained and
+  restrained thinking wrapped in governance.") Every governance element is
+  a dial that must pay for itself in measured capability; the null
+  hypothesis for any harness element is REMOVE IT, and an ablation arm
+  that measures no lift at real cost comes out rather than being defended.
+  The symbolic layer delivers state the model uses freely — facts carried
+  forward, joins computed, obligations named — never caution it must
+  route around.
 - **Context is a budget, not a dumping ground.** (Owner, 14 Sep 2026: what
   we add must not make the context bloated and the agent less capable.)
   Every cognitive addition to the model's input lives inside ONE bounded,
