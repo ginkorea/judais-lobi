@@ -141,3 +141,30 @@ Everything a recording can answer is answered across three windows and
   8,904 (v1.1.3 pane) and the 1,088 (champion pane) are thirteen
   minutes apart on the same pool. The tail is lease/session-scoped,
   not day-scoped — measured, not inferred.
+
+## Final — the v1.3.1 bracket closed by direct measurement
+
+The v1.3.1 arm's raw run dirs (42, handed over after the VPN returned)
+confirm the bracketed inference in full: the mesh clause is PRESENT
+(109/109 calls — it tracks the clock of the mesh apply, not the release),
+the masked system-prompt and tool-block hashes match the other three
+windows' single values, sampling parameters are identical, and all ten
+single-turn scenarios now hash identical FOUR times over. Running total:
+**517 recorded model calls across 231 run directories and four releases —
+one request shape, zero drift.** Context spread across three release
+boundaries: 0.6%.
+
+The 220.14s plot stall's raw side adds a bound, honestly stated: the
+recorder writes after the reply, so the killed call left no record — step 2
+generated ≥171s silently, ≈6,800–7,200 tokens at the window's measured
+decode rate, unbounded above. v1.3.1's recorded max (4,483) therefore
+understates its true tail for the same censoring reason the pane numbers
+did — the worst call of the window is exactly the one that left nothing.
+
+Verdict unchanged and now unambiguous: the bisect gradient spans releases
+whose requests are measured identical and runs in the wrong direction for
+a framework story (the worst tail belongs to v1.1.3, two releases before
+the "regression"). The open variable is the per-lease serving
+configuration behind each pane — two panes, byte-identical prompts,
+thirteen minutes apart, 8,904 vs 1,088 tokens. The framework is exonerated
+on all four windows.
