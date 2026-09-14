@@ -20,8 +20,10 @@ import json
 
 import pytest
 
+from core.runtime.cognition import Progress
 from core.runtime.supervisor import (
-    FAILED_GATE, NO_NEW_EVIDENCE, NUDGE, OSCILLATION, PROGRESSING,
+    BELIEFS_PER_STEP, FAILED_GATE, FROZEN_FRONTIER, FROZEN_STEPS,
+    NO_NEW_EVIDENCE, NUDGE, OSCILLATION, PROGRESSING,
     REFUNDS_ON_PROGRESSING, REJECTED_REPLIES, REPEATED_CALL, REPLAN,
     REVIEW_REFUNDS, REVIEWS, SIGNALS, STALE_STEPS, STUCK,
     VERDICTS, Review, Supervisor,
@@ -54,18 +56,22 @@ def watching(*replies, **kw):
     return Supervisor(reviewer, **kw), reviewer
 
 
-def step(sup, *acts, rejections=0):
+def step(sup, *acts, rejections=0, progress=None):
     """One step's worth of observations, then the boundary that closes it.
 
     The boundary is where a review happens, so a test that wants three
     steps' worth of pattern calls this three times and reads the verdict
     off the last one — which is exactly the order the loop does it in.
+
+    *progress* is the step's epistemic reading, as the runner hands it over
+    — ``None`` on every run with cognition off, which is every test in this
+    file but one section.
     """
     for tool, arguments, result in acts:
         sup.saw_call(tool, arguments, result)
     for _ in range(rejections):
         sup.saw_rejection()
-    return sup.look("find the actor at the top of run r-7")
+    return sup.look("find the actor at the top of run r-7", progress=progress)
 
 
 READ = ("governed_read", {"asset_id": "a.1"}, "asset a.1: results only")
@@ -340,7 +346,13 @@ class TestAnAbsenceOfEvidenceDoesNotSpendTheBudget:
         assert seen[0].reviews_left == REVIEWS - 1
 
     def test_the_refunded_signals_are_a_stated_set(self):
-        assert REFUNDS_ON_PROGRESSING == frozenset({NO_NEW_EVIDENCE})
+        """Two absences, and both for the same reason. `frozen_frontier`
+        is cognition's, and the owner's ruling of 13 September 2026 is the
+        floor under it: the cognitive layer is shadow and additive, so a
+        signal it feeds must not be able to spend a run's review budget
+        down to a forced wind-up."""
+        assert REFUNDS_ON_PROGRESSING == frozenset({NO_NEW_EVIDENCE,
+                                                    FROZEN_FRONTIER})
         assert REVIEW_REFUNDS == 2
 
 
@@ -365,6 +377,259 @@ class TestGoingRoundInTwos:
         assert step(sup, a) is None
         assert step(sup, b) is None
         assert reviewer.calls == 0
+
+
+# ── the signal that is not about what the run did ────────────────────────────
+
+
+OWED = "owed: (alice, payment_link, ?c) — for goal g1, open"
+
+
+def believing(frontier="f1", obligations=2, contradictions=0,
+              propositions=0, owed=OWED):
+    """One step's epistemic reading, in the shape the shadow hands over.
+
+    The production class, not a stand-in: the supervisor duck-types it, and
+    a test that invented its own four fields would go on passing the day
+    the shadow renamed one.
+    """
+    return Progress(frontier=frontier, obligations=obligations,
+                    contradictions=contradictions, propositions=propositions,
+                    owed=owed)
+
+
+def working(sup, count, readings=None, start=0, **kw):
+    """*count* steps of honest-looking work, each with its own reading.
+
+    A new call and a new result every step, so none of the four procedural
+    signals has anything to say: this is the run that looks healthy to all
+    of them, which is the whole case `frozen_frontier` exists for.  *start*
+    is where the act numbering picks up, for a test that calls this twice
+    and needs the second stretch to be new work rather than a re-read.
+    """
+    seen = []
+    for index in range(start, start + count):
+        reading = (readings[index - start] if readings is not None
+                   else believing(**kw))
+        seen.append(step(sup, ("read", {"n": index}, f"row {index}"),
+                         progress=reading))
+    return seen
+
+
+class TestTheRunsBeliefHasStoppedMoving:
+    """ROADMAP §2.9.6's signal: the frontier, not the transcript.
+
+    Every run in this class is *busy* — a new call and a new result every
+    step — so `repeated_call`, `oscillation`, `rejected_replies` and
+    `no_new_evidence` all see a healthy mission. What they cannot see is
+    that nothing the run is learning answers anything the goals asked for,
+    and §2.9.6 calls that this arc's largest expected gain.
+    """
+
+    def test_five_frozen_steps_are_a_signal(self):
+        sup, reviewer = watching(verdict(NUDGE, "try the holder directly"))
+        seen = working(sup, FROZEN_STEPS)
+        assert [review for review in seen[:-1]] == [None] * (FROZEN_STEPS - 1)
+        assert seen[-1] is not None
+        assert seen[-1].signal == FROZEN_FRONTIER
+        assert reviewer.calls == 1
+
+    def test_four_are_not(self):
+        sup, reviewer = watching()
+        assert working(sup, FROZEN_STEPS - 1) == [None] * (FROZEN_STEPS - 1)
+        assert reviewer.calls == 0
+
+    def test_a_moving_frontier_is_never_a_signal(self):
+        """The condition, stated as its negative: a run whose obligations
+        are changing is a run whose goals are being worked, however long it
+        takes."""
+        sup, reviewer = watching()
+        assert working(sup, 20, readings=[believing(frontier=f"f{index}")
+                                          for index in range(20)]) \
+            == [None] * 20
+        assert reviewer.calls == 0
+
+    def test_a_contradiction_settled_is_progress(self):
+        """Frozen frontier, and one disagreement fewer than the step
+        before: the run resolved something, which is exactly what §2.9.6's
+        third clause is about."""
+        sup, reviewer = watching()
+        readings = [believing(contradictions=count)
+                    for count in (3, 3, 2, 2, 2)]
+        assert working(sup, len(readings), readings=readings) \
+            == [None] * len(readings)
+        assert reviewer.calls == 0
+
+    def test_a_contradiction_found_is_not_progress(self):
+        """The check is "none was reduced", not "the number moved". A run
+        that keeps discovering disagreements and settling none of them has
+        a frontier that is still exactly where it was."""
+        sup, _reviewer = watching(verdict(NUDGE, "settle one of them"))
+        readings = [believing(contradictions=count)
+                    for count in range(FROZEN_STEPS)]
+        assert working(sup, FROZEN_STEPS,
+                       readings=readings)[-1].signal == FROZEN_FRONTIER
+
+    def test_a_store_that_is_filling_up_is_progress(self):
+        """One new proposition a step is a run that is establishing things,
+        and an absence claimed over that is a claim the run disproves."""
+        sup, reviewer = watching()
+        readings = [believing(propositions=index * BELIEFS_PER_STEP)
+                    for index in range(FROZEN_STEPS)]
+        assert working(sup, FROZEN_STEPS, readings=readings) \
+            == [None] * FROZEN_STEPS
+        assert reviewer.calls == 0
+
+    def test_but_a_trickle_is_noise(self):
+        """Two new propositions across four steps of work is a store that
+        is standing still with a rounding error on it."""
+        sup, _reviewer = watching(verdict(NUDGE, "read the holder"))
+        readings = [believing(propositions=count)
+                    for count in (10, 10, 11, 11, 12)]
+        assert working(sup, FROZEN_STEPS,
+                       readings=readings)[-1].signal == FROZEN_FRONTIER
+
+    def test_an_empty_frontier_is_absent_and_not_frozen(self):
+        """Every run that has not been given a rule pack has the same empty
+        frontier at every step forever. A signal that read that as a stall
+        would review every cognition-on mission in the world for standing
+        still at nothing."""
+        sup, reviewer = watching()
+        assert working(sup, 20, obligations=0, owed="") == [None] * 20
+        assert reviewer.calls == 0
+
+    def test_the_review_quotes_what_has_not_moved(self):
+        """"The frontier has not moved" is a sentence a model can neither
+        check nor act on. The top owed line — the same words the compiled
+        block showed it — is both."""
+        sup, reviewer = watching(verdict(NUDGE, "ask for the holder"))
+        review = working(sup, FROZEN_STEPS)[-1]
+        assert OWED in review.sentence()
+        assert f"has not moved in {FROZEN_STEPS} steps" in review.sentence()
+        assert OWED in reviewer.seen[0][-1]["content"]
+
+    def test_it_asks_once_and_not_once_a_step(self):
+        """The floor moves after a review, exactly as it does for every
+        other signal: a note that is re-asked at the very next boundary
+        never gets a chance to work."""
+        sup, reviewer = watching(verdict(NUDGE, "ask for the holder"))
+        assert working(sup, FROZEN_STEPS)[-1] is not None
+        assert working(sup, FROZEN_STEPS - 1, start=FROZEN_STEPS) \
+            == [None] * (FROZEN_STEPS - 1)
+        assert reviewer.calls == 1
+
+    def test_the_frontier_moving_resets_the_count(self):
+        """Recovery. Four frozen steps, one that moves, and the count
+        starts again — the window is consecutive by construction."""
+        sup, reviewer = watching()
+        working(sup, FROZEN_STEPS - 1)
+        assert step(sup, ("read", {"n": 99}, "row 99"),
+                    progress=believing(frontier="moved")) is None
+        assert working(sup, FROZEN_STEPS - 2, start=FROZEN_STEPS,
+                       frontier="moved") == [None] * (FROZEN_STEPS - 2)
+        assert reviewer.calls == 0
+
+
+class TestCognitionOffChangesNothing:
+    """The floor under the whole feature: a run that did not ask for
+    cognition is supervised byte for byte as it always was."""
+
+    def test_no_reading_is_no_signal_however_long_the_run(self):
+        sup, reviewer = watching()
+        for index in range(40):
+            assert step(sup, ("read", {"n": index}, f"row {index}")) is None
+        assert reviewer.calls == 0
+
+    def test_the_other_signals_are_untouched_without_readings(self):
+        sup, _reviewer = watching(verdict(NUDGE, "read something else"))
+        assert step(sup, READ) is None
+        assert step(sup, READ) is None
+        assert step(sup, READ).signal == REPEATED_CALL
+
+    def test_a_reading_that_goes_missing_disables_the_signal(self):
+        """Failure isolation, written as a condition rather than a `try`:
+        the shadow answers `None` when its frontier cannot be read, the
+        window stops being usable, and the supervisor keeps its other
+        four."""
+        sup, reviewer = watching()
+        readings = [believing()] * (FROZEN_STEPS * 2)
+        readings[FROZEN_STEPS - 1] = None
+        assert working(sup, FROZEN_STEPS, readings=readings) \
+            == [None] * FROZEN_STEPS
+        assert reviewer.calls == 0
+
+    def test_and_the_signal_comes_back_when_the_readings_do(self):
+        """Disabled for the window and not for the run: a shadow that
+        recovers is watched again, because nothing here latches."""
+        sup, _reviewer = watching(verdict(NUDGE, "ask for the holder"))
+        readings = [None] + [believing()] * FROZEN_STEPS
+        assert working(sup, len(readings),
+                       readings=readings)[-1].signal == FROZEN_FRONTIER
+
+
+class TestCognitionSteersAndNeverGates:
+    """The owner's ruling of 13 September 2026, checked at the seam.
+
+    The cognitive layer emits state and guidance; it never gates. What
+    keeps that true here is that the signal was given no machinery of its
+    own: it raises the review this module already raises, and there is no
+    path from it to an ending that a repeated call did not already have.
+    """
+
+    def test_it_rides_the_record_every_other_signal_rides(self):
+        sup, _reviewer = watching(verdict(NUDGE, "ask for the holder"))
+        record = working(sup, FROZEN_STEPS)[-1].as_record()
+        assert set(record) == {"signal", "verdict", "reviews_left", "note"}
+        assert record["signal"] == FROZEN_FRONTIER
+
+    def test_it_invents_no_verdict(self):
+        assert FROZEN_FRONTIER in SIGNALS
+        assert VERDICTS == (PROGRESSING, NUDGE, STUCK, REPLAN)
+
+    def test_the_quoted_line_is_not_on_the_wire(self):
+        """`detail` is prose out of the kernel. A consumer rendering it
+        would be rendering the cognitive layer's internals as contract."""
+        sup, _reviewer = watching(verdict(NUDGE, "ask for the holder"))
+        review = working(sup, FROZEN_STEPS)[-1]
+        assert review.detail
+        assert review.detail not in json.dumps(review.as_record())
+
+    def test_a_progressing_verdict_costs_it_nothing(self):
+        """Refunded, like the other absence. A cognitive signal that could
+        spend a run's review budget down to a forced wind-up would be
+        cognition deciding a mission's length."""
+        sup, _reviewer = watching(verdict(PROGRESSING))
+        review = working(sup, FROZEN_STEPS)[-1]
+        assert review.verdict == PROGRESSING
+        assert review.reviews_left == REVIEWS
+
+    def test_and_the_threshold_rises_so_the_refund_is_not_free(self):
+        sup, reviewer = watching(*[verdict(PROGRESSING)] * 4)
+        seen = [review for review in working(sup, FROZEN_STEPS * 4)
+                if review is not None]
+        assert [review.count for review in seen[:2]] == [FROZEN_STEPS,
+                                                         FROZEN_STEPS * 2]
+
+    def test_a_run_that_is_repeating_itself_is_asked_the_concrete_question(
+            self):
+        """Specificity order, at the one boundary where it decides
+        anything: both thresholds ready, and the run is asked about the
+        evidence — that sentence names a call and a result, which is
+        something a model can act on. The two are put on the same number
+        here because that is the only way to make them arrive together;
+        with the shipped numbers they usually do not."""
+        known = [("governed_read", {"asset_id": f"a.{n}"}, f"result {n}")
+                 for n in range(3)]
+        sup, _reviewer = watching(verdict(NUDGE, "you already have this"),
+                                  frozen_steps=STALE_STEPS)
+        review = None
+        for index in range(3 + STALE_STEPS):
+            # The frontier moves while the run is reading things for the
+            # first time and freezes once it starts re-reading them, so the
+            # two thresholds come ready on the same boundary.
+            review = step(sup, known[index % 3],
+                          progress=believing(frontier=f"f{min(index, 3)}"))
+        assert review is not None and review.signal == NO_NEW_EVIDENCE
 
 
 # ── layer two: the review turn ───────────────────────────────────────────────

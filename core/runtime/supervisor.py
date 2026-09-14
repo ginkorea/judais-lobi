@@ -31,6 +31,16 @@ without spending a model call:
    the run did not already have, an A-B-A-B oscillation.  Nothing here
    counts tokens, output length or thinking time — a model that spends
    nine minutes on one honest turn trips nothing.
+
+   One of them is not procedural.  :data:`FROZEN_FRONTIER` watches
+   **epistemic** progress — the frontier, the contradictions and the
+   store, as :meth:`core.runtime.cognition.ShadowCognition.progress`
+   reads them — and it is ROADMAP §2.9.6's ask: *frontier unchanged, no
+   predicate resolved, no contradiction reduced* is a stall the other
+   four cannot see, because a run can be calling new tools and getting
+   new results and establishing nothing that any goal wanted.  It is
+   active **only where cognition is on**, which is a run that asked for
+   it, and a run without it is reviewed exactly as it always was.
 2. **A review turn** (:meth:`Supervisor.look`).  When a signal fires the
    *same model* is asked, in plain chat, to look at what the run has
    done and say one of three words: :data:`PROGRESSING` (a false alarm),
@@ -58,6 +68,15 @@ object to every sub-mission it builds and to its own step-level gate
 review, so a plan that loops *across* its steps is a pattern this sees —
 and so the review budget is the turn's, not five copies of it.
 
+**And cognition steers with the same voice as everything else.**  The
+epistemic signal raises the review this module already raises and
+nothing more: no new verdict, no new record, no field on the wire, and
+no path to an ending that a repeated call did not already have.  The
+owner's ruling of 13 September 2026 is the floor — the cognitive layer
+is shadow and additive, it emits state and guidance, it never gates —
+and the way that is kept true here is by giving it no machinery of its
+own to gate with.
+
 Nothing in here ends a run by itself.  :meth:`Supervisor.look` returns a
 :class:`Review` and the runner decides what to do with it; the note a
 nudge carries is delivered through the mechanism an operator's
@@ -77,8 +96,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 __all__ = [
     "REPEATED_CALL", "REJECTED_REPLIES", "NO_NEW_EVIDENCE", "OSCILLATION",
-    "FAILED_GATE", "SIGNALS", "PROGRESSING", "NUDGE", "STUCK", "REPLAN",
+    "FAILED_GATE", "FROZEN_FRONTIER", "SIGNALS", "PROGRESSING", "NUDGE",
+    "STUCK", "REPLAN",
     "VERDICTS", "VERDICT_LINES", "REPEATS", "REJECTIONS", "STALE_STEPS",
+    "FROZEN_STEPS", "BELIEFS_PER_STEP",
     "REVIEWS", "REFUNDS_ON_PROGRESSING", "REVIEW_REFUNDS",
     "Review", "Supervisor", "NUDGE_NOTE", "WIND_UP", "describe",
 ]
@@ -97,6 +118,10 @@ OSCILLATION = "oscillation"
 #: A staged step's gate said no.  The swarm's, and the only signal that is
 #: reported to this object rather than noticed by it.
 FAILED_GATE = "failed_gate"
+#: The run's **belief** has stopped moving: the same thing is owed, nothing
+#: has been settled, nothing has been learned.  Cognition's, and the only
+#: signal that is not about what the run *did*.
+FROZEN_FRONTIER = "frozen_frontier"
 
 #: One row per signal: the sentence the reviewing model is shown, with the
 #: numbers filled in.  **Data and not code** for the reason
@@ -132,6 +157,10 @@ SIGNALS: Dict[str, str] = {
     FAILED_GATE: (
         "this plan step has just failed its gate — the step ran and what it "
         "produced is not what the plan asked for"),
+    FROZEN_FRONTIER: (
+        "the frontier — what this run's goals still require — has not moved "
+        "in {n} steps: nothing on it has been resolved, no disagreement has "
+        "been settled, and almost nothing new has been established{detail}"),
 }
 
 #: How many identical (tool, arguments, result) acts make a
@@ -170,6 +199,49 @@ REJECTIONS = 3
 #: one call is reviewed as a repeat — the specific signal, with the specific
 #: sentence — rather than as a general stall.
 STALE_STEPS = 4
+
+#: How many consecutive steps of frozen belief are a :data:`FROZEN_FRONTIER`.
+#: **Five**, and the number is chosen against :data:`STALE_STEPS` rather
+#: than in the abstract.
+#:
+#: One more than the stale-steps threshold, exactly as :data:`STALE_STEPS`
+#: is one more than :data:`REPEATS`, and the reason is the same specificity
+#: argument: where both are ready at one boundary the run should be asked
+#: the concrete question — no new call, no new result — because that is the
+#: more actionable sentence, and :meth:`Supervisor._signal` reads in that
+#: order.  The gap keeps the two from arriving together on the ordinary
+#: shape rather than guaranteeing it: :data:`NO_NEW_EVIDENCE` measures its
+#: window against everything *before* it, so a run that repeats itself from
+#: its very first step needs a few steps of history before it can fire at
+#: all, and this signal may reach a stall of that shape first.  That is
+#: not a defect — the review it raises names the frontier and quotes what
+#: is owed, which is at least as answerable as "nothing new came back".
+#:
+#: What is left for this signal alone is the case nothing else can see:
+#: **receipts arriving every step and the belief not moving**.  That run
+#: reads as healthy to all four of the mechanical signals — new calls, new
+#: results, no alternation — and ROADMAP §2.9.6 names it as this arc's
+#: largest expected gain.
+#:
+#: Five steps and not three because this is an *absence*, and the absence
+#: has a legitimate shape: a run reading the three receipts it needs before
+#: any of them satisfies a premise moves nothing for as long as it is
+#: reading.  See :data:`REFUNDS_ON_PROGRESSING`, which this signal joins for
+#: the same reason.
+FROZEN_STEPS = 5
+
+#: How much the store may grow per step and still be standing still.  One:
+#: a run that is learning establishes at least one thing a step, and below
+#: that the store is noise around a flat line.  The window's own length is
+#: the multiplier, so the rule reads "fewer new propositions than steps"
+#: and has no second number in it.
+#:
+#: It is here because a run *can* harvest steadily while the frontier stays
+#: frozen — twenty fields off a receipt that answers none of the goals —
+#: and the owner's rule is that a working harness beats a strict one: an
+#: absence claimed over a store that is visibly filling up is a claim the
+#: run can disprove.
+BELIEFS_PER_STEP = 1
 
 #: How many acts an :data:`OSCILLATION` is read over: A, B, A, B.  Four is
 #: the shortest window in which alternation is distinguishable from two
@@ -213,7 +285,19 @@ REVIEWS = 3
 #: ``progressing`` — four stale steps, then eight, then twelve — so the same
 #: absence costs geometrically more to report and cannot spend a run's turns
 #: on reviews.  What it cannot do any more is *end* a run that is working.
-REFUNDS_ON_PROGRESSING: frozenset = frozenset({NO_NEW_EVIDENCE})
+#:
+#: :data:`FROZEN_FRONTIER` is the second member and it is here for the same
+#: argument plus one of its own.  It is an absence — belief that has not
+#: moved — and it is **cognition's**, and the owner's ruling of 13 September
+#: 2026 is the floor under this whole layer: the cognitive layer is shadow
+#: and additive, it emits state and guidance, it never gates.  A signal that
+#: could spend a run's review budget down to a forced wind-up would be
+#: cognition deciding a mission's length, which is the one thing it may not
+#: do.  Refunded, it can raise its own threshold and say what it sees, and
+#: the arithmetic that ends runs stays the property of demonstrated
+#: repetition.
+REFUNDS_ON_PROGRESSING: frozenset = frozenset({NO_NEW_EVIDENCE,
+                                               FROZEN_FRONTIER})
 
 #: How many refunds one signal may have.  Two, and it is a number rather
 #: than "as many as it likes" because the endless-loop catch has to survive
@@ -358,16 +442,23 @@ OUT_OF_REVIEWS = (
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
 
-def describe(signal: str, n: int = 0) -> str:
-    """The sentence for *signal*, with its number in it.
+def describe(signal: str, n: int = 0, detail: str = "") -> str:
+    """The sentence for *signal*, with its number and its quote in it.
 
-    ``{n}`` is filled where the row has one and left alone where it does
-    not, so a row may be written with or without a count and neither
-    spelling needs a branch at the call site.
+    ``{n}`` and ``{detail}`` are filled where the row has them and left
+    alone where it does not, so a row may be written with either, both or
+    neither and no spelling needs a branch at the call site.
+
+    *detail* is the one thing a row cannot state for itself: what the
+    pattern was *about*.  :data:`FROZEN_FRONTIER` uses it to quote the top
+    of the frontier that has not moved — the same line
+    :func:`core.cognition.compile.owed_line` put in front of the model —
+    because "the frontier has not moved" is a sentence a model can neither
+    check nor act on, and "still owed: (alice, payment_link, ?c)" is both.
     """
     sentence = SIGNALS.get(signal, signal)
     try:
-        return sentence.format(n=n)
+        return sentence.format(n=n, detail=detail)
     except (KeyError, IndexError):              # pragma: no cover - defensive
         return sentence
 
@@ -393,6 +484,12 @@ class Review:
     #: shown.  Never on the wire: a consumer reads the signal's name and
     #: this repo's own thresholds are not a contract.
     count: int = 0
+    #: What the pattern was about, where the signal's row has somewhere to
+    #: put it — :data:`FROZEN_FRONTIER` quotes the top owed line here.  Off
+    #: the wire for :attr:`count`'s reason and one more: it is prose out of
+    #: the kernel, and a consumer rendering it would be rendering the
+    #: cognitive layer's internals as though they were contract.
+    detail: str = ""
 
     def as_record(self) -> Dict[str, Any]:
         """``{signal, verdict, reviews_left}``, plus ``note`` when there is one.
@@ -410,7 +507,7 @@ class Review:
 
     def sentence(self) -> str:
         """The signal's own sentence, for the turn the model is shown."""
-        return describe(self.signal, self.count)
+        return describe(self.signal, self.count, self.detail)
 
 
 # ── what the supervisor watches ──────────────────────────────────────────────
@@ -438,6 +535,12 @@ class _Step:
 
     acts: List[_Act] = field(default_factory=list)
     rejections: int = 0
+    #: What the run believed at this step's boundary — a
+    #: :class:`core.runtime.cognition.Progress`, or ``None`` when cognition
+    #: is off, stopped, or could not be read.  Duck-typed, like every other
+    #: cognitive thing the runtime holds: this module reads four attributes
+    #: off it and does not import the class.
+    progress: Any = None
 
     @property
     def empty(self) -> bool:
@@ -517,9 +620,10 @@ class Supervisor:
         a model call and it goes on the ledger like every other one; a
         supervisor whose calls were free on the invoice would be
         under-reporting exactly the runs that went badly.
-    repeats, rejections, stale_steps, reviews:
-        The four numbers above (:data:`REPEATS`, :data:`REJECTIONS`,
-        :data:`STALE_STEPS`, :data:`REVIEWS`).  Parameters so a test can
+    repeats, rejections, stale_steps, reviews, frozen_steps:
+        The five numbers above (:data:`REPEATS`, :data:`REJECTIONS`,
+        :data:`STALE_STEPS`, :data:`REVIEWS`,
+        :data:`FROZEN_STEPS`).  Parameters so a test can
         make a pattern in three lines instead of twelve, and so a
         deployment that measures a better number can state it — not
         because any of them is a budget.
@@ -535,6 +639,7 @@ class Supervisor:
         rejections: int = REJECTIONS,
         stale_steps: int = STALE_STEPS,
         reviews: int = REVIEWS,
+        frozen_steps: int = FROZEN_STEPS,
     ):
         self._chat = chat_fn
         self._window = window
@@ -542,6 +647,7 @@ class Supervisor:
         self._repeats = max(2, int(repeats))
         self._rejections = max(1, int(rejections))
         self._stale = max(2, int(stale_steps))
+        self._frozen = max(2, int(frozen_steps))
         self._reviews = max(0, int(reviews))
         self._spent = 0
         #: Acts and steps, oldest first, for the whole turn — every
@@ -599,7 +705,8 @@ class Supervisor:
     def reviews_left(self) -> int:
         return max(0, self._reviews - self._spent)
 
-    def look(self, objective: str, *, ledger: Any = None) -> Optional[Review]:
+    def look(self, objective: str, *, ledger: Any = None,
+             progress: Any = None) -> Optional[Review]:
         """Close the step that just ran; review it if a signal fires.
 
         ``None`` — the ordinary answer, on every boundary of every run that
@@ -610,14 +717,24 @@ class Supervisor:
         be delivered without landing inside a decision the model has
         already made: it is where an operator's ``inject`` is applied, and
         a nudge is the same act by somebody else.
+
+        *progress* is the step's epistemic reading — whatever
+        :meth:`core.runtime.cognition.ShadowCognition.progress` gave the
+        runner, and ``None`` on every run with cognition off, which is
+        every run today that did not ask for it.  It arrives **here**
+        rather than through a second ``saw_…`` call because it is a fact
+        about the step as a whole rather than about an act in it, and
+        because this is the boundary that closes the step it belongs to: a
+        reading taken at any other moment would be a different step's.
         """
+        self._open.progress = progress
         self._close()
-        signal, count = self._signal()
+        signal, count, detail = self._signal()
         if signal is None:
             return None
         return self._review(objective, signal, count,
                             verdicts=(PROGRESSING, NUDGE, STUCK),
-                            ledger=ledger)
+                            ledger=ledger, detail=detail)
 
     def review_gate(self, objective: str, *, goal: str, why: str,
                     ledger: Any = None) -> Review:
@@ -664,13 +781,19 @@ class Supervisor:
         """*base*, raised once per :data:`PROGRESSING` verdict on *signal*."""
         return base * (1 + self._raised.get(signal, 0))
 
-    def _signal(self) -> Tuple[Optional[str], int]:
-        """``(signal, n)`` for the first pattern that fires, else ``(None, 0)``.
+    def _signal(self) -> Tuple[Optional[str], int, str]:
+        """``(signal, n, detail)`` for the first pattern that fires.
+
+        ``(None, 0, "")`` when nothing does, which is the ordinary answer.
 
         Order is deliberate and it is specificity order: a run repeating one
         call trips :data:`REPEATED_CALL` and is reviewed with that sentence,
         rather than tripping the general stall a step later and being asked
-        a vaguer question about the same thing.
+        a vaguer question about the same thing.  :data:`FROZEN_FRONTIER` is
+        **last** for the same reason and one more: it is the only signal
+        that can fire on a run whose acts all look healthy, so anything the
+        four procedural signals can see should be asked about as the
+        procedural thing it is.
 
         Everything is read from :attr:`_floor` forward — the acts and steps
         since the last review — so one pattern buys one review.
@@ -689,13 +812,13 @@ class Supervisor:
                 key = (act.call, act.result)
                 seen[key] = seen.get(key, 0) + 1
             if max(seen.values()) >= n:
-                return REPEATED_CALL, n
+                return REPEATED_CALL, n, ""
 
         n = self._threshold(REJECTED_REPLIES, self._rejections)
         if len(steps) >= n:
             recent = steps[-n:]
             if all(step.rejections and not step.acts for step in recent):
-                return REJECTED_REPLIES, n
+                return REJECTED_REPLIES, n, ""
 
         n = self._threshold(OSCILLATION, OSCILLATES)
         if len(acts) >= n and n % 2 == 0:
@@ -704,7 +827,7 @@ class Supervisor:
             if first != second and all(
                     act.call == (first if index % 2 == 0 else second)
                     for index, act in enumerate(tail)):
-                return OSCILLATION, n
+                return OSCILLATION, n, ""
 
         n = self._threshold(NO_NEW_EVIDENCE, self._stale)
         if len(steps) >= n:
@@ -731,14 +854,82 @@ class Supervisor:
             fresh = [act for step in steps[-n:] for act in step.acts
                      if act.call not in seen or act.result not in seen]
             if not fresh:
-                return NO_NEW_EVIDENCE, n
-        return None, 0
+                return NO_NEW_EVIDENCE, n, ""
+
+        n = self._threshold(FROZEN_FRONTIER, self._frozen)
+        if len(steps) >= n:
+            window = [step.progress for step in steps[-n:]]
+            if self._frozen_frontier(window):
+                return FROZEN_FRONTIER, n, self._still_owed(window[-1])
+        return None, 0, ""
+
+    @staticmethod
+    def _frozen_frontier(window: Sequence[Any]) -> bool:
+        """Whether *window* is N steps of belief that did not move.
+
+        Three conditions, and they are ROADMAP §2.9.6's three read in the
+        order they can be checked cheaply:
+
+        * **the frontier is the same** at every step in the window — the
+          same obligations, in the same states, in the same order.  One
+          premise satisfied renames an obligation (its id is
+          content-addressed on the pattern as resolved so far), so this is
+          also "no predicate resolved";
+        * **no contradiction was reduced** — pairwise, step against the one
+          before it, not endpoint against endpoint: a disagreement settled
+          and another found is a run that did something, and comparing only
+          the ends would call that standing still;
+        * **almost nothing new was believed** — fewer new propositions than
+          there are steps of *work* in the window, which is one fewer than
+          there are readings in it: N readings are taken at N boundaries
+          and N-1 steps happened between them.  See
+          :data:`BELIEFS_PER_STEP`.
+
+        A step with no reading at all (cognition off, stopped, or a frontier
+        that could not be read) makes the window unusable and the answer is
+        ``False``: this signal is **only** ever raised on evidence, and a
+        run whose shadow went quiet is a run this has nothing to say about.
+        That is also the whole of the failure isolation, written as a
+        condition rather than a ``try``.
+
+        An **empty** frontier is not frozen, it is absent.  A run with no
+        goals loaded — every run today that has not been given a rule pack —
+        has the same empty frontier at every step forever, and a signal that
+        read that as a stall would review every cognition-on mission in the
+        world for standing still at nothing.
+        """
+        if any(reading is None for reading in window):
+            return False
+        first, last = window[0], window[-1]
+        if not first.obligations:
+            return False
+        if any(reading.frontier != first.frontier for reading in window):
+            return False
+        if any(later.contradictions < earlier.contradictions
+               for earlier, later in zip(window, window[1:])):
+            return False
+        return (last.propositions - first.propositions
+                < BELIEFS_PER_STEP * (len(window) - 1))
+
+    @staticmethod
+    def _still_owed(reading: Any) -> str:
+        """The quote the review's sentence ends with, or ``""``.
+
+        The top of the frontier as the compiled block renders it, so the
+        model reads the same words twice rather than two spellings of one
+        obligation. Defensive about the attribute for the reason every other
+        reader of a cognitive object in this module is: the shadow is
+        duck-typed here and a reading without one is a reading that simply
+        has nothing to quote.
+        """
+        owed = str(getattr(reading, "owed", "") or "")
+        return f"; still {owed}" if owed else ""
 
     # ── layer two: the review turn ──────────────────────────────────────
 
     def _review(self, objective: str, signal: str, count: int, *,
                 verdicts: Sequence[str], ledger: Any = None,
-                extra: str = "") -> Review:
+                extra: str = "", detail: str = "") -> Review:
         """Spend one review, or answer with the arithmetic when there is none.
 
         The budget is checked BEFORE the call and the verdict when it is
@@ -749,7 +940,7 @@ class Supervisor:
         if self.reviews_left <= 0:
             self._move_floor()
             return Review(signal=signal, verdict=STUCK, note=OUT_OF_REVIEWS,
-                          reviews_left=0, count=count)
+                          reviews_left=0, count=count, detail=detail)
         self._spent += 1
         left = self.reviews_left
         refundable = (signal in REFUNDS_ON_PROGRESSING
@@ -762,7 +953,7 @@ class Supervisor:
         allowed = tuple(word for word in verdicts
                         if word != PROGRESSING or left > 0 or refundable)
         verdict, note, asked = self._ask(objective, signal, count, allowed,
-                                         extra, ledger)
+                                         extra, ledger, detail)
         if verdict == PROGRESSING and asked:
             self._raised[signal] = self._raised.get(signal, 0) + 1
             if refundable:
@@ -773,7 +964,7 @@ class Supervisor:
                 left = self.reviews_left
         self._move_floor()
         return Review(signal=signal, verdict=verdict, note=note,
-                      reviews_left=left, count=count)
+                      reviews_left=left, count=count, detail=detail)
 
     def _move_floor(self) -> None:
         """Everything reviewed once is not reviewed again."""
@@ -781,7 +972,7 @@ class Supervisor:
 
     def _ask(self, objective: str, signal: str, count: int,
              allowed: Sequence[str], extra: str,
-             ledger: Any) -> Tuple[str, str, bool]:
+             ledger: Any, detail: str = "") -> Tuple[str, str, bool]:
         """``(verdict, note, asked)`` — the model's, or the safe default.
 
         *asked* is ``False`` when the endpoint could not be reached or the
@@ -795,7 +986,7 @@ class Supervisor:
         messages = [
             {"role": "system", "content": self._prompt(allowed)},
             {"role": "user", "content": self._rendering(
-                objective, signal, count, extra)},
+                objective, signal, count, extra, detail)},
         ]
         try:
             reply = self._chat(self._fit(messages))
@@ -847,7 +1038,7 @@ class Supervisor:
             if word in VERDICT_LINES)
 
     def _rendering(self, objective: str, signal: str, count: int,
-                   extra: str = "") -> str:
+                   extra: str = "", detail: str = "") -> str:
         """What the run has done, compactly, and what tripped the watcher."""
         lines: List[str] = [f"The mission's objective:\n{objective}"]
         if extra:
@@ -862,5 +1053,5 @@ class Supervisor:
         if rejected:
             lines.append(f"Replies rejected by the harness so far: {rejected}")
         lines.append(f"The pattern that triggered this review: "
-                     f"{describe(signal, count)}")
+                     f"{describe(signal, count, detail)}")
         return "\n\n".join(lines)

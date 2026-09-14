@@ -451,8 +451,8 @@ releases.
 | `--gate-tool` | — | a tool this deployment offers and gates; repeatable (§5) |
 | `--gate-wait` | `MISSION_GATE_WAIT` | how long a gate waits for a decision on `--control` |
 | `--no-grounding` | `MISSION_NO_GROUNDING` | do not check the answers and do not ask a critic: no validator, no repair turn, no caveat, and no `grounding` record on the stream. The `grounding:` block is still parsed, so an unusable one still refuses at the door. For a conversational surface; not for one whose answers are governed findings |
-| `--cognition` | `JUDAIS_LOBI_COGNITION` | carry a **shadow** cognitive state through the mission: every tool receipt is harvested into propositions whose evidence is the receipt, and the kernel's event log is written as `reasoning.jsonl` beside the run's `events.jsonl`. Nothing reads it back — no prompt, call, gate or answer changes because it is on, and with it off the run is byte for byte what it always was. Needs a run directory (`JUDAIS_LOBI_RUNS` on) |
-| `--compiled-context` | `JUDAIS_LOBI_COMPILED_CONTEXT` | put the runtime's **view of the problem** into each step's model input: one block, replacing the one before it, holding the established facts with the receipt handle each came from, both sides of every open conflict, and what is only a model's claim. **Implies `--cognition`** and needs the same run directory. Nothing new on the wire — what changes is the model's input, visible only in the run's own `model.jsonl` — and it gates nothing: no answer is held, checked or refused against it |
+| `--cognition` | `JUDAIS_LOBI_COGNITION` | carry a **shadow** cognitive state through the mission: every tool receipt is harvested into propositions whose evidence is the receipt, and the kernel's event log is written as `reasoning.jsonl` beside the run's `events.jsonl`. No prompt changes, nothing is gated, and with it off the run is byte for byte what it always was. One thing does read it back: where the run has **goals** loaded, the supervisor's `frozen_frontier` signal (§ the supervisor) watches whether the belief is moving, and a run whose frontier freezes may spend one advisory review it would not otherwise have spent. No goals, no signal. Needs a run directory (`JUDAIS_LOBI_RUNS` on) |
+| `--compiled-context` | `JUDAIS_LOBI_COMPILED_CONTEXT` | put the runtime's **view of the problem** into each step's model input: one block, replacing the one before it, holding the established facts with the receipt handle each came from — a fact the runtime concluded rather than read is marked `derived`, since its receipts are its premises' — both sides of every open conflict, what is only a model's claim, and — where the run has goals — **OWED**, the ranked proof frontier, one line per unresolved obligation naming its goal and whether it is open or blocked. Owed lines are state and not instruction. **Implies `--cognition`** and needs the same run directory. Nothing new on the wire — what changes is the model's input, visible only in the run's own `model.jsonl` — and it gates nothing: no answer is held, checked or refused against it |
 | `--version` | — | print the installed version and exit 0, starting no mission. **How a deployment identifies the checkout it pinned**: it is read from the metadata the installer wrote — the same source `pip show` reads — so it answers for the binary actually on `PATH`. A checkout being run in place says so in words instead of reporting a number out of the source tree |
 | `--approval` | `MISSION_APPROVAL` | spend one approved gate record on this run (§5) |
 | `--resume` | `MISSION_RESUME` | continue an unfinished run against a live model (§6) |
@@ -1429,7 +1429,8 @@ noticed a little after it runs out.
 ### The supervisor
 
 What stops a run that is going nowhere is the supervisor, and it watches for
-**repetition** rather than for length. Five mechanical signals:
+**repetition** rather than for length — and, where cognition is on, for
+**epistemic** progress too. Six mechanical signals:
 
 | signal | what fires it |
 | --- | --- |
@@ -1438,6 +1439,7 @@ What stops a run that is going nowhere is the supervisor, and it watches for
 | `no_new_evidence` | four steps in which no act was new. An act is new if **either** its call **or** its result is one the run has not seen — so a polling loop (same call, new result) and an edit loop (new call, same result) are both progress |
 | `oscillation` | A B A B — alternating between two calls rather than going forward from either |
 | `failed_gate` | swarm only, and *reported* rather than noticed: a plan step ran and what came back is not what the plan asked for |
+| `frozen_frontier` | `--cognition` only: five steps in which the proof frontier did not move, no contradiction was reduced and fewer new propositions arrived than there were steps. The one signal that is not about what the run *did* — a run can be calling new tools and getting new results and establishing nothing any goal asked for. It never fires where nothing is owed (a run with no rule pack), and a step whose frontier could not be read disables it for that window |
 
 Each fires one plain model call asking what the pattern means, and the verdict
 rides the next `step_started` as `review: {signal, verdict, note?, reviews_left}`.
@@ -1458,14 +1460,18 @@ judgement on purpose: each review is a model call and each verdict is the
 model's opinion of itself, so a run that can keep asking for another opinion is
 a run that can loop forever with a review turn in it.
 
-One signal is excepted: a `progressing` verdict on `no_new_evidence` is
-**refunded** — not counted against the three — twice. The other four are
-demonstrated repetition and the arithmetic is right for them; an absence of new
-evidence is something a healthy run shows honestly for a stretch, and ending
+Two signals are excepted: a `progressing` verdict on `no_new_evidence` or on
+`frozen_frontier` is **refunded** — not counted against the three — twice. The
+other four are demonstrated repetition and the arithmetic is right for them;
+an absence is something a healthy run shows honestly for a stretch, and ending
 such a run by counting is what replacing the step budget was for. The
 threshold still rises on every `progressing` (4 stale steps, then 8, then 12),
 and after two refunds the count applies again, so a run that is genuinely stuck
-is still wound up.
+is still wound up. `frozen_frontier` is refunded for that reason and one more:
+the cognitive layer is shadow and additive — it emits state and guidance and
+never gates — so a signal it feeds must not be able to spend a run's review
+budget down to a forced wind-up. It raises the same review every other signal
+raises, carries no new verdict and adds nothing to the wire.
 
 The supervisor is **built by default**: `Bounds()` with no `supervisor=` gets
 one made from the run's own model and shared with every child, so a turn has

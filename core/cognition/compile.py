@@ -34,16 +34,61 @@ the writes rather than of who looked.
    from a figure attributed to nothing.  Lines of one entity are
    contiguous, and entities are ordered **most recent first**, because the
    receipt the mission just took is the one the next step is about.
+
+   A line the store *concluded* rather than read is marked
+   :data:`DERIVED` — ``[verified · derived]`` — because otherwise it is
+   the same shape and the same band as an observation, and the one thing
+   the band cannot say is that there is no receipt behind this line at
+   all.  Its receipts are its premises'; the heading says so and
+   :data:`DERIVED` argues why they are not listed on it.
 2. **CONFLICTS** — every *open* contradiction, one line, **both sides
    named, each with its handle**.  The owner's rule of 13 September 2026:
    surfacing both sides beats silence, and a compiled view that quietly
    picked a side would be the laundering the kernel's walls exist to stop.
    Settled rows are history and are not here — see
    :meth:`~core.cognition.state.CognitiveState.settle`.
-3. **HYPOTHESES** — what a model claimed, marked as claimed and never
+3. **OWED** — the proof frontier: every unresolved obligation the run's
+   goals imply, one line, naming the goal it serves and whether anything
+   is blocking it.  ``ROADMAP.md`` §2.9.6 (Phase 19) is the argument —
+   *the frontier drives* — and the wording is the constitution's: these
+   are lines of **state**, not instructions.  "owed: (alice,
+   payment_link, ?c) — for goal g1, open" says what is missing; it does
+   not tell anybody what to call.  Nothing here gates: a model
+   that ignores the whole section answers exactly as it would have.
+   Ordered by :meth:`~core.cognition.state.CognitiveState.ranked_frontier`
+   — the order the runtime itself would work them in — so the line a
+   reader's eye lands on first is the cheapest true thing to do next.
+   Empty frontier, no section: a run with no goals loaded is not told
+   that nothing is owed, it is told nothing, which is the same
+   no-empty-headings rule the other three keep.
+4. **HYPOTHESES** — what a model claimed, marked as claimed and never
    mixed in with the facts, and **only if the budget has room left after
    the facts and the conflicts**.  A guess crowding out a receipt is the
    one trade this block must never make.
+
+## What goes first when it does not fit
+
+:data:`DROP_ORDER`, which is data because it is the one thing in this
+module somebody will want to move after Phase 19 measures the block.
+Hypotheses go first (a guess is the cheapest thing to lose), then facts
+**from the end** — the oldest entity — then owed, and conflicts last.
+
+The interesting placement is owed *above* facts, and the argument is the
+escape.  A dropped fact is still reachable: its line printed the handle,
+and the mission's result store holds that receipt whole — which is what
+:data:`OMITTED` tells the model in as many words.  A dropped **owed**
+line is reachable from nowhere.  It is not in the transcript, not in the
+store and not in any tool's output; it is computed from goals and rules
+against the store, and no deployment has an interface that serves it.
+The rule this repository truncates by is that what goes must leave a way
+back, and for the frontier there is none.  The counter-argument is real
+and is written here so the next reader does not have to reconstruct it:
+receipts are the evidence and the frontier is only guidance, so a block
+of owed lines over no facts would be a runtime talking about itself.
+What settles it at this size is that the frontier is *bounded* by goals
+× rules × premises while facts grow with every receipt — so keeping owed
+above facts costs a handful of lines, never the block.  One constant,
+one place, and Phase 19's A/B is what is allowed to move it.
 
 The header names the source: ``compiled from 3 receipts, 7 facts, 1
 conflict``.  A receipt here is a distinct evidence *locator* under the
@@ -99,12 +144,15 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from core.cognition.state import CognitiveState
 from core.cognition.types import (EvidenceAuthority, LIVE_STATUSES,
-                                  Proposition, PropositionStatus, Support)
+                                  Obligation, ObligationState, Proposition,
+                                  PropositionStatus, Support)
 
 __all__ = [
-    "BANDS", "BUDGET_CHARS", "CONFLICTS_HEADING", "DISPUTED", "FACTS_HEADING",
-    "HYPOTHESES_HEADING", "OMITTED", "TITLE", "UNGRADED",
-    "CompiledView", "band", "compile_view",
+    "BANDS", "BUDGET_CHARS", "CONFLICTS_HEADING", "DERIVED", "DISPUTED",
+    "DROP_ORDER",
+    "FACTS_HEADING", "FRONTIER_CAPPED", "HYPOTHESES_HEADING", "OMITTED",
+    "OWED_HEADING", "SECTIONS", "TITLE", "UNGRADED",
+    "CompiledView", "band", "compile_view", "owed_line",
 ]
 
 
@@ -119,9 +167,27 @@ BUDGET_CHARS = 4000
 #: and does not match on this.
 TITLE = "THE RUNTIME'S VIEW OF THIS PROBLEM"
 
-FACTS_HEADING = "FACTS — established, with the receipt each came from"
+FACTS_HEADING = ("FACTS — established, with the receipt each came from; "
+                 "a derived line rests on others")
 CONFLICTS_HEADING = "CONFLICTS — both sides, unresolved"
+OWED_HEADING = "OWED — what the goals still require, cheapest first"
 HYPOTHESES_HEADING = "HYPOTHESES — claimed by a model, not established"
+
+#: The sections, in the order they are **rendered**, and the order every
+#: tuple of per-section numbers in this module is written in.  One spelling,
+#: because four parallel tuples whose order is a convention is the shape
+#: where a heading ends up over the wrong lines.
+SECTIONS: Tuple[str, ...] = ("facts", "conflicts", "owed", "hypotheses")
+
+#: The order sections are **lost** in when the budget bites — first to go,
+#: first in the list.  Data rather than four lines of arithmetic: the module
+#: docstring argues every position, and this is the one constant Phase 19's
+#: measurement is allowed to move.
+DROP_ORDER: Tuple[str, ...] = ("hypotheses", "facts", "owed", "conflicts")
+
+#: What the headings are, in :data:`SECTIONS` order.
+HEADINGS: Tuple[str, ...] = (FACTS_HEADING, CONFLICTS_HEADING, OWED_HEADING,
+                             HYPOTHESES_HEADING)
 
 #: The sentence a dropped line leaves behind — **one** line for the whole
 #: block, naming each kind it lost.  One spelling, so that a reader can find
@@ -152,8 +218,30 @@ KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "receipts": ("receipt", "receipts"),
     "facts": ("fact", "facts"),
     "conflicts": ("conflict", "conflicts"),
+    "owed": ("owed line", "owed lines"),
     "hypotheses": ("hypothesis", "hypotheses"),
 })
+
+#: The line an :data:`OWED` section begins with when the kernel's own walk
+#: stopped short — :attr:`core.cognition.types.Frontier.truncated`, which is
+#: the environment cap in
+#: :meth:`~core.cognition.state.CognitiveState.obligations` and **not** this
+#: module's budget.  Two different truncations and two different sentences,
+#: because a reader asking "is this everything?" is owed the reason: the
+#: budget's answer is :data:`OMITTED` and points at the result store, and
+#: this one points nowhere because there is nowhere to point — the rest of
+#: the frontier was never computed.
+#:
+#: No count: the kernel reports that it stopped, not how much it did not
+#: reach, and a number invented here would be the second owner of a fact
+#: nobody holds.
+#:
+#: **First** in the section, which is where a line that must not disappear
+#: goes: lines are dropped from the end, so this is the last owed line to be
+#: lost, and when even it goes the block's one omission sentence still says
+#: ``+N owed lines`` — the flag is never silently dropped.
+FRONTIER_CAPPED = ("+ more owed than these — the frontier walk reached the "
+                   "store's cap and stopped")
 
 #: The five authorities as the four bands a reader is asked to tell apart.
 #: The two model-only authorities below extraction collapse into one word:
@@ -179,6 +267,32 @@ UNGRADED = "ungraded"
 #: renders — a contested figure the model cannot see is a figure it quotes
 #: — and the mark is what says not to quote it alone.
 DISPUTED = "disputed"
+
+#: Appended to a fact's band when the store *concluded* it rather than read
+#: it: :attr:`~core.cognition.types.PropositionStatus.DERIVED`.
+#:
+#: The first lane in which derived facts reached a model found them
+#: rendering **identically to observations** — same shape, same band, same
+#: line — and that is the one confusion this block cannot afford.  The band
+#: says how good the evidence is and it is already honest about a chain (a
+#: conclusion carries its weakest premise's authority); what it cannot say
+#: is that there is no receipt behind *this* line at all.  A model asked to
+#: quote a figure with where it came from will happily quote the entity
+#: handle on a derived line, and no such receipt exists.
+#:
+#: **The mark, and not a list of the premises' receipts.**  The leaves are
+#: there — :attr:`~core.cognition.types.Support.evidence_leaves`, which is
+#: what :meth:`~core.cognition.state.CognitiveState.prove` walks to — but
+#: rendering them on the line would put a *second* citation vocabulary in
+#: the block: every other line cites the entity handle the shadow minted,
+#: and an evidence locator is whatever the caller's world calls it.  It is
+#: also unbounded — one conclusion over twenty premises is one very long
+#: line — against a budget whose whole discipline is that a line is worth
+#: what it costs.  So the line says *derived*, the heading says a derived
+#: line rests on others, and the receipts stay one ``prove`` away for a
+#: reader who has the store.  A shorter ``via …`` rendering is a thing
+#: Phase 19's measurement may buy; it is not a thing to guess at.
+DERIVED = "derived"
 
 #: The separator between an entity and its field on a fact line, and
 #: between the two sides of a conflict.  Constants because the corpus and
@@ -238,10 +352,52 @@ def _claim(prop: Proposition) -> str:
 
 
 def _fact_line(prop: Proposition, support: Support) -> str:
+    """One live proposition as one line, with its band and its marks.
+
+    Band first — it is the thing a reader decides on — then
+    :data:`DERIVED` where the store concluded this rather than read it,
+    then :data:`DISPUTED` where something contradicts it.  The order is
+    strongest claim about the line to weakest: what it is worth, where it
+    came from, and who disagrees.
+    """
     marks = [band(support.grade)]
+    if prop.status is PropositionStatus.DERIVED:
+        marks.append(DERIVED)
     if support.contested_by or support.hypothesis:
         marks.append(DISPUTED)
     return f"{_claim(prop)}  [{' · '.join(marks)}]"
+
+
+def owed_line(obligation: Obligation) -> str:
+    """One unresolved obligation as one line of **state**.
+
+    ``owed: (alice, payment_link, ?c) — for goal g1, open``, and when
+    something has to come first: ``… — for goal g1, blocked on 2``.
+
+    The goal is named by its **id**, which is what the reasoning log, the
+    obligation's own id and every other reader call it.  Its ``note`` is
+    free text a pack author wrote and may be a paragraph; a line that
+    sometimes carries one and sometimes does not is a line nothing can
+    parse and nobody can predict the width of.
+
+    Three facts and no fourth: what is missing, which goal wants it, and
+    whether it can be worked now.  Not "call the payments tool", not "you
+    should" — the owner's ruling of 13 September 2026 is that the cognitive
+    layer is shadow and additive, and a line in the imperative is the layer
+    steering with a verb rather than reporting.  The state is named even
+    when it is ``open``, because a reader should not have to know that
+    *absence* means workable.
+
+    **Public, and the one owner of this spelling.**
+    :meth:`core.runtime.cognition.ShadowCognition.progress` renders the top
+    of the frontier with it for the supervisor's stall sentence, so the line
+    the model reads and the line a review quotes are the same line.
+    """
+    blocked = obligation.state is ObligationState.BLOCKED
+    where = (f"blocked on {len(obligation.depends_on)}" if blocked
+             else obligation.state.value)
+    return (f"owed: {obligation.render()} — for goal {obligation.goal}, "
+            f"{where}")
 
 
 def _entity_order(props: Sequence[Proposition]) -> List[str]:
@@ -277,13 +433,19 @@ class CompiledView:
     #: number the header states, over the population the header's other
     #: numbers are about.
     receipts: int = 0
-    #: Facts, conflicts and hypotheses **rendered**.
+    #: Facts, conflicts, owed lines and hypotheses **rendered**.  ``owed``
+    #: counts LINES and not obligations, so :data:`FRONTIER_CAPPED` is one
+    #: of them: it is a line about what is owed, it costs the budget like
+    #: one, and a counter that skipped it would disagree with the omission
+    #: sentence about how many lines the section lost.
     facts: int = 0
     conflicts: int = 0
+    owed: int = 0
     hypotheses: int = 0
-    #: And the same three, **dropped** for the budget.
+    #: And the same four, **dropped** for the budget.
     facts_omitted: int = 0
     conflicts_omitted: int = 0
+    owed_omitted: int = 0
     hypotheses_omitted: int = 0
 
     def __bool__(self) -> bool:
@@ -293,7 +455,7 @@ class CompiledView:
     def truncated(self) -> bool:
         """Whether the budget dropped anything at all."""
         return bool(self.facts_omitted or self.conflicts_omitted
-                    or self.hypotheses_omitted)
+                    or self.owed_omitted or self.hypotheses_omitted)
 
     def digest(self) -> str:
         """A short, stable hash of the block.
@@ -330,10 +492,22 @@ class _Cut:
 
     facts: int = 0
     conflicts: int = 0
+    owed: int = 0
     hypotheses: int = 0
     facts_out: int = 0
     conflicts_out: int = 0
+    owed_out: int = 0
     hypotheses_out: int = 0
+
+    @property
+    def kept(self) -> Tuple[int, ...]:
+        """Lines surviving, in :data:`SECTIONS` order."""
+        return tuple(getattr(self, name) for name in SECTIONS)
+
+    @property
+    def out(self) -> Tuple[int, ...]:
+        """Lines dropped, in :data:`SECTIONS` order."""
+        return tuple(getattr(self, f"{name}_out") for name in SECTIONS)
 
 
 def _prefix(lines: Sequence[str]) -> List[int]:
@@ -345,21 +519,24 @@ def _prefix(lines: Sequence[str]) -> List[int]:
 
 
 def _cut_at(dropped: int, totals: Sequence[int]) -> _Cut:
-    """The cut after *dropped* lines have gone, in the documented order.
+    """The cut after *dropped* lines have gone, in :data:`DROP_ORDER`.
 
-    Hypotheses first (a guess is the cheapest thing to lose), then facts
-    from the **end**, which is the oldest entity (the receipt the mission
-    just took is the one the next step is about), and conflicts last — an
-    unresolved disagreement the model cannot see is the failure this whole
-    block exists to prevent.
+    The order is data and the module docstring argues every position; this
+    walks it. Each section loses lines from its **end** — for facts that is
+    the oldest entity, because the receipt the mission just took is the one
+    the next step is about, and for owed it is the most blocked, because the
+    ranking put the workable ones first.
     """
-    facts, conflicts, hypotheses = totals
-    out_guesses = min(dropped, hypotheses)
-    out_facts = min(dropped - out_guesses, facts)
-    out_clashes = min(dropped - out_guesses - out_facts, conflicts)
-    return _Cut(facts=facts - out_facts, conflicts=conflicts - out_clashes,
-                hypotheses=hypotheses - out_guesses, facts_out=out_facts,
-                conflicts_out=out_clashes, hypotheses_out=out_guesses)
+    kept = dict(zip(SECTIONS, totals))
+    gone = {name: 0 for name in SECTIONS}
+    left = int(dropped)
+    for name in DROP_ORDER:
+        taken = min(left, kept[name])
+        kept[name] -= taken
+        gone[name] = taken
+        left -= taken
+    return _Cut(**kept, **{f"{name}_out": count
+                           for name, count in gone.items()})
 
 
 def _size(cut: _Cut, prefixes: Sequence[Sequence[int]],
@@ -401,17 +578,12 @@ def _size(cut: _Cut, prefixes: Sequence[Sequence[int]],
     """
     total, parts = len(_head(receipts[cut.facts], cut.facts,
                              cut.conflicts)), 1
-    for heading, kept, prefix in ((FACTS_HEADING, cut.facts, prefixes[0]),
-                                  (CONFLICTS_HEADING, cut.conflicts,
-                                   prefixes[1]),
-                                  (HYPOTHESES_HEADING, cut.hypotheses,
-                                   prefixes[2])):
+    for heading, kept, prefix in zip(HEADINGS, cut.kept, prefixes):
         if not kept:
             continue
         total += len(heading) + prefix[kept]
         parts += 2 + kept
-    sentence = _omission(cut.facts_out, cut.conflicts_out,
-                         cut.hypotheses_out)
+    sentence = _omission(cut.out)
     if sentence:
         total += len(sentence)
         parts += 2
@@ -433,15 +605,15 @@ def _floor(budget: int, totals: Sequence[int],
     Monotone by construction, which is why it is the thing searched: each
     further drop removes a line and its newline and adds nothing at all.
     """
-    whole = prefixes[0][-1] + prefixes[1][-1] + prefixes[2][-1]
+    whole = sum(prefix[-1] for prefix in prefixes)
     lines = sum(totals)
-    # The drop order's cumulative cost: hypotheses from the end, then
-    # facts, then conflicts — the same order :func:`_cut_at` walks, read as
-    # "what has gone by the time d lines have gone".
+    # The drop order's cumulative cost, read as "what is still here by the
+    # time d lines have gone" — through :func:`_cut_at`, which owns the
+    # order, rather than a second walk of :data:`DROP_ORDER` here.
     def kept_at(dropped: int) -> int:
         cut = _cut_at(dropped, totals)
-        return (prefixes[0][cut.facts] + prefixes[1][cut.conflicts]
-                + prefixes[2][cut.hypotheses])
+        return sum(prefix[kept]
+                   for kept, prefix in zip(cut.kept, prefixes))
 
     if whole + lines <= budget:
         return 0
@@ -528,6 +700,14 @@ def compile_view(state: CognitiveState, *,
     to produce: the bound is on what the model reads, and the price is
     paid on what the runtime believes.  Phase 19's measurement is where
     that number gets watched.
+
+    The OWED section adds one
+    :meth:`~core.cognition.state.CognitiveState.ranked_frontier`, which is
+    the obligation walk — **cached per epoch by the kernel**, and asked for
+    at the same epoch by
+    :meth:`core.runtime.cognition.ShadowCognition.progress`, so a step that
+    both compiles a block and reads its progress pays for the walk once.
+    A store with no goals pays nothing: there is nothing to walk.
     """
     budget = int(budget_chars)
     live = [prop for prop in state.propositions()
@@ -536,7 +716,16 @@ def compile_view(state: CognitiveState, *,
                if prop.status is PropositionStatus.HYPOTHESIZED]
     open_clashes = [clash for clash in state.contradictions()
                     if not clash.settled]
-    if not (live or guesses or open_clashes):
+    # The frontier in the order the runtime would work it — one owner, in
+    # the kernel — and the cap note first where the walk stopped short. A
+    # store with goals and no receipts yet compiles to a block that is
+    # nothing but OWED, which is the honest thing for a run that knows what
+    # it wants and has established none of it.
+    frontier = state.ranked_frontier()
+    owed_lines = [owed_line(item) for item in frontier]
+    if frontier.truncated:
+        owed_lines.insert(0, FRONTIER_CAPPED)
+    if not (live or guesses or open_clashes or owed_lines):
         return CompiledView()
 
     support = _supports(state, live)
@@ -563,9 +752,9 @@ def compile_view(state: CognitiveState, *,
         seen.update(ref.locator for ref in support[prop.id].evidence_leaves)
         receipts.append(len(seen))
 
-    totals = (len(fact_lines), len(clash_lines), len(guess_lines))
-    prefixes = (_prefix(fact_lines), _prefix(clash_lines),
-                _prefix(guess_lines))
+    sections = (fact_lines, clash_lines, owed_lines, guess_lines)
+    totals = tuple(len(lines) for lines in sections)
+    prefixes = tuple(_prefix(lines) for lines in sections)
 
     cut = _choose(budget, totals, prefixes, receipts)
     if cut is None:
@@ -573,9 +762,8 @@ def compile_view(state: CognitiveState, *,
         # An empty view, not an over-budget one — a cap that is exceeded to
         # apologise for itself is not a cap.
         return CompiledView()
-    text = _render(fact_lines[:cut.facts], clash_lines[:cut.conflicts],
-                   guess_lines[:cut.hypotheses], receipts[cut.facts],
-                   cut.facts_out, cut.conflicts_out, cut.hypotheses_out)
+    text = _render([lines[:kept] for lines, kept in zip(sections, cut.kept)],
+                   receipts[cut.facts], cut.out)
     if len(text) > budget:
         # The arithmetic and the renderer disagreed, which is the one thing
         # a second reader of a shape can do wrong. No block, rather than a
@@ -583,9 +771,10 @@ def compile_view(state: CognitiveState, *,
         return CompiledView()
     return CompiledView(
         text=text, receipts=receipts[cut.facts],
-        facts=cut.facts, conflicts=cut.conflicts, hypotheses=cut.hypotheses,
+        facts=cut.facts, conflicts=cut.conflicts, owed=cut.owed,
+        hypotheses=cut.hypotheses,
         facts_omitted=cut.facts_out, conflicts_omitted=cut.conflicts_out,
-        hypotheses_omitted=cut.hypotheses_out,
+        owed_omitted=cut.owed_out, hypotheses_omitted=cut.hypotheses_out,
     )
 
 
@@ -613,18 +802,20 @@ def _head(receipts: int, facts: int, clashes: int) -> str:
             f"{_plural(clashes, 'conflicts')}.")
 
 
-def _omission(facts_out: int, clashes_out: int, guesses_out: int) -> str:
-    """The sentence a dropped line leaves behind, or ``""``.  One owner."""
-    lost = [f"+{_plural(dropped, kind)}"
-            for dropped, kind in ((facts_out, "facts"),
-                                  (clashes_out, "conflicts"),
-                                  (guesses_out, "hypotheses")) if dropped]
+def _omission(dropped: Sequence[int]) -> str:
+    """The sentence a dropped line leaves behind, or ``""``.  One owner.
+
+    *dropped* is per section, in :data:`SECTIONS` order — so the sentence
+    names its losses in the order the block renders them, not in the order
+    it lost them.
+    """
+    lost = [f"+{_plural(count, kind)}"
+            for count, kind in zip(dropped, SECTIONS) if count]
     return OMITTED.format(what=", ".join(lost)) if lost else ""
 
 
-def _render(facts: Sequence[str], clashes: Sequence[str],
-            guesses: Sequence[str], receipts: int,
-            facts_out: int, clashes_out: int, guesses_out: int) -> str:
+def _render(sections: Sequence[Sequence[str]], receipts: int,
+            dropped: Sequence[int]) -> str:
     """The block, from lines that have already been chosen.
 
     One renderer, so what a caller measures is exactly the bytes the model
@@ -639,16 +830,14 @@ def _render(facts: Sequence[str], clashes: Sequence[str],
     which is a claim this block has no business making.  What *was* dropped
     is said once, at the end, in :data:`OMITTED`.
     """
-    out: List[str] = [_head(receipts, len(facts), len(clashes))]
-    for heading, lines in ((FACTS_HEADING, facts),
-                           (CONFLICTS_HEADING, clashes),
-                           (HYPOTHESES_HEADING, guesses)):
+    out: List[str] = [_head(receipts, len(sections[0]), len(sections[1]))]
+    for heading, lines in zip(HEADINGS, sections):
         if not lines:
             continue
         out.append("")
         out.append(heading)
         out.extend(lines)
-    sentence = _omission(facts_out, clashes_out, guesses_out)
+    sentence = _omission(dropped)
     if sentence:
         out.append("")
         out.append(sentence)

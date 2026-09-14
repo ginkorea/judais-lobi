@@ -50,7 +50,7 @@ from core.runtime.cognition import (KERNEL_COUNT_KEY, KERNEL_EVENTS_KEY,
                                     KERNEL_SCHEMA_KEY, NOTE_KEY,
                                     REASONING_LOG,
                                     REASONING_SCHEMA_VERSION, RESUMED_NOTE,
-                                    SCHEMA_KEY, STOPPED_NOTE,
+                                    SCHEMA_KEY, STOPPED_NOTE, UNWATCHED_NOTE,
                                     ShadowCognition, header_record,
                                     observations_of, open_shadow,
                                     read_reasoning, replay_reasoning)
@@ -482,6 +482,96 @@ class TestNothingInHereReachesTheMission:
                     KERNEL_EVENTS_KEY: events}
         assert replay_reasoning(shadow.path).propositions() == \
             CognitiveState.replay(envelope).propositions()
+
+
+class TestWhatTheSupervisorIsTold:
+    """``progress()`` — four numbers and a line, and no more than that.
+
+    ROADMAP §2.9.6's epistemic-progress signal reads the store through this
+    one method, which decides nothing: the supervisor compares readings and
+    may raise the advisory review it already raises for a repeated call.
+    The reading is a *read* in the kernel's sense — it flushes, like every
+    reader, and writes no event of its own.
+    """
+
+    def _goal(self, shadow):
+        from core.cognition.types import RuleAuthority
+
+        shadow.state.add_rule("owner_known", ("alice", "owner_known", True),
+                              [("alice", "payment_link", "?c")],
+                              authority=RuleAuthority.SKILL)
+        shadow.state.add_goal(("alice", "owner_known", True))
+        return shadow
+
+    def test_a_run_with_no_goals_reads_an_empty_frontier(self, shadow):
+        shadow.receipt("t", "r1", RECEIPT)
+        shadow.close_step()
+        reading = shadow.progress()
+        assert reading.obligations == 0 and reading.owed == ""
+        assert reading.propositions == len(shadow.state.propositions())
+
+    def test_it_quotes_the_top_of_the_frontier(self, shadow):
+        """The same words the compiled block shows, through the same
+        function, so a review and a block cannot name one obligation two
+        ways."""
+        from core.cognition.compile import owed_line
+
+        self._goal(shadow)
+        assert shadow.progress().owed == \
+            owed_line(shadow.state.next_obligation())
+
+    def test_the_digest_moves_when_the_frontier_does(self, shadow):
+        self._goal(shadow)
+        before = shadow.progress()
+        shadow.receipt("mcp.x", "r1",
+                       json.dumps({"units": 12}))
+        shadow.close_step()
+        assert shadow.progress().frontier == before.frontier, \
+            "a receipt that answers nothing moves no obligation"
+        shadow.state.assert_observation(
+            ("alice", "payment_link", "acct-9"),
+            evidence=(shadow.state.propositions()[0].evidence[0],),
+            authority=EvidenceAuthority.DETERMINISTIC)
+        assert shadow.progress().frontier != before.frontier
+
+    def test_reading_it_writes_no_event(self, shadow):
+        self._goal(shadow)
+        shadow.receipt("t", "r1", RECEIPT)
+        shadow.close_step()
+        before = len(shadow.state.events)
+        shadow.progress()
+        shadow.progress()
+        assert len(shadow.state.events) == before
+
+    def test_a_stopped_shadow_is_not_watched(self, shadow, monkeypatch):
+        monkeypatch.setattr("core.runtime.cognition.observations_of", _boom)
+        shadow.receipt("t", "r1", RECEIPT)
+        assert shadow.on is False
+        assert shadow.progress() is None
+
+    def test_a_frontier_that_raises_costs_the_signal_and_nothing_else(
+            self, shadow, monkeypatch):
+        """Failure isolation, and it is narrow on purpose: a frontier this
+        run cannot read is not a store it cannot hold. The harvest keeps
+        running, the log keeps growing, and the mission is the mission it
+        would have been."""
+        monkeypatch.setattr(type(shadow.state), "ranked_frontier", _boom)
+        assert shadow.progress() is None
+        assert shadow.watch_failures == 1
+        assert shadow.watching is False
+        assert shadow.on is True
+        monkeypatch.undo()
+        shadow.receipt("t", "r1", RECEIPT)
+        shadow.close_step()
+        assert shadow.state.propositions()
+        assert shadow.progress() is None, "it stops for the rest of the run"
+
+    def test_the_log_says_which_half_stopped(self, shadow, monkeypatch):
+        monkeypatch.setattr(type(shadow.state), "ranked_frontier", _boom)
+        shadow.progress()
+        notes = [line for line in lines(shadow.path) if NOTE_KEY in line]
+        assert [note[NOTE_KEY] for note in notes] == [UNWATCHED_NOTE]
+        assert "Boom" in notes[0]["error"]
 
 
 class _Boom(Exception):

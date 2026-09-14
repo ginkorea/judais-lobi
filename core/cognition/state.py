@@ -1718,8 +1718,8 @@ class CognitiveState:
                          if item.state != ObligationState.RESOLVED),
                         truncated=computed.truncated)
 
-    def next_obligation(self) -> Optional[Obligation]:
-        """The cheapest true thing to do next, or ``None``.
+    def ranked_frontier(self) -> Frontier:
+        """The frontier in priority order — cheapest true thing first.
 
         Priority is **fewest unresolved dependencies, then computation
         order**.  Because ``OPEN`` means exactly "no unresolved dependency",
@@ -1731,10 +1731,31 @@ class CognitiveState:
         interesting an obligation looks: a frontier that reordered itself on a
         heuristic would stop being reproducible on the day that heuristic
         changed.
+
+        **The whole ranking lives here**, and :meth:`next_obligation` is its
+        first element.  It was the other way round — the sort inside
+        ``next_obligation``, with every other consumer left to re-spell it —
+        until a second reader appeared: Phase 19's compiled ``OWED`` section
+        renders the frontier *in the order the runtime would work it*, and
+        two spellings of one ordering is the shape that drifts.  Carries
+        :attr:`~core.cognition.types.Frontier.truncated` through, for
+        :meth:`frontier`'s reason.
         """
-        ranked = sorted(enumerate(self.frontier()),
-                        key=lambda pair: (len(pair[1].depends_on), pair[0]))
-        return ranked[0][1] if ranked else None
+        computed = self.frontier()
+        return Frontier(
+            (item for _position, item in
+             sorted(enumerate(computed),
+                    key=lambda pair: (len(pair[1].depends_on), pair[0]))),
+            truncated=computed.truncated)
+
+    def next_obligation(self) -> Optional[Obligation]:
+        """The cheapest true thing to do next, or ``None``.
+
+        The head of :meth:`ranked_frontier`, which owns the ordering and
+        argues it.
+        """
+        ranked = self.ranked_frontier()
+        return ranked[0] if ranked else None
 
     def _satisfied(self, pattern: Sequence[Any], bindings: Bindings) -> bool:
         for pid in self._matches(pattern, bindings, None):

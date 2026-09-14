@@ -395,8 +395,23 @@ class Obligation:
     depends_on: Tuple[str, ...] = ()
 
     def render(self) -> str:
-        e, f, v = self.pattern
-        return f"({e}, {f}, {v!r})"
+        """The pattern as a reader meets it: ``(alice, payment_link, ?c)``.
+
+        **Display only**, and deliberately not :func:`render_pattern`, which
+        is what :attr:`id` is content-addressed with: an id has to be stable
+        and unambiguous, a line a model reads has to be legible, and one
+        function cannot be both.
+
+        A variable is printed bare.  Through ``repr`` it came out as
+        ``'?c'`` — quoted exactly like a literal string, in the one position
+        where the difference between "this is the thing that is missing" and
+        "this is a value we know" is the whole meaning of the line.  A
+        literal keeps its ``repr``, so ``8`` and ``'8'`` still do not read
+        the same.
+        """
+        return "(" + ", ".join(
+            str(term) if index < 2 or is_variable(term) else repr(term)
+            for index, term in enumerate(self.pattern)) + ")"
 
 
 class Frontier(tuple):

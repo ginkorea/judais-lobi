@@ -699,6 +699,14 @@ class Bounds:
     #: run nothing can stop.  Duck-typed: what a run needs is ``look``,
     #: ``saw_call`` and ``saw_rejection``.
     #:
+    #: ``look`` is called as ``look(objective, ledger=…, progress=…)``.
+    #: ``progress`` arrived with Phase 19 (ROADMAP §2.9.6) and is the
+    #: run's epistemic reading or ``None``; a watcher with no use for it
+    #: takes it and drops it, and one written before it existed should
+    #: take ``**_kwargs`` — this loop passes the keyword on every step,
+    #: including the steps where it is ``None``, so that a watcher's
+    #: signature does not depend on whether the run has cognition on.
+    #:
     #: ``None`` is not "unwatched": it made the documented example —
     #: ``Run(personality, plane, Bounds(), …)`` — a run with no
     #: endless-loop catch at all, which is fail-open on the only bound 1.0
@@ -2503,7 +2511,8 @@ class Run:
         if self.bounds.supervisor is None:
             return None
         review = self.bounds.supervisor.look(
-            objective, ledger=transcript.usage)
+            objective, ledger=transcript.usage,
+            progress=self._cognitive_progress())
         if review is None:
             return None
         if review.verdict == NUDGE and review.note:
@@ -2516,6 +2525,37 @@ class Run:
             self._winding_up = True
             transcript.reason = STUCK
         return review
+
+    def _cognitive_progress(self) -> Any:
+        """What the run believes, for the watcher.  ``None`` without a shadow.
+
+        ROADMAP §2.9.6's epistemic-progress signal, and the whole of its
+        wiring: one read handed to
+        :meth:`core.runtime.supervisor.Supervisor.look`, which compares it
+        with the last few and may raise the advisory review it already
+        raises for a repeated call.  Nothing is emitted, nothing is stored,
+        and the supervisor gains no verdict it did not have — the cognitive
+        layer steers by being *read*, never by holding anything up.
+
+        Read **here**, at the same boundary
+        :meth:`_close_cognitive_step` has already flushed at, so the read
+        appends no kernel event; ``None`` on every run with ``--cognition``
+        off, which is one ``is not None`` per step, exactly as the
+        compiled block costs.
+
+        **Asked for, not assumed.**  :attr:`Store.cognition` is duck-typed
+        on purpose — the loop holds the fact that there is one and not its
+        type — so a shadow written against the three methods this loop used
+        to call is a shadow that predates this one, and the honest reading
+        of it is *no reading* rather than an ``AttributeError`` out of a
+        mission's step boundary.  It is the same failure isolation
+        :meth:`core.runtime.cognition.ShadowCognition.progress` states from
+        the other side, at the one place a stand-in can differ from the
+        real thing: the signal goes quiet, the supervisor keeps its four
+        mechanical ones, and the mission never learns.
+        """
+        read = getattr(self.store.cognition, "progress", None)
+        return read() if callable(read) else None
 
     def _receipt_seq(self, handle: str) -> str:
         """What names this receipt inside this run, for the shadow.

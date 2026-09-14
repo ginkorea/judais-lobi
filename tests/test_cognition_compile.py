@@ -32,9 +32,12 @@ from core.cognition import (CognitiveState, EvidenceAuthority, EvidenceRef,
                             compile_view)
 from core.cognition import compile as mod
 from core.cognition.compile import (BANDS, BUDGET_CHARS, CONFLICTS_HEADING,
-                                    DISPUTED, FACTS_HEADING,
-                                    HYPOTHESES_HEADING, OMITTED, TITLE,
-                                    UNGRADED, CompiledView, band)
+                                    DISPUTED, FACTS_HEADING, FRONTIER_CAPPED,
+                                    HYPOTHESES_HEADING, OMITTED, OWED_HEADING,
+                                    TITLE, UNGRADED, CompiledView, band,
+                                    owed_line)
+from core.cognition.state import ENV_CAP
+from core.cognition.types import RuleAuthority
 
 
 def receipt(handle: str) -> EvidenceRef:
@@ -197,6 +200,81 @@ class TestTheFactsCarryTheirReceipts:
         assert not view.truncated
 
 
+class TestAConclusionDoesNotLookLikeAReceipt:
+    """The 19a review's finding: the first lane in which derived facts
+    reached a model found them rendering **identically to observations**.
+
+    Same shape, same band, same line — and a model asked to quote a figure
+    with where it came from will quote the entity handle on a derived line,
+    where no such receipt exists.  The band is already honest about a chain
+    (a conclusion carries its weakest premise's authority); what it cannot
+    say is that nothing was read to produce this one.
+    """
+
+    @pytest.fixture
+    def concluded(self) -> CognitiveState:
+        state = CognitiveState()
+        state.add_rule("owner_known", ("alice", "owner_known", True),
+                       [("alice", "payment_link", "?c")],
+                       authority=RuleAuthority.SKILL)
+        observe(state, "alice", "payment_link", "acct-9")
+        return state
+
+    def test_a_derived_line_says_so(self, concluded):
+        assert "alice · owner_known = true  [verified · derived]" in \
+            section(compile_view(concluded), FACTS_HEADING)
+
+    def test_an_observed_line_does_not(self, concluded):
+        line = [row for row in section(compile_view(concluded), FACTS_HEADING)
+                if "payment_link" in row][0]
+        assert line.endswith("[verified]")
+
+    def test_the_band_is_still_the_weakest_premise(self):
+        """The mark is beside the grade and not instead of it: a
+        conclusion over a model's extraction is `model-extracted` AND
+        derived, and a reader needs both halves."""
+        state = CognitiveState()
+        state.add_rule("owner_known", ("alice", "owner_known", True),
+                       [("alice", "payment_link", "?c")],
+                       authority=RuleAuthority.SKILL)
+        observe(state, "alice", "payment_link", "acct-9",
+                authority=EvidenceAuthority.SOURCE)
+        assert "owner_known = true  [sourced · derived]" in \
+            compile_view(state).text
+
+    def test_a_contested_conclusion_carries_both_marks(self):
+        """Band, then where it came from, then who disagrees."""
+        state = CognitiveState()
+        state.declare_field("owner_known", "one")
+        state.add_rule("owner_known", ("alice", "owner_known", True),
+                       [("alice", "payment_link", "?c")],
+                       authority=RuleAuthority.SKILL)
+        observe(state, "alice", "payment_link", "acct-9")
+        guess(state, "alice", "owner_known", False)
+        line = [row for row in section(compile_view(state), FACTS_HEADING)
+                if "owner_known = true" in row][0]
+        assert line.endswith("[verified · derived · disputed]")
+
+    def test_the_heading_does_not_promise_a_receipt_for_it(self, concluded):
+        """The heading's claim — "with the receipt each came from" — is
+        false of a derived line, and a heading that is false of a line
+        under it is worse than no heading."""
+        assert "derived" in FACTS_HEADING
+
+    def test_the_mark_is_in_the_digest(self):
+        """The same claim read and the same claim concluded are two
+        different blocks, and a digest that called them one would be a
+        cache key that served the wrong view."""
+        read, concluded = CognitiveState(), CognitiveState()
+        observe(read, "alice", "owner_known", True)
+        concluded.add_rule("owner_known", ("alice", "owner_known", True),
+                           [("alice", "payment_link", "?c")],
+                           authority=RuleAuthority.SKILL)
+        observe(concluded, "alice", "payment_link", "acct-9")
+        assert "owner_known = true  [verified]" in compile_view(read).text
+        assert compile_view(read).digest() != compile_view(concluded).digest()
+
+
 class TestBothSidesOfEveryConflict:
     """The owner's rule of 13 September 2026, rendered.
 
@@ -275,6 +353,179 @@ class TestBothSidesOfEveryConflict:
         line = [row for row in section(compile_view(state), FACTS_HEADING)
                 if "units = 120" in row][0]
         assert DISPUTED in line
+
+
+def owes(state: CognitiveState, premises, *, goal: str = "owner_known",
+         entity: str = "alice", authority=RuleAuthority.SKILL) -> str:
+    """One goal and one rule whose *premises* nothing satisfies.
+
+    Obligations are **computed, never authored** — the kernel's own rule —
+    so a state with a frontier in it is a state with a goal and a rule in
+    it, and this file builds one the only way there is.  Each premise the
+    store cannot satisfy is one owed line; premises that share a variable
+    with an earlier unsatisfied one are ``BLOCKED`` on it, which is how
+    this file makes a blocked line without asking for one.
+    """
+    state.add_rule(goal, (entity, goal, True), list(premises),
+                   authority=authority)
+    return state.add_goal((entity, goal, True))
+
+
+def chain(count: int, entity: str = "alice"):
+    """*count* premises about *entity*, none of them sharing a variable."""
+    return [(entity, f"p{index}", f"?v{index}") for index in range(count)]
+
+
+class TestTheFrontierIsInTheBlock:
+    """``ROADMAP.md`` §2.9.6: the frontier drives, so the model reads it.
+
+    Every line here is **state** and none of them is an instruction. The
+    layer is shadow and additive by the owner's ruling of 13 September
+    2026 — it says what is owed, it never says what to call, and a model
+    that ignores the whole section answers exactly as it would have.
+    """
+
+    @pytest.fixture
+    def owed(self) -> CognitiveState:
+        """A goal, a rule, and two premises the store cannot satisfy —
+        the second blocked on the first, because it cannot even be stated
+        until the first binds the account it is about."""
+        state = CognitiveState()
+        state.add_rule("owner_known", ("?a", "owner_known", True),
+                       [("?a", "payment_link", "?c"), ("?c", "holder", "?h")],
+                       authority=RuleAuthority.SKILL)
+        state.add_goal(("alice", "owner_known", True))
+        return state
+
+    def test_an_open_obligation_names_the_pattern_and_its_goal(self, owed):
+        assert section(compile_view(owed), OWED_HEADING)[0] == \
+            "owed: (alice, payment_link, ?c) — for goal g1, open"
+
+    def test_a_blocked_one_says_what_it_waits_on(self, owed):
+        assert section(compile_view(owed), OWED_HEADING)[1] == \
+            "owed: (?c, holder, ?h) — for goal g1, blocked on 1"
+
+    def test_a_variable_does_not_read_like_a_string(self, owed):
+        """``'?c'`` in quotes is a variable dressed as a literal value, in
+        the one position where the difference is the whole meaning of the
+        line: what is missing, against what is known."""
+        for line in section(compile_view(owed), OWED_HEADING):
+            assert "'?" not in line, line
+
+    def test_the_workable_one_comes_first(self, owed):
+        """The kernel's own ranking — fewest unresolved dependencies, then
+        computation order — and not a second sort written here. A reader's
+        eye lands on the cheapest true thing to do next."""
+        lines = section(compile_view(owed), OWED_HEADING)
+        assert lines == [owed_line(item) for item in owed.ranked_frontier()]
+        assert owed_line(owed.next_obligation()) == lines[0]
+
+    def test_the_section_sits_after_the_conflicts(self, owed):
+        state = owed
+        state.declare_field("units", "one")
+        observe(state, "t#r1", "units", 120)
+        guess(state, "t#r1", "units", 999)
+        guess(state, "t#g1", "route", "north")
+        text = compile_view(state).text
+        assert text.index(CONFLICTS_HEADING) < text.index(OWED_HEADING) \
+            < text.index(HYPOTHESES_HEADING)
+
+    def test_a_run_with_no_goals_has_no_heading_at_all(self, ledger):
+        """The no-empty-headings rule. A mission that was given no pack is
+        not told that nothing is owed — it is told nothing, which is what
+        every other empty section in this block does."""
+        assert OWED_HEADING not in compile_view(ledger).text
+
+    def test_a_satisfied_goal_owes_nothing(self):
+        """The kernel drops a goal the store already satisfies, and the
+        section goes with it: a finished goal on an owed ledger is a
+        runtime asking for what it has."""
+        state = CognitiveState()
+        state.add_rule("owner_known", ("?a", "owner_known", True),
+                       [("?a", "payment_link", "?c")],
+                       authority=RuleAuthority.SKILL)
+        state.add_goal(("alice", "owner_known", True))
+        assert OWED_HEADING in compile_view(state).text
+        observe(state, "alice", "payment_link", "acct-9")
+        assert OWED_HEADING not in compile_view(state).text
+
+    def test_a_goal_alone_is_a_block_of_nothing_but_owed(self):
+        """A run that knows what it wants and has established none of it
+        still has something to be shown, and it is the frontier."""
+        state = CognitiveState()
+        owes(state, chain(2))
+        view = compile_view(state)
+        assert view.owed == 2
+        assert view.facts == 0 and FACTS_HEADING not in view.text
+
+    def test_nothing_in_the_section_is_an_instruction(self, owed):
+        """The constitution, read off the words. A verb in the imperative
+        would be the shadow layer steering with a mouth rather than
+        reporting with a page."""
+        text = "\n".join(section(compile_view(owed), OWED_HEADING)).lower()
+        for word in ("call ", "you should", "must ", "try ", "next, ",
+                     "do not"):
+            assert word not in text, word
+
+    def test_the_header_does_not_count_the_frontier(self, owed):
+        """Receipts, facts and conflicts are one population — the evidence
+        — and the frontier is not evidence. A fourth number in that
+        sentence would be a count of something else entirely, with nothing
+        on the line to say so."""
+        observe(owed, "t#r1", "units", 120)
+        assert lines_of(compile_view(owed))[0] == \
+            f"{TITLE} — compiled from 1 receipt, 1 fact, 0 conflicts."
+
+
+class TestTheFrontierSaysWhenItStoppedShort:
+    """:attr:`~core.cognition.types.Frontier.truncated` is the kernel's own
+    cap, not this module's budget, and the two say so differently.
+
+    A walk that stopped at :data:`~core.cognition.state.ENV_CAP` and a walk
+    that finished look identical from outside — both hand back obligations
+    and neither says anything — and this repository's rule is that a budget
+    exhausted is a recorded outcome naming the budget.
+    """
+
+    @pytest.fixture
+    def capped(self) -> CognitiveState:
+        state = CognitiveState()
+        state.add_rule("owner_known", ("?a", "owner_known", True),
+                       [("?a", "payment_link", "?c"), ("?c", "holder", "?h")],
+                       authority=RuleAuthority.SKILL)
+        state.add_goal(("alice", "owner_known", True))
+        for index in range(ENV_CAP + 4):
+            state.assert_observation(("alice", "payment_link", f"acct-{index}"),
+                                     evidence=(receipt(f"r{index}"),),
+                                     authority=EvidenceAuthority.SOURCE)
+        assert state.ranked_frontier().truncated, "this fixture must cap"
+        return state
+
+    def test_the_section_says_the_walk_stopped(self, capped):
+        assert section(compile_view(capped, budget_chars=1_000_000),
+                       OWED_HEADING)[0] == FRONTIER_CAPPED
+
+    def test_it_is_first_so_it_is_the_last_line_to_go(self, capped):
+        """Lines are dropped from the end, so a flag at the end is a flag
+        the budget silences. This one survives every owed line it stands
+        in front of."""
+        view = compile_view(capped, budget_chars=1_000_000)
+        tight = compile_view(capped, budget_chars=len(view.text) // 4)
+        assert tight.owed_omitted
+        assert FRONTIER_CAPPED in tight.text
+
+    def test_and_when_even_it_goes_the_block_still_says_so(self, capped):
+        """The floor under the flag: the block's one omission sentence
+        counts the owed lines it lost, the cap note among them, so there
+        is no budget at which owed material disappears in silence."""
+        tight = compile_view(capped, budget_chars=420)
+        assert FRONTIER_CAPPED not in tight.text
+        assert f"+{tight.owed_omitted} owed lines" in tight.text
+
+    def test_an_uncapped_frontier_says_nothing_about_it(self):
+        state = CognitiveState()
+        owes(state, chain(3))
+        assert FRONTIER_CAPPED not in compile_view(state).text
 
 
 class TestAGuessIsNeverAFact:
@@ -464,6 +715,75 @@ class TestTheBudgetIsHardAndNeverSilent:
         assert tight.conflicts == 1
         assert tight.facts_omitted
 
+    def test_an_owed_line_outlives_a_fact(self):
+        """The drop-order decision, stated as the thing it buys.
+
+        A dropped fact is recoverable: its line printed the handle and the
+        mission's result store holds that receipt whole, which is what the
+        omission sentence tells the model in as many words. A dropped owed
+        line is recoverable from nowhere — it is not in the transcript, not
+        in the store, and no deployment has an interface that serves it.
+        """
+        state = CognitiveState()
+        for index in range(30):
+            observe(state, f"mcp.ledger_entry#r{index}", "units", index)
+        owes(state, chain(3))
+        whole = compile_view(state)
+        tight = compile_view(state, budget_chars=len(whole.text) - 300)
+        assert tight.facts_omitted
+        assert tight.owed_omitted == 0
+        assert tight.owed == whole.owed
+
+    def test_but_a_guess_still_goes_before_an_owed_line(self):
+        """Owed is kept longer than a receipt and a guess is kept shorter
+        than everything: the frontier is guidance, and guidance a model
+        wrote is the cheapest thing in the block."""
+        state = CognitiveState()
+        owes(state, chain(4))
+        for index in range(10):
+            guess(state, f"t#g{index}", "route", f"road-{index}")
+        whole = compile_view(state)
+        tight = compile_view(state, budget_chars=len(whole.text) - 100)
+        assert tight.hypotheses_omitted
+        assert tight.owed_omitted == 0
+
+    def test_and_a_conflict_still_outlives_an_owed_line(self):
+        """Conflicts stay last to go. What is owed is a question; a
+        disagreement the model cannot see is an answer that is wrong."""
+        state = CognitiveState()
+        state.declare_field("units", "one")
+        observe(state, "led.a41", "units", 120)
+        guess(state, "led.a41", "units", 98)
+        owes(state, chain(12))
+        tight = compile_view(state, budget_chars=600)
+        assert tight.conflicts == 1
+        assert tight.owed_omitted
+
+    def test_what_the_frontier_lost_is_counted_in_the_block(self):
+        state = CognitiveState()
+        owes(state, chain(20))
+        view = compile_view(state, budget_chars=600)
+        assert view.owed_omitted
+        assert view.truncated
+        assert f"+{view.owed_omitted} owed lines" in view.text
+
+    def test_one_owed_line_lost_is_singular(self):
+        """Asked of the sentence's one owner, because the budget at which
+        exactly one line goes is not a number this file should have to
+        know — the omission sentence is itself a line, so a block often
+        loses two to afford saying it lost any."""
+        assert "+1 owed line " in mod._omission((0, 0, 1, 0))
+        assert "+2 owed lines " in mod._omission((0, 0, 2, 0))
+
+    def test_the_sentence_names_its_losses_in_render_order(self):
+        """Facts, conflicts, owed, hypotheses — the order the block reads
+        in, not the order the budget took them in. A reader matching the
+        sentence against the block should not have to know the drop
+        order."""
+        said = mod._omission((1, 1, 1, 1))
+        assert said.index("+1 fact") < said.index("+1 conflict") \
+            < said.index("+1 owed line") < said.index("+1 hypothesis")
+
     def test_a_budget_too_small_to_explain_itself_compiles_nothing(self,
                                                                    wide):
         """A cap that is exceeded to apologise for itself is not a cap, and
@@ -471,13 +791,16 @@ class TestTheBudgetIsHardAndNeverSilent:
         assert compile_view(wide, budget_chars=80).text == ""
 
 
-#: The shapes the oracle below is run over, as ``(facts, conflicts,
+#: The shapes the oracle below is run over, as ``(facts, conflicts, owed,
 #: hypotheses)``.  Small on purpose — the oracle renders every cut of every
 #: shape at every budget, and a few hundred pairs settle the question that
 #: a thousand would settle no better.  Each shape reaches a different
 #: branch: nothing to drop but facts; a section that empties; a store whose
-#: conflicts have to outlive its facts.
-_SHAPES = {(12, 0, 0), (20, 0, 4), (8, 2, 3), (30, 1, 0), (5, 3, 5)}
+#: conflicts have to outlive its facts; a frontier with no receipts under
+#: it at all; and a block in which every one of the four sections has to
+#: give something up.
+_SHAPES = {(12, 0, 0, 0), (20, 0, 0, 4), (8, 2, 0, 3), (30, 1, 0, 0),
+           (5, 3, 0, 5), (0, 0, 6, 0), (10, 1, 4, 3), (6, 2, 9, 2)}
 
 #: The budgets each shape is measured at: a stride across the whole range
 #: from "not even the header" to "everything fits", chosen with a stride
@@ -491,9 +814,10 @@ def _shaped(shape) -> CognitiveState:
     One receipt per fact is what lets the oracle know the header's receipt
     count without re-deriving it: it is the number of facts shown.  The
     conflicts are model-against-receipt disagreements, which is the kind a
-    shadow run actually produces.
+    shadow run actually produces, and the owed lines are one goal's worth
+    of premises nothing satisfies.
     """
-    facts, conflicts, hypotheses = shape
+    facts, conflicts, owed, hypotheses = shape
     state = CognitiveState()
     state.declare_field("units", "one")
     for index in range(facts):
@@ -502,6 +826,8 @@ def _shaped(shape) -> CognitiveState:
         guess(state, f"mcp.ledger_entry#r{index}", "units", 900 + index)
     for index in range(hypotheses):
         guess(state, f"mcp.guess#g{index}", "route", f"road-{index}")
+    if owed:
+        owes(state, chain(owed))
     return state
 
 
@@ -513,22 +839,34 @@ def _brute_force(state: CognitiveState, budget: int) -> str:
     the first one that measures inside the budget.  That is the definition
     :func:`~core.cognition.compile.compile_view`'s size model is an
     optimisation of, so it is the thing the optimisation has to agree with.
+
+    The drop order is **spelled out here** rather than imported from
+    :data:`~core.cognition.compile.DROP_ORDER`, which is the whole point of
+    an oracle: a second statement of the property, written by hand, that
+    disagrees when the first one moves.  Hypotheses, then facts, then owed,
+    then conflicts — and the interesting one is owed above facts, because a
+    dropped fact is still in the result store under the handle its line
+    printed and a dropped obligation is nowhere at all.
     """
     whole = compile_view(state, budget_chars=1_000_000)
-    facts = section(whole, FACTS_HEADING) if whole.facts else []
-    clashes = section(whole, CONFLICTS_HEADING) if whole.conflicts else []
-    guesses = section(whole, HYPOTHESES_HEADING) if whole.hypotheses else []
-    totals = (len(facts), len(clashes), len(guesses))
-    for dropped in range(sum(totals) + 1):
-        out_guesses = min(dropped, totals[2])
-        out_facts = min(dropped - out_guesses, totals[0])
-        out_clashes = min(dropped - out_guesses - out_facts, totals[1])
-        kept = (totals[0] - out_facts, totals[1] - out_clashes,
-                totals[2] - out_guesses)
-        text = mod._render(facts[:kept[0]], clashes[:kept[1]],
-                           guesses[:kept[2]],
+    held = (whole.facts, whole.conflicts, whole.owed, whole.hypotheses)
+    headings = (FACTS_HEADING, CONFLICTS_HEADING, OWED_HEADING,
+                HYPOTHESES_HEADING)
+    lines = [section(whole, heading) if count else []
+             for heading, count in zip(headings, held)]
+    facts, clashes, owed, guesses = (len(rows) for rows in lines)
+    for dropped in range(facts + clashes + owed + guesses + 1):
+        out_guesses = min(dropped, guesses)
+        out_facts = min(dropped - out_guesses, facts)
+        out_owed = min(dropped - out_guesses - out_facts, owed)
+        out_clashes = min(dropped - out_guesses - out_facts - out_owed,
+                          clashes)
+        kept = (facts - out_facts, clashes - out_clashes, owed - out_owed,
+                guesses - out_guesses)
+        text = mod._render([rows[:keep] for rows, keep in zip(lines, kept)],
                            # one receipt per fact — see `_shaped`
-                           kept[0], out_facts, out_clashes, out_guesses)
+                           kept[0],
+                           (out_facts, out_clashes, out_owed, out_guesses))
         if len(text) <= budget:
             return text
     return ""
@@ -646,6 +984,27 @@ class TestTheSameStateIsTheSameBlock:
         before = compile_view(ledger).digest()
         observe(ledger, "mcp.ledger_entry#r4", "units", 7)
         assert compile_view(ledger).digest() != before
+
+    def test_the_frontier_is_in_the_digest(self):
+        """The digest is what the supervisor's stall signal and any cache
+        key are read through, so a block whose OWED section changed and
+        whose facts did not has to digest differently. A view that dropped
+        the frontier from what it hashes would call two different problems
+        the same problem."""
+        first, second = CognitiveState(), CognitiveState()
+        for state, premises in ((first, chain(2)), (second, chain(3))):
+            observe(state, "t#r1", "units", 120)
+            owes(state, premises)
+        assert compile_view(first).digest() != compile_view(second).digest()
+
+    def test_an_obligation_resolving_changes_the_block(self):
+        """The frontier moving is the event Phase 19 is about, and the
+        block is where a reader sees it."""
+        state = CognitiveState()
+        owes(state, chain(2))
+        before = compile_view(state).digest()
+        observe(state, "alice", "p0", "acct-9")
+        assert compile_view(state).digest() != before
 
     def test_the_digest_is_of_the_text_and_not_of_the_counts(self):
         """Two views with the same shape and different figures are two
