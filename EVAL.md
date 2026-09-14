@@ -1772,17 +1772,26 @@ three regions of that string are attributed:
 
 | region | what it is |
 |---|---|
-| `pinned` | the **longest common prefix** of this conversation's requests, computed and never assumed. That is what a provider's prefix cache keys on: the leading bytes that did not change |
-| `block` | the compiled view, identified **exactly** — a part beginning with `compile.TITLE`. Which of its sections rode along is read off `compile.HEADINGS`, so a section a later phase adds is counted with no edit here |
+| `pinned` | the **longest common prefix** of this conversation's requests, computed and never assumed. That is the region a provider's prefix cache can key on: the leading text that did not change |
+| `block` | the compiled view, identified by **two** things: a part beginning with `compile.TITLE` *and* sitting under the role the runtime injects it under (`context.BLOCK_ROLE`). A title is a string — a tool result that echoes the block back begins with the same words and is not the view. Which of its sections rode along is read off `compile.HEADINGS` as whole lines, so a section a later phase adds is counted with no edit here |
 | `rest` | the transcript, the tool results, the steering — everything else |
 
 **The attribution adds up**: `pinned + block-outside-the-pinned-prefix + rest
 == chars`, on every call, because the three come out of one interval algebra
 over the same spans rather than three tallies that agree by convention. A
-compiled view that did not change between two steps lies *inside* the pinned
-prefix and is charged there **once** — a reader shown its characters a second
-time would conclude the opposite of what happened. The raw `block` figure is
-printed beside it, so nothing is lost.
+compiled view that did not change between two steps would lie *inside* the
+pinned prefix and is charged there **once** — a reader shown its characters a
+second time would conclude it cost twice what it did. The raw `block` figure
+is printed beside it, so nothing is lost.
+
+**That overlap is not reachable in a recording made today, and the algebra is
+kept anyway.** The runtime appends the view LAST, after the whole transcript
+(`Run._compile`), so the common prefix always stops before it and the block is
+entirely new on every call this release can record. The union is what makes
+the three regions *provably* disjoint rather than disjoint by argument, and
+the day a lane pins the view into the head — a cached preamble, a view that
+leads the request — three independent sums would silently report a request
+larger than the request. It costs one interval merge.
 
 A run is grouped into conversations by the recorded `kind` before any of this.
 A swarm records its router, its children and its synthesis in one
@@ -1791,6 +1800,12 @@ this run" over all of them would be the few words three unrelated prompts
 happen to start with, reported as the thing a cache keeps.
 
 ### Characters, and tokens where the recording has them
+
+**Characters, and never bytes.** Every size here is a count of Python
+characters; a request in a non-Latin script runs to three times that in
+UTF-8, so the two are not interchangeable and every column is labelled
+`chars` for that reason. It is the right unit for this instrument — what a
+lane adds to a prompt is text — and it is not the unit a wire is billed in.
 
 Characters are always computable. Tokens are what a window is actually spent
 in, and the only honest source is the provider's own `usage` — `prompt_tokens`,
@@ -1808,9 +1823,13 @@ cost.
   before it shows in a timeout;
 * the **view's share** — what fraction of each request the compiled block is;
 * **prefix stability** — `byte-stable: YES/NO`, and the first call at which it
-  was not. This is a regression detector, and the one an inserted timestamp, a
-  shuffled tool catalogue or a per-step rewrite of the system prompt trips.
-  The caching claim is exactly the claim that this stays YES.
+  was not. This one really is byte-for-byte: it is an *identity* check on the
+  system-side head, not a length. It is a regression detector, and the one an
+  inserted timestamp, a shuffled tool catalogue or a per-step rewrite of the
+  system prompt trips. The caching claim is exactly the claim that this stays
+  YES. A conversation of one call had nothing to compare and answers **neither**
+  — the report says *no prefix measurable* and the JSON carries `null`, not
+  `true`.
 
 ### In the ablation table
 
@@ -1819,6 +1838,13 @@ Each arm's row in the rate table gains `chars/call` and `view share`, over
 `Δ chars/call` — what the arm added to the mean model call against the
 baseline — beside what it fixed and broke. `—` is an arm whose runs recorded no
 model log, which is not the same fact as a cheap one.
+
+**`view share` and `Δ chars/call` are different quantities and neither derives
+from the other.** The share is the view's RAW characters against this arm's own
+requests; the delta is marginal, against the baseline's requests. An arm whose
+block displaces transcript the baseline was carrying shows a real share and a
+small delta, and an arm that adds a block on top of everything shows both. Read
+the delta for what the flag cost and the share for what the block is.
 
 Where an arm's pass delta is `≤ 0` while its context delta is positive, the
 report says so in as many words:

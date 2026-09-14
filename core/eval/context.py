@@ -30,18 +30,20 @@ Three things are then attributed and they do not overlap:
 
 ``pinned``
     The **longest common prefix** of the requests of this run's calls,
-    computed and never assumed.  That is what a provider's prefix cache
-    actually keys on: the leading bytes that did not change.  A run is
+    computed and never assumed.  That is the region a provider's prefix
+    cache can key on: the leading text that did not change.  A run is
     grouped into conversations by the recorded ``kind`` first (a swarm's
     router and its children are not one conversation and averaging them
     into a single prefix would be a number about nothing), and each
     conversation's prefix is its own.
 ``block``
-    The compiled view, identified **exactly** — a part whose text begins
-    with :data:`core.cognition.compile.TITLE`.  Which of the view's
-    sections rode along is read off
-    :data:`~core.cognition.compile.HEADINGS`, so a section a later phase
-    adds is counted here with no edit.
+    The compiled view, identified by **two** things and not one: a part
+    whose text begins with :data:`core.cognition.compile.TITLE` *and*
+    which sits under :data:`BLOCK_ROLE`, the role the runtime injects it
+    under.  A title is a string, and a tool result that echoes the block
+    back begins with the same words.  Which of the view's sections rode
+    along is read off :data:`~core.cognition.compile.HEADINGS`, so a
+    section a later phase adds is counted here with no edit.
 ``rest``
     Everything else: the transcript, the tool results, the steering.
 
@@ -49,18 +51,32 @@ Three things are then attributed and they do not overlap:
 block-outside-the-prefix + rest == chars``, every call, because the three
 are computed from one interval algebra over the same spans rather than from
 three tallies that agree by convention.  A block whose text did not change
-between two steps is *inside* the pinned prefix, and it is charged to the
-prefix and not a second time to itself — a run that shows a 900-character
-block in a 4 000-character pinned head is a run whose view cost nothing
-after the first call, and a reader who was shown 900 twice would draw the
-opposite conclusion.  :attr:`CallCost.block_chars` keeps the raw figure
-beside it, so nothing is lost.
+between two steps would be *inside* the pinned prefix, and it is charged to
+the prefix and not a second time to itself — a reader shown a 900-character
+view twice would conclude it cost twice what it did.
+:attr:`CallCost.block_chars` keeps the raw figure beside it, so nothing is
+lost.
+
+**That overlap is not reachable in a recording made today**, and the
+algebra is kept anyway.  :meth:`core.runtime.run.Run._compile` appends the
+view LAST, after the whole transcript, so the common prefix always stops
+before it and ``block_unpinned_chars == block_chars`` in every run this
+release can produce.  The union is what makes the three regions provably
+disjoint rather than disjoint by argument, and the day a lane pins the view
+into the head — a cached preamble, a view that leads the request — a tally
+of three independent sums would silently report a request larger than the
+request.  The invariant costs one interval merge and holds either way.
 
 Characters, and tokens when the recording has them
 --------------------------------------------------
 
-Characters are what this module can always compute.  Tokens are what a
-window is actually spent in, and the only honest source for them is the
+**Characters, and never bytes.**  Everything counted here is Python
+characters; a request in a non-Latin script is up to three times its
+character count in UTF-8, so the two are not interchangeable and every
+figure is labelled ``chars`` for that reason.  It is the right unit for
+this instrument — what a lane adds to a prompt is text — and it is not the
+unit a wire is billed in.  Tokens are what a window is actually spent in,
+and the only honest source for them is the
 provider's own ``usage`` — :class:`core.runtime.backends.base.Usage`'s
 ``prompt_tokens``, which the recorder copies into every line whose provider
 reported one.  So: tokens where the recording carries them, characters
@@ -76,11 +92,13 @@ What the profile is read for
   here before it shows in a timeout;
 * the **block's share** — what fraction of a request the compiled view is,
   per step;
-* **prefix stability** — whether the pinned head was byte-stable across a
-  conversation's calls, and the first call where it was not.  This is a
-  regression detector and it is the one an inserted timestamp, a shuffled
-  tool catalogue or a per-step rewrite of the system prompt trips: the
-  caching claim in ROADMAP §2.6 is exactly the claim that this stays YES.
+* **prefix stability** — whether the system-side head was *identical*
+  across a conversation's calls, and the first call where it was not.
+  Identity, so this one really is byte-for-byte.  It is a regression
+  detector and it is the one an inserted timestamp, a shuffled tool
+  catalogue or a per-step rewrite of the system prompt trips: the caching
+  claim in ROADMAP §2.6 is exactly the claim that this stays YES.  A
+  conversation of one call answers **neither** yes nor no, and says so.
 
 A run directory with no ``model.jsonl`` is **refused by name** rather than
 scored as zero: nothing was recorded, which is a different fact from a
@@ -104,7 +122,8 @@ from core.eval.measure import _table, report_paths
 from core.runtime.replay import MODEL_LOG, canonical
 
 __all__ = [
-    "CRITERION", "SEPARATOR", "NO_MODEL_LOG", "NO_CALLS", "Part", "CallCost",
+    "BLOCK_ROLE", "CRITERION", "SEPARATOR", "NO_MODEL_LOG", "NO_CALLS",
+    "Part", "CallCost",
     "Conversation", "RunCost", "ContextSummary", "ContextProfile",
     "render_request", "parts_of", "common_prefix", "head_of", "is_block",
     "sections_in", "cost_of_run", "profile", "run_shaped", "summarise",
@@ -133,6 +152,20 @@ NO_MODEL_LOG = (
 NO_CALLS = (
     "{log} holds no readable call — every line was empty, unparseable, or "
     "carried no request messages")
+
+#: The role the runtime injects the compiled view under, and the second
+#: half of recognising one.
+#:
+#: There is exactly one injection point —
+#: :meth:`core.runtime.run.Run._compile` appends ``{"role": "user",
+#: "content": block}`` after everything else — so a part under any other
+#: role that happens to begin with the title is something else wearing the
+#: view's first words: a tool result that echoed it back, an assistant turn
+#: that quoted it, a receipt from a platform that renders it.  Matching on
+#: the title alone would charge those to the view and inflate the two
+#: figures an arm is read by.  If a later lane injects the block under a
+#: different role, this constant moves with it and the tests say so.
+BLOCK_ROLE = "user"
 
 #: The files that make a directory look like a run, for the walk below.  A
 #: directory holding any of them is reported on; a directory holding none is
@@ -165,15 +198,22 @@ class Part:
 
 
 def is_block(text: str) -> bool:
-    """Whether *text* is the compiled view.
+    """Whether *text* BEGINS with the compiled view's title.
 
-    Exact, and on the one string the compiler declares for the purpose:
-    :data:`core.cognition.compile.TITLE` is the block's first words and the
-    module that owns it says in as many words that it is the string a
+    Half of the test and never all of it — see :data:`BLOCK_ROLE` and
+    :func:`render_request`, which is where the two halves are put
+    together.  A title is a string, and a string can appear at the front
+    of anything: a tool result that echoes the block back, an assistant
+    turn that quotes it, an operator's own paragraph.  Charging any of
+    those to the view would inflate exactly the two figures a lane is
+    read by.
+
+    Exact on the one string the compiler declares for the purpose:
+    :data:`core.cognition.compile.TITLE` is the block's first words and
+    the module that owns it says in as many words that it is the string a
     reader of ``model.jsonl`` recognises the block by.  Leading whitespace
     is tolerated because a renderer may indent a paragraph; nothing else
-    is, so an operator's own paragraph about the runtime's view of the
-    problem is not silently charged to a lane.
+    is.
     """
     return text.lstrip().startswith(TITLE)
 
@@ -184,9 +224,15 @@ def sections_in(text: str) -> Tuple[str, ...]:
     Read off :data:`core.cognition.compile.HEADINGS` rather than matched by
     a copy of the words, so the section Phase 20 adds is counted here the
     day it lands and this module is not edited for it.
+
+    Matched as a **whole line**, which is how
+    :func:`core.cognition.compile._render` emits one: a heading quoted
+    mid-sentence inside a fact line is a fact line that mentions a
+    section, not a section.
     """
+    lines = set(text.splitlines())
     return tuple(name for name, heading in zip(SECTIONS, HEADINGS)
-                 if heading in text)
+                 if heading in lines)
 
 
 def parts_of(request: Mapping[str, Any]) -> Tuple[Tuple[str, str], ...]:
@@ -204,7 +250,7 @@ def parts_of(request: Mapping[str, Any]) -> Tuple[Tuple[str, str], ...]:
     tools = extra.get("tools") if isinstance(extra, Mapping) else None
     if tools:
         # The one spelling of "this value as a string" in this tree, so two
-        # readers of the same catalogue measure the same bytes.
+        # readers of the same catalogue measure the same characters.
         out.append(("tools", canonical(tools)))
     for message in (request.get("messages") or ()):
         if not isinstance(message, Mapping):
@@ -224,7 +270,10 @@ def render_request(request: Mapping[str, Any]) -> Tuple[str, Tuple[Part, ...]]:
     for index, (label, text) in enumerate(pieces):
         if index:
             cursor += len(SEPARATOR)
-        block = is_block(text)
+        # BOTH halves: the title AND the role the runtime injects the view
+        # under. A tool result that echoes the block back begins with the
+        # same words and is not the view — see `BLOCK_ROLE`.
+        block = label == BLOCK_ROLE and is_block(text)
         spans.append(Part(label=label, text=text, start=cursor,
                           end=cursor + len(text), block=block,
                           sections=sections_in(text) if block else ()))
@@ -305,6 +354,12 @@ class CallCost:
     block_chars: int
     #: The view's characters that were NOT already in the pinned prefix —
     #: the half of the block this call actually paid for.
+    #:
+    #: Equal to :attr:`block_chars` in every recording this release can
+    #: produce, because the runtime appends the view after the transcript
+    #: and the common prefix therefore stops before it.  The two are kept
+    #: apart so that the attribution stays provably disjoint if a later
+    #: lane ever pins the view into the head — see the module docstring.
     block_unpinned_chars: int
     #: Everything that is neither.  ``prefix + block_unpinned + rest ==
     #: chars``, always; see :func:`_merged_length`.
@@ -364,8 +419,10 @@ class Conversation:
     prefix_chars: int
     #: Whether a prefix could be measured at all — two calls or more.
     measured: bool
-    #: Whether the system-side head was byte-stable across every call.
-    stable: bool
+    #: Whether the system-side head was identical across every call.
+    #: ``None`` where there was nothing to compare (a conversation of one
+    #: call), which is not the same answer as "yes".
+    stable: Optional[bool]
     #: The first call whose head differed from the first call's, or ``None``.
     diverged_at: Optional[int] = None
 
@@ -440,10 +497,18 @@ class RunCost:
         return sum(int(value) for value in seen if value is not None)
 
     @property
-    def stable(self) -> bool:
-        """Whether every conversation's head held byte-stable."""
-        return all(conversation.stable
-                   for conversation in self.conversations)
+    def stable(self) -> Optional[bool]:
+        """Whether every MEASURED conversation's head held identical.
+
+        ``None`` where no conversation had two calls to compare.  A run of
+        one model call has not got a stable prefix and has not got an
+        unstable one; reporting ``true`` there would put a caching claim
+        in the JSON that the Markdown, which says *no prefix measurable*,
+        declines to make.
+        """
+        seen = [conversation.stable for conversation in self.conversations
+                if conversation.stable is not None]
+        return all(seen) if seen else None
 
     @property
     def diverged_at(self) -> Optional[int]:
@@ -469,6 +534,46 @@ class RunCost:
         }
 
 
+def _finite_int(value: Any) -> Optional[int]:
+    """*value* as an ``int``, or ``None`` when it is not a finite number.
+
+    The one guard in this module, because every number it reads comes off
+    a log line somebody else wrote and a reader of recordings must never
+    be the thing that raises.  ``"two"``, ``[1]``, ``{"a": 1}``, ``NaN``
+    and the infinities are all *absent* rather than fatal — which is the
+    discipline the rest of the file already keeps for a torn line.
+
+    ``bool`` is excluded on purpose.  It is an ``int`` in Python, and a
+    ``call: true`` silently read as ordinal 1 would collide with the real
+    first call rather than being noticed.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return int(value)
+    except (ValueError, OverflowError):        # NaN, ±inf
+        return None
+
+
+def _ordinal(record: Mapping[str, Any], fallback: int) -> int:
+    """This call's ``call`` ordinal, or *fallback*.
+
+    Every read of ``call`` goes through here — the sort key and the three
+    places an ordinal is printed — because a single malformed line
+    otherwise raises **at report time**, after every arm of an ablation
+    has been spawned: :meth:`core.eval.ablation.Ablation.context` reaches
+    :func:`cost_of_run` from both ``as_dict`` and the Markdown, so one
+    corrupt line in one arm's recording would take the whole report down
+    and lose the hours that produced it.
+
+    *fallback* is the call's position in the file, which is the honest
+    substitute: the order is still the order things happened in, and the
+    report prints a number a reader can find.
+    """
+    value = _finite_int(record.get("call"))
+    return fallback if value is None else value
+
+
 def _model_calls(path: Path) -> List[Mapping[str, Any]]:
     """Every parseable ``model.jsonl`` line, in call order.
 
@@ -491,8 +596,11 @@ def _model_calls(path: Path) -> List[Mapping[str, Any]]:
             continue
         if isinstance(parsed, Mapping):
             out.append(parsed)
-    out.sort(key=lambda record: int(record.get("call") or 0))
-    return out
+    # A line whose ordinal will not read as a number sorts by the position
+    # the file gave it, rather than to the front under a zero it never had.
+    order = sorted(enumerate(out),
+                   key=lambda pair: _ordinal(pair[1], pair[0] + 1))
+    return [record for _position, record in order]
 
 
 def _prompt_tokens(record: Mapping[str, Any]) -> Optional[int]:
@@ -508,8 +616,7 @@ def _prompt_tokens(record: Mapping[str, Any]) -> Optional[int]:
     usage = reply.get("usage") if isinstance(reply, Mapping) else None
     if not isinstance(usage, Mapping):
         return None
-    value = usage.get("prompt_tokens")
-    return int(value) if isinstance(value, (int, float)) else None
+    return _finite_int(usage.get("prompt_tokens"))
 
 
 def cost_of_run(directory: Path) -> RunCost:
@@ -548,17 +655,22 @@ def cost_of_run(directory: Path) -> RunCost:
         diverged = None
         for position, head in enumerate(heads[1:], start=1):
             if head != heads[0]:
-                diverged = int(rendered[indexes[position]][0].get("call")
-                               or indexes[position] + 1)
+                diverged = _ordinal(rendered[indexes[position]][0],
+                                    indexes[position] + 1)
                 break
         for index in indexes:
             prefix_for[index] = prefix
+        measured = len(indexes) > 1
         conversations.append(Conversation(
             kind=kind,
-            calls=tuple(int(rendered[index][0].get("call") or index + 1)
+            calls=tuple(_ordinal(rendered[index][0], index + 1)
                         for index in indexes),
-            prefix_chars=prefix, measured=len(indexes) > 1,
-            stable=diverged is None, diverged_at=diverged))
+            prefix_chars=prefix, measured=measured,
+            # `None`, not `True`, where nothing was compared: one call
+            # cannot have held stable, and a JSON reader shown `true`
+            # would read a claim the Markdown correctly declines to make.
+            stable=(diverged is None) if measured else None,
+            diverged_at=diverged))
 
     calls: List[CallCost] = []
     for index, (record, text, parts) in enumerate(rendered):
@@ -570,12 +682,15 @@ def cost_of_run(directory: Path) -> RunCost:
                        for start, end in blocks)
         covered = _merged_length([(0, prefix), *blocks])
         calls.append(CallCost(
-            call=int(record.get("call") or index + 1),
+            call=_ordinal(record, index + 1),
             kind=str(record.get("kind") or ""),
             chars=total, prefix_chars=prefix, block_chars=block_chars,
             block_unpinned_chars=unpinned, rest_chars=total - covered,
             parts=len(parts), prompt_tokens=_prompt_tokens(record),
-            sections=tuple(name for part in parts for name in part.sections)))
+            # Deduped: two block parts in one request would otherwise
+            # report `facts` twice, which reads as two sections.
+            sections=tuple(dict.fromkeys(
+                name for part in parts for name in part.sections))))
 
     return RunCost(run=directory.name, path=str(directory),
                    calls=tuple(calls), conversations=tuple(conversations))
@@ -868,12 +983,17 @@ def _markdown(profile_: ContextProfile) -> str:
             f"**{_thousands(run.peak_chars)}**"
             + ("" if run.slope is None
                else f", growth **{run.slope:+,.0f}** chars/step")
-            + ". *pinned* is what a prefix cache would have kept; *new* is "
-              "what every call paid for regardless. *block* is the compiled "
-              "view's own characters — where it did not change between two "
-              "steps it is inside *pinned* and charged there once, which is "
-              "why `pinned + block-outside-pinned + rest` is the whole "
-              "request and `pinned + block + rest` is not.")
+            + ". All figures are **characters**, not bytes — a non-Latin "
+              "script runs to three times this in UTF-8. *pinned* is what a "
+              "prefix cache could have kept; *new* is what every call paid "
+              "for regardless. *block* is the compiled view's own "
+              "characters; it is charged to *pinned* instead, once, in the "
+              "case where a view did not change between two steps and the "
+              "prefix therefore covered it — which is why `pinned + "
+              "block-outside-pinned + rest` is the whole request and "
+              "`pinned + block + rest` is not. The runtime appends the view "
+              "after the transcript, so in a recording made by this release "
+              "that case does not arise and *block* is entirely *new*.")
         lines.append("")
 
     refused = [run for run in profile_.runs if run.refused]

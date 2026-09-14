@@ -154,6 +154,62 @@ class TestTheBlockIsRecognisedExactly:
         assert len(found) == 1
         assert found[0].sections == ("facts",)
 
+    def test_a_tool_result_that_echoes_the_view_back_is_not_the_view(self):
+        """A title is a string and a string can front anything. A tool that
+        returns the block verbatim — a platform rendering it, a receipt
+        quoting it — begins with the exact same words, and charging it to
+        the view inflates the two figures an arm is read by. The runtime
+        injects the block one way only, under `BLOCK_ROLE`."""
+        block = view_block()
+        _text, parts = render_request(
+            request(("system", "S"), ("user", "go"), ("tool", block),
+                    ("assistant", block)))
+        assert is_block(block)                  # the text DOES begin with it
+        assert [part.label for part in parts if part.block] == []
+
+    def test_the_same_text_under_the_injected_role_is_the_view(self):
+        """The other side of the same fact, so the guard cannot be read as
+        'blocks are never found'."""
+        block = view_block()
+        _text, parts = render_request(
+            request(("system", "S"), (mod.BLOCK_ROLE, block)))
+        assert [part.label for part in parts if part.block] == [mod.BLOCK_ROLE]
+
+    def test_an_echoed_view_costs_the_call_nothing_in_block_chars(self,
+                                                                  tmp_path):
+        """End to end, because this is where the inflation would show: the
+        two figures the owner reads are `block chars/call` and the share."""
+        block = view_block()
+        directory = record(tmp_path, [
+            ("mission", request(("system", "S" * 80), ("user", "go"))),
+            ("mission", request(("system", "S" * 80), ("user", "go"),
+                                ("tool", block))),
+        ])
+        cost = cost_of_run(directory)
+        assert cost.block_chars == 0
+        assert cost.block_share == 0.0
+        assert all(call.sections == () for call in cost.calls)
+
+    def test_a_heading_quoted_inside_a_line_is_not_a_section(self):
+        """Sections are whole lines, which is how the compiler renders one.
+        A fact line that mentions a heading mentions a heading."""
+        from core.cognition.compile import CONFLICTS_HEADING, FACTS_HEADING
+
+        block = view_block()
+        assert sections_in(block) == ("facts",)
+        assert sections_in(
+            f"{block}\njob#2 · note = \"see {CONFLICTS_HEADING}\"") == (
+                "facts",)
+        assert sections_in(f"x\n{FACTS_HEADING}\ny") == ("facts",)
+
+    def test_two_block_parts_do_not_report_a_section_twice(self, tmp_path):
+        block = view_block()
+        directory = record(tmp_path, [
+            ("mission", request(("system", "S" * 80), (mod.BLOCK_ROLE, block),
+                                (mod.BLOCK_ROLE, block))),
+        ])
+        assert cost_of_run(directory).calls[0].sections == ("facts",)
+
 
 # ── the pinned prefix ────────────────────────────────────────────────────────
 
@@ -236,6 +292,37 @@ class TestThePinnedPrefixIsComputed:
         assert cost.conversations[0].measured is False
         assert cost.calls[0].prefix_chars == 0
         assert "no prefix measurable" in mod._prefix_line(cost)
+
+    def test_nothing_compared_is_neither_stable_nor_unstable(self,
+                                                             tmp_path):
+        """A run of one call has not got a stable prefix and has not got
+        an unstable one. `true` in the JSON would be a caching claim the
+        Markdown, which says *no prefix measurable*, declines to make."""
+        directory = record(tmp_path, [
+            ("mission", request(("system", "S" * 40), ("user", "go"))),
+        ])
+        cost = cost_of_run(directory)
+        assert cost.conversations[0].stable is None
+        assert cost.stable is None
+        assert cost.as_dict()["stable"] is None
+        assert mod.profile(directory).as_dict()["runs"][0]["stable"] is None
+
+    def test_a_measured_conversation_beside_an_unmeasured_one_still_answers(
+            self, tmp_path):
+        """The `None` is about *nothing compared*, not about *anything
+        unmeasured being present* — a swarm's one-off router call must not
+        erase the mission conversation's finding."""
+        directory = record(tmp_path, [
+            ("plain", request(("system", "ROUTER"), ("user", "pick"))),
+            ("mission", request(("system", "A" * 40), ("user", "go"))),
+            ("mission", request(("system", "A" * 40), ("user", "go"),
+                                ("assistant", "a"))),
+        ])
+        cost = cost_of_run(directory)
+        kinds = {c.kind: c for c in cost.conversations}
+        assert kinds["plain"].stable is None
+        assert kinds["mission"].stable is True
+        assert cost.stable is True
 
 
 # ── the attribution ──────────────────────────────────────────────────────────
@@ -398,6 +485,55 @@ class TestNothingRecordedIsRefusedByName:
         cost = cost_of_run(tmp_path)
         assert not cost.measured
         assert "no readable call" in cost.refused
+
+    def test_a_call_ordinal_that_is_not_a_number_never_raises(self,
+                                                              tmp_path):
+        """The line a reader of somebody else's log must survive.
+
+        `Ablation.context` reaches `cost_of_run` from BOTH `as_dict` and
+        the Markdown, so a `ValueError` out of one corrupt line in one
+        arm's recording would take down the whole report — after every
+        arm had been spawned, which is hours. Every read of `call` goes
+        through `_ordinal`, and a line that will not give a number keeps
+        its position in the file instead.
+        """
+        lines = [
+            {"call": "two", "kind": "mission",
+             "request": {"messages": [{"role": "user", "content": "a"}]}},
+            {"call": [1], "kind": "mission",
+             "request": {"messages": [{"role": "user", "content": "bb"}]}},
+            {"call": {"a": 1}, "kind": "mission",
+             "request": {"messages": [{"role": "user", "content": "ccc"}]}},
+            {"kind": "mission",
+             "request": {"messages": [{"role": "user", "content": "dddd"}]}},
+        ]
+        (tmp_path / MODEL_LOG).write_text(
+            "\n".join(json.dumps(line) for line in lines) + "\n",
+            encoding="utf-8")
+        cost = cost_of_run(tmp_path)
+        assert [call.call for call in cost.calls] == [1, 2, 3, 4]
+        assert [call.chars for call in cost.calls] == [1, 2, 3, 4]
+        assert cost.as_dict()["calls"][0]["call"] == 1
+        assert mod.profile(tmp_path).to_markdown()
+
+    def test_a_usage_that_is_not_a_number_is_absent_and_not_fatal(self,
+                                                                 tmp_path):
+        """The same guard, on the other number read off a log line — NaN
+        included, which `int()` raises on and JSON will happily carry."""
+        line = {"call": 1, "kind": "mission",
+                "request": {"messages": [{"role": "user", "content": "a"}]},
+                "reply": {"usage": {"prompt_tokens": float("nan")}}}
+        (tmp_path / MODEL_LOG).write_text(json.dumps(line) + "\n",
+                                          encoding="utf-8")
+        assert cost_of_run(tmp_path).calls[0].prompt_tokens is None
+
+    def test_a_boolean_ordinal_is_not_read_as_the_first_call(self):
+        """`True` is an `int` in Python, and a `call: true` silently read
+        as 1 would collide with the real first call rather than show."""
+        assert mod._finite_int(True) is None
+        assert mod._ordinal({"call": True}, 7) == 7
+        assert mod._ordinal({"call": 3}, 7) == 3
+        assert mod._ordinal({"call": float("inf")}, 7) == 7
 
     def test_a_torn_last_line_costs_only_that_line(self, tmp_path):
         good = json.dumps({

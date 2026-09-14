@@ -840,13 +840,18 @@ def _markdown(ablation: Ablation) -> str:
             "ate.")
         lines.append("")
         lines.append(
-            "*chars/call* is the mean size of the requests this arm's runs "
-            "actually sent, and *view share* the compiled view's part of "
-            "them, out of the recordings themselves — `python -m core.eval "
-            "context --runs <the directory below>` prints the whole profile, "
-            "including the growth curve and whether the pinned prefix held. "
-            "`—` is an arm whose runs recorded no model log, which is not "
-            "the same fact as a cheap one.")
+            "*chars/call* is the mean size (in characters, not bytes) of the "
+            "requests this arm's runs actually sent, and *view share* the "
+            "compiled view's **raw** part of them — the view against this "
+            "arm's own requests, which is not the same quantity as the "
+            "marginal `Δ chars/call` below and can be larger than it: an "
+            "arm whose block replaces transcript the baseline was carrying "
+            "shows a share without having cost that much. Both come out of "
+            "the recordings themselves — `python -m core.eval context --runs "
+            "<the directory below>` prints the whole profile, including the "
+            "growth curve and whether the pinned prefix held. `—` is an arm "
+            "whose runs recorded no model log, which is not the same fact as "
+            "a cheap one.")
         lines.append("")
         for result in ablation.arms:
             environment = result.environment(half) if result.ran else []

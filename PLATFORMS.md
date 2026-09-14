@@ -1805,12 +1805,14 @@ python -m core.eval context  --runs DIR
   and it reads
   the `model.jsonl` the recorder wrote and reports, per model call, how large
   the request was, how much of it was the **pinned prefix** (the longest
-  common prefix of that conversation's requests, which is what a provider's
-  cache keys on), how much was the compiled view, and how much was
+  common prefix of that conversation's requests — the region a provider's
+  cache can key on), how much was the compiled view, and how much was
   everything else; per run it reports the growth curve, the peak, and
-  **whether the pinned head stayed byte-stable** — the regression a per-step
-  rewrite of the system prompt causes and nothing else catches. Characters
-  always; tokens where your provider reported `usage`, and a report over a
+  **whether the pinned head stayed byte-stable** — an identity check on the
+  system-side head, which catches the regression a per-step rewrite of the
+  system prompt causes and nothing else does. Sizes are **characters, not
+  bytes** (a non-Latin script runs to three times its character count in
+  UTF-8); tokens where your provider reported `usage`, and a report over a
   recording without one says *characters only* rather than dividing by four.
   `ablation` prints its figures beside each arm's pass rate, so an arm that
   added context and no capability is flagged in the same table that scored
