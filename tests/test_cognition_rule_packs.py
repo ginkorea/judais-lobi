@@ -374,6 +374,94 @@ class TestAResumeReplaysThePackAndNeverLoadsItTwice:
             range(1, len(events) + 1))
 
 
+class TestAResumedRunSaysWhichClausesCameBack:
+    """``--resume`` reuses the recorded run's id, so the second process
+    opens the same directory and replays the pack out of the log.
+
+    Which means the console has a hole exactly where it matters: the run
+    is reasoning under two rules and a goal, nothing loaded them this
+    time, and a line that reported *what this process loaded* would report
+    nothing. An operator reconstructing a killed run is the one reader who
+    most needs to know the frontier is there.
+    """
+
+    VIEW = json.dumps({"tool": "mcp.governed_view",
+                       "arguments": {"run_id": "asset.5f21",
+                                     "section": "totals"}})
+
+    def _script(self, agent, *replies, then_die=False):
+        queue = list(replies)
+
+        def _chat(**kw):
+            agent.seeds.append([dict(m) for m in kw["messages"]])
+            if queue:
+                return queue.pop(0)
+            if then_die:
+                raise RuntimeError("the model server went away")
+            return json.dumps({"answer": "The view holds 12481 records, "
+                                         "asset.5f21."})
+
+        agent.client.chat.side_effect = _chat
+
+    def _run(self, MockClass, tmp_path, *extra):
+        argv = ["test", "what exists?", "--mission",
+                "--mcp-stdio", f"{sys.executable} {MISSION_STUB}",
+                "--skill", write_packed_skill(tmp_path / "skill"), *extra]
+        with patch("sys.argv", argv):
+            from core.cli import _main
+            _main(MockClass)
+
+    @pytest.fixture
+    def resumed(self, elf, tmp_path, capsys):  # noqa: F811
+        """One call, the endpoint dies, the run is picked back up."""
+        MockClass, agent = elf
+        self._script(agent, self.VIEW, then_die=True)
+        with pytest.raises(SystemExit):
+            self._run(MockClass, tmp_path, "--cognition")
+        store = RunStore(tmp_path / "runs")
+        listed = store.list()
+        assert len(listed) == 1, [run.run_id for run in listed]
+        run_id = listed[0].run_id
+        capsys.readouterr()
+
+        self._script(agent, self.VIEW)
+        argv = ["test", "--mission", "--resume", run_id,
+                "--mcp-stdio", f"{sys.executable} {MISSION_STUB}",
+                "--skill", write_packed_skill(tmp_path / "skill"),
+                "--cognition"]
+        with patch("sys.argv", argv):
+            from core.cli import _main
+            _main(MockClass)
+        return capsys.readouterr().out, store.directory(run_id) / REASONING_LOG
+
+    def test_the_console_says_what_came_back(self, resumed):
+        out, _path = resumed
+        assert "2 rule(s), 1 goal(s) replayed from the log" in out
+
+    def test_it_does_not_claim_to_have_loaded_them(self, resumed):
+        """The distinction the line exists to keep: a replayed pack is not
+        a loaded one, and a run that said it loaded would be a run whose
+        log should hold a second copy."""
+        out, _path = resumed
+        assert "loaded before the first receipt" not in out
+
+    def test_and_the_log_holds_one_copy_of_the_pack(self, resumed):
+        _out, path = resumed
+        assert ops(path).count("add_rule") == 2
+        assert ops(path).count("add_goal") == 1
+
+    def test_the_resumed_run_is_still_deriving(self, resumed):
+        """The line is only worth anything if it is true — and the second
+        stretch's receipt derives exactly as the first one's did, off
+        clauses this process never loaded."""
+        _out, path = resumed
+        state = replay_reasoning(path)
+        assert sorted((p.entity, p.field, p.value) for p in
+                      state.propositions(status=PropositionStatus.DERIVED)) \
+            == [("mcp.governed_view#r1", "sizeable", 12481),
+                ("mcp.governed_view#r2", "sizeable", 12481)]
+
+
 # ── failure isolation ────────────────────────────────────────────────────────
 
 

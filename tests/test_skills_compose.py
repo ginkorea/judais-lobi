@@ -867,17 +867,61 @@ class TestTheRulePackMerges:
         if key != "rules":
             assert key not in composed.cognition
 
-    def test_the_merged_pack_is_validated_as_a_written_one_is(self, tmp_path):
-        """A merge can produce a pack no skill wrote. The door is where a
-        mission finds that out, not the first derive."""
+    def test_a_block_that_does_not_stand_up_alone_names_its_own_skill(self):
+        """Hand-built, because a manifest off disk never gets this far —
+        `load_skill` refuses it at the file. A platform composing in
+        process has no such door, and the refusal has to say WHICH skill
+        to open: a fault reported under the primary's name sends an
+        operator to the wrong file, which is the argument `describe()`
+        was written for."""
+        good = SkillManifest(name="first", allowed_tools=("alpha",),
+                             prompt="a", cognition={"rules": [CONTROLS]})
+        bad = SkillManifest(name="second", allowed_tools=("alpha",),
+                            prompt="b", cognition={"rules": [
+                                {"name": "loose",
+                                 "head": ["?a", "owns", "?x"],
+                                 "body": [["?a", "paid", True]]}]})
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([good, bad])
+        message = str(exc.value)
+        assert "'second'" in message
+        assert "?x" in message
+
+    def test_the_merged_block_carries_only_what_stood_up(self):
+        """And the composition goes on being computed, so the refusal
+        names every problem rather than the first — the module's idiom,
+        and the reason a merge collects rather than raises."""
+        good = SkillManifest(name="first", allowed_tools=("alpha",),
+                             prompt="a", cognition={"rules": [CONTROLS]})
+        bad = SkillManifest(name="second", allowed_tools=("alpha",),
+                            prompt="b", cognition={"cardinality": "nope"})
+        worse = SkillManifest(name="third", allowed_tools=("alpha",),
+                              prompt="c", cognition={"goals": [{"name": "g"}]})
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([good, bad, worse])
+        message = str(exc.value)
+        assert "'second'" in message and "'third'" in message
+
+    def test_the_problems_in_one_pack_are_one_per_line(self):
+        """A separator the messages never use. Several of them carry a
+        semicolon of their own — the kernel's `'two' is not a cardinality;
+        'one' or 'many'` among them — so a list joined on `"; "` is three
+        faults arriving as six half-sentences."""
+        bad = SkillManifest(name="second", allowed_tools=("alpha",),
+                            prompt="b", cognition={
+                                "nonsense": 1, "cardinality": {"u": "two"}})
         with pytest.raises(SkillManifestError) as exc:
             compose_manifests([
-                skill(tmp_path, "first", cognition={"rules": [CONTROLS]}),
-                skill(tmp_path, "second", cognition={"rules": [
-                    {"name": "loose", "head": ["?a", "owns", "?x"],
-                     "body": [["?a", "paid", True]]}]}),
+                SkillManifest(name="first", allowed_tools=("alpha",),
+                              prompt="a", cognition={"rules": [CONTROLS]}),
+                bad,
             ])
-        assert "?x" in str(exc.value)
+        lines = [line.strip() for line in str(exc.value).splitlines()
+                 if line.strip().startswith("- ")]
+        assert any(line.startswith("- unknown key(s): nonsense")
+                   for line in lines), lines
+        assert any(line.startswith("- `cardinality: u` is 'two'")
+                   for line in lines), lines
 
     def test_the_composed_pack_loads_into_a_kernel(self, tmp_path):
         """The end of the merge is a pack, and a pack's whole purpose is

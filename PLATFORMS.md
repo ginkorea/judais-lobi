@@ -1202,7 +1202,10 @@ cognition:
   message.
 * **A resume replays the pack out of the log and never loads it twice.** A
   second load would mint a second rule id for each clause: one conclusion with
-  two derivations, and every obligation counted twice.
+  two derivations, and every obligation counted twice. `--resume` reuses the
+  recorded run's id, so the second process finds the log and picks the clauses
+  back up; the console says how many came back (`N rule(s), M goal(s) replayed
+  from the log`) rather than reporting what it loaded, which is nothing.
 
 **What a v1 rule can express, honestly.** An entity is `"{tool}#{seq}"` — one
 per *receipt* — so a rule joins fields **of the same receipt** for free:

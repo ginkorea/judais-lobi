@@ -1810,6 +1810,27 @@ def _mission(elf, args, name, style):
                         f"this run — {REASONING_LOG} says why. The mission "
                         f"runs exactly as it would have",
                         style="yellow")
+                else:
+                    # THE RESUME. `--resume` reuses the recorded run's id, so
+                    # the second process opens the SAME directory, finds the
+                    # log and replays it — the pack included, which is why
+                    # `open_shadow` does not load one here. `shadow.pack` is
+                    # therefore empty on a path where the rules are very much
+                    # alive, and reading it would say nothing at the one
+                    # moment an operator reconstructing a run needs to be
+                    # told the frontier exists. So the count comes off the
+                    # STATE, which is where the replayed clauses are.
+                    rules = len(shadow.state.rules())
+                    goals = len(shadow.state.goals())
+                    if rules or goals:
+                        console.print(
+                            f"🧾 cognition: {rules} rule(s), {goals} goal(s) "
+                            f"replayed from the log — this run picks up the "
+                            f"pack the process before it loaded, and derives "
+                            f"and owes under those clauses. Nothing was "
+                            f"loaded again: a second copy would conclude "
+                            f"everything twice",
+                            style=style)
                 if compiling:
                     console.print(
                         "🧠 compiled context: each step's model input "

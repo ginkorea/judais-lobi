@@ -261,7 +261,8 @@ __all__ = [
     "KERNEL_SCHEMA_KEY", "KERNEL_KEY", "KERNEL_EVENTS_KEY",
     "KERNEL_COUNT_KEY", "NOTE_KEY", "RECEIPT_KIND", "RESUMED_NOTE",
     "STOPPED_NOTE", "UNCOMPILED_NOTE", "UNLOADED_NOTE",
-    "COGNITION_KEYS", "GOAL_KEYS", "PACK_AUTHORITY", "RULE_KEYS",
+    "COGNITION_KEYS", "GOAL_KEYS", "PACK_AUTHORITY", "PROBLEM_SEP",
+    "RULE_KEYS",
     "PackGoal", "PackRule", "RulePack",
     "ShadowCognition", "header_record", "observations_of", "open_shadow",
     "read_reasoning", "replay_reasoning",
@@ -329,6 +330,24 @@ RULE_KEYS: Tuple[str, ...] = ("name", "head", "body")
 
 #: What one entry of ``goals:`` may say.
 GOAL_KEYS: Tuple[str, ...] = ("name", "pattern")
+
+#: How :meth:`RulePack.from_mapping` lays out the problems in one refusal,
+#: and it is **not** ``"; "``.
+#:
+#: Several of the messages carry a semicolon of their own — the kernel's own
+#: ``"'two' is not a cardinality; 'one' or 'many'"`` among them — so a list
+#: joined on a semicolon is a list nobody can take apart again: three faults
+#: arrive looking like six half-sentences, and an author fixing a file has to
+#: guess where each one ends.  A newline and a dash appear in none of them,
+#: which is what makes this a separator rather than a decoration.
+#:
+#: Indented one level deeper than the refusal-list idiom
+#: (:class:`~core.runtime.skills.SkillManifestError`'s ``"\n  - "``),
+#: because that is where these lines land: a manifest refusal is a list, and
+#: a pack's faults are a list *inside one of its items*.  Every caller of
+#: this door ends its own sentence with a colon and lets the separator do
+#: the rest.
+PROBLEM_SEP = "\n    - "
 
 #: The authority a pack's rules end up standing on, and the whole argument
 #: for the two-step load below.
@@ -429,6 +448,16 @@ class RulePack:
         :meth:`~core.runtime.grounding.GroundingConfig.from_mapping` raises
         for the same reason, so ``skills.py`` refuses both blocks through
         one ``except``.
+
+        **One problem per line**, on :data:`PROBLEM_SEP`, and that is not
+        cosmetic: several of the messages below contain a semicolon of
+        their own (``"{cardinality!r} is not a cardinality; 'one' or
+        'many'"`` comes straight out of the kernel), so a list joined on
+        ``"; "`` is a list a reader cannot take apart again — three faults
+        arrive looking like six half-sentences. The newline-dash is the
+        idiom every other refusing door in the harness already writes,
+        including :meth:`~core.runtime.grounding.GroundingConfig
+        .from_mapping` next door.
         """
         problems: List[str] = []
         if raw is None:
@@ -464,7 +493,7 @@ class RulePack:
                 problems.append(f"the kernel refuses this pack: {exc}")
 
         if problems:
-            raise ValueError("; ".join(problems))
+            raise ValueError(PROBLEM_SEP + PROBLEM_SEP.join(problems))
         return pack
 
     def load_into(self, state: CognitiveState) -> Tuple[int, int, int]:

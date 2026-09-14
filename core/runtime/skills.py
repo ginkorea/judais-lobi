@@ -456,7 +456,13 @@ class SkillManifest:
             try:
                 RulePack.from_mapping(cognition)
             except ValueError as exc:
-                problems.append(f"`cognition:` {exc}")
+                # No space before `{exc}`: the pack's own faults arrive as
+                # their own indented lines (`RulePack.PROBLEM_SEP`), nested
+                # under this one item of the manifest's list. A separator
+                # that a message can also contain is a list a reader cannot
+                # take apart, which is what "; " was.
+                problems.append(f"`cognition:` is not a usable rule "
+                                f"pack:{exc}")
 
         # Refused rather than coerced. `sdk_import: [acme]` would render as
         # "import ['acme']" in a sentence handed to a model, and the model
@@ -1314,7 +1320,7 @@ def _merge_cognition(
         except ValueError as exc:
             problems.append(
                 f"skill {manifest.name!r} has a `cognition:` block that is "
-                f"not usable on its own, so there is nothing to merge: {exc}"
+                f"not usable on its own, so there is nothing to merge:{exc}"
             )
             continue
         usable.append(manifest)
@@ -1371,16 +1377,35 @@ def _merge_cognition(
         if _declares(blocks, key):
             merged[key] = [entry for entry, _content in entries.values()]
 
-    # Validated HERE, for `_merge_grounding`'s reason: a merge can produce a
-    # pack no skill wrote — one skill's rule concluding about a field
-    # another skill declared single-valued — and the door is where a mission
-    # finds that out.
+    # Validated HERE, for `_merge_grounding`'s reason: the merged mapping is
+    # a block no skill wrote, and the door is where a mission finds out that
+    # it does not stand up. What it can find is what the reader and the dry
+    # run find — a merged `rules` list the reader will not take, a clause or
+    # a cardinality the kernel refuses — asked of the COMPOSITION rather
+    # than of any one input.
+    #
+    # And what it finds today is nothing, which is worth writing down rather
+    # than leaving to be discovered: every rule above either carries a value
+    # out of a block that already stood up on its own, or records a problem
+    # and keeps the first, so the merged mapping is made of validated parts.
+    # The guard is kept because a merge rule added later could compose
+    # content no skill wrote, and it costs one dry run over three lists.
+    #
+    # It must not be mistaken for a check on cross-skill DERIVATION. One
+    # skill's rule concluding a value that collides with another skill's
+    # `cardinality: one` composes cleanly here and should: nothing derives
+    # at load — there are no propositions yet — so there is nothing to
+    # collide with. That belongs to the run, and it is the owner's rule
+    # that it does: a contradiction is a thing to SURFACE, so the store
+    # records both sides, contests the claim and shows it in the view. A
+    # door that refused the composition would be refusing it over an
+    # argument the receipts may never make.
     try:
         RulePack.from_mapping(merged)
     except ValueError as exc:
         problems.append(
             f"the merged `cognition:` block is not one the kernel would "
-            f"take: {exc}"
+            f"take:{exc}"
         )
     return merged
 
