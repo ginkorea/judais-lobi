@@ -335,11 +335,6 @@ class _Cut:
     conflicts_out: int = 0
     hypotheses_out: int = 0
 
-    @property
-    def lost(self) -> bool:
-        return bool(self.facts_out or self.conflicts_out
-                    or self.hypotheses_out)
-
 
 def _prefix(lines: Sequence[str]) -> List[int]:
     """``[0, len(l0), len(l0)+len(l1), …]`` — the cost of keeping a prefix."""
@@ -367,8 +362,8 @@ def _cut_at(dropped: int, totals: Sequence[int]) -> _Cut:
                 conflicts_out=out_clashes, hypotheses_out=out_guesses)
 
 
-def _size(cut: _Cut, prefixes: Sequence[Sequence[int]], head: int,
-          omission: int) -> int:
+def _size(cut: _Cut, prefixes: Sequence[Sequence[int]],
+          receipts: Sequence[int]) -> int:
     """What :func:`_render` of *cut* will measure, without rendering it.
 
     The one thing in this module that knows the shape of the block without
@@ -378,15 +373,34 @@ def _size(cut: _Cut, prefixes: Sequence[Sequence[int]], head: int,
     that joins it, a section costs its heading and a blank line **only if
     it keeps a line**, and the omission sentence costs its own two.
 
-    It is a second reader of :func:`_render`'s shape, which is a thing this
-    package otherwise refuses to have — so it is never *trusted*: the cut
-    it chooses is rendered and **measured** before it is returned, and a
-    disagreement between the two yields no block rather than one over its
-    own cap.  ``test_the_cut_is_tight`` is the other half of that guard: it
-    says the cut is not merely safe but the largest one that fits, which is
-    the half a conservative bug would pass.
+    **Exact, and every part of it built by the renderer's own owner.**  The
+    header and the sentence are the two pieces whose length depends on the
+    cut being measured, and both are asked for *at this cut* — through
+    :func:`_head` and :func:`_omission`, which is what :func:`_render`
+    calls — rather than reserved at some upper bound.  The first version
+    reserved, and the review measured what that cost: 44 of 1,941 (state,
+    budget) pairs kept one line fewer than a renderer alone would have,
+    and two produced no block where one fits.  A reserve cannot be
+    iterated out of, either, because the reserve is computed from a cut
+    that was itself chosen under it — the fixed point is the conservative
+    answer.  Exact has no such corner: this function computes, part for
+    part, the number :func:`_render` would produce, so the cut it chooses
+    is the one brute force chooses (``test_the_cut_is_what_brute_force_
+    would_have_chosen`` is that claim, against a renderer and no
+    arithmetic at all).
+
+    *receipts* is the running count of distinct receipts under the first
+    *n* fact lines, so the header's figure costs a lookup rather than a
+    re-union per candidate.
+
+    It remains a second reader of :func:`_render`'s shape, which is a thing
+    this package otherwise refuses to have — so it is never *trusted*: the
+    cut it chooses is rendered and **measured** before it is returned, and
+    a disagreement between the two yields no block rather than one over its
+    own cap.
     """
-    total, parts = head, 1
+    total, parts = len(_head(receipts[cut.facts], cut.facts,
+                             cut.conflicts)), 1
     for heading, kept, prefix in ((FACTS_HEADING, cut.facts, prefixes[0]),
                                   (CONFLICTS_HEADING, cut.conflicts,
                                    prefixes[1]),
@@ -396,8 +410,10 @@ def _size(cut: _Cut, prefixes: Sequence[Sequence[int]], head: int,
             continue
         total += len(heading) + prefix[kept]
         parts += 2 + kept
-    if cut.lost:
-        total += omission
+    sentence = _omission(cut.facts_out, cut.conflicts_out,
+                         cut.hypotheses_out)
+    if sentence:
+        total += len(sentence)
         parts += 2
     return total + parts - 1
 
@@ -440,57 +456,38 @@ def _floor(budget: int, totals: Sequence[int],
 
 
 def _choose(budget: int, totals: Sequence[int],
-            prefixes: Sequence[Sequence[int]], head: int,
-            omission: int) -> Optional[_Cut]:
+            prefixes: Sequence[Sequence[int]],
+            receipts: Sequence[int]) -> Optional[_Cut]:
     """The fewest lines to drop so that the block fits, or ``None``.
 
-    A scan over the *number* dropped, not over renderings: every candidate
-    costs a handful of additions against the prefix sums, so a store with
-    ten thousand live facts is arithmetic rather than ten thousand joins of
-    ten thousand strings.  Bounded by construction — there are finitely
-    many lines and each step drops one more — which is the property a loop
-    inside a mission step has to have.
+    **Brute force, computed instead of rendered.**  Every cut in the
+    documented drop order, in order, and the first one that fits — which
+    is the definition, and is what a renderer alone would find.  What this
+    changes is only the cost: a candidate is a handful of additions and two
+    short strings against the prefix sums, so a store with ten thousand
+    live facts is arithmetic rather than ten thousand joins of ten thousand
+    strings.  Bounded by construction — there are finitely many lines and
+    each step drops one more — which is the property a loop inside a
+    mission step has to have.
 
-    The scan is **exact** and starts at :func:`_floor`, which is the first
-    candidate that is not already impossible.  It is not itself a binary
-    search because :func:`_size` is not monotone at the two places that
-    matter: the omission sentence appears when the first line goes, and a
-    section's heading disappears when its last one does.  Searching a
-    function that steps up as well as down is how a block ends up one line
-    over the cap it was obeying.
-
-    *head* and *omission* are **upper bounds** on those two variable-length
-    pieces rather than their exact lengths, because both depend on the
-    counts the scan is choosing.  Reserving the widest they could be makes
-    the answer safe; the caller then spends its second render recovering
-    what that reservation over-reserved.
+    The scan starts at :func:`_floor`, which is the first candidate that is
+    not already impossible, and it is not itself a binary search because
+    :func:`_size` is not monotone at the two places that matter: the
+    omission sentence appears when the first line goes, and a section's
+    heading disappears when its last one does.  Searching a function that
+    steps up as well as down is how a block ends up one line over the cap
+    it was obeying.
     """
     lines = sum(totals)
     nothing = _cut_at(0, totals)
-    if _size(nothing, prefixes, head, omission) <= budget:
+    if _size(nothing, prefixes, receipts) <= budget:
         return nothing
     for dropped in range(max(1, _floor(budget, totals, prefixes)),
                          lines + 1):
         cut = _cut_at(dropped, totals)
-        if _size(cut, prefixes, head, omission) <= budget:
+        if _size(cut, prefixes, receipts) <= budget:
             return cut
     return None
-
-
-def _widest_head(totals: Sequence[int]) -> int:
-    """The longest the header line can be for any cut of these totals.
-
-    Every count the header states is between zero and its total, and a
-    number's width grows with its value — so the extremes bound the middle.
-    Zero is in the set as well as the total because ``0 facts`` is *longer*
-    than ``1 fact``: the plural is the one place where a smaller number
-    takes more room.
-    """
-    facts, conflicts, _hypotheses = totals
-    return max(len(_head(receipts, kept_facts, kept_clashes))
-               for receipts in (0, sum(totals))
-               for kept_facts in (0, facts)
-               for kept_clashes in (0, conflicts))
 
 
 def compile_view(state: CognitiveState, *,
@@ -500,17 +497,37 @@ def compile_view(state: CognitiveState, *,
     Deterministic: the same state compiles to the same bytes, every time,
     in any process.  The only inputs are the store and the budget.
 
-    **Two renders, whatever the store holds.**  The cut is chosen
-    arithmetically (:func:`_choose`, over prefix sums) and rendered twice:
-    once under upper bounds for the header and the omission sentence, whose
-    lengths depend on the very counts being chosen, and once more with the
-    lengths that first pass actually produced — which gives back the room
-    the upper bound reserved and did not need.  The second is used only if
-    it **measures** within the budget, so the arithmetic is checked against
-    the renderer on every call rather than trusted.  This is the shape the
-    review asked for: the previous version re-rendered the whole block once
-    per dropped line, which is quadratic against a store that only grows —
-    482 ms at four thousand live facts, on the model-call path.
+    **One render, whatever the store holds.**  The cut is chosen
+    arithmetically — :func:`_choose` walks the same candidates a renderer
+    would, measuring each with :func:`_size` instead of building it — and
+    only the chosen one is rendered.  The rendering is then **measured**
+    against the budget before it is returned, so the arithmetic is checked
+    against the renderer on every single call rather than trusted.
+
+    The original re-rendered the whole block once per dropped line, which
+    is quadratic against a store that only grows: 482 ms at four thousand
+    live facts, on the model-call path.  Its first replacement rendered a
+    fixed three times and reserved upper bounds for the header and the
+    omission sentence, and the review measured what reserving costs — 44 of
+    1,941 (state, budget) pairs kept a line they had room for, two produced
+    no block at all — and reserving cannot be iterated away, because the
+    reserve is derived from a cut that was chosen under it.  So nothing is
+    reserved: :func:`_size` asks :func:`_head` and :func:`_omission` for
+    the cut in hand, which is what :func:`_render` will ask them for.
+
+    **What is O(N) here is the cut, and it is not what this call costs.**
+    Choosing the cut is a walk of prefix sums and a binary search
+    (:func:`_floor`); what dominates is upstream of it and always was —
+    one :meth:`~core.cognition.state.CognitiveState.support` per live
+    claim, each a memoised DAG walk, plus one rendered line per claim.
+    Measured on this tree (median of five, warm): 40 ms at two thousand
+    live facts, **95 ms** at four thousand and **244 ms** at eight —
+    roughly 2.6× for twice the store, which is super-linear in the
+    *grading* and not in the cut.  A block bounded to
+    four thousand characters is therefore *not* bounded in what it costs
+    to produce: the bound is on what the model reads, and the price is
+    paid on what the runtime believes.  Phase 19's measurement is where
+    that number gets watched.
     """
     budget = int(budget_chars)
     live = [prop for prop in state.propositions()
@@ -533,55 +550,39 @@ def compile_view(state: CognitiveState, *,
     # header can count the receipts of the facts it is ABOUT. Counting all
     # of them there would state two numbers over two different populations
     # in one sentence, and the reader has no way to see which.
-    fact_receipts = [tuple(ref.locator
-                           for ref in support[prop.id].evidence_leaves)
-                     for prop in ordered]
     clash_lines = [_conflict_line(state, clash) for clash in open_clashes]
     guess_lines = [f"{_claim(prop)}  [{band(prop.authority)}]"
                    for prop in guesses]
+
+    # How many distinct receipts the first n fact lines rest on, for every
+    # n: the header's figure, at any cut, for a lookup. Built once here
+    # because the scan below asks for it per candidate and a re-union per
+    # candidate is the quadratic shape this whole function stopped having.
+    receipts, seen = [0], set()
+    for prop in ordered:
+        seen.update(ref.locator for ref in support[prop.id].evidence_leaves)
+        receipts.append(len(seen))
 
     totals = (len(fact_lines), len(clash_lines), len(guess_lines))
     prefixes = (_prefix(fact_lines), _prefix(clash_lines),
                 _prefix(guess_lines))
 
-    def receipts_of(kept: int) -> int:
-        return len({locator for refs in fact_receipts[:kept]
-                    for locator in refs})
-
-    def render(cut: _Cut) -> str:
-        return _render(fact_lines[:cut.facts], clash_lines[:cut.conflicts],
-                       guess_lines[:cut.hypotheses], receipts_of(cut.facts),
-                       cut.facts_out, cut.conflicts_out, cut.hypotheses_out)
-
-    first = _choose(budget, totals, prefixes, _widest_head(totals),
-                    len(_omission(*totals)))
-    if first is None:
+    cut = _choose(budget, totals, prefixes, receipts)
+    if cut is None:
         # Not even the header and the sentence saying what went will fit.
         # An empty view, not an over-budget one — a cap that is exceeded to
         # apologise for itself is not a cap.
         return CompiledView()
-    text, cut = render(first), first
-
-    # The second pass, and the only thing it is for: the first reserved the
-    # widest sentence any cut of this store could need, and the cut it made
-    # says which sentence is really wanted. Never a longer one — a pass
-    # that keeps MORE lines drops fewer, and fewer drops cannot make that
-    # sentence grow — so the room given back here is room the block is
-    # entitled to.
-    wider = _choose(budget, totals, prefixes, _widest_head(totals),
-                    len(_omission(first.facts_out, first.conflicts_out,
-                                  first.hypotheses_out)) if first.lost else 0)
-    if wider is not None:
-        second = render(wider)
-        if len(second) <= budget:
-            text, cut = second, wider
+    text = _render(fact_lines[:cut.facts], clash_lines[:cut.conflicts],
+                   guess_lines[:cut.hypotheses], receipts[cut.facts],
+                   cut.facts_out, cut.conflicts_out, cut.hypotheses_out)
     if len(text) > budget:
         # The arithmetic and the renderer disagreed, which is the one thing
         # a second reader of a shape can do wrong. No block, rather than a
         # block over the cap somebody set.
         return CompiledView()
     return CompiledView(
-        text=text, receipts=receipts_of(cut.facts),
+        text=text, receipts=receipts[cut.facts],
         facts=cut.facts, conflicts=cut.conflicts, hypotheses=cut.hypotheses,
         facts_omitted=cut.facts_out, conflicts_omitted=cut.conflicts_out,
         hypotheses_omitted=cut.hypotheses_out,

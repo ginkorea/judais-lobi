@@ -398,24 +398,31 @@ class TestTheWindowStillOwnsWhatFits:
         words. The one they sent stays; the one the runtime put there is
         the one that goes.
         """
-        from core.runtime.run import Run
-
         run = _bare_run(self._shadow(tmp_path))
         messages = [{"role": "system", "content": "you are"},
                     {"role": "user", "content": "go"}]
+        # THE OPERATOR SPEAKS FIRST, and that ordering is the whole test.
+        # A scan that deleted the first message *looking* like a view would
+        # take the runtime's own block by accident if the operator's came
+        # second — the arrangement that tells the two rules apart is the
+        # stale lookalike EARLIER in the list than the live block.
+        theirs = {"role": "user",
+                  "content": f"{TITLE} — no it does not; look again at r2"}
+        messages.append(theirs)
         run._compile_context(messages)
         mine = messages[-1]
-        theirs = {"role": "user",
-                  "content": f"{TITLE} — no it does not, look again"}
-        messages.append(theirs)
+        assert mine is not theirs
 
         run._compile_context(messages)
         # BY IDENTITY, both ways: the two blocks are byte-identical here
         # (the fake shadow answers with one string), which is exactly the
         # case a value comparison cannot tell apart and the case an
         # operator quoting the view back produces.
-        assert any(message is theirs for message in messages)
-        assert all(message is not mine for message in messages)
+        assert any(message is theirs for message in messages), \
+            "the operator's paragraph was deleted as if it were the view"
+        assert all(message is not mine for message in messages), \
+            "the step's own block was left behind"
+        assert messages.index(theirs) < len(messages) - 1
         assert len(blocks_in(messages)) == 2
         assert messages[-1] is run._compiled
 

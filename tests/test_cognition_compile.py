@@ -471,6 +471,69 @@ class TestTheBudgetIsHardAndNeverSilent:
         assert compile_view(wide, budget_chars=80).text == ""
 
 
+#: The shapes the oracle below is run over, as ``(facts, conflicts,
+#: hypotheses)``.  Small on purpose — the oracle renders every cut of every
+#: shape at every budget, and a few hundred pairs settle the question that
+#: a thousand would settle no better.  Each shape reaches a different
+#: branch: nothing to drop but facts; a section that empties; a store whose
+#: conflicts have to outlive its facts.
+_SHAPES = {(12, 0, 0), (20, 0, 4), (8, 2, 3), (30, 1, 0), (5, 3, 5)}
+
+#: The budgets each shape is measured at: a stride across the whole range
+#: from "not even the header" to "everything fits", chosen with a stride
+#: that is not a multiple of a line length so the cuts land unevenly.
+_BUDGETS = tuple(range(120, 1400, 17))
+
+
+def _shaped(shape) -> CognitiveState:
+    """A store of exactly *shape*, one receipt per fact.
+
+    One receipt per fact is what lets the oracle know the header's receipt
+    count without re-deriving it: it is the number of facts shown.  The
+    conflicts are model-against-receipt disagreements, which is the kind a
+    shadow run actually produces.
+    """
+    facts, conflicts, hypotheses = shape
+    state = CognitiveState()
+    state.declare_field("units", "one")
+    for index in range(facts):
+        observe(state, f"mcp.ledger_entry#r{index}", "units", index)
+    for index in range(conflicts):
+        guess(state, f"mcp.ledger_entry#r{index}", "units", 900 + index)
+    for index in range(hypotheses):
+        guess(state, f"mcp.guess#g{index}", "route", f"road-{index}")
+    return state
+
+
+def _brute_force(state: CognitiveState, budget: int) -> str:
+    """What a renderer alone would choose: the first cut in order that fits.
+
+    No arithmetic, no prefix sums, no reserved lengths — every cut in the
+    documented drop order, rendered through the production renderer, and
+    the first one that measures inside the budget.  That is the definition
+    :func:`~core.cognition.compile.compile_view`'s size model is an
+    optimisation of, so it is the thing the optimisation has to agree with.
+    """
+    whole = compile_view(state, budget_chars=1_000_000)
+    facts = section(whole, FACTS_HEADING) if whole.facts else []
+    clashes = section(whole, CONFLICTS_HEADING) if whole.conflicts else []
+    guesses = section(whole, HYPOTHESES_HEADING) if whole.hypotheses else []
+    totals = (len(facts), len(clashes), len(guesses))
+    for dropped in range(sum(totals) + 1):
+        out_guesses = min(dropped, totals[2])
+        out_facts = min(dropped - out_guesses, totals[0])
+        out_clashes = min(dropped - out_guesses - out_facts, totals[1])
+        kept = (totals[0] - out_facts, totals[1] - out_clashes,
+                totals[2] - out_guesses)
+        text = mod._render(facts[:kept[0]], clashes[:kept[1]],
+                           guesses[:kept[2]],
+                           # one receipt per fact — see `_shaped`
+                           kept[0], out_facts, out_clashes, out_guesses)
+        if len(text) <= budget:
+            return text
+    return ""
+
+
 class TestTheCutIsArithmeticAndNotRepeatedRendering:
     """The review's M1, pinned as a call count rather than as a stopwatch.
 
@@ -497,17 +560,17 @@ class TestTheCutIsArithmeticAndNotRepeatedRendering:
         return calls
 
     @pytest.mark.parametrize("facts", [1, 10, 100, 1000])
-    def test_two_renders_whatever_the_store_holds(self, monkeypatch, facts):
+    def test_one_render_whatever_the_store_holds(self, monkeypatch, facts):
         state = CognitiveState()
         for index in range(facts):
             observe(state, f"t#r{index}", "units", index)
         calls = self._spy(monkeypatch)
         assert compile_view(state).text
-        assert len(calls) == 2, len(calls)
+        assert len(calls) == 1, len(calls)
 
     @pytest.mark.parametrize("facts", [10, 100, 1000])
-    def test_two_renders_when_the_budget_bites_as_well(self, monkeypatch,
-                                                       facts):
+    def test_one_render_when_the_budget_bites_as_well(self, monkeypatch,
+                                                      facts):
         """The path that used to be the quadratic one: the tighter the
         budget, the more lines the old loop dropped and the more whole
         blocks it built to find that out."""
@@ -516,7 +579,7 @@ class TestTheCutIsArithmeticAndNotRepeatedRendering:
             observe(state, f"t#r{index}", "units", index)
         calls = self._spy(monkeypatch)
         assert compile_view(state, budget_chars=800).text
-        assert len(calls) == 2, len(calls)
+        assert len(calls) == 1, len(calls)
 
     def test_a_budget_that_fits_nothing_renders_nothing(self, monkeypatch):
         state = CognitiveState()
@@ -525,32 +588,28 @@ class TestTheCutIsArithmeticAndNotRepeatedRendering:
         assert compile_view(state, budget_chars=30).text == ""
         assert calls == []
 
-    @pytest.mark.parametrize("budget", [300, 420, 517, 900, 1000, 2048])
-    def test_the_cut_is_tight(self, budget):
-        """Safe is not enough: a cut that dropped everything would satisfy
-        every cap assertion in this file.  This says the block is the
-        LARGEST one that fits — putting back one dropped line takes it over
-        — which is the half that a conservative arithmetic bug would pass
-        and the half that says the size model agrees with the renderer.
-        """
-        state = CognitiveState()
-        for index in range(60):
-            observe(state, f"mcp.ledger_entry#r{index}", "units", index)
-        view = compile_view(state, budget_chars=budget)
-        assert view.facts_omitted, "pick a budget that actually truncates"
-        assert len(view.text) <= budget
+    @pytest.mark.parametrize("shape", sorted(_SHAPES))
+    def test_the_cut_is_what_brute_force_would_have_chosen(self, shape):
+        """The oracle, and it is the only honest form of this claim.
 
-        # Exactly what the next line would have cost: itself and the
-        # newline joining it, plus the section's heading and blank line
-        # when the cut left the section closed. The omission sentence
-        # cannot grow when fewer lines are dropped, so this is the whole
-        # of the difference.
-        whole = compile_view(state, budget_chars=100_000)
-        following = section(whole, FACTS_HEADING)[view.facts]
-        extra = len(following) + 1 + (0 if view.facts
-                                      else len(FACTS_HEADING) + 2)
-        assert compile_view(state,
-                            budget_chars=budget + extra).facts > view.facts
+        Safe is not enough: a cut that dropped everything would satisfy
+        every cap assertion in this file.  So the block is compared,
+        budget by budget, against **rendering every cut in drop order and
+        taking the first that fits** — which is the definition the
+        arithmetic is an optimisation of, and which cannot be wrong
+        because it does not compute anything.
+
+        The review found what a weaker check missed: reserving the widest
+        header any cut could need is two characters wide of the truth for
+        a typical one, and over 1,941 measured pairs that cost 44 of them
+        a line they had room for and two of them a block entirely.  A test
+        that only asked "does one more line fit at a slightly larger
+        budget" passed through all of it.
+        """
+        state = _shaped(shape)
+        for budget in _BUDGETS:
+            assert compile_view(state, budget_chars=budget).text == \
+                _brute_force(state, budget), (shape, budget)
 
     def test_the_renderer_and_the_arithmetic_are_checked_against_each_other(
             self, monkeypatch):

@@ -51,10 +51,13 @@ a cost somebody discovers.
 step, and it walks every live proposition: one
 :meth:`~core.cognition.state.CognitiveState.support` per claim (a memoised
 DAG walk), one line rendered per claim, and then a cut chosen against prefix
-sums.  Measured on this tree: **95 ms** for a store of four thousand live
-facts, and a fraction of a millisecond for the dozens a real mission holds
-— it is **linear in what the store believes**, not in what the block shows,
-because a fact must be graded before it can be ranked out.  It was 482 ms
+sums.  Measured on this tree (median of five, warm): **95 ms** for a store
+of four thousand live facts and **244 ms** for eight thousand — roughly
+2.6× for twice the store, which is the grading and not the cut — and a
+fraction of a millisecond for the dozens a real mission holds.  It scales with **what the store believes**,
+not with what the block shows, because a fact must be graded before it can
+be ranked out: the four-thousand-character cap bounds what the model
+reads, never what it costs to work out what to show it.  It was 482 ms
 before the review: the cut used to re-render the whole block once per
 dropped line, which is quadratic against a store that only grows.  A
 deployment that intends to run thousands of receipts through one mission
