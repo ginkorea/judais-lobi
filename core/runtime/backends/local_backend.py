@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -39,12 +39,70 @@ from core.runtime.backends.base import (
     ToolCallAccumulator,
     Usage,
     tool_calls_from,
+    truncation_of,
 )
 from core.runtime.backends import policy, state
 from core.runtime.backends.policy import CHAT_TIMEOUT
 
 DEFAULT_LOCAL_API_BASE = "http://127.0.0.1:8000/v1"
 DEFAULT_LOCAL_MODEL = "local-model"
+
+#: How many completion tokens this backend asks for when nobody named a
+#: number — the bound that used to be **absent**, which is the whole
+#: reason this constant exists.
+#:
+#: A request with no ``max_tokens`` is not an unbounded request; it is a
+#: request bounded by somebody else.  A served endpoint lets the model run
+#: to ``max_model_len − prompt_tokens``, which at the 87,000-token prompts
+#: of a real deployment is still tens of thousands of tokens, and the
+#: effective ceiling then belongs to whoever times the turn out first — a
+#: platform's turn budget, a proxy, an operator's patience.  None of those
+#: can say *the answer was cut short*, because none of them is the thing
+#: that cut it.  The harness sending its own number is what turns a stall
+#: into a truncation with a name on it: see
+#: :data:`~core.runtime.backends.base.TRUNCATED_REASONS`, which is how the
+#: fact gets onto the wire.
+#:
+#: **4,096, and the number is not a taste.**  It is the output reserve this
+#: harness has *already* subtracted from every prompt it built —
+#: ``core.runtime.context_window`` defaults ``max_output_tokens`` to 4096
+#: and sizes the input window at ``max_context − max_output`` — so it is
+#: the one number in the tree that is already a statement about how long an
+#: answer may be.  Asking the server for more than the window reserved room
+#: for is the harness contradicting its own arithmetic, and on a full
+#: window it is the request that 400s.  A test holds the two equal.
+#:
+#: **Raising it is one variable**, :data:`MAX_OUTPUT_TOKENS_ENV`, and a
+#: deployment whose model reasons at length should raise it: the doctrine
+#: here is that the harness lifts and never holds back, so a truncation is
+#: a thing an operator is told about and can undo, never a ceiling they
+#: were not consulted on.  What ended is the silent state — no bound the
+#: harness set, and no way to say an answer was cut off.
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
+#: Where a deployment raises (or lowers) :data:`DEFAULT_MAX_OUTPUT_TOKENS`.
+#: Read here, like ``LOCAL_API_BASE`` and ``LOCAL_MODEL``, because it is
+#: configuration of the endpoint this backend talks to.
+MAX_OUTPUT_TOKENS_ENV = "JUDAIS_LOBI_MAX_OUTPUT_TOKENS"
+
+
+def _env_max_output_tokens(name: str = MAX_OUTPUT_TOKENS_ENV) -> Optional[int]:
+    """The completion ceiling from the environment, or ``None`` for the default.
+
+    The ``MCP_TIMEOUT_S`` rule, deliberately: unset, blank, unparseable or
+    non-positive all mean ``None`` and therefore
+    :data:`DEFAULT_MAX_OUTPUT_TOKENS`.  **Zero is not a value** — a
+    zero-token completion is every answer empty, which nobody asks for by
+    that spelling — and a typo must not be able to turn the model off.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        tokens = int(raw)
+    except ValueError:
+        return None
+    return tokens if tokens > 0 else None
 
 #: Seconds to wait on ``GET /models``.  Short: the probe is a convenience,
 #: and a capabilities lookup must never be the thing that hangs a CLI.
@@ -56,6 +114,34 @@ PROBE_TIMEOUT = 5.0
 #: resolving.  ``PROBE_TIMEOUT`` stays here because it is genuinely local:
 #: five seconds is a statement about a convenience lookup on this host,
 #: not about how long a completion may take.
+
+
+@dataclass
+class _StreamProgress:
+    """How far a streamed call has got, for the timer thread to read.
+
+    Mutable and unlocked on purpose.  It is written by the thread
+    draining the stream and read by the one-shot timer that may fire
+    beside it, and every field is a plain int, str or bool assignment —
+    so the worst a race can do is report a count one frame stale, which
+    is a sentence for a person to read and not a number anything computes
+    with.  A lock here would be a lock taken on every frame of every
+    streamed call to protect against being told 412 characters instead of
+    419.
+    """
+
+    #: Whether the first frame carrying choices has arrived.  Until it
+    #: has, a long call is :meth:`LocalBackend._late_first_byte`'s to
+    #: explain and not this one's.
+    arrived: bool = False
+    #: Frames carrying choices, and content characters in them.
+    frames: int = 0
+    chars: int = 0
+    #: The model id the SERVER put on its frames, once one has arrived.
+    model: str = ""
+    #: Whether the long-call state went out — and therefore whether there
+    #: is a wait outstanding for the end of the stream to close.
+    reported: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,12 +185,24 @@ class LocalBackend(Backend):
         want no key; some are started with ``--api-key``.
     supports_tool_calls:
         Declared, not probed — see :attr:`capabilities`.
+    max_output_tokens:
+        The completion ceiling this backend asks for when a caller names
+        none.  Defaults to :data:`MAX_OUTPUT_TOKENS_ENV` then
+        :data:`DEFAULT_MAX_OUTPUT_TOKENS` — never to *no ceiling*, which
+        is what it used to default to and what left the bound in
+        somebody else's hands.  A ``max_tokens=`` on :meth:`chat` still
+        wins.
     first_byte_queued_s:
         How long an accepted request may stay silent before the wait is
         reported as a state.  See
         :data:`core.runtime.backends.state.FIRST_BYTE_QUEUED_S`, which
         owns the number and the reasoning; a constructor argument
         because it is a property of the endpoint a deployment points at.
+    streaming_long_s:
+        How long a call that IS answering may keep answering before that
+        is reported as a state.  See
+        :data:`core.runtime.backends.state.STREAMING_LONG_S`, which owns
+        the number, and a constructor argument for the same reason.
     """
 
     #: The word :class:`core.unified_client.UnifiedClient` routes on.
@@ -120,17 +218,29 @@ class LocalBackend(Backend):
         supports_tool_calls: bool = True,
         session: Any = None,
         first_byte_queued_s: float = state.FIRST_BYTE_QUEUED_S,
+        streaming_long_s: float = state.STREAMING_LONG_S,
     ):
         raw = endpoint or os.getenv("LOCAL_API_BASE") or DEFAULT_LOCAL_API_BASE
         self.endpoint = self._normalize_base(raw)
         self._model = model or os.getenv("LOCAL_MODEL") or None
         self._max_context_tokens = max_context_tokens
         self._max_output_tokens = max_output_tokens
+        #: What goes in the request when nobody named a number.  Kept apart
+        #: from ``_max_output_tokens`` on purpose: that one is what a
+        #: caller DECLARED and is what :attr:`capabilities` reports, and
+        #: ``core.runtime.context_window`` sizes every prompt off the
+        #: capability.  Announcing a ceiling nobody declared would move the
+        #: input window — which is prompt bytes, on a path this change is
+        #: not allowed to touch — so the default is a fact about the
+        #: request and stays one.
+        self._output_bound = (max_output_tokens if max_output_tokens is not None
+                              else _env_max_output_tokens())
         self._api_key = api_key or os.getenv("LOCAL_API_KEY") or None
         self._supports_tool_calls = supports_tool_calls
         self._session = session if session is not None else requests
         self._probed: Optional[ServedModel] = None
         self.first_byte_queued_s = first_byte_queued_s
+        self.streaming_long_s = streaming_long_s
         self.last_usage = None
         self.last_tool_calls = []
 
@@ -415,9 +525,17 @@ class LocalBackend(Backend):
                 for m in messages
             ],
         }
-        limit = max_tokens if max_tokens is not None else self._max_output_tokens
-        if limit is not None:
-            body["max_tokens"] = limit
+        # ALWAYS a number, which is the change. A caller's `max_tokens=`
+        # wins, then whatever the deployment declared or set in the
+        # environment, then the default — and there is no longer a branch
+        # in which the field is left off. See
+        # `DEFAULT_MAX_OUTPUT_TOKENS`: an absent `max_tokens` is not an
+        # unbounded request, it is a request bounded by somebody who
+        # cannot report it.
+        body["max_tokens"] = (
+            max_tokens if max_tokens is not None
+            else self._output_bound if self._output_bound is not None
+            else DEFAULT_MAX_OUTPUT_TOKENS)
         body.update(extra)
         if constrained is not None:
             # AFTER the passthrough, so the typed argument wins over a
@@ -601,6 +719,123 @@ class LocalBackend(Backend):
                     f"for {self.first_byte_queued_s:g}s; {self.endpoint} "
                     f"lists the model, so it is loaded and this is a queue"))
 
+    def _long_stream(self, body: Dict[str, Any],
+                     progress: "_StreamProgress") -> bool:
+        """The call is still answering — say so, once.  Or ask again.
+
+        Runs on a timer thread :attr:`streaming_long_s` seconds after the
+        request went out.  The gap it closes is the one the v1.4.0
+        regression diagnosis is made of: five stalls whose entire trace
+        was a ``step_started`` and then nothing, because the first byte
+        had arrived inside twenty seconds, ``first_byte_within`` had
+        stood down, and no instrument in this harness was watching a call
+        that answers slowly rather than not at all.
+
+        **Nothing is said when the first frame has not arrived.**  That
+        wait belongs to :meth:`_late_first_byte`, which has already asked
+        ``/models`` and said ``queued`` or ``cold`` about it, and a second
+        opinion from here would be this backend disagreeing with itself
+        about a silence.  So the word is only ever said about frames this
+        backend actually watched go past — which is why it is a
+        measurement and not a guess, and why the counts are in it.
+
+        **But it asks again instead of standing down**, which is the
+        difference between an instrument and a coincidence.  A one-shot
+        that returned here would mean a call whose first token arrives
+        AFTER the threshold — the server that is slow to start *and* slow
+        to finish, which is the worse version of the same afternoon — is
+        never reported at all: ``queued`` at twenty seconds, ``loaded``
+        when the token lands, and then two hundred seconds of the same
+        silence this word exists to end, now with a wait that was opened
+        and closed to make it look accounted for.  Returning ``True``
+        re-arms the same alarm for another :attr:`streaming_long_s` — see
+        :func:`~core.runtime.backends.state.alarm_after` — so the windows
+        stay aligned to the request clock, which is the clock ``since_s``
+        is measured on.
+
+        One report and no repeat once it HAS spoken: see
+        :data:`STREAMING_LONG_S
+        <core.runtime.backends.state.STREAMING_LONG_S>`.  The wait it
+        opens is closed by :meth:`_stream`, which reports ``loaded`` when
+        the frames stop and ``failed`` when they stop because the stream
+        died.
+
+        **The detail states no elapsed time**, and that is the re-arming
+        above forcing an honest split rather than a stylistic choice.
+        How long this call has been going is ``since_s``'s to say — the
+        emitter measures it from the request, per call, and is the only
+        thing here that knows which window fired.  A sentence naming
+        :attr:`streaming_long_s` would be right on the first window and
+        wrong on every later one: a call silent for 150s and then
+        trickling reports ``since_s: 180`` beside prose claiming sixty,
+        which is two fields of one record disagreeing about one fact.
+        So the counts — which this backend did watch go past — stay, and
+        the clock has one owner.
+        """
+        if not progress.arrived:
+            return True
+        progress.reported = True
+        self._report(
+            state.STREAMING,
+            model=progress.model or str(body.get("model")
+                                        or self._named_model()),
+            detail=(f"the model is still answering — {progress.frames} "
+                    f"frames and {progress.chars} characters of content so "
+                    f"far"))
+        return False
+
+    def _stream_died(self, body: Dict[str, Any],
+                     progress: "_StreamProgress", exc: BaseException) -> None:
+        """Close a streaming wait that ended in an exception, not an answer.
+
+        **Something must close a wait this backend opened**, and until
+        this existed nothing did: a ``ConnectionError`` out of
+        ``iter_lines`` after the long-call word had gone out reaches
+        neither :meth:`_post`'s retry (the connect already succeeded) nor
+        :meth:`_raise_for_status` (the status was already 200), so the
+        run's de-duplicator kept the wait open — and then emitted the
+        NEXT, healthy call's ``loaded`` against it, which is a ``loaded``
+        on a call where nothing went wrong and which ``CONTRACT.md``
+        forbids in as many words.  Worse when the failure ends the run:
+        the last thing on the stream is a model still answering, after
+        ``mission_finished``.
+
+        ``failed`` and not a ``loaded`` that explains itself, because the
+        two words are read differently by something that is not reading
+        the sentence: a consumer clears a wait on ``loaded`` and shows
+        the call as having recovered.  This call did not recover.  The
+        word is read off :data:`~core.runtime.backends.policy.ERROR_POLICY`
+        rather than written here — the ``timeout`` row, whose reasoning
+        is exactly this case: *the request IS in flight — the server may
+        be decoding it right now*.  A stream that dies mid-body is that
+        row's situation, not the ``connect`` row's, which says the
+        request never left this host.
+
+        **Every way out that is not the end of the stream**, which is why
+        the caller catches ``BaseException``: a consumer that walked away
+        and a run that was cancelled leave exactly the same open wait as
+        a broken socket, and the cancelled case is the one where a
+        dangling *still answering* is most visible — it would be the last
+        word on the stream, after ``mission_finished``.  ``failed`` is
+        honest across all three, because what it says of the call is what
+        is true of all of them: it did not deliver.  The detail names
+        which, by exception type.
+
+        Said only when the long-call word went out.  A stream that dies
+        without one opened no wait, and the exception on its way to the
+        caller is the whole of what happened.
+        """
+        if not progress.reported:
+            return
+        progress.reported = False
+        self._report(
+            policy.ERROR_POLICY["timeout"].state,
+            model=progress.model or str(body.get("model")
+                                        or self._named_model()),
+            detail=(f"the stream stopped after {progress.frames} frames and "
+                    f"{progress.chars} characters: "
+                    f"{type(exc).__name__}: {exc}"))
+
     def _complete(self, body: Dict[str, Any]) -> str:
         with state.first_byte_within(self.first_byte_queued_s,
                                      lambda: self._late_first_byte(body)):
@@ -612,14 +847,21 @@ class LocalBackend(Backend):
         # on the record, and it is the one moment this backend learns it.
         self._report(state.LOADED,
                      model=str(payload.get("model") or body.get("model") or ""))
+        choices = payload.get("choices") or []
+        first = choices[0] if choices else {}
         # Before the empty-choices return, not after it: a completion that
         # produced no content still spent the prompt, and a reply nobody
         # could use is exactly the call worth finding in the ledger.
-        self.last_usage = Usage.from_payload(payload.get("usage"))
-        choices = payload.get("choices") or []
+        #
+        # The finish reason is read off the CHOICE and handed to the counts,
+        # because "how many tokens" and "and then it hit the ceiling" are
+        # one fact about one call and a consumer that gets only the first
+        # half has been told a truncated answer was complete.
+        self.last_usage = Usage.from_payload(
+            payload.get("usage"), first.get("finish_reason"))
         if not choices:
             return ""
-        message = choices[0].get("message") or {}
+        message = first.get("message") or {}
         # Always, and before the branch: what the model decided is a fact
         # about the reply, not about the protocol the caller asked for.
         self.last_tool_calls = tool_calls_from(message.get("tool_calls"))
@@ -735,11 +977,24 @@ class LocalBackend(Backend):
         invented for a caller that DID get content, and nothing at all
         for one speaking native, which reads
         :attr:`last_tool_calls` itself.
+
+        **Two alarms, and they watch opposite failures.**  The first-byte
+        one asks why nothing has come back; the long-call one, armed for
+        the whole request and never disarmed by a frame, says that
+        something IS coming back and has been for a long time.  Before it
+        existed a call that trickled for two hundred seconds produced no
+        record at all — see :meth:`_long_stream`, which is where that
+        costs a paragraph.
         """
         seen: Optional[Usage] = None
         calls = ToolCallAccumulator()
         spoke = False
-        arrived = False
+        finish: Any = None
+        # "Has the first frame landed" is ONE fact with one owner, and
+        # that owner is the object the timer thread reads: a local beside
+        # it would be a second copy of it, and the two would disagree in
+        # exactly the window this whole change exists to describe.
+        progress = _StreamProgress()
         try:
             # The alarm covers the request AND the wait for the first
             # frame, because on a streamed call those are the same wait
@@ -747,7 +1002,16 @@ class LocalBackend(Backend):
             # and the server may then think for a minute before the
             # first token. Disarmed by the first frame, and by the
             # `finally` for a consumer that walked away.
-            with state.first_byte_within(
+            #
+            # The long-call alarm OUTSIDE it, covering the same request
+            # and never disarmed early: the question it answers is about
+            # the whole call, and `since_s` on the record is measured
+            # from the request going out, so its clock and the record's
+            # clock are the same clock.
+            with state.alarm_after(
+                    self.streaming_long_s,
+                    lambda: self._long_stream(body, progress)), \
+                 state.first_byte_within(
                     self.first_byte_queued_s,
                     lambda: self._late_first_byte(body)) as watch:
                 res = self._post(body, stream=True)
@@ -776,27 +1040,62 @@ class LocalBackend(Backend):
                         calls.add(delta.get("tool_calls"))
                         if delta.get("content"):
                             spoke = True
+                            progress.chars += len(delta["content"])
+                        # The reason arrives on the LAST frame with
+                        # choices, which is a different frame from the one
+                        # carrying the counts. Kept here and folded in at
+                        # the end rather than looked for in one place,
+                        # because a stream is where the two halves of one
+                        # fact travel separately.
+                        if choice.get("finish_reason"):
+                            finish = choice["finish_reason"]
                     if not chunk.get("choices"):
                         continue
-                    if not arrived:
+                    progress.frames += 1
+                    if not progress.arrived:
                         # The first frame IS the model answering, so this
                         # is where a wait that was reported ends. The id
                         # is the server's own — see `_complete`.
-                        arrived = True
                         watch.arrived()
-                        self._report(state.LOADED,
-                                     model=str(chunk.get("model")
-                                               or body.get("model") or ""))
+                        progress.model = str(chunk.get("model")
+                                             or body.get("model") or "")
+                        progress.arrived = True
+                        self._report(state.LOADED, model=progress.model)
                     yield self._as_delta(chunk)
                 if not spoke and not self._speaking_native(body):
                     rendered = self._as_mission_json(calls.result())
                     if rendered:
                         yield self._content_frame(rendered)
+                if progress.reported:
+                    # The long-call state said a wait was on. A wait is
+                    # announced once and CLOSED once — the rule
+                    # `core.runtime.run._ModelStates` owns — so the end of
+                    # the stream says so, and a pane that put up "still
+                    # answering" takes it down. `loaded` HERE, because
+                    # this stream finished; the stream that died has its
+                    # own word, in `_stream_died`.
+                    progress.reported = False
+                    self._report(
+                        state.LOADED,
+                        model=progress.model or str(body.get("model") or ""),
+                        detail=(f"the stream finished — {progress.frames} "
+                                f"frames and {progress.chars} characters "
+                                f"of content"))
+        except BaseException as exc:
+            # EVERY way out that is not the end of the stream, including
+            # a `GeneratorExit` from a consumer that walked away and a
+            # cancellation: a wait this backend opened must not outlive
+            # the call, because the run's de-duplicator would spend the
+            # NEXT call's `loaded` closing it. See `_stream_died`.
+            self._stream_died(body, progress, exc)
+            raise
         finally:
             # In a `finally` so that a consumer that walks away mid-stream
             # still leaves behind whatever had been reported by then —
             # the abandoned case is the one that has to work.
-            self.last_usage = seen
+            self.last_usage = (
+                seen if seen is None
+                else replace(seen, finish_reason=truncation_of(finish)))
             self.last_tool_calls = calls.result()
 
     @staticmethod

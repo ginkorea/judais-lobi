@@ -62,6 +62,62 @@ from core.runtime.messages import (
 #: is usually the thing this repo did not think to name.
 NAMED_COUNTS = ("prompt_tokens", "completion_tokens", "total_tokens")
 
+#: The key :meth:`Usage.as_record` puts the harness's own account of how
+#: a call ended under.
+#:
+#: It is **not** reserved against the provider: a provider that puts a
+#: ``finish_reason`` inside its own ``usage`` object gets it carried
+#: verbatim like every other extra, because dropping it would be this
+#: repo deleting the very field it is here to surface.  The harness's
+#: word simply wins where both exist — :meth:`Usage.as_record` writes it
+#: last — which is the right way round: one is read off the choice this
+#: call actually produced and the other is whatever the provider
+#: volunteered beside its counts.
+FINISH_REASON = "finish_reason"
+
+#: Every ``finish_reason`` this repo reads as *the completion was cut short
+#: by a token ceiling* — OpenAI-compatible servers say ``length``, the
+#: Anthropic Messages API says ``max_tokens``, and some OpenAI-compatible
+#: servers in the wild say ``model_length``.
+#:
+#: ``model_context_window_exceeded`` is the Anthropic Messages API's word
+#: for the same thing arriving from the other side — the prompt plus the
+#: completion outgrew the window rather than the completion outgrowing
+#: ``max_tokens``.  It is declared and **unreachable today**: the
+#: Anthropic backend does not yet hand its stop reason to
+#: :meth:`Usage.from_payload`, so nothing produces it.  Declared anyway,
+#: because the set is what this repo means by *cut short* and a word
+#: left out of it is the one that will arrive unrecognised.
+#:
+#: Matched case-insensitively; the provider's own spelling is what
+#: travels.  Only these reach the stream: ``stop``, ``tool_calls`` and an
+#: absent reason are a model that finished saying what it had to say, and
+#: putting those on the wire would be a field on every record to state
+#: the ordinary case — the rule ``model_state`` follows, for the same
+#: reason.
+TRUNCATED_REASONS = ("length", "max_tokens", "model_length",
+                     "model_context_window_exceeded")
+
+
+def truncation_of(finish_reason: Any) -> str:
+    """The provider's own word when a completion was cut short, else ``""``.
+
+    One owner for a question the request-bounding code and every backend
+    that grows a bound have to answer the same way.  The provider's
+    spelling is kept rather than normalised into a flag of this repo's
+    own: a platform reading ``max_tokens`` off one turn and ``length``
+    off another is reading what its provider said, which is the only
+    thing this harness is in a position to report.
+
+    The *match* is case-insensitive and the *answer* is not: a server
+    that shouts ``LENGTH`` has said the same thing as one that does not,
+    and a vocabulary this repo compares against is a poor reason to miss
+    a truncation — but what travels is still the string the provider
+    sent, because that is the thing a platform's own logs will have.
+    """
+    word = str(finish_reason or "").strip()
+    return word if word.lower() in TRUNCATED_REASONS else ""
+
 
 def _as_int(value: Any) -> Optional[int]:
     """An integer count, or ``None`` for anything that is not one.
@@ -96,12 +152,21 @@ def _as_mapping(payload: Any) -> Optional[Dict[str, Any]]:
 
 @dataclass(frozen=True)
 class Usage:
-    """What the provider said one completion cost.
+    """What the provider said one completion cost, and how the call ended.
 
     Constructed only from a provider's own report — see
     :meth:`from_payload`, which returns ``None`` rather than a zeroed
     instance when there was nothing to read.  Frozen because it is a
     statement about a call that has already happened.
+
+    :attr:`finish_reason` is the one field here that does not come out of
+    the provider's ``usage`` object, and it earns its place beside the
+    counts rather than somewhere of its own: *2,306 completion tokens* and
+    *2,306 completion tokens and then the ceiling* are different facts
+    about the same call, and a consumer reading one without the other has
+    been told an answer was complete when it was cut in half.  It is
+    carried only when it says the completion was **cut short** — see
+    :func:`truncation_of`.
     """
 
     prompt_tokens: int = 0
@@ -109,9 +174,14 @@ class Usage:
     total_tokens: int = 0
     #: Every other key the provider put in its ``usage`` object, verbatim.
     extra: Mapping[str, Any] = field(default_factory=dict)
+    #: The provider's own ``finish_reason``, and **only** when it is one of
+    #: :data:`TRUNCATED_REASONS`; ``""`` for a completion that ended on its
+    #: own terms, which is nearly all of them.
+    finish_reason: str = ""
 
     @classmethod
-    def from_payload(cls, payload: Any) -> Optional["Usage"]:
+    def from_payload(cls, payload: Any,
+                     finish_reason: Any = None) -> Optional["Usage"]:
         """Read a provider's ``usage``, or ``None`` when it reported none.
 
         ``None`` for an absent object and ``None`` for an object carrying
@@ -122,6 +192,20 @@ class Usage:
         ``total_tokens`` is derived from the other two only when the
         provider omitted it — llama.cpp's server has been known to — and
         that is arithmetic on numbers the provider did give, not a guess.
+
+        *finish_reason* is the provider's word for how the completion
+        ended, read off the choice rather than off the usage object and
+        passed in by the backend that had both in hand.  It is kept only
+        when it names a truncation.  A provider that reported no usage
+        still reports no usage: there is nothing to hang the word on, and
+        manufacturing three zeros to carry it would be the claim this
+        class exists to refuse.
+
+        A ``finish_reason`` the provider put inside its own ``usage``
+        object travels in :attr:`extra`, verbatim, like every other key
+        it sent — see :data:`FINISH_REASON` for why it is not filtered
+        out — and :meth:`as_record` lets the harness's word win when
+        there are two.
         """
         raw = _as_mapping(payload)
         if raw is None:
@@ -138,7 +222,8 @@ class Usage:
         extra = {key: value for key, value in raw.items()
                  if key not in NAMED_COUNTS and value is not None}
         return cls(prompt_tokens=prompt, completion_tokens=completion,
-                   total_tokens=total, extra=extra)
+                   total_tokens=total, extra=extra,
+                   finish_reason=truncation_of(finish_reason))
 
     def as_record(self) -> Dict[str, Any]:
         """The shape this rides the event stream in.
@@ -147,13 +232,25 @@ class Usage:
         beside them — the same layout the provider used, so a consumer
         that already reads ``prompt_tokens_details`` off an OpenAI
         response reads it off this without a second mapping.
+
+        The harness's ``finish_reason`` joins them **only when the
+        completion was cut short**, and is written LAST so it wins over a
+        provider that volunteered one of its own inside ``usage``: this
+        one was read off the choice the call actually produced.  Absent,
+        never ``""``, when the harness has nothing to say — a key on every
+        record to state the ordinary case is the field this stream keeps
+        declining to add — so a provider's own, if it sent one, is what a
+        consumer then sees, verbatim, like every other extra.
         """
-        return {
+        record = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             **dict(self.extra),
         }
+        if self.finish_reason:
+            record[FINISH_REASON] = self.finish_reason
+        return record
 
 
 def attr_or_key(payload: Any, name: str) -> Any:

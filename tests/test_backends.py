@@ -17,6 +17,7 @@ from core.runtime.backends.base import (
     Usage,
     json_schema_request,
     tool_calls_from,
+    truncation_of,
 )
 from core.runtime.backends.anthropic_backend import (
     DEFAULT_ANTHROPIC_MODEL,
@@ -920,6 +921,96 @@ class TestUsageIsReportedNeverEstimated:
 
     def test_unparseable_counts_are_not_counts(self):
         assert Usage.from_payload({"prompt_tokens": "many"}) is None
+
+
+class TestHowTheCallEndedTravelsBesideWhatItCost:
+    """A count without a finish reason can be read two ways, and only one
+    of them is true: *2,306 completion tokens* and *2,306 completion tokens
+    and then the ceiling* are different facts about the same call, and a
+    consumer given only the first has been told a truncated answer was a
+    complete one.
+
+    The word is kept only when it names a truncation. A key stating the
+    ordinary case on every record is the field this stream keeps declining
+    to add — the rule `model_state` follows, for the same reason.
+    """
+
+    @pytest.mark.parametrize("word", ["length", "max_tokens", "model_length",
+                                      "model_context_window_exceeded"])
+    def test_the_ceilings_every_provider_spells_differently(self, word):
+        assert truncation_of(word) == word
+
+    def test_the_window_word_is_declared_though_nothing_produces_it_yet(self):
+        """`model_context_window_exceeded` is the Anthropic Messages API's
+        word for the same thing from the other side. Unreachable today —
+        that backend does not yet hand its stop reason to
+        `Usage.from_payload` — and in the set anyway, because the set is
+        what this repo MEANS by *cut short* and a word left out of it is
+        the one that arrives unrecognised."""
+        from core.runtime.backends import base
+
+        assert "model_context_window_exceeded" in base.TRUNCATED_REASONS
+
+    @pytest.mark.parametrize("word", ["LENGTH", "Length", "MAX_TOKENS"])
+    def test_a_server_that_shouts_has_said_the_same_thing(self, word):
+        """Matched case-insensitively — a vocabulary this repo compares
+        against is a poor reason to miss a truncation — and what travels
+        is still the spelling the provider sent."""
+        assert truncation_of(word) == word
+
+    @pytest.mark.parametrize(
+        "word", ["stop", "tool_calls", "content_filter", "", None, "  "])
+    def test_and_everything_else_is_a_completion_that_ended_itself(self, word):
+        assert truncation_of(word) == ""
+
+    def test_the_providers_own_spelling_is_kept_not_normalised(self):
+        """A platform reading `max_tokens` off one turn and `length` off
+        another is reading what its provider said, which is the only thing
+        this harness is in a position to report."""
+        assert truncation_of("max_tokens") == "max_tokens"
+
+    def test_a_truncated_call_carries_the_word_into_the_record(self):
+        record = Usage.from_payload(
+            {"prompt_tokens": 9, "completion_tokens": 4096}, "length"
+        ).as_record()
+        assert record["finish_reason"] == "length"
+        assert record["completion_tokens"] == 4096
+
+    def test_an_ordinary_call_carries_no_such_key(self):
+        record = Usage.from_payload(
+            {"prompt_tokens": 9, "completion_tokens": 3}, "stop").as_record()
+        assert "finish_reason" not in record
+
+    def test_a_provider_that_reported_no_counts_still_reports_nothing(self):
+        """There is nothing to hang the word on, and three zeros to carry
+        it would be the claim this class exists to refuse."""
+        assert Usage.from_payload(None, "length") is None
+        assert Usage.from_payload({}, "length") is None
+
+    def test_the_harnesss_word_wins_where_a_provider_sent_one_too(self):
+        """Written last on purpose: this one was read off the choice the
+        call actually produced, where the provider's is whatever it
+        volunteered beside its counts."""
+        record = Usage.from_payload(
+            {"prompt_tokens": 9, "completion_tokens": 4096,
+             "finish_reason": "stop"}, "length").as_record()
+        assert record["finish_reason"] == "length"
+
+    def test_but_a_providers_own_is_carried_when_the_harness_has_none(self):
+        """The key is NOT reserved against the provider. Filtering it out
+        would be this repo deleting the very field it is here to surface
+        — in exactly the case it is here for — so it travels verbatim
+        like every other extra the provider sent."""
+        record = Usage.from_payload(
+            {"prompt_tokens": 9, "completion_tokens": 4096,
+             "finish_reason": "length"}).as_record()
+        assert record["finish_reason"] == "length"
+
+    def test_and_that_passthrough_is_the_extras_rule_and_not_a_second_one(self):
+        usage = Usage.from_payload(
+            {"prompt_tokens": 9, "finish_reason": "stop"})
+        assert usage.extra["finish_reason"] == "stop"
+        assert usage.finish_reason == ""
 
 
 class TestNativeCallsTravelAsPlainDicts:

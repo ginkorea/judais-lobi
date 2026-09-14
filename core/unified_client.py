@@ -29,9 +29,18 @@ class UnifiedClient:
         elif self.provider == "mistral":
             self._backend = MistralBackend()
         elif self.provider == "local":
-            # Config lives in LOCAL_API_BASE / LOCAL_MODEL and is read by the
-            # backend itself.  Nothing is contacted here: constructing a client
-            # must not require the server to already be up.
+            # Config lives in LOCAL_API_BASE / LOCAL_MODEL /
+            # JUDAIS_LOBI_MAX_OUTPUT_TOKENS and is read by the backend
+            # itself.  Nothing is contacted here: constructing a client must
+            # not require the server to already be up.
+            #
+            # No `max_output_tokens=` argument on purpose, and it is worth a
+            # sentence because its ABSENCE used to mean "unbounded".  A
+            # router that named the number would be a second owner of it,
+            # disagreeing with the environment on whichever path did not go
+            # through here; the backend has the default and the variable, so
+            # every caller of it — this router, a library caller, a probe —
+            # gets the same bound.
             self._backend = LocalBackend()
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")

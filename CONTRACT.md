@@ -409,6 +409,29 @@ cached-token breakdown, say). On `answer` after a grounding repair it is the
 repair turn's call, not the draft's: the per-call field is always the cost of
 the call that produced the record it rides on.
 
+**`prompt_tokens` there is one call's, and it is the number to read when a turn
+is slow or a base prompt is suspected of having moved.** Dividing the
+`mission_finished` total by `calls` to recover a per-call figure is reading the
+wrong record: the per-call number is already on the three records above and is
+exact where the division is an average. The two do not reconcile, either — the
+calls that produce none of those records (a supervisor's review, a staged
+turn's router and synthesizer) are counted in the total and appear nowhere
+else, and that difference is what the average silently absorbs.
+
+`finish_reason` joins the three counts **only when the completion was cut short
+by a token ceiling**, carrying the provider's own word for it (`length` from an
+OpenAI-compatible server, `max_tokens` from the Anthropic Messages API). It is
+the one key inside `usage` that does not come from the provider's `usage`
+object, and it is there because *2,306 completion tokens* and *2,306 completion
+tokens and then the ceiling* are different facts about the same call: a
+consumer that reads only the count has been told a truncated answer was a
+complete one. **Absent on every call that ended on its own terms**, which is
+nearly all of them. Render it as a warning beside the answer — it is never a
+failure, and the run's `outcome` does not change because of it. (A provider
+that puts a `finish_reason` inside its own `usage` object has it carried
+verbatim like every other extra it sent; where both exist, the harness's word —
+read off the choice this call produced — is the one you get.)
+
 On `mission_finished` it is the **run's ledger**:
 `{prompt_tokens, completion_tokens, total_tokens, calls}`, where `calls` counts
 the model calls that *reported* usage rather than the calls that were made. On
@@ -672,7 +695,7 @@ The steady pair — the request went out, the reply came back — is already on 
 stream as `step_started` and then `tool_call` or `answer`, so a run against a
 model that answers produces not one of these and every stream recorded before
 this event existed is byte-identical to the stream it would produce today. What
-you receive is the five words that mean *a person is waiting and does not know
+you receive is the six words that mean *a person is waiting and does not know
 why*, and then the `loaded` that ends the wait:
 
 | the harness observed | `state` |
@@ -683,6 +706,7 @@ why*, and then the `loaded` that ends the wait:
 | the server answered **429** | `queued` |
 | the request was accepted and nothing came back for 20s, and `GET /models` lists the model | `queued` |
 | the request was accepted and nothing came back for 20s, and `GET /models` does not list it, or does not answer | `cold` / `absent` — the row above it, asked again |
+| the first token arrived and the model is **still answering** 60s after the request went out | `streaming` — with the frames and characters watched so far in `detail` |
 | any other 4xx or 5xx, or a read timeout | `failed` |
 | a reply, or a first token, arrived — after any of the above | `loaded`, carrying the model id **the server** reported |
 
@@ -697,18 +721,58 @@ the backend: a local endpoint at 59 tok/s is healthy while it spends tens of
 seconds on one answer, so the threshold is a judgement about a person's
 patience rather than about a model's speed.
 
-The seventh word, `asking`, is reported inside the harness and **never reaches
+`streaming` is the one word in the table that is **not** a fault, and the
+newest. It says the model answered and is still answering: the frames went
+past, this harness counted them, and it is telling you rather than leaving you
+with a gap. It exists because the first-byte instrument stands down the instant
+a token arrives, so a call that trickles for two hundred seconds used to
+produce no record at all — a `step_started`, and then nothing, which is the
+shape every stall in
+`evidence/diagnosis-v1.4.0-regression-2026-09-14.md` has and the reason that
+investigation took six passes. The 60s is
+`core.runtime.backends.state.STREAMING_LONG_S`, a constructor argument like the
+20s beside it, and it is a shade over three times the p90 of the calls measured
+there: high enough that a long-but-healthy turn stays quiet, low enough that a
+176s call is announced with two minutes still to run. **Said once per call** —
+this is a state channel and not a metronome — and **always closed**: by the
+`loaded` that follows when the frames stop, whose `detail` says how much
+arrived in the end, or by a `failed` when the stream dies mid-answer, is
+abandoned, or is cancelled. A wait the harness opens is a wait it closes; you
+will not be left holding one.
+
+A first token that is itself slow does not lose the word. The threshold is
+re-asked every 60s until a frame has arrived, so a call that spends 90s silent
+and then 200s trickling says `queued` at 20s, `loaded` when the token lands,
+and `streaming` at the next window — rather than going quiet for the whole
+answer because the one instrument fired before there was anything to report.
+
+The eighth word, `asking`, is reported inside the harness and **never reaches
 this stream**: it is the steady state, and the record exists to explain a wait.
-`contract.MODEL_STATES` declares all seven anyway, because a closed set a
+`contract.MODEL_STATES` declares all eight anyway, because a closed set a
 consumer asserts should be the set the harness has rather than the subset
-today's emitter uses.
+today's emitter uses. **Adding a word to it is additive** and does not bump
+`SCHEMA_VERSION`: a consumer meets an unknown `state` exactly where it already
+meets an unknown record type, and the answer there is to drop it. A consumer
+holding `MODEL_STATES` against its own list will see the list grow, which is
+that assertion working rather than a break.
 
 **It is a transition, de-duplicated.** The same word twice running is one
 record — three refused connects inside one retry budget say `absent` once —
 unless `retry_after_s` changed, which is new information about the same state.
 Hold the last one you saw as the current state of the model; clear it on the
-`loaded` that follows. `loaded` is emitted **only** after one of the other five:
+`loaded` that follows. `loaded` is emitted **only** after one of the other six:
 on a run where nothing went wrong there is nothing to say it about.
+
+`streaming` is the exception to that de-duplication, and the exception matters
+on a `--swarm` turn. The other six words are facts about the **endpoint**,
+which a run and its children share, so one dead socket reported by three
+children is one record. `streaming` is a fact about **one call**: it is
+de-duplicated per `index` instead, and the word that ends it — `loaded` when
+the stream finishes, `failed` when it dies mid-answer — closes that step's wait
+and no other. Two children streaming at once therefore produce two `streaming`
+records with different `index`, and two closes. Key your "what is the model
+doing" state by `index` and both render; key it by run and you see the later of
+the two.
 
 `since_s` is how long the run had been waiting on the model when the state was
 reported, from the start of that model call — so on `loaded` it is how long the
@@ -802,6 +866,7 @@ passes the other gets the one it passed.
 - `TAI_PERSONALITY` — the same, on any entry point, and it wins over `ELF_PERSONALITY`.
 - `LOCAL_API_BASE` — where the local backend answers.
 - `LOCAL_MODEL` — which model it is serving.
+- `JUDAIS_LOBI_MAX_OUTPUT_TOKENS` — how many completion tokens that backend asks for when a caller names no number; default 4,096. **No flag**: like the two above it, this is configuration of the endpoint a deployment points at, and the backend reads it itself. Unset, blank, garbage or non-positive all mean the default — zero is not a value, because a zero-token completion is every answer empty by typo. It is published because the *absence* of a bound was not neutral: a request with no `max_tokens` is bounded by the served model's `max_model_len − prompt_tokens` instead, and whoever times the turn out first — a platform's turn budget, a proxy, an operator — becomes the effective ceiling without being able to say an answer was cut short. With the harness sending its own number, a completion that hits the ceiling arrives as `usage.finish_reason` on the record that follows it. Raise this rather than live with a truncation: the bound is meant to be visible and undoable.
 - `MISSION_SKILL` — the environment form of `--skill`.
 - `MISSION_SWARM` — the environment form of `--swarm`.
 - `MISSION_EVENTS` — the environment form of `--events`.
@@ -894,9 +959,19 @@ it knows who the person is. Core enforces only that somebody is named.
 - Adding an event, or adding an optional field to an existing event, is a
   **minor** change and does not bump it. That is safe because consumers drop
   record types they do not know.
-- Renaming a field, removing one, moving one out of the required set, or
-  changing what an existing required field means is a **breaking** change and
-  **bumps** it.
+- **Adding a value to a published vocabulary** — a word in `MODEL_STATES`, a
+  word in `OUTCOMES`, a key inside an optional field such as `usage` — is a
+  **minor** change and does not bump it either. A consumer meets an unfamiliar
+  value exactly where it already meets an unfamiliar record type, and the
+  answer is the same: branch if you have a branch, otherwise ignore it and
+  render what you had. A test of yours that holds one of these tuples equal to
+  your own list will go red on the growth; that is the test telling you a word
+  arrived, not the contract breaking. (`OUTCOMES` is a special case with a
+  stronger promise — see *the freeze* below, where it is fixed for the whole of
+  1.x.)
+- Renaming a field, removing one, moving one out of the required set, removing
+  or renaming a value in one of those vocabularies, or changing what an
+  existing required field means is a **breaking** change and **bumps** it.
 
 ## 1.0 — the freeze
 
@@ -933,6 +1008,11 @@ For every release `>=1.0.0, <2.0.0`:
   a required field changing meaning for every driver that has an `else` arm,
   which is why cancellation became `reason` beside `incomplete` rather than a
   sixth outcome.
+- **`MODEL_STATES` only grows.** No word is removed or renamed, and none
+  changes what it means; a word you have never heard of may arrive on a
+  `model_state` record's `state` at any minor release. Branch if you have a
+  branch for it; otherwise show `detail` and hold it as the model's current
+  state until the next `loaded`, which is what the field already asks of you.
 - **`CLI_FLAGS` only grows.** No published flag is removed or renamed, and none
   changes what it takes. A spawn line that works on 1.0 works on 1.9.
 - **`ENV_VARS` only grows**, on the same terms.

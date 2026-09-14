@@ -18,6 +18,8 @@ import pytest
 from core.runtime.backends.base import Backend
 from core.runtime.backends.local_backend import (
     DEFAULT_LOCAL_API_BASE,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_OUTPUT_TOKENS_ENV,
     LocalBackend,
     ServedModel,
 )
@@ -49,6 +51,10 @@ class _StubState:
         #: content pieces.  A streamed tool call arrives as fragments of
         #: a JSON string spread over several of these.
         self.deltas = None
+        #: How the completion ended, on both paths.  ``"length"`` is the
+        #: word an OpenAI-compatible server sends when ``max_tokens`` cut
+        #: the answer off, and it is the whole reason this is a knob.
+        self.finish_reason = "stop"
 
 
 def _make_handler(state: _StubState):
@@ -93,7 +99,7 @@ def _make_handler(state: _StubState):
                     "index": 0,
                     "message": state.message if state.message is not None else {
                         "role": "assistant", "content": "hello from local"},
-                    "finish_reason": "stop",
+                    "finish_reason": state.finish_reason,
                 }],
             }
             if state.usage is not None:
@@ -104,11 +110,18 @@ def _make_handler(state: _StubState):
             frames = []
             deltas = (state.deltas if state.deltas is not None
                       else [{"content": piece} for piece in ("he", "llo")])
-            for delta in deltas:
+            for i, delta in enumerate(deltas):
+                # The reason rides the LAST frame with choices, which is
+                # a different frame from the one carrying the counts —
+                # that is how an OpenAI-compatible server sends it, and
+                # the reason the backend cannot read both in one place.
+                choice = {"index": 0, "delta": delta}
+                if i == len(deltas) - 1:
+                    choice["finish_reason"] = state.finish_reason
                 frames.append("data: " + json.dumps({
                     "id": "cmpl-1",
                     "model": body.get("model"),
-                    "choices": [{"index": 0, "delta": delta}],
+                    "choices": [choice],
                 }) + "\n\n")
             frames.append(": a comment nobody should parse\n\n")
             # The OpenAI convention, which vLLM and llama.cpp follow: a
@@ -336,10 +349,6 @@ class TestChat:
         backend = LocalBackend(endpoint=stub.base)
         backend.chat("m", [{"role": "user", "content": "hi"}], max_tokens=64)
         assert stub.last_body["max_tokens"] == 64
-
-    def test_max_tokens_omitted_when_unset(self, stub):
-        LocalBackend(endpoint=stub.base).chat("m", [{"role": "user", "content": "x"}])
-        assert "max_tokens" not in stub.last_body
 
     def test_constructor_output_limit_is_the_default(self, stub):
         backend = LocalBackend(endpoint=stub.base, max_output_tokens=32)
@@ -970,3 +979,147 @@ class TestAGrammarTravelsInTheBody:
         backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b")
         assert backend.chat("gpt-oss-20b", [{"role": "user", "content": "hi"}],
                             json_schema=self.SCHEMA) == "hello from local"
+
+
+class TestEveryRequestCarriesABound:
+    """`max_tokens` used to be omitted when nobody named one, and an
+    omitted `max_tokens` is not an unbounded request — it is a request
+    bounded by the served model's `max_model_len - prompt_tokens` and, in
+    practice, by whichever turn timeout fires first. A timeout cannot
+    report a truncation, because it is not the thing that truncated.
+
+    So there is no branch in which the field is absent any more, and the
+    number the harness sends is the same output reserve it already
+    subtracts from every prompt it builds.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_inherited_ceiling(self, monkeypatch):
+        """The variable is read from the process environment, so a shell
+        that happens to export it would otherwise decide these tests."""
+        monkeypatch.delenv(MAX_OUTPUT_TOKENS_ENV, raising=False)
+
+    def test_a_request_nobody_bounded_carries_the_default(self, stub):
+        LocalBackend(endpoint=stub.base).chat(
+            "m", [{"role": "user", "content": "x"}])
+        assert stub.last_body["max_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_a_streamed_request_carries_it_too(self, stub):
+        list(LocalBackend(endpoint=stub.base).chat(
+            "m", [{"role": "user", "content": "x"}], stream=True))
+        assert stub.last_body["max_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_the_default_is_the_reserve_the_window_already_subtracts(self, stub):
+        """Not a taste. `core.runtime.context_window` sizes every prompt at
+        `max_context - max_output`, and with nothing declared the output
+        half is where this number comes from — so asking the server for
+        more than that would be the harness contradicting its own
+        arithmetic, and on a full window it is the request that 400s.
+
+        Asked of the window itself, with this backend's real capabilities,
+        so the two cannot drift apart quietly behind a literal.
+        """
+        from core.runtime.context_window import ContextWindowManager
+
+        profile = ContextWindowManager().resolve_profile(
+            "local", "gpt-oss-20b",
+            LocalBackend(endpoint=stub.base).capabilities)
+        assert profile.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_the_environment_moves_it(self, stub, monkeypatch):
+        monkeypatch.setenv(MAX_OUTPUT_TOKENS_ENV, "20000")
+        LocalBackend(endpoint=stub.base).chat(
+            "m", [{"role": "user", "content": "x"}])
+        assert stub.last_body["max_tokens"] == 20000
+
+    def test_a_declared_ceiling_beats_the_environment(self, stub, monkeypatch):
+        monkeypatch.setenv(MAX_OUTPUT_TOKENS_ENV, "20000")
+        LocalBackend(endpoint=stub.base, max_output_tokens=99).chat(
+            "m", [{"role": "user", "content": "x"}])
+        assert stub.last_body["max_tokens"] == 99
+
+    def test_and_the_callers_own_number_beats_both(self, stub, monkeypatch):
+        monkeypatch.setenv(MAX_OUTPUT_TOKENS_ENV, "20000")
+        LocalBackend(endpoint=stub.base, max_output_tokens=99).chat(
+            "m", [{"role": "user", "content": "x"}], max_tokens=7)
+        assert stub.last_body["max_tokens"] == 7
+
+    @pytest.mark.parametrize("raw", ["", "   ", "lots", "-1", "0", "4096.5"])
+    def test_garbage_and_non_positive_mean_the_default(self, stub, monkeypatch,
+                                                       raw):
+        """The `MCP_TIMEOUT_S` rule: zero is not a value, because a
+        zero-token completion is every answer empty — and a typo must not
+        be able to turn the model off."""
+        monkeypatch.setenv(MAX_OUTPUT_TOKENS_ENV, raw)
+        LocalBackend(endpoint=stub.base).chat(
+            "m", [{"role": "user", "content": "x"}])
+        assert stub.last_body["max_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_the_capability_still_reports_only_what_was_declared(
+            self, stub, monkeypatch):
+        """The bound is a fact about the REQUEST and stays one.
+        `core.runtime.context_window` sizes the input window off
+        `capabilities.max_output_tokens`, so announcing a ceiling nobody
+        declared would move prompt bytes — on the one path this change is
+        not allowed to touch."""
+        monkeypatch.delenv(MAX_OUTPUT_TOKENS_ENV, raising=False)
+        assert LocalBackend(
+            endpoint=stub.base).capabilities.max_output_tokens is None
+
+    def test_and_an_environment_ceiling_does_not_leak_into_it_either(
+            self, stub, monkeypatch):
+        monkeypatch.setenv(MAX_OUTPUT_TOKENS_ENV, "20000")
+        assert LocalBackend(
+            endpoint=stub.base).capabilities.max_output_tokens is None
+
+
+class TestACutOffCompletionSaysSo:
+    """A bound the harness sets is only half the fix. The other half is
+    that a completion which reached it arrives labelled, beside the count
+    it spent — *2,306 completion tokens* and *2,306 and then the ceiling*
+    are different facts, and a consumer given only the first has been told
+    a truncated answer was a complete one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_inherited_ceiling(self, monkeypatch):
+        monkeypatch.delenv(MAX_OUTPUT_TOKENS_ENV, raising=False)
+
+    def test_a_truncated_completion_carries_the_providers_word(self, stub):
+        stub.finish_reason = "length"
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage.as_record()["finish_reason"] == "length"
+
+    def test_an_ordinary_completion_carries_nothing(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert "finish_reason" not in backend.last_usage.as_record()
+
+    def test_a_truncated_streamed_completion_carries_it_too(self, stub):
+        stub.finish_reason = "length"
+        backend = LocalBackend(endpoint=stub.base)
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert backend.last_usage.as_record()["finish_reason"] == "length"
+
+    def test_an_ordinary_streamed_completion_carries_nothing(self, stub):
+        backend = LocalBackend(endpoint=stub.base)
+        list(backend.chat("m", [{"role": "user", "content": "x"}], stream=True))
+        assert "finish_reason" not in backend.last_usage.as_record()
+
+    def test_a_server_that_reported_no_usage_still_reports_none(self, stub):
+        """There is nothing to hang the word on, and manufacturing three
+        zeros to carry it would be the claim `Usage` exists to refuse."""
+        stub.usage = None
+        stub.finish_reason = "length"
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage is None
+
+    def test_the_counts_beside_it_are_the_providers_own(self, stub):
+        stub.finish_reason = "length"
+        backend = LocalBackend(endpoint=stub.base)
+        backend.chat("m", [{"role": "user", "content": "x"}])
+        assert backend.last_usage.as_record() == {
+            "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15,
+            "finish_reason": "length"}

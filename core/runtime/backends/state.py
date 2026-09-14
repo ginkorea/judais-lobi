@@ -1,6 +1,6 @@
 # core/runtime/backends/state.py — what a backend can say about the model itself
 
-"""The side channel for *why you are waiting*, in seven words.
+"""The side channel for *why you are waiting*, in eight words.
 
 A run's stream says what the agent decided and what it cost.  It has never
 said anything about the thing on the other end of the socket, and two weeks
@@ -31,6 +31,13 @@ So a backend reports, and the words are these:
 ``loaded``
     A reply, or a first token, arrived — with the model id the server
     reported.
+``streaming``
+    The first token arrived and the call is **still going** a long time
+    later.  Not a fault and not a guess: the harness watched the frames
+    go past and is saying so, because the alternative — the one that
+    cost a six-pass investigation — is a stall that is a *hole* in the
+    event stream rather than a fact on it.  See
+    :data:`STREAMING_LONG_S`.
 ``failed``
     The class of error :data:`core.runtime.backends.policy.ERROR_POLICY`
     names, arrived at through that table rather than through a second
@@ -76,14 +83,15 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Iterator, Optional
 
 __all__ = [
-    "COLD", "ASKING", "QUEUED", "LOADING", "LOADED", "FAILED", "ABSENT",
-    "STATES", "WAITING", "FIRST_BYTE_QUEUED_S",
-    "Report", "report", "watching", "first_byte_within",
+    "COLD", "ASKING", "QUEUED", "LOADING", "LOADED", "STREAMING", "FAILED",
+    "ABSENT",
+    "STATES", "WAITING", "FIRST_BYTE_QUEUED_S", "STREAMING_LONG_S",
+    "Report", "report", "watching", "alarm_after", "first_byte_within",
     "retry_after_seconds",
 ]
 
 
-# ── the seven words ──────────────────────────────────────────────────────────
+# ── the eight words ──────────────────────────────────────────────────────────
 
 #: The server is up and does not list the model this backend asks for.
 COLD = "cold"
@@ -95,6 +103,8 @@ QUEUED = "queued"
 LOADING = "loading"
 #: A reply, or a first token, arrived.
 LOADED = "loaded"
+#: Tokens are arriving and the call has been going a long time.
+STREAMING = "streaming"
 #: The error class :data:`~core.runtime.backends.policy.ERROR_POLICY` names.
 FAILED = "failed"
 #: Nothing answered on the socket.
@@ -104,7 +114,7 @@ ABSENT = "absent"
 #: assert it knows all of them.  The order is the order a bad afternoon
 #: tends to produce them in.
 STATES: tuple[str, ...] = (
-    COLD, ASKING, QUEUED, LOADING, LOADED, FAILED, ABSENT,
+    COLD, ASKING, QUEUED, LOADING, LOADED, STREAMING, FAILED, ABSENT,
 )
 
 #: The states that mean **a person is waiting and does not know why**.
@@ -117,7 +127,16 @@ STATES: tuple[str, ...] = (
 #: every stream ever recorded to say what those records already say.  See
 #: :meth:`core.runtime.run.Model.watching`, which owns that rule, and
 #: ``CONTRACT.md`` on ``model_state``, which states it to consumers.
-WAITING: frozenset = frozenset({COLD, QUEUED, LOADING, FAILED, ABSENT})
+#:
+#: ``streaming`` is in it, and that is the one member whose inclusion is an
+#: argument rather than an obvious reading.  A model that has been writing
+#: for three minutes is *working*, not broken — but the person in front of
+#: the pane is waiting and does not know why, which is the sentence this
+#: set exists to answer.  Being in ``WAITING`` is also what makes the
+#: ``loaded`` at the end of that call reach the wire, so the wait a
+#: ``streaming`` record opens is a wait a consumer can close.
+WAITING: frozenset = frozenset(
+    {COLD, QUEUED, LOADING, STREAMING, FAILED, ABSENT})
 
 #: How long the first byte of an accepted request may take before the wait
 #: is reported as a state rather than left as a silence.
@@ -135,6 +154,40 @@ WAITING: frozenset = frozenset({COLD, QUEUED, LOADING, FAILED, ABSENT})
 #: contract's :data:`~core.runtime.contract.ENV_VARS` is a surface a
 #: consumer is promised rather than a place to put a tuning knob.
 FIRST_BYTE_QUEUED_S = 20.0
+
+#: How long a call whose first token HAS arrived may keep producing before
+#: the fact that it is still producing is reported as a state.
+#:
+#: :data:`FIRST_BYTE_QUEUED_S` catches a server that says nothing.  Nothing
+#: caught a server that says something and then keeps saying it for three
+#: minutes, and the cost of that hole is on the record: the v1.4.0
+#: regression diagnosis (``evidence/diagnosis-v1.4.0-regression-2026-09-14.md``)
+#: spent six passes on five stalls whose whole signature was *a
+#: ``step_started`` and then no event at all*, because the first byte had
+#: arrived inside twenty seconds and so the only instrument the harness
+#: owned had already stood down.  Every one of those calls was streaming
+#: the entire time, and the harness could see the frames going past.
+#:
+#: **Sixty seconds**, and the number is read off that same measurement
+#: rather than chosen.  Over the 98 model calls of those three runs the
+#: median call was 6.0s and the p90 was 18.0s; the stalls were 176s, 214s
+#: and four that never terminated.  Sixty is a shade over three times the
+#: p90 — high enough that a healthy heavy-tailed turn almost never reports,
+#: low enough that a 176s call is announced with two minutes still to run.
+#: A threshold tuned any tighter would put a record on every long-but-fine
+#: code-writing turn, which is the failure mode :data:`FIRST_BYTE_QUEUED_S`
+#: describes one paragraph up.
+#:
+#: **One report per call, not a metronome.**  This is a state channel: the
+#: word says *this call is still going*, a consumer holds it as the current
+#: state of the model, and the ``loaded`` at the end of the call clears it.
+#: Repeating it every minute would say nothing the first one did not, on a
+#: stream that de-duplicates a repeated word anyway.
+#:
+#: A constructor argument on the backend for the same reason
+#: :data:`FIRST_BYTE_QUEUED_S` is one: it is a property of the endpoint a
+#: deployment is pointed at, not a tuning knob the contract promises.
+STREAMING_LONG_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -217,22 +270,71 @@ def watching(sink: Callable[[Report], None]) -> Iterator[None]:
 # ── the wait that stopped looking like work ──────────────────────────────────
 
 class FirstByte:
-    """A one-shot alarm for a request that has been accepted and is silent.
+    """A one-shot alarm for a wait that may turn out to be too long.
 
-    Held by :func:`first_byte_within`.  :meth:`arrived` is idempotent and
-    is called both by the backend, when the first byte turns up, and by
-    the context manager's ``finally``, so an abandoned generator or a
+    Held by :func:`alarm_after` and by :func:`first_byte_within`, which is
+    the named case of it.  :meth:`arrived` is idempotent and is called
+    both by the backend, when whatever was being waited for turns up, and
+    by the context manager's ``finally``, so an abandoned generator or a
     raised call cannot leave a timer thread behind.
+
+    **One shot that may ask for another.**  *on_late* returning ``True``
+    re-arms the same alarm for another window — see :meth:`again`, and
+    :func:`alarm_after` for why a callback that decides *it was too early*
+    needs that and cannot get it by holding this object instead.
+
+    The name is the first case it had and is kept because tests and
+    callers read it; what it is, is one alarm.
     """
 
-    def __init__(self, timer: Optional[threading.Timer] = None):
+    def __init__(self, timer: Optional[threading.Timer] = None, *,
+                 context: Any = None, after_s: float = 0.0,
+                 on_late: Optional[Callable[[], Any]] = None):
+        self._lock = threading.Lock()
         self._timer = timer
+        self._context = context
+        self._after_s = after_s
+        self._on_late = on_late
+        self._closed = False
 
     def arrived(self) -> None:
-        """The wait is over — disarm.  Safe to call twice, or never."""
-        timer, self._timer = self._timer, None
+        """The wait is over — disarm, for good.  Safe to call twice, or never.
+
+        **Terminal**, which is what makes :meth:`again` safe: the context
+        manager's ``finally`` calls this, so a re-arm racing the end of a
+        call loses and no timer outlives the call it was watching.
+        """
+        with self._lock:
+            self._closed = True
+            timer, self._timer = self._timer, None
         if timer is not None:
             timer.cancel()
+
+    def again(self) -> None:
+        """Arm the same alarm for another window.  A no-op once closed."""
+        with self._lock:
+            if self._closed or self._context is None or self._on_late is None:
+                return
+            if not self._after_s or self._after_s <= 0:
+                return
+            timer = threading.Timer(self._after_s, self._fire)
+            timer.daemon = True
+            self._timer = timer
+        timer.start()
+
+    def _fire(self) -> None:
+        """Run the callback in the caller's context; re-arm if it asks.
+
+        Timer threads inherit no context of their own, which is the whole
+        reason this class holds one: a :func:`report` inside *on_late*
+        must reach the sink the caller installed.
+        """
+        try:
+            again = self._context.run(self._on_late)
+        except Exception:                       # pragma: no cover - defensive
+            return
+        if again:
+            self.again()
 
     @property
     def armed(self) -> bool:
@@ -251,11 +353,46 @@ def first_byte_within(after_s: float,
     ``CHAT_TIMEOUT``, because the point is to *say something* about a
     wait, never to shorten one.
 
+    The named case of :func:`alarm_after`, which owns the construction.
+    Two names rather than one because the call sites read as what they
+    are — *has the first byte arrived*, and *is this call still going* —
+    and one owner rather than two copies because a second timer helper
+    would be a second set of rules about when nothing is armed.
+    """
+    with alarm_after(after_s, on_late) as watch:
+        yield watch
+
+
+@contextmanager
+def alarm_after(after_s: float,
+                on_late: Callable[[], None]) -> Iterator[FirstByte]:
+    """Run *on_late* once, *after_s* seconds in, unless disarmed first.
+
     *on_late* runs on a timer thread, in a **copy of the calling
     context**, so a :func:`report` inside it reaches the sink the caller
     installed.  Timer threads inherit no context of their own, and that
     is the whole reason this helper exists rather than a bare
     :class:`threading.Timer` at each call site.
+
+    Disarmed by :meth:`FirstByte.arrived` — which the first-byte case
+    calls when the first frame lands, and the long-call case does not
+    call at all — and by this context manager's ``finally`` either way,
+    so no call can leave a timer thread behind.
+
+    **A callback may return ``True`` to be asked again** after another
+    *after_s*, which turns a one-shot into a series it controls.  That is
+    how the long-call case answers *the first frame has not arrived yet*
+    without going silent for the rest of the call: a plain one-shot that
+    returned early would mean a call whose first token lands AFTER the
+    threshold is never reported at all — the hole this word exists to
+    close, moved one window further out.
+
+    The signal is a return value and not the alarm object because the
+    object does not exist yet when the callback is built: a caller
+    writing ``with alarm_after(s, lambda: f(watch)) as watch`` arms the
+    timer before ``watch`` is bound, and a short threshold fires into a
+    ``NameError`` that this function would then swallow.  One value out
+    of the callback has no such window.
 
     Nothing is armed when no sink is installed, or when *after_s* is not
     positive: a chat session, a probe and a library caller with no
@@ -265,18 +402,9 @@ def first_byte_within(after_s: float,
     if _SINK.get() is None or not after_s or after_s <= 0:
         yield FirstByte()
         return
-    context = contextvars.copy_context()
-
-    def fire() -> None:
-        try:
-            context.run(on_late)
-        except Exception:                   # pragma: no cover - defensive
-            pass
-
-    timer = threading.Timer(after_s, fire)
-    timer.daemon = True
-    timer.start()
-    watch = FirstByte(timer)
+    watch = FirstByte(context=contextvars.copy_context(),
+                      after_s=after_s, on_late=on_late)
+    watch.again()
     try:
         yield watch
     finally:

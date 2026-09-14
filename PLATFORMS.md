@@ -368,16 +368,59 @@ what it says is not about the record's kind.
 | `model_state` | `state`, `provider`, `model` | `index`, `detail`, `since_s`, `retry_after_s`, `branch` |
 
 **`model_state`** (0.16, the eleventh) says why a pane is waiting: `state` is
-one of `cold`, `asking`, `queued`, `loading`, `loaded`, `failed`, `absent`
-(`contract.MODEL_STATES`), with `detail` (the server's sentence), `since_s`
-(how long the run has been in it) and `retry_after_s` (a `Retry-After` the
-server sent). **A healthy call emits none of them** — the record's presence is
-the signal — and `loaded` closes a wait. `queued` and `loading` are separated
-by construction: `loading` is only ever the server's own 503; `queued` is a
-429 or an accepted request with no first byte while `/models` lists the model.
-Branch on `state`, render `detail` as prose, hold the last state until
-`loaded`; never treat it as an error — a model that is loading is a run that
-has not failed.
+one of `cold`, `asking`, `queued`, `loading`, `loaded`, `streaming`, `failed`,
+`absent` (`contract.MODEL_STATES`), with `detail` (the server's sentence),
+`since_s` (how long the run has been in it) and `retry_after_s` (a
+`Retry-After` the server sent). **A healthy call emits none of them** — the
+record's presence is the signal — and `loaded` closes a wait. `queued` and
+`loading` are separated by construction: `loading` is only ever the server's
+own 503; `queued` is a 429 or an accepted request with no first byte while
+`/models` lists the model. Branch on `state`, render `detail` as prose, hold
+the last state until `loaded`; never treat it as an error — a model that is
+loading is a run that has not failed.
+
+`streaming` is newer than the rest of that list and is the only word in it that
+is **not** a fault: the model answered and is still answering 60s after the
+request went out, with the frames and characters watched so far in `detail`. It
+is said once per call and **always closed** — by `loaded` when the frames stop,
+by `failed` when the stream dies, is abandoned or is cancelled — so a pane that
+put up *still answering* never has to guess when to take it down. It exists
+because the instrument that catches a silent server stands down the moment a
+token arrives, so a turn whose model writes for three minutes used to be a
+`step_started` followed by nothing at all — which is how a pane's "thinking…"
+and a genuinely hung run come to look identical, and what made
+`evidence/diagnosis-v1.4.0-regression-2026-09-14.md` take six passes.
+
+Two details a pane has to get right. **It is keyed by `index`, not by run.**
+The other six words are facts about the endpoint, which a `--swarm` turn's
+children share and which are de-duplicated across them; `streaming` is a fact
+about one call, so two slow children produce two records with different `index`
+and two closes. Key your model-state widget by `index` (or per `branch`) and
+both render; key it by run and you see whichever spoke last. **And a slow first
+token does not lose the word:** the threshold is re-asked every 60s until a
+frame arrives, so a call that is silent for 90s and then trickles for 200s
+reports `queued`, then `loaded`, then `streaming` — rather than going quiet for
+the whole answer.
+
+**A word added to `MODEL_STATES` is additive and does not bump
+`SCHEMA_VERSION`** — `CONTRACT.md` §Compatibility now states the
+vocabulary-growth rule for enums as such, so it can be classified from there
+alone. A lockstep test holding that tuple against your own list will see it
+grow, and the response is a branch or a shrug, not a pin.
+
+**Reading a slow turn.** Three fields answer it and all three are already on
+the wire. `model_state.state` says whether the model is silent (`queued`,
+`cold`) or working (`streaming`). `usage.prompt_tokens` on the `tool_call` or
+`answer` that follows is **that one call's** prompt size — the number to
+compare against what you believe your base prompt costs. Do *not* divide
+`mission_finished.usage.total_tokens` by `calls` to recover it: that average
+also carries the calls that emit no record of their own (a supervisor review,
+a staged turn's router and synthesizer), so it does not reconcile with the
+per-call numbers and never did. And `usage.finish_reason` appears only when the
+completion was **cut short by a token ceiling**, carrying the provider's own
+word (`length`, `max_tokens`). Render that one as a warning beside the answer:
+the outcome word does not change, and an answer that stops mid-sentence with
+nothing on the pane to say why is the failure the field exists to prevent.
 
 **Read every optional field with a default, and never read an absent one as a
 zero.** Absence and a stated null are different facts throughout: an absent
@@ -475,6 +518,7 @@ The rest of `contract.ENV_VARS`, which have no flag:
 | `MCP_CLIENT_NAME` | **what this client calls itself in the `initialize` handshake** — see §5, and set it |
 | `ELF_PERSONALITY` / `TAI_PERSONALITY` | where the personality file is (§4) |
 | `LOCAL_API_BASE` / `LOCAL_MODEL` | the OpenAI-compatible endpoint on this host, and the name it serves (§8) |
+| `JUDAIS_LOBI_MAX_OUTPUT_TOKENS` | how many completion tokens that endpoint is asked for when nobody names a number; default 4,096, and blank/garbage/non-positive all mean the default. Raise it for a model that reasons at length — a completion that hits the ceiling arrives as `usage.finish_reason` and is not a failure (§8) |
 | `JUDAIS_LOBI_AUDIT` | move the audit file (a path) or silence it (`none`/`off`) |
 | `JUDAIS_LOBI_RUNS` | move the run store (a path) or keep nothing (`none`/`off`) |
 | `JUDAIS_LOBI_APPROVALS` | move the approvals directory |
@@ -1962,6 +2006,17 @@ Three things follow that a hosted-only integration never has to think about:
   and the most-constant-first ordering are deliberate, and `--replay` reports
   *drift* when a request differs from a recorded one, which is how that promise
   is tested rather than asserted.
+* **The output is bounded, and the bound is yours to move.** Every request
+  carries a `max_tokens` — `JUDAIS_LOBI_MAX_OUTPUT_TOKENS`, default 4,096,
+  which is the same output reserve the harness already subtracts from the
+  context window when it sizes a prompt. It did not always: a request with no
+  `max_tokens` is not an unbounded request, it is one bounded by
+  `max_model_len − prompt_tokens` and, in practice, by whichever turn timeout
+  fires first — and a timeout cannot tell you an answer was cut short, because
+  it is not the thing that cut it. With the harness sending its own number, a
+  completion that reaches the ceiling says so as `usage.finish_reason` on the
+  record that follows. If your model reasons at length, raise the variable
+  rather than live with the truncation.
 * **The critic can be local too.** `critic: true` in a manifest's `grounding:`
   block resolves local first, so a deployment running entirely on its own
   hardware still gets an adversarial second opinion (§5).
