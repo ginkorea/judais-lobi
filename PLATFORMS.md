@@ -1451,6 +1451,21 @@ claim about your plane, never evidence of what a call did return — the
 receipt remains the only evidence — and a declaration that turns out to be
 wrong costs a hint, never a fact.
 
+**Writing the first draft of this block, and of `cognition:` above.** Both
+blocks cost an afternoon with your plane the first time, so there is a tool
+for the afternoon: `python -m core.eval suggest-pack --schemas tools_list.json
+--runs DIR` reads a saved `tools/list` and your recorded receipts and prints a
+draft of exactly these two blocks, every line carrying the evidence behind it
+and marked `schema:` (your plane's own contract, better grounded) or
+`observed:` (induced from the receipts that happen to exist — the absence of a
+second value is not evidence that a field holds one). **Nothing it prints is
+loaded by anything**, and it refuses to write into a directory with a
+`SKILL.md` above it. Review it, prune it, paste what you agree with. The two
+judgements it cannot make for you are the two that matter: whether a string is
+an *identity* is a claim about your world, and whether a field that has held
+one value will keep to one is a claim about your plane. See §9 and `EVAL.md`
+§19.
+
 ### Composing skills
 
 `--skill` **repeats**, and several manifests become one mission — which is how
@@ -1917,7 +1932,7 @@ missions:
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
 
-`python -m core.eval` has nine subcommands. The three a platform starts with
+`python -m core.eval` has ten subcommands. The three a platform starts with
 are these:
 
 ```
@@ -1928,6 +1943,7 @@ python -m core.eval measure  --suite path/to/suite.yml --out DIR -- <your spawn 
 python -m core.eval ablation --suite path/to/suite.yml --out DIR -- <your spawn line>
 python -m core.eval corpus   --out corpus.jsonl --from-runs DIR --note "<your data>"
 python -m core.eval context  --runs DIR
+python -m core.eval suggest-pack --schemas tools_list.json --runs DIR --out draft.yml
 ```
 
 * **`check`** refuses a suite that cannot be graded, before anybody spends a GPU
@@ -2011,6 +2027,18 @@ python -m core.eval context  --runs DIR
   `ablation` prints its figures beside each arm's pass rate, so an arm that
   added context and no capability is flagged in the same table that scored
   it. See `EVAL.md` §18.
+* **`suggest-pack`** measures nothing at all. It reads a **saved** `tools/list`
+  response and your recorded `tools.jsonl` receipts, and prints a **draft**
+  `cognition:`/`tools:` pack — an authoring aid for §5's manifest blocks, and
+  the answer to *somebody has to sit down with forty tools and write which keys
+  are identities*. Every line carries the evidence behind it and is marked with
+  its source, because the two sources are not equally good: `schema:` is your
+  plane's own published contract, `observed:` is **induced** from the receipts
+  that happen to exist, and the absence of a second value is not evidence that
+  a field holds one. Nothing it prints is loaded by anything, and it refuses an
+  `--out` path with a `SKILL.md` above it — a draft beside a manifest is one
+  `git add` from being a declaration nobody reviewed. Review it, prune it, and
+  paste the lines you agree with into your skill. See `EVAL.md` §19.
 
 `live` — a platform's own suite driven against a running deployment rather than
 against an archive — is the one that has not landed.
