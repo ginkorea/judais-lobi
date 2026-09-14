@@ -1726,8 +1726,16 @@ def _mission(elf, args, name, style):
     # branches on it — it rides `Store` and the loop feeds it. See
     # `core.runtime.cognition`: with the flag off there is no object, and
     # with it on the only thing that changes about this run is that file.
+    #
+    # `--compiled-context` IMPLIES `--cognition` and does not refuse without
+    # it: the view is compiled from the shadow's own state, so asking for
+    # the view is asking for the state, and a harness that made a person
+    # type both would be charging them for an implementation detail. Turned
+    # on here rather than written back onto `args`, so that what the
+    # operator typed stays what the operator typed.
+    compiling = bool(getattr(args, "compiled_context", False))
     shadow = None
-    if getattr(args, "cognition", False):
+    if getattr(args, "cognition", False) or compiling:
         if run_store is not None and run_id:
             try:
                 # `resumed` is what makes a short log readable: a resumed
@@ -1735,7 +1743,8 @@ def _mission(elf, args, name, style):
                 # so this shadow never saw them and says so in the log.
                 # See `core.runtime.cognition.open_shadow`.
                 shadow = open_shadow(run_store, run_id,
-                                     resumed=recorded is not None)
+                                     resumed=recorded is not None,
+                                     compiling=compiling)
             except Exception as exc:
                 # The one call into the shadow that is NOT already total:
                 # `open_shadow` reads a log a previous process wrote and
@@ -1758,11 +1767,25 @@ def _mission(elf, args, name, style):
                     f"transcript and read by nothing: no prompt, no call "
                     f"and no answer changes because of it",
                     style=style)
+                if compiling:
+                    console.print(
+                        "🧠 compiled context: each step's model input "
+                        "carries ONE block of what the runtime believes — "
+                        "the established facts with the receipt each came "
+                        "from, both sides of every open conflict, and what "
+                        "is only a model's claim — replacing the block "
+                        "before it. It is added to the turn and gates "
+                        "nothing: no answer is held, checked or refused "
+                        "against it (implies --cognition)",
+                        style=style)
         else:
             console.print(
                 f"🧩 cognition: asked for and NOT running — there is no run "
                 f"directory to write {REASONING_LOG} into ({RUNS_ENV} is "
-                f"off). The mission runs exactly as it would have",
+                f"off). The mission runs exactly as it would have"
+                + (" — and with no store there is no state to compile, so "
+                   "--compiled-context adds nothing either" if compiling
+                   else ""),
                 style="yellow")
 
     def chat_fn(messages):
@@ -2756,6 +2779,29 @@ def _main(AgentClass):
                              "a run directory: with JUDAIS_LOBI_RUNS off "
                              "there is nowhere to write it and the flag says "
                              "so (env: JUDAIS_LOBI_COGNITION)")
+    parser.add_argument("--compiled-context", action="store_true",
+                        default=bool((os.getenv(
+                            "JUDAIS_LOBI_COMPILED_CONTEXT") or "").strip()),
+                        help="Put the runtime's view of the problem into "
+                             "each step's model input: ONE block, replacing "
+                             "the block the step before it had, holding the "
+                             "established facts with the receipt handle each "
+                             "came from, both sides of every open conflict, "
+                             "and what is only a model's claim — each graded "
+                             "verified / sourced / model-extracted / "
+                             "speculative. It rides last, next to the "
+                             "current turn, and the cached prefix (persona, "
+                             "protocol, catalogue, conduct) does not move "
+                             "for it. Bounded to 4,000 characters, and what "
+                             "does not fit is named rather than dropped in "
+                             "silence — the receipts are still in the "
+                             "transcript. This IMPLIES --cognition and turns "
+                             "it on rather than refusing, because the view "
+                             "is compiled from that state. It gates nothing: "
+                             "no answer is held, checked or refused against "
+                             "it, and a compiler that fails leaves the "
+                             "mission exactly as it was (env: "
+                             "JUDAIS_LOBI_COMPILED_CONTEXT)")
     parser.add_argument("--no-grounding", action="store_true",
                         default=bool((os.getenv("MISSION_NO_GROUNDING")
                                       or "").strip()),

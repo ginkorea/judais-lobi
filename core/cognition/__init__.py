@@ -26,15 +26,22 @@ the model "what should I do next?" and starts telling it "resolve this."
 production and partially removed — "evidence is great, but a functioning
 harness is better."  So the cognitive layer is **shadow and additive from
 birth**.  This package produces state and guidance, never a verdict on an
-answer.  **Nothing in it may ever refuse or gate a mission**, and nothing in
-it is on the answer path: cognition off is byte-identical, and cognition on
-never blocks an answer.  There is no refusal in here to find, because there is
-no call in here that a mission loop waits on for permission.
+answer.  **Nothing in it may ever refuse or gate a mission**: cognition off
+is byte-identical, and cognition on never blocks an answer.  There is no
+refusal in here to find, because there is no call in here that a mission
+loop waits on for permission.
+
+*Additive* is the half Phase 18 spends.  :mod:`core.cognition.compile`
+renders this store into one block of model input, so with
+``--compiled-context`` the model **reads** what the runtime believes — and
+that is still not a gate: the block is added to a turn, nothing is taken
+away, no answer is held, checked or refused against it, and a compiler that
+fails leaves the mission exactly as it was.
 
 It is also deliberately small about what it does not do.  No I/O — it never
 opens a file, a socket or a model.  No natural-language parsing: turning a
 receipt into propositions is *extraction*, it happens outside, and its
-reliability is Phase 16's number.  No context compiling — Phase 18.  No
+reliability is Phase 16's number.  No
 imports from :mod:`core.runtime`, on purpose and permanently: the
 shadow-attachment lane depends on this package and not the other way round,
 and a kernel that cannot be imported on its own cannot be swapped for a
@@ -109,7 +116,11 @@ this store's id) and the content-addressed obligation id.
 The five modules: :mod:`~core.cognition.types` (the records and the closed
 sets), :mod:`~core.cognition.matching` (unification, and nothing else),
 :mod:`~core.cognition.events` (the log and its version),
-:mod:`~core.cognition.state` (the store).
+:mod:`~core.cognition.state` (the store), and
+:mod:`~core.cognition.compile` (Phase 18's *context compiler*: the store as
+one bounded block of model input — a pure read, under the same
+constitution, and the one thing in this package whose output a model ever
+sees).
 
 **The sibling.**  :mod:`core.cognition.graph` holds entity↔entity
 *relationships* under the same constitution — pure, deterministic, replayable,
@@ -123,6 +134,8 @@ nothing here imports it: the dependency runs one way, the way every other one
 in this package does.
 """
 
+from core.cognition.compile import (BANDS, BUDGET_CHARS, CompiledView, band,
+                                    compile_view)
 from core.cognition.events import (COUNT_KEY, EVENT_OPS,
                                    EVENT_SCHEMA_VERSION, EVENTS_KEY,
                                    KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY,
@@ -147,8 +160,11 @@ from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
 __all__ = [
     "AUTHORITY_RANK",
     "AuthorityRefused",
+    "BANDS",
+    "BUDGET_CHARS",
     "CognitionError",
     "CognitiveState",
+    "CompiledView",
     "CARDINALITIES",
     "COUNT_KEY",
     "CONTRADICTION_KINDS",
@@ -185,6 +201,8 @@ __all__ = [
     "Support",
     "TRUSTED_RULE_AUTHORITIES",
     "UnknownId",
+    "band",
+    "compile_view",
     "deep_copy",
     "freeze",
     "is_variable",

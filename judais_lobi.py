@@ -136,7 +136,10 @@ __all__ = [
     # with one answer and `--resume` is the caller that needs it. A run
     # built without it is the loop exactly as it was; see
     # `core.runtime.cognition` for what it does and, more to the point,
-    # for the long list of what it does not.
+    # for the long list of what it does not. `open_shadow(…,
+    # compiling=True)` is the one thing on that list that is now `--
+    # compiled-context`: the same state, rendered into each step's model
+    # input as one replaced block, and still never a gate.
     "open_shadow",
     # The wire, so a consumer can check a stream without owning a copy of
     # the rules.

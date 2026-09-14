@@ -17,10 +17,12 @@ tokens appended to the spawn line, and the report prints that delta beside
 every arm so the comparison describes itself.  A toggle that lands next
 month is one entry here and no branch anywhere.
 
-**Availability is mechanical and never a list somebody maintains.**  Most
-of the arms this arc will want do not exist yet: ``--cognition`` lands on
-another branch, and compiled context and the graph working set are Phases
-18 and 20.  An arm whose flags the installed CLI does not accept is
+**Availability is mechanical and never a list somebody maintains.**  Every
+arm here was declared before its flag existed: ``--cognition`` landed with
+the shadow lane, ``--compiled-context`` with Phase 18, and the graph
+working set is Phase 20 and still to come.  Each of them graduated — and
+the last will graduate — with **no edit to this module**.  An arm whose
+flags the installed CLI does not accept is
 **SKIPPED with the reason**, and whether it accepts them is settled by
 asking the spawn line's own ``--help`` — see :func:`accepted_flags`.  So
 this module never has to be edited when a flag arrives; the same table
@@ -104,9 +106,10 @@ class Arm:
 #:
 #: ``baseline`` is the line exactly as the caller wrote it and every other
 #: arm is read against it.  The three below it are the pieces ROADMAP §2.9
-#: builds; each is declared here **before** it exists so that the table has
-#: its column from the first run and the column says SKIPPED until the flag
-#: lands, rather than appearing one day with no history behind it.
+#: builds; each was declared here **before** it existed so that the table
+#: has its column from the first run and the column says SKIPPED until the
+#: flag lands, rather than appearing one day with no history behind it.
+#: Two have since landed and neither needed a line changed here.
 ARMS: Tuple[Arm, ...] = (
     Arm(
         name="baseline",
@@ -126,8 +129,11 @@ ARMS: Tuple[Arm, ...] = (
         name="compiled-context",
         flags=("--compiled-context",),
         why="ROADMAP §2.9.5: the context compiled from the epistemic state "
-            "rather than accumulated as a transcript. Declared now, "
-            "skipped until Phase 18 lands the flag",
+            "rather than accumulated as a transcript — one block a step, "
+            "holding the facts with their receipts, both sides of every "
+            "conflict and what is only claimed. The question this arm "
+            "answers is whether a model told what the runtime believes "
+            "spends fewer calls finding it out again",
     ),
     Arm(
         name="graph",

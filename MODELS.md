@@ -67,6 +67,14 @@ Everything here is a deployment knob, never a core edit:
   parameters on agent-facing tools; a 20B filled an optional
   `submitted_via` filter 8 runs of 8 and hid the real data from itself
   (`PLATFORMS.md`).
+- **`--compiled-context`** — put the runtime's view of the problem into
+  each step's input instead of leaving the model to re-read the transcript
+  for facts the runtime already holds. The knob a *weaker* model is most
+  likely to need: it is off by default, it implies `--cognition`, it costs
+  up to 4,000 characters of the window, and whether it pays is a measured
+  question per model — run it as the `compiled-context` arm of
+  `python -m core.eval ablation` against your own baseline before turning
+  it on for a deployment.
 - **Grounding strictness** — the tiers are off by default, `--no-grounding`
   exists, and the owner's ruling stands: evidence is great, a functioning
   harness is better. Turn checks on where the measurements say the model

@@ -1113,7 +1113,8 @@ class TestThePackageStandsAlone:
         assert result.returncode == 0, result.stderr
         loaded = ast.literal_eval(result.stdout.strip())
         assert set(loaded) == {
-            "core.cognition", "core.cognition.events",
+            "core.cognition", "core.cognition.compile",
+            "core.cognition.events",
             "core.cognition.matching", "core.cognition.state",
             "core.cognition.types",
         }, ("the standalone claim is the whole loaded set, not the absence of "

@@ -1256,12 +1256,15 @@ no branch anywhere.
 |---|---|---|
 | `baseline` | *(none)* | the spawn line exactly as the caller wrote it. Every other arm is read against it |
 | `shadow` | `--cognition` | ROADMAP §2.9.4 — the epistemic prototype attached in shadow, emitting state and never gating the answer path |
-| `compiled-context` | `--compiled-context` | ROADMAP §2.9.5 — Phase 18 |
+| `compiled-context` | `--compiled-context` | ROADMAP §2.9.5 — the runtime's view of the problem compiled into each step's input instead of accumulated as a transcript. Landed in Phase 18; this arm graduated with no edit to the table |
 | `graph` | `--graph-context` | ROADMAP §2.9.7 — Phase 20, conditional on Phase 19 |
 
-Three of those four flags do not exist in this release. They are declared
-anyway, so the column is in the table from the first run and says SKIPPED until
-the flag lands — rather than appearing one day with no history behind it.
+`--graph-context` does not exist in this release. It is declared anyway, so the
+column is in the table from the first run and says SKIPPED until the flag lands
+— rather than appearing one day with no history behind it. `--cognition` and
+`--compiled-context` were declared the same way and have since landed, which is
+the graduation this table was designed around: an arm becomes runnable the day
+its flag is published, with no edit here.
 
 ### The availability rule
 
