@@ -499,6 +499,26 @@ class TestNothingCountsTheTurns:
         assert "budget" not in seen[-1]
 
 
+def frontier_shadow(tmp_path, *, compiling=False):
+    """A shadow with one goal and one rule in it — a run that owes something.
+
+    Module level because two classes need the same state and a second
+    spelling of one fixture is the shape that drifts: the class below asks
+    whether the frontier reaches the model, and the class after it asks
+    whether the frontier can end the run.
+    """
+    from core.cognition.types import RuleAuthority
+    from core.runtime.cognition import ShadowCognition
+
+    shadow = ShadowCognition(tmp_path / "reasoning.jsonl", "run-1",
+                             compiling=compiling)
+    shadow.state.add_rule("owner_known", ("alice", "owner_known", True),
+                          [("alice", "payment_link", "?c")],
+                          authority=RuleAuthority.SKILL)
+    shadow.state.add_goal(("alice", "owner_known", True))
+    return shadow
+
+
 class TestTheFrontierSteersTheRun:
     """Phase 19 (ROADMAP §2.9.6) at the seam, both halves in one loop.
 
@@ -519,16 +539,7 @@ class TestTheFrontierSteersTheRun:
     """
 
     def _shadow(self, tmp_path, *, compiling=False):
-        from core.cognition.types import RuleAuthority
-        from core.runtime.cognition import ShadowCognition
-
-        shadow = ShadowCognition(tmp_path / "reasoning.jsonl", "run-1",
-                                 compiling=compiling)
-        shadow.state.add_rule("owner_known", ("alice", "owner_known", True),
-                              [("alice", "payment_link", "?c")],
-                              authority=RuleAuthority.SKILL)
-        shadow.state.add_goal(("alice", "owner_known", True))
-        return shadow
+        return frontier_shadow(tmp_path, compiling=compiling)
 
     OWED = "owed: (alice, payment_link, ?c) — for goal g1, open"
 
@@ -644,6 +655,167 @@ class TestTheFrontierSteersTheRun:
         assert transcript.outcome == "answered"
         assert transcript.reason == ""
         assert transcript.answer == "as far as I got"
+
+
+class TestCognitionCannotEndAMission:
+    """ROADMAP §2.9.3's floor rule, at the only place it can be checked.
+
+    *Cognition-on never blocks an answer.* The first build of this lane
+    kept that as an argument — the epistemic signal is refunded a
+    `progressing` verdict, so it cannot spend the budget down to a
+    wind-up — and the argument had two holes in it, both of which end a
+    mission with `reason: "stuck"` that the same run with the flag off
+    answers:
+
+    * a reviewer that answers `stuck` on the very first firing, and
+    * the review budget spent on this signal's *own* nudges, after which
+      the supervisor's arithmetic makes the wind-up verdict with no call
+      at all.
+
+    So the exemption is structural now
+    (`core.runtime.supervisor.NEVER_WINDS_UP`) and these are the three
+    sequences that used to end a run. Each asserts `reason == ""`: not
+    "ended politely", not "ended with a different word" — never ended.
+    """
+
+    def _busy(self, count=40):
+        """A run that is working: a new call and a new result every step.
+
+        `catalog.search` returns prose, so the harvest establishes nothing
+        and the frontier never moves — which is the one shape the four
+        procedural signals cannot see, and therefore the only one that
+        puts `frozen_frontier` alone in charge of a mission's length.
+        """
+        return ScriptedModel(*[tool_call("catalog.search", q=f"q{index}")
+                               for index in range(count)],
+                             '{"answer": "partial"}')
+
+    def _run(self, bus, tmp_path, *replies, steps=40):
+        from core.runtime.supervisor import Supervisor
+
+        return MissionRunner(
+            self._busy(steps), bus, ["catalog.search"],
+            cognition=frontier_shadow(tmp_path),
+            supervisor=Supervisor(ScriptedModel(*replies))).run("go")
+
+    def test_a_reviewer_saying_stuck_does_not_wind_the_run_up(self, bus,
+                                                              tmp_path):
+        """The word is not on this review's menu, so it is not in the
+        prompt and is not accepted back. A reviewer that says it anyway is
+        read as the nearest thing this review may return — a nudge, whose
+        note still reaches the run."""
+        transcript = self._run(bus, tmp_path,
+                               *[verdict("stuck", "nothing is moving")] * 8)
+        assert transcript.reason == ""
+        assert transcript.answer == "partial"
+
+    def test_nor_does_the_budget_running_out_on_its_own_nudges(self, bus,
+                                                               tmp_path):
+        """Three nudges spend the three reviews; the fourth firing used to
+        be the arithmetic's wind-up with no call made. Now it is no review
+        at all — the out-of-reviews answer *is* the wind-up, and this
+        signal has none to make."""
+        transcript = self._run(bus, tmp_path,
+                               *[verdict("nudge", "try again")] * 8)
+        assert transcript.reason == ""
+        assert transcript.answer == "partial"
+
+    def test_nor_does_a_run_that_is_told_it_is_fine_five_times(self, bus,
+                                                               tmp_path):
+        """The refund runs out after two, and the third `progressing`
+        spends a review like any other. What must not follow is the
+        narrowing that takes `progressing` off the last menu: it exists to
+        force a wind-up, and there is no wind-up here to force.
+
+        Eighty steps because every `progressing` raises the threshold —
+        five firings cost 5 + 10 + 15 + 20 + 25 steps of work, which is
+        the refund doing its other job. The fifth is the one that used to
+        end the run: a reviewer still saying "this is fine", answered by
+        arithmetic.
+        """
+        transcript = self._run(bus, tmp_path, *[verdict("progressing")] * 8,
+                               steps=80)
+        assert transcript.reason == ""
+        assert transcript.answer == "partial"
+
+    def test_and_the_same_run_with_cognition_off_is_the_comparison(self,
+                                                                   bus):
+        """The claim is a *difference*, so the other side of it is here:
+        the identical forty steps, no shadow, no reading — and the same
+        answer. A regression in either direction shows up as these two
+        disagreeing."""
+        from core.runtime.supervisor import Supervisor
+
+        transcript = MissionRunner(
+            self._busy(), bus, ["catalog.search"],
+            supervisor=Supervisor(ScriptedModel(
+                *[verdict("nudge", "try again")] * 8))).run("go")
+        assert transcript.reason == ""
+        assert transcript.answer == "partial"
+
+    def test_a_watcher_written_before_the_reading_existed_still_watches(
+            self, bus):
+        """`Bounds.supervisor` is duck-typed, and a platform's own watcher
+        written against the seam as it was at v1.3.0 takes
+        `look(objective, ledger=None)`. Handing it a keyword it never
+        declared is a `TypeError` out of a step boundary — a mission killed
+        over an argument name. It is asked the older question instead, and
+        the answer is honoured."""
+        seen = []
+
+        class _OlderWatcher:
+            def __init__(self):
+                self.asked = 0
+
+            def look(self, objective, ledger=None):
+                self.asked += 1
+                return None
+
+            def saw_call(self, *args, **kwargs):
+                pass
+
+            def saw_rejection(self, *args, **kwargs):
+                pass
+
+        watcher = _OlderWatcher()
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="x"),
+                          '{"answer": "done"}'),
+            bus, ["catalog.search"], observer=seen.append,
+            supervisor=watcher).run("go")
+        assert transcript.answer == "done"
+        assert watcher.asked >= 2
+        assert not [record for record in seen
+                    if record["event"] == "step_started" and "review" in record]
+
+    def test_a_shadow_whose_reading_raises_is_simply_not_read(self, bus):
+        """The shipped shadow's `progress` never raises. This attribute
+        holds anybody's, and a stand-in that throws is the same event as a
+        stand-in that has nothing to say: the signal goes quiet and the
+        mission answers."""
+        from core.runtime.supervisor import Supervisor
+
+        class _RaisingShadow:
+            def receipt(self, *args, **kwargs):
+                pass
+
+            def close_step(self):
+                pass
+
+            def compiled_block(self):
+                return ""
+
+            def progress(self):
+                raise RuntimeError("frontier unreadable")
+
+        transcript = MissionRunner(
+            ScriptedModel(tool_call("catalog.search", q="x"),
+                          '{"answer": "done"}'),
+            bus, ["catalog.search"], cognition=_RaisingShadow(),
+            supervisor=Supervisor(ScriptedModel(verdict("nudge", "x")))
+        ).run("go")
+        assert transcript.answer == "done"
+        assert transcript.reason == ""
 
 
 class TestTheSupervisor:

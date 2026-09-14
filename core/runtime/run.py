@@ -702,10 +702,13 @@ class Bounds:
     #: ``look`` is called as ``look(objective, ledger=…, progress=…)``.
     #: ``progress`` arrived with Phase 19 (ROADMAP §2.9.6) and is the
     #: run's epistemic reading or ``None``; a watcher with no use for it
-    #: takes it and drops it, and one written before it existed should
-    #: take ``**_kwargs`` — this loop passes the keyword on every step,
-    #: including the steps where it is ``None``, so that a watcher's
-    #: signature does not depend on whether the run has cognition on.
+    #: takes it and drops it, and ``**_kwargs`` is the way to be sure of
+    #: taking whatever comes next.  This loop passes the keyword on every
+    #: step, including the steps where it is ``None``, so that a watcher's
+    #: signature does not depend on whether the run has cognition on — and
+    #: a watcher that does **not** take it is not a broken run: see
+    #: :meth:`Run._look`, which asks the older question instead and
+    #: remembers.
     #:
     #: ``None`` is not "unwatched": it made the documented example —
     #: ``Run(personality, plane, Bounds(), …)`` — a run with no
@@ -826,8 +829,17 @@ class Store:
     #: that has to be edited to swap it.  It is durable state like the
     #: other three — one ``reasoning.jsonl`` in the same run directory,
     #: under the same ``JUDAIS_LOBI_RUNS`` — and it is **shadow**: nothing
-    #: the loop does waits on it, reads it back, or ends differently
-    #: because of it.
+    #: the loop does waits on it or ends differently because of it.
+    #:
+    #: Two things read it back, and neither of them gates.  With
+    #: ``--compiled-context`` the compiled view of it rides in each step's
+    #: model input (:meth:`Run._compile_context`); and where the run has
+    #: goals loaded, :meth:`Run._cognitive_progress` hands the step's
+    #: epistemic reading to the watcher, which may raise the same advisory
+    #: review a repeated call raises — and may not end the run with it
+    #: (:data:`core.runtime.supervisor.NEVER_WINDS_UP`).  "Shadow" is a
+    #: claim about deciding, and it survives both: no answer is held,
+    #: checked or refused against this object.
     cognition: Any = None
 
     def __post_init__(self) -> None:
@@ -1626,6 +1638,12 @@ class Run:
         #: one path that legitimately continues after an answer, and
         #: therefore the one thing that may follow a wind-up turn.
         self._repairing = False
+        #: Whether this run's watcher takes the ``progress`` keyword.  See
+        #: :meth:`_supervise`: a watcher written against the seam as it was
+        #: before Phase 19 takes ``(objective, ledger=…)`` and nothing
+        #: else, and is asked the older question from then on rather than
+        #: probed once a step.
+        self._watcher_reads_progress = True
         #: The last complete answer this run WROTE and did not return.
         #:
         #: There is exactly one way to write one and not return it — a
@@ -2510,9 +2528,7 @@ class Run:
         """
         if self.bounds.supervisor is None:
             return None
-        review = self.bounds.supervisor.look(
-            objective, ledger=transcript.usage,
-            progress=self._cognitive_progress())
+        review = self._look(objective, transcript)
         if review is None:
             return None
         if review.verdict == NUDGE and review.note:
@@ -2525,6 +2541,42 @@ class Run:
             self._winding_up = True
             transcript.reason = STUCK
         return review
+
+    def _look(self, objective: str, transcript: MissionTranscript) -> Any:
+        """Ask the watcher about the step, in the dialect it understands.
+
+        ``progress`` arrived with Phase 19 and :attr:`Bounds.supervisor` is
+        **duck-typed**: what a run needs is ``look``, ``saw_call`` and
+        ``saw_rejection``, and a platform's own watcher written against the
+        seam as it was at v1.3.0 has ``look(objective, ledger=None)``.
+        Handing that one a keyword it never declared is a ``TypeError`` out
+        of a step boundary — a mission killed by a watcher that was doing
+        its job, which is the harness deciding a run's fate over an
+        argument name.
+
+        So the newer question is asked, and a watcher that cannot take it
+        is asked the older one instead and **remembered**: the fallback is
+        latched on this run object, so the probe costs one extra call once
+        rather than one a step, and the signal is simply unavailable
+        for that watcher — the disable-do-not-fabricate rule
+        :meth:`_cognitive_progress` obeys on the other side.
+
+        The narrowness is deliberate: only :class:`TypeError`, and only
+        here.  A watcher that raises anything else is raising it about the
+        run, and this loop does not swallow that.  The cost of the
+        narrowness is the corner where a watcher raises ``TypeError`` from
+        *inside* its own ``look``: it is asked once more without the
+        keyword, and after that once, never again.
+        """
+        watcher = self.bounds.supervisor
+        if not self._watcher_reads_progress:
+            return watcher.look(objective, ledger=transcript.usage)
+        try:
+            return watcher.look(objective, ledger=transcript.usage,
+                                progress=self._cognitive_progress())
+        except TypeError:
+            self._watcher_reads_progress = False
+            return watcher.look(objective, ledger=transcript.usage)
 
     def _cognitive_progress(self) -> Any:
         """What the run believes, for the watcher.  ``None`` without a shadow.
@@ -2553,9 +2605,24 @@ class Run:
         the other side, at the one place a stand-in can differ from the
         real thing: the signal goes quiet, the supervisor keeps its four
         mechanical ones, and the mission never learns.
+
+        **And the call is inside the guard, not only the lookup.**  The
+        shipped shadow's ``progress`` never raises — it is a ``try`` all
+        the way down and answers ``None`` for every reason there is not to
+        have a reading — but that is a property of *that* implementation
+        and this attribute holds anybody's.  A stand-in whose reading
+        raises is the same event as a stand-in that has no reading at all,
+        and both of them are a mission that keeps running: the one thing
+        this layer may never do is end a run, and raising out of a step
+        boundary is the loudest way there is to do it.
         """
         read = getattr(self.store.cognition, "progress", None)
-        return read() if callable(read) else None
+        if not callable(read):
+            return None
+        try:
+            return read()
+        except Exception:                       # noqa: BLE001 - the point
+            return None
 
     def _receipt_seq(self, handle: str) -> str:
         """What names this receipt inside this run, for the shadow.

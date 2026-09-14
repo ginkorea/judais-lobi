@@ -23,7 +23,7 @@ import pytest
 from core.runtime.cognition import Progress
 from core.runtime.supervisor import (
     BELIEFS_PER_STEP, FAILED_GATE, FROZEN_FRONTIER, FROZEN_STEPS,
-    NO_NEW_EVIDENCE, NUDGE, OSCILLATION, PROGRESSING,
+    NEVER_WINDS_UP, NO_NEW_EVIDENCE, NUDGE, OSCILLATION, PROGRESSING,
     REFUNDS_ON_PROGRESSING, REJECTED_REPLIES, REPEATED_CALL, REPLAN,
     REVIEW_REFUNDS, REVIEWS, SIGNALS, STALE_STEPS, STUCK,
     VERDICTS, Review, Supervisor,
@@ -460,6 +460,20 @@ class TestTheRunsBeliefHasStoppedMoving:
             == [None] * len(readings)
         assert reviewer.calls == 0
 
+    def test_and_the_comparison_is_pairwise_and_not_end_to_end(self):
+        """The window that separates the two spellings: two disagreements,
+        one settled, one found again. Its ends agree — an endpoint
+        comparison sees a run standing still — and step against step there
+        is a reduction in it, which is a run that settled something. The
+        second reading is the true one, and this window is the only kind
+        that can tell."""
+        sup, reviewer = watching()
+        readings = [believing(contradictions=count)
+                    for count in (2, 1, 2, 2, 2)]
+        assert working(sup, len(readings), readings=readings) \
+            == [None] * len(readings)
+        assert reviewer.calls == 0
+
     def test_a_contradiction_found_is_not_progress(self):
         """The check is "none was reduced", not "the number moved". A run
         that keeps discovering disagreements and settling none of them has
@@ -558,6 +572,26 @@ class TestCognitionOffChangesNothing:
             == [None] * FROZEN_STEPS
         assert reviewer.calls == 0
 
+    def test_a_reading_this_module_does_not_recognise_is_no_reading(self):
+        """Every attribute read off a reading here is optional, and it is
+        one rule rather than two: a stand-in carrying three of the four
+        fields is a shape this module cannot compare, and the honest
+        answer to a shape it cannot compare is no signal — not an
+        `AttributeError` out of a step boundary."""
+
+        class _Partial:
+            frontier = "f1"
+            obligations = 2
+            contradictions = 0
+            # and no `propositions`, which is the one being compared to
+            # `BELIEFS_PER_STEP`.
+
+        sup, reviewer = watching()
+        assert working(sup, FROZEN_STEPS,
+                       readings=[_Partial()] * FROZEN_STEPS) \
+            == [None] * FROZEN_STEPS
+        assert reviewer.calls == 0
+
     def test_and_the_signal_comes_back_when_the_readings_do(self):
         """Disabled for the window and not for the run: a shadow that
         recovers is watched again, because nothing here latches."""
@@ -609,6 +643,72 @@ class TestCognitionSteersAndNeverGates:
                 if review is not None]
         assert [review.count for review in seen[:2]] == [FROZEN_STEPS,
                                                          FROZEN_STEPS * 2]
+
+    def test_the_exempt_signals_are_a_stated_set(self):
+        """One member, and it is the cognitive one. A refund was not
+        enough: it protects a run whose reviewer keeps saying
+        `progressing`, and two other paths ended a procedurally healthy
+        mission on this signal alone.
+
+        It is an exemption and not a softening — the arithmetic that ends
+        runs still belongs to demonstrated repetition, which
+        `TestTheEndlessLoopIsCaughtByArithmetic` is the owner of."""
+        assert NEVER_WINDS_UP == frozenset({FROZEN_FRONTIER})
+
+    def test_the_reviewing_model_is_not_offered_the_ending_word(self):
+        """Not offered and not accepted, which is the same narrowing the
+        last review already does for `progressing`: a word that is not in
+        the prompt cannot come back as a verdict by accident."""
+        sup, reviewer = watching(verdict(NUDGE, "ask for the holder"))
+        working(sup, FROZEN_STEPS)
+        prompt = reviewer.seen[0][0]["content"]
+        assert '"progressing"' in prompt and '"nudge"' in prompt
+        assert '"stuck"' not in prompt
+
+    def test_and_a_reviewer_that_says_it_anyway_is_read_as_a_nudge(self):
+        """A verdict dropped on the floor is a review spent for nothing,
+        so an unoffered word is read as the nearest one this review MAY
+        return — and the note, which is the actionable half, still reaches
+        the run."""
+        sup, _reviewer = watching(verdict(STUCK, "nothing is moving"))
+        review = working(sup, FROZEN_STEPS)[-1]
+        assert review.verdict == NUDGE
+        assert review.note == "nothing is moving"
+
+    def test_and_the_spent_budget_says_nothing_at_all(self):
+        """The out-of-reviews answer *is* the wind-up — `stuck` by
+        arithmetic, with no call made. A signal that may not end a run has
+        none to make, so the boundary is the ordinary one: no review, no
+        record, nothing said to the model."""
+        sup, reviewer = watching(*[verdict(NUDGE, "try the holder")] * 8)
+        spent = [working(sup, FROZEN_STEPS, start=FROZEN_STEPS * turn)[-1]
+                 for turn in range(REVIEWS)]
+        assert [review.verdict for review in spent] == [NUDGE] * REVIEWS
+        assert sup.reviews_left == 0
+        assert working(sup, FROZEN_STEPS,
+                       start=FROZEN_STEPS * REVIEWS)[-1] is None
+        assert reviewer.calls == REVIEWS
+
+    def test_and_a_run_told_it_is_fine_to_the_last_review_records_that(self):
+        """Taking `progressing` off the last menu exists to force the
+        wind-up, and there is none here to force. So the word stays on the
+        menu: dropping it would mean an honest `progressing` came back as
+        an unoffered word, was read as the nearest one this review may
+        return, and rode `step_started` as a nudge nobody wrote.
+
+        Five firings, because every `progressing` raises the threshold —
+        5, 10, 15, 20 and 25 steps of work — and the last two spend the
+        budget the refund stops covering.
+        """
+        sup, reviewer = watching(*[verdict(PROGRESSING)] * 8)
+        seen, done = [], 0
+        for turn in range(5):
+            window = FROZEN_STEPS * (turn + 1)
+            seen.append(working(sup, window, start=done)[-1])
+            done += window
+        assert [review.verdict for review in seen] == [PROGRESSING] * 5
+        assert reviewer.calls == 5
+        assert sup.reviews_left == 0
 
     def test_a_run_that_is_repeating_itself_is_asked_the_concrete_question(
             self):

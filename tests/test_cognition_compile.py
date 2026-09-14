@@ -32,8 +32,9 @@ from core.cognition import (CognitiveState, EvidenceAuthority, EvidenceRef,
                             compile_view)
 from core.cognition import compile as mod
 from core.cognition.compile import (BANDS, BUDGET_CHARS, CONFLICTS_HEADING,
-                                    DISPUTED, FACTS_HEADING, FRONTIER_CAPPED,
-                                    HYPOTHESES_HEADING, OMITTED, OWED_HEADING,
+                                    DISPUTED, DROP_ORDER, FACTS_HEADING,
+                                    FRONTIER_CAPPED, HYPOTHESES_HEADING,
+                                    OMITTED, OWED_HEADING, SECTIONS,
                                     TITLE, UNGRADED, CompiledView, band,
                                     owed_line)
 from core.cognition.state import ENV_CAP
@@ -420,6 +421,35 @@ class TestTheFrontierIsInTheBlock:
         assert lines == [owed_line(item) for item in owed.ranked_frontier()]
         assert owed_line(owed.next_obligation()) == lines[0]
 
+    def test_and_the_ranking_is_not_the_order_it_was_computed_in(self):
+        """The case where the two orders differ, written out in full.
+
+        The assertion above says the block renders what
+        `ranked_frontier()` returns, which is true of an unsorted
+        `ranked_frontier()` as well — both sides would move together. So
+        here is a state whose computation order and whose ranking are
+        *different lists*: two goals, one rule, and a second premise that
+        cannot be stated until the first binds the account it is about.
+        Walked, it is alice-open, alice-blocked, bob-open, bob-blocked —
+        goal by goal. Ranked, every workable line comes first and the
+        blocked ones follow in the order they were found, which is what a
+        reader working from the top of the section is owed.
+        """
+        state = CognitiveState()
+        state.add_rule("owner_known", ("?a", "owner_known", True),
+                       [("?a", "payment_link", "?c"), ("?c", "holder", "?h")],
+                       authority=RuleAuthority.SKILL)
+        state.add_goal(("alice", "owner_known", True))
+        state.add_goal(("bob", "owner_known", True))
+        assert section(compile_view(state), OWED_HEADING) == [
+            "owed: (alice, payment_link, ?c) — for goal g1, open",
+            "owed: (bob, payment_link, ?c) — for goal g2, open",
+            "owed: (?c, holder, ?h) — for goal g1, blocked on 1",
+            "owed: (?c, holder, ?h) — for goal g2, blocked on 1",
+        ]
+        assert [owed_line(item) for item in state.frontier()] != \
+            [owed_line(item) for item in state.ranked_frontier()]
+
     def test_the_section_sits_after_the_conflicts(self, owed):
         state = owed
         state.declare_field("units", "one")
@@ -518,7 +548,7 @@ class TestTheFrontierSaysWhenItStoppedShort:
         """The floor under the flag: the block's one omission sentence
         counts the owed lines it lost, the cap note among them, so there
         is no budget at which owed material disappears in silence."""
-        tight = compile_view(capped, budget_chars=420)
+        tight = compile_view(capped, budget_chars=500)
         assert FRONTIER_CAPPED not in tight.text
         assert f"+{tight.owed_omitted} owed lines" in tight.text
 
@@ -526,6 +556,31 @@ class TestTheFrontierSaysWhenItStoppedShort:
         state = CognitiveState()
         owes(state, chain(3))
         assert FRONTIER_CAPPED not in compile_view(state).text
+
+    def test_and_a_capped_walk_owing_nothing_renders_no_section(self,
+                                                                monkeypatch):
+        """The note says there is more than what is shown, so it needs
+        something to be more *than*. A walk that stopped at the cap having
+        resolved everything it reached leaves an empty frontier, and the
+        note alone under the heading would be a section announcing itself
+        over no rows — the no-empty-headings rule, broken by the one line
+        that is exempt from being dropped.
+
+        Asked of the renderer directly because the kernel is not known to
+        produce this state today: the flag and the emptiness are two
+        properties of one object, and what this pins is what the block does
+        when it is handed both.
+        """
+        from core.cognition.types import Frontier
+
+        state = CognitiveState()
+        observe(state, "mcp.ledger_entry#r1", "units", 120)
+        monkeypatch.setattr(type(state), "ranked_frontier",
+                            lambda self: Frontier((), truncated=True))
+        view = compile_view(state)
+        assert view.owed == 0 and view.owed_omitted == 0
+        assert OWED_HEADING not in view.text
+        assert FRONTIER_CAPPED not in view.text
 
 
 class TestAGuessIsNeverAFact:
@@ -617,6 +672,49 @@ class TestTheFourBands:
         observe(state, "t#r1", "units", 120,
                 authority=EvidenceAuthority.SOURCE)
         assert "[sourced]" in compile_view(state).text
+
+
+class TestTheSectionsAreOneList:
+    """Five structures, four names, and nothing but this keeps them in step.
+
+    :data:`SECTIONS` is the order the block renders in; :data:`HEADINGS` is
+    parallel to it; :data:`DROP_ORDER` is the same four names in another
+    order; and both ``_Cut`` and :class:`CompiledView` carry a field per
+    name and a second field per name for what was lost. The module says
+    the reason out loud — *four parallel tuples whose order is a
+    convention is the shape where a heading ends up over the wrong lines*
+    — and a fifth section, or a rename, is the edit that would prove it.
+    """
+
+    def _fields(self, cls):
+        import dataclasses
+
+        return [field.name for field in dataclasses.fields(cls)]
+
+    def test_the_headings_are_parallel_to_the_sections(self):
+        assert len(set(SECTIONS)) == len(SECTIONS)
+        assert len(mod.HEADINGS) == len(SECTIONS)
+
+    def test_the_drop_order_is_the_same_four_names(self):
+        assert sorted(DROP_ORDER) == sorted(SECTIONS)
+
+    def test_the_cut_carries_one_field_per_section_and_one_per_loss(self):
+        assert self._fields(mod._Cut) == \
+            list(SECTIONS) + [f"{name}_out" for name in SECTIONS]
+
+    def test_and_the_view_carries_the_same_four_twice_over(self):
+        section_fields = [name for name in self._fields(CompiledView)
+                          if name in set(SECTIONS)
+                          or name.endswith("_omitted")]
+        assert section_fields == \
+            list(SECTIONS) + [f"{name}_omitted" for name in SECTIONS]
+
+    def test_and_the_kept_and_out_tuples_read_in_section_order(self):
+        cut = mod._cut_at(0, (4, 3, 2, 1))
+        assert cut.kept == (4, 3, 2, 1)
+        assert cut.kept == tuple(getattr(cut, name) for name in SECTIONS)
+        assert cut.out == tuple(getattr(cut, f"{name}_out")
+                                for name in SECTIONS)
 
 
 # ── what the budget does ─────────────────────────────────────────────────────
@@ -776,13 +874,62 @@ class TestTheBudgetIsHardAndNeverSilent:
         assert "+2 owed lines " in mod._omission((0, 0, 2, 0))
 
     def test_the_sentence_names_its_losses_in_render_order(self):
-        """Facts, conflicts, owed, hypotheses — the order the block reads
-        in, not the order the budget took them in. A reader matching the
-        sentence against the block should not have to know the drop
-        order."""
+        """Facts, conflicts, hypotheses — the order the block reads in, not
+        the order the budget took them in. A reader matching the sentence
+        against the block should not have to know the drop order.
+
+        The owed lines are named in a clause of their own and therefore
+        last; render order is kept inside the clause that has a store to
+        point at, which is the clause it is a promise about."""
         said = mod._omission((1, 1, 1, 1))
         assert said.index("+1 fact") < said.index("+1 conflict") \
-            < said.index("+1 owed line") < said.index("+1 hypothesis")
+            < said.index("+1 hypothesis") < said.index("+1 owed line")
+
+    def test_a_dropped_owed_line_is_not_promised_in_the_store(self):
+        """The escape is true of three sections and false of this one. An
+        owed line is computed from the goals against the store; it is in no
+        store, and a model sent to look for one has spent a tool call
+        learning the runtime was wrong about itself."""
+        state = CognitiveState()
+        owes(state, chain(20))
+        view = compile_view(state, budget_chars=600)
+        assert view.owed_omitted and view.facts_omitted == 0
+        assert f"+{view.owed_omitted} owed lines" in view.text
+        assert "result store" not in view.text
+        assert "ask the mission" not in view.text
+
+    def test_and_what_it_says_instead_is_what_is_true_of_a_frontier(self):
+        """Nothing was lost when an owed line went: the frontier is
+        recomputed from the goals at every step, and the rest of it renders
+        as soon as the lines above it are resolved or there is room."""
+        state = CognitiveState()
+        owes(state, chain(20))
+        text = compile_view(state, budget_chars=600).text
+        assert "nothing to ask for" in text
+        assert "recomputed from the goals at every step" in text
+
+    def test_a_block_that_lost_only_receipts_says_only_that(self):
+        """And the other direction: the clause appears where it is true and
+        nowhere else, so a block that dropped no owed line reads exactly as
+        it did before this clause existed."""
+        state = CognitiveState()
+        for index in range(40):
+            observe(state, f"mcp.ledger_entry#r{index}", "units", index)
+        owes(state, chain(2))
+        view = compile_view(state, budget_chars=900)
+        assert view.facts_omitted and view.owed_omitted == 0
+        assert "result store" in view.text
+        assert "nothing to ask for" not in view.text
+
+    def test_and_a_block_that_lost_both_says_both(self):
+        state = CognitiveState()
+        for index in range(40):
+            observe(state, f"mcp.ledger_entry#r{index}", "units", index)
+        owes(state, chain(20))
+        view = compile_view(state, budget_chars=500)
+        assert view.facts_omitted and view.owed_omitted
+        assert "result store" in view.text
+        assert "nothing to ask for" in view.text
 
     def test_a_budget_too_small_to_explain_itself_compiles_nothing(self,
                                                                    wide):

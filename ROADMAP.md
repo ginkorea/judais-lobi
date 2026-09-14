@@ -1198,15 +1198,21 @@ compiled view (§2.9.5) gained an **OWED** section — the ranked frontier, one
 line per unresolved obligation naming the goal it serves and what blocks it,
 sharing the block's one budget, with the kernel's own frontier truncation
 said out loud rather than left to look like an exhausted walk. The supervisor
-gained **`frozen_frontier`**, a fifth mechanical signal fed by the shadow's
+gained **`frozen_frontier`**, a sixth mechanical signal fed by the shadow's
 progress digest (frontier fingerprint, obligations, open contradictions,
 propositions): five consecutive steps in which the frontier did not move, no
 contradiction was reduced and almost nothing new was believed raise the
 *same* advisory review a repeated call raises — quoting the top owed line, in
 the words the block already showed — and no other thing. No flag, no record,
-no field on the wire, and no path to an ending the procedural signals did not
-already have; a `progressing` verdict on it is refunded, so it cannot spend a
-run's review budget down to a wind-up. Cognition off is byte-identical.
+no field on the wire, and **no path to an ending at all**: the signal is never
+offered `stuck`, and where the review budget is spent it produces no review
+rather than the wind-up the arithmetic makes for the procedural five
+(`NEVER_WINDS_UP`). A `progressing` verdict on it is refunded besides. That is
+§2.9.3's floor rule — *cognition-on never blocks an answer* — made true by
+construction; the first build of this lane had it as an argument, and the
+review found the two paths (a reviewer answering `stuck`, and the budget spent
+on this signal's own nudges) by which a cognition-on run ended where a
+cognition-off run answered. Cognition off is byte-identical.
 
 What is *not* done is the number. The A/B above is the owed measurement, and
 until it is read this is machinery with an argument rather than a result —

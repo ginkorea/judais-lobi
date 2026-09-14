@@ -63,6 +63,12 @@ owner asked to catch, and it is caught by arithmetic that cannot be
 talked out of it: after the last review the next signal winds the run up
 with no further call.
 
+That arithmetic belongs to the signals that are about *what the run
+did*.  A signal in :data:`NEVER_WINDS_UP` is outside it in both
+directions — it is never offered :data:`STUCK`, and when the budget is
+spent it produces no review at all rather than the wind-up the
+arithmetic makes.
+
 **One supervisor per turn.**  A staged (``--swarm``) turn hands the same
 object to every sub-mission it builds and to its own step-level gate
 review, so a plan that loops *across* its steps is a pattern this sees —
@@ -71,7 +77,8 @@ and so the review budget is the turn's, not five copies of it.
 **And cognition steers with the same voice as everything else.**  The
 epistemic signal raises the review this module already raises and
 nothing more: no new verdict, no new record, no field on the wire, and
-no path to an ending that a repeated call did not already have.  The
+**no path to an ending at all** — see :data:`NEVER_WINDS_UP`, which is
+that claim made true by construction rather than by argument.  The
 owner's ruling of 13 September 2026 is the floor — the cognitive layer
 is shadow and additive, it emits state and guidance, it never gates —
 and the way that is kept true here is by giving it no machinery of its
@@ -100,7 +107,7 @@ __all__ = [
     "STUCK", "REPLAN",
     "VERDICTS", "VERDICT_LINES", "REPEATS", "REJECTIONS", "STALE_STEPS",
     "FROZEN_STEPS", "BELIEFS_PER_STEP",
-    "REVIEWS", "REFUNDS_ON_PROGRESSING", "REVIEW_REFUNDS",
+    "REVIEWS", "REFUNDS_ON_PROGRESSING", "REVIEW_REFUNDS", "NEVER_WINDS_UP",
     "Review", "Supervisor", "NUDGE_NOTE", "WIND_UP", "describe",
 ]
 
@@ -315,6 +322,43 @@ REFUNDS_ON_PROGRESSING: frozenset = frozenset({NO_NEW_EVIDENCE,
 #: either a new call or a new result is evidence, a run that is getting
 #: anywhere never fires the signal at all.
 REVIEW_REFUNDS = 2
+
+#: The signals that may **never end a run**.  One member, and it is the
+#: cognitive one.
+#:
+#: A refund was not enough, and the review that found that out is the
+#: reason this constant exists rather than an argument in a docstring.
+#: :data:`REFUNDS_ON_PROGRESSING` protects a run whose reviewer keeps
+#: saying ``progressing`` — and only that run.  Two other paths ended a
+#: procedurally healthy mission on the strength of a frozen frontier
+#: alone: a reviewer that answered ``stuck`` on the first firing, and
+#: :data:`REVIEWS` spent on this signal's own nudges, after which
+#: :meth:`Supervisor._review` made the wind-up verdict by arithmetic with
+#: no call at all.  Both ended a cognition-**on** run that a cognition-off
+#: run would have answered, which is the one thing ROADMAP §2.9.3's floor
+#: rule forbids: *the cognitive layer is shadow and additive — it emits
+#: state and guidance, and never gates*.
+#:
+#: So the exemption is structural and is read in two places, which is what
+#: makes it true by construction rather than by care:
+#:
+#: * :meth:`Supervisor.look` does not offer :data:`STUCK` for such a
+#:   signal — the word is neither in the prompt nor accepted by the parser
+#:   (:meth:`Supervisor._ask` reads an unoffered word as the nearest one
+#:   this review *may* return), so no reviewer can say it into being;
+#: * :meth:`Supervisor._review` answers ``None`` — no review, no record,
+#:   nothing said to the model — where it would otherwise make the
+#:   out-of-reviews :data:`STUCK`.
+#:
+#: What such a signal still does is **spend** a review when it raises one,
+#: because a review is a model call and an unpaid one is an unbounded one:
+#: a nudge does not raise a threshold, so a signal that fired for free
+#: could fire every :data:`FROZEN_STEPS` steps forever.  The residual is
+#: stated rather than hidden: a run whose reviews went on frozen-frontier
+#: nudges meets a later *procedural* signal with fewer left.  That ending
+#: is still demonstrated repetition's, made by the arithmetic that has
+#: always owned it — what cognition cannot do is be the ending itself.
+NEVER_WINDS_UP: frozenset = frozenset({FROZEN_FRONTIER})
 
 #: How much of a result the reviewing model is shown per act.  Enough to
 #: recognise a listing; short enough that twenty of them are a prompt and
@@ -547,6 +591,33 @@ class _Step:
         return not self.acts and not self.rejections
 
 
+#: What a step's epistemic reading has to carry to be compared at all —
+#: the four fields :meth:`Supervisor._frozen_frontier` reads, named once
+#: because they are read twice (asked for, then compared).
+#:
+#: **Every attribute this module reads off a reading is optional**, and
+#: that is one rule and not two: readings are duck-typed here exactly as
+#: the shadow that produces them is, so a stand-in missing a field turns
+#: the signal off rather than raising out of a step boundary.  The check
+#: is made once, here, and the comparison below then reads the four
+#: plainly; the fifth, ``owed``, is a quote rather than a comparison and
+#: :meth:`Supervisor._still_owed` treats its absence as nothing to quote.
+READING: Tuple[str, ...] = ("frontier", "obligations", "contradictions",
+                            "propositions")
+
+
+def _complete(reading: Any) -> bool:
+    """Whether *reading* is a reading this module can compare.
+
+    ``None`` — cognition off, stopped, or a frontier that could not be
+    read — is the ordinary answer and is not complete.  So is an object
+    that has some of :data:`READING` and not the rest: the honest reading
+    of a shape this module does not recognise is *no reading*.
+    """
+    return reading is not None and all(hasattr(reading, name)
+                                       for name in READING)
+
+
 def _digest(text: str) -> str:
     """A short, stable fingerprint.  Not a security decision: this compares
     a 40 KB governed view with the last one cheaply, and nothing anywhere
@@ -732,8 +803,14 @@ class Supervisor:
         signal, count, detail = self._signal()
         if signal is None:
             return None
-        return self._review(objective, signal, count,
-                            verdicts=(PROGRESSING, NUDGE, STUCK),
+        # The menu is the signal's, and the one thing it decides is whether
+        # this review may end the run. See NEVER_WINDS_UP: a word that is
+        # not offered is not in the prompt and is not accepted back, so the
+        # exemption is a property of the shape rather than of a check
+        # somewhere downstream.
+        verdicts = ((PROGRESSING, NUDGE) if signal in NEVER_WINDS_UP
+                    else (PROGRESSING, NUDGE, STUCK))
+        return self._review(objective, signal, count, verdicts=verdicts,
                             ledger=ledger, detail=detail)
 
     def review_gate(self, objective: str, *, goal: str, why: str,
@@ -752,7 +829,10 @@ class Supervisor:
         It shares the run's review budget, and when that is spent the
         verdict is :data:`STUCK` with no call made — a settled failure the
         plan carries on past, which is what a spent budget means for one
-        step of a plan.
+        step of a plan.  Always a :class:`Review` and never ``None``:
+        :data:`FAILED_GATE` is not in :data:`NEVER_WINDS_UP`, which is the
+        one signal class :meth:`_review` can answer nothing to, and a gate
+        that reported a failure is owed an answer either way.
         """
         self._close()
         return self._review(
@@ -878,15 +958,24 @@ class Supervisor:
         * **no contradiction was reduced** — pairwise, step against the one
           before it, not endpoint against endpoint: a disagreement settled
           and another found is a run that did something, and comparing only
-          the ends would call that standing still;
+          the ends would call that standing still.  What pairwise cannot
+          see is a settlement and a discovery **inside one step**: two
+          readings a step apart showing the same count, one contradiction
+          shorter and one longer, are indistinguishable from a step that
+          did nothing, and this signal will call that frozen.  It is the
+          price of reading a digest instead of the store, it is bounded by
+          what the signal can do — one advisory review, which a run that
+          did settle something can answer ``progressing`` — and it is
+          written here rather than left for somebody to find;
         * **almost nothing new was believed** — fewer new propositions than
           there are steps of *work* in the window, which is one fewer than
           there are readings in it: N readings are taken at N boundaries
           and N-1 steps happened between them.  See
           :data:`BELIEFS_PER_STEP`.
 
-        A step with no reading at all (cognition off, stopped, or a frontier
-        that could not be read) makes the window unusable and the answer is
+        A step with no usable reading — cognition off, stopped, a frontier
+        that could not be read, or a stand-in that does not carry
+        :data:`READING` — makes the window unusable and the answer is
         ``False``: this signal is **only** ever raised on evidence, and a
         run whose shadow went quiet is a run this has nothing to say about.
         That is also the whole of the failure isolation, written as a
@@ -898,7 +987,7 @@ class Supervisor:
         read that as a stall would review every cognition-on mission in the
         world for standing still at nothing.
         """
-        if any(reading is None for reading in window):
+        if any(not _complete(reading) for reading in window):
             return False
         first, last = window[0], window[-1]
         if not first.obligations:
@@ -917,10 +1006,13 @@ class Supervisor:
 
         The top of the frontier as the compiled block renders it, so the
         model reads the same words twice rather than two spellings of one
-        obligation. Defensive about the attribute for the reason every other
-        reader of a cognitive object in this module is: the shadow is
-        duck-typed here and a reading without one is a reading that simply
-        has nothing to quote.
+        obligation.
+
+        ``owed`` is deliberately not in :data:`READING`: it is a quote and
+        not a comparison, a reading that has none is a perfectly good
+        reading, and the sentence simply ends earlier.  The attribute is
+        read the same optional way every other one in this module is — see
+        :data:`READING` for the single rule both places obey.
         """
         owed = str(getattr(reading, "owed", "") or "")
         return f"; still {owed}" if owed else ""
@@ -929,16 +1021,25 @@ class Supervisor:
 
     def _review(self, objective: str, signal: str, count: int, *,
                 verdicts: Sequence[str], ledger: Any = None,
-                extra: str = "", detail: str = "") -> Review:
+                extra: str = "", detail: str = "") -> Optional[Review]:
         """Spend one review, or answer with the arithmetic when there is none.
 
         The budget is checked BEFORE the call and the verdict when it is
         spent is :data:`STUCK`, which is the endless-loop catch itself: a
         run whose pattern survived every review it was allowed does not get
         a fourth opinion, it gets wound up.
+
+        ``None`` for a signal in :data:`NEVER_WINDS_UP` with the budget
+        spent — the one case where nothing is said at all.  The wind-up is
+        the only thing an out-of-reviews answer *is*, and a signal that may
+        not end a run has nothing to make here: no call, no verdict, no
+        ``review`` on the record.  The caller reads it exactly as it reads
+        the ordinary boundary where no signal fired.
         """
         if self.reviews_left <= 0:
             self._move_floor()
+            if signal in NEVER_WINDS_UP:
+                return None
             return Review(signal=signal, verdict=STUCK, note=OUT_OF_REVIEWS,
                           reviews_left=0, count=count, detail=detail)
         self._spent += 1
@@ -950,8 +1051,14 @@ class Supervisor:
         # three times and answering "no" three times has answered the
         # question. The prompt and the parser are narrowed together, so the
         # word is neither offered nor accepted.
+        #
+        # Except where the catch does not apply. Narrowing the menu exists
+        # to force the wind-up, and a NEVER_WINDS_UP signal has none to
+        # force: dropping the word there would only mean reading an honest
+        # `progressing` as something else on the record.
         allowed = tuple(word for word in verdicts
-                        if word != PROGRESSING or left > 0 or refundable)
+                        if word != PROGRESSING or left > 0 or refundable
+                        or signal in NEVER_WINDS_UP)
         verdict, note, asked = self._ask(objective, signal, count, allowed,
                                          extra, ledger, detail)
         if verdict == PROGRESSING and asked:
@@ -1002,7 +1109,15 @@ class Supervisor:
             # Read as the nearest thing the caller can act on rather than
             # as nothing, because a verdict dropped on the floor is a
             # review spent for nothing.
-            return STUCK, note, True
+            #
+            # The nearest thing among the words this review MAY return,
+            # and not `stuck` unconditionally: for a NEVER_WINDS_UP signal
+            # that word is not on the menu precisely so that no reviewer
+            # can end the run with it, and reading it back in here is the
+            # same ending through the parser. What is left is `nudge` —
+            # the model's note still reaches the run, and a nudge with no
+            # note says nothing at all.
+            return (STUCK if STUCK in allowed else NUDGE), note, True
         return PROGRESSING, "", False
 
     def _meter(self, ledger: Any) -> None:

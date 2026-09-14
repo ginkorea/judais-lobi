@@ -107,6 +107,13 @@ prints.  That is v1's *widening escape*, which §2.9.5 requires from day
 one — the compiled view may omit the decisive clue, and the model must be
 able to reach past it.
 
+Except for the owed lines, which get a clause of their own
+(:data:`OWED_OMITTED`) saying the thing that is true of *them*: there is
+nowhere to ask, because the frontier is recomputed from the goals every
+step and nothing about it was lost.  Two losses, two truths, one line —
+a single sentence that sent a model to the store for an obligation would
+be the block promising what it knows is not there.
+
 **Not the transcript, and the difference is a measurement.**  The obvious
 escape — "the receipts are still above you" — is falsifiable by this very
 block: the view is window pressure like anything else, and at a tight
@@ -151,6 +158,7 @@ __all__ = [
     "BANDS", "BUDGET_CHARS", "CONFLICTS_HEADING", "DERIVED", "DISPUTED",
     "DROP_ORDER",
     "FACTS_HEADING", "FRONTIER_CAPPED", "HYPOTHESES_HEADING", "OMITTED",
+    "OWED_OMITTED",
     "OWED_HEADING", "SECTIONS", "TITLE", "UNGRADED",
     "CompiledView", "band", "compile_view", "owed_line",
 ]
@@ -212,6 +220,30 @@ OMITTED = ("{what} not shown at this budget; ask the mission's result store "
            "(entity `tool#handle`) — every receipt this run took is still "
            "in it, whole.")
 
+#: The clause a dropped **owed** line leaves behind — its own, beside
+#: :data:`OMITTED` and never inside it.
+#:
+#: The escape in :data:`OMITTED` is true of three of the four sections and
+#: false of this one: an owed line is not in the result store, not in the
+#: transcript and not in any tool's output.  It is computed from the goals
+#: and the rules against the store, and the module docstring's drop-order
+#: argument turns on exactly that — *a dropped owed line is reachable from
+#: nowhere*.  Sending a model to the store for one would be the block
+#: promising something it knows is not there, which is worse than saying
+#: nothing: a model that asks and finds nothing has spent a tool call
+#: learning the runtime was wrong about itself.
+#:
+#: So this says what IS true.  The frontier is recomputed from the goals
+#: at every step — it is not a log, and nothing about it was lost when a
+#: line went — and the lines that did not fit render as soon as the ones
+#: above them are resolved or the budget has room.  There is nothing to
+#: ask for and nothing to recover; there is work to do, and doing it is
+#: what shows the rest.
+OWED_OMITTED = ("{what} not shown at this budget — nothing to ask for: the "
+                "frontier is recomputed from the goals at every step, and "
+                "what is not shown renders as soon as the lines above it "
+                "are resolved or there is room.")
+
 #: How each kind of line is counted, singular and plural, in one place so
 #: the header and the omission sentence cannot disagree about a word.
 KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
@@ -240,6 +272,11 @@ KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
 #: goes: lines are dropped from the end, so this is the last owed line to be
 #: lost, and when even it goes the block's one omission sentence still says
 #: ``+N owed lines`` — the flag is never silently dropped.
+#:
+#: **Only over rows.**  A truncated walk that left nothing unresolved
+#: renders no OWED section at all rather than this line alone: the note
+#: says there is more than what is shown, and over an empty section it
+#: would be saying it about nothing at all.
 FRONTIER_CAPPED = ("+ more owed than these — the frontier walk reached the "
                    "store's cap and stopped")
 
@@ -723,7 +760,14 @@ def compile_view(state: CognitiveState, *,
     # it wants and has established none of it.
     frontier = state.ranked_frontier()
     owed_lines = [owed_line(item) for item in frontier]
-    if frontier.truncated:
+    if frontier.truncated and owed_lines:
+        # The note is about lines there are more of, so it needs one. A
+        # walk that stopped at the cap having resolved everything it
+        # reached leaves nothing owed, and "+ more owed than these" over
+        # no rows is a heading over nothing twice over: it announces a
+        # section the block is not showing and claims a frontier the run
+        # does not have. No lines, no section — the same rule the other
+        # three keep.
         owed_lines.insert(0, FRONTIER_CAPPED)
     if not (live or guesses or open_clashes or owed_lines):
         return CompiledView()
@@ -808,10 +852,26 @@ def _omission(dropped: Sequence[int]) -> str:
     *dropped* is per section, in :data:`SECTIONS` order — so the sentence
     names its losses in the order the block renders them, not in the order
     it lost them.
+
+    **Two clauses and not one**, on one line, because the two kinds of
+    loss have two different truths: what came off a receipt is still in
+    the result store (:data:`OMITTED`), and an owed line is in no store at
+    all (:data:`OWED_OMITTED`).  Each clause appears only when something
+    it is true of was dropped, so a block that lost only owed lines never
+    points at a store, and a block that lost no owed lines reads exactly
+    as it did before this existed.
     """
-    lost = [f"+{_plural(count, kind)}"
-            for count, kind in zip(dropped, SECTIONS) if count]
-    return OMITTED.format(what=", ".join(lost)) if lost else ""
+    lost = [(count, kind) for count, kind in zip(dropped, SECTIONS) if count]
+    stored = [f"+{_plural(count, kind)}"
+              for count, kind in lost if kind != "owed"]
+    owed = [f"+{_plural(count, kind)}"
+            for count, kind in lost if kind == "owed"]
+    clauses = []
+    if stored:
+        clauses.append(OMITTED.format(what=", ".join(stored)))
+    if owed:
+        clauses.append(OWED_OMITTED.format(what=", ".join(owed)))
+    return " ".join(clauses)
 
 
 def _render(sections: Sequence[Sequence[str]], receipts: int,
