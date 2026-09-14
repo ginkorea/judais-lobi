@@ -7,6 +7,7 @@ asks. So: the three hosted backends resolve their SDK client — and demand the
 key — at the first `chat`, and a replay of a recorded run completes with every
 provider variable unset."""
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -53,7 +54,16 @@ class TestAReplayNeedsNoKey:
     def test_the_corpus_replays_with_every_provider_variable_unset(
             self, tmp_path):
         env = {k: v for k, v in os.environ.items() if k not in KEYS}
-        env["JUDAIS_LOBI_RUNS"] = str(REPO / "tests" / "fixtures" / "runs")
+        # The recording is copied out and the store pointed at the copy:
+        # a replay writes a fresh run directory into JUDAIS_LOBI_RUNS, and
+        # pointed at the fixtures it would leave a stray run behind on
+        # every suite pass — the drift an operator then profiles as a
+        # fifth recording that nobody committed.
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        shutil.copytree(REPO / "tests" / "fixtures" / "runs" /
+                        "run_corpusjson-0001", runs / "run_corpusjson-0001")
+        env["JUDAIS_LOBI_RUNS"] = str(runs)
         env["PYTHONPATH"] = str(REPO)
         events = tmp_path / "events.ndjson"
         child = subprocess.run(

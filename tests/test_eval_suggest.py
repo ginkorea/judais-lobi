@@ -291,6 +291,18 @@ class TestTheDraftLoads:
         assert Draft().problems() == ()
         assert mod._as_blocks(None) == Draft().as_mapping()
 
+    def test_a_block_that_parses_to_a_non_mapping_is_a_finding_not_a_crash(
+            self):
+        """The guard written to catch "the page parses to something else"
+        must itself survive the things "something else" can be: a `tools:`
+        that parses to a list or a string reaches the comparison as itself
+        and fails there, instead of blowing `_as_blocks` up on the way
+        (`dict()` over a list raises)."""
+        for body in ({"tools": ["a", "b"]}, {"tools": "x"},
+                     {"cognition": [["a", "b"]]}):
+            blocks = mod._as_blocks(body)
+            assert blocks != Draft().as_mapping()
+
     def test_a_key_spelled_on_stays_a_string(self):
         """pyyaml is a YAML 1.1 parser and `on:` is a boolean in it. Every
         scalar this page writes is quoted for exactly this."""

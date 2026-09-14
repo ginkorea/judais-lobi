@@ -985,7 +985,16 @@ def _as_blocks(loaded: Any) -> Dict[str, Any]:
     empty page.
     """
     body = loaded if isinstance(loaded, Mapping) else {}
-    return {name: dict(body.get(name) or {}) for name in ("cognition", "tools")}
+    blocks: Dict[str, Any] = {}
+    for name in ("cognition", "tools"):
+        value = body.get(name)
+        # A page whose block parses to a list or a string is exactly the
+        # "something other than the blocks it was built from" this feeds —
+        # it must arrive at the comparison as itself and fail there, not
+        # blow the guard up on the way (dict() over a list raises).
+        blocks[name] = dict(value) if isinstance(value, Mapping) else (
+            {} if value is None else value)
+    return blocks
 
 
 # ── putting the two halves together ──────────────────────────────────────────

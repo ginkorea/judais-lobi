@@ -860,6 +860,16 @@ class TestTheServerThatWillNotStopAnswering:
                                    detail)[0]
         assert 1 <= int(frames) <= self.FRAMES
         assert int(chars) >= 1
+        # Bound by the CLOSING record's totals, not just the range: a
+        # plausible constant left behind by a refactor sits inside
+        # 1..FRAMES and would pass the range check while measuring
+        # nothing. The stub serves same-sized frames, so the two records
+        # must agree on the per-frame arithmetic as well as the order.
+        total_f, total_c = re.findall(r"(\d+) frames and (\d+) characters",
+                                      run.seen[1]["detail"])[0]
+        assert int(frames) <= int(total_f) == self.FRAMES
+        assert int(chars) <= int(total_c)
+        assert int(chars) * int(total_f) == int(frames) * int(total_c)
 
     def test_the_closing_record_says_how_much_arrived_in_the_end(self, endpoint):
         run = Recorded()
