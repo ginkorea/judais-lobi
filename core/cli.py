@@ -1744,9 +1744,18 @@ def _mission(elf, args, name, style):
                 # run's earlier receipts were re-recorded, not dispatched,
                 # so this shadow never saw them and says so in the log.
                 # See `core.runtime.cognition.open_shadow`.
+                # The pack rides in on the COMPOSED manifest, which is the
+                # only honest source: `--skill` repeats, the merge is where
+                # two packs become one, and a door that read the primary's
+                # block would run a mission under half the rules its
+                # operator asked for. `None` for a run with no skill and for
+                # a skill that wrote no `cognition:` — the shadow the flag
+                # alone has always been.
                 shadow = open_shadow(run_store, run_id,
                                      resumed=recorded is not None,
-                                     compiling=compiling)
+                                     compiling=compiling,
+                                     cognition_block=(manifest.cognition
+                                                      if manifest else None))
             except Exception as exc:
                 # The one call into the shadow that is NOT already total:
                 # `open_shadow` reads a log a previous process wrote and
@@ -1773,6 +1782,34 @@ def _mission(elf, args, name, style):
                     f"transcript and read by nothing: no prompt, no call "
                     f"and no answer changes because of it",
                     style=style)
+                if shadow.pack:
+                    # Truthiness and not `is not None`: a skill may declare
+                    # `cognition: {}` — a block that is there and says
+                    # nothing — and announcing nought rules would be the
+                    # harness reporting work it did not do.
+                    fields, rules, goals = shadow.loaded
+                    console.print(
+                        f"🧾 rule pack: {rules} rule(s), {goals} goal(s) and "
+                        f"{fields} field declaration(s) from skill "
+                        f"{manifest.describe()}, loaded before the first "
+                        f"receipt. Receipts now DERIVE through the skill's "
+                        f"clauses and the goals compute what is still owed; "
+                        f"every clause is in the log, promoted to SKILL "
+                        f"authority in an event of its own, and none of it "
+                        f"gates anything",
+                        style=style)
+                elif (manifest is not None and manifest.cognition
+                      and not shadow.on):
+                    # The pack was validated at the manifest door, so this is
+                    # the narrow case the door cannot see — a kernel refusal
+                    # against THIS store. Said out loud, because the whole
+                    # difference between a shadow with rules and one without
+                    # is a frontier, and an empty frontier reads as a finding.
+                    console.print(
+                        f"🧾 rule pack: NOT loaded, and cognition is off for "
+                        f"this run — {REASONING_LOG} says why. The mission "
+                        f"runs exactly as it would have",
+                        style="yellow")
                 if compiling:
                     console.print(
                         "🧠 compiled context: each step's model input "

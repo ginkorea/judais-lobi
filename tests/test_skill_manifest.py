@@ -416,6 +416,237 @@ class TestGroundingBlock:
         assert load_skill(path).grounding is None
 
 
+class TestTheRulePack:
+    """`cognition:` — the clauses a run reasons under, in the skill.
+
+    `ROADMAP.md` §2.9.4: *rules arrive through skills*. So the block is
+    carried exactly as `grounding:` is — raw, uninterpreted here, read by
+    `core.runtime.cognition.RulePack` — and it is refused exactly as
+    `grounding:` is, which is the half that matters. A rule the kernel
+    would not take must be a manifest that does not load: found at the
+    first `derive` of a mission that has already started, it would cost a
+    run the one thing the shadow promises never to cost it.
+
+    The refusals below are each a different *layer*: this module's (is it
+    a mapping), the reader's (is it a list of named entries with three-term
+    patterns), and the kernel's own (does the head name what the body
+    binds) — the last reached through a dry run, which is why a manifest
+    cannot start a mission on a pack the kernel would refuse.
+    """
+
+    PACK = """\
+        ---
+        name: packed
+        allowed_tools: [alpha]
+        when_to_use: Something.
+        cognition:
+          cardinality:
+            total_s: one
+          rules:
+            - name: controls
+              head: ["?a", "controls", "?c"]
+              body:
+                - ["?a", "admin_access", "?c"]
+                - ["?a", "payment_link", "?c"]
+          goals:
+            - name: owner_known
+              pattern: ["?a", "controls", "?c"]
+        ---
+        Body.
+        """
+
+    def test_it_is_carried_but_not_interpreted(self, tmp_path):
+        block = load_skill(write(tmp_path, self.PACK)).cognition
+        assert block["cardinality"] == {"total_s": "one"}
+        assert block["rules"][0]["name"] == "controls"
+        assert block["goals"][0]["pattern"] == ["?a", "controls", "?c"]
+
+    def test_absence_is_none_and_not_an_empty_pack(self, tmp_path):
+        """`None` is a skill that wrote no rules; `{}` is a skill that
+        wrote an empty block. Composition keeps the difference, so the
+        loader has to make it."""
+        path = write(tmp_path, """\
+            ---
+            name: unpacked
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            ---
+            Body.
+            """)
+        assert load_skill(path).cognition is None
+
+    def test_a_declared_empty_block_survives_as_declared(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: empty-pack
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            cognition: {}
+            ---
+            Body.
+            """)
+        assert load_skill(path).cognition == {}
+
+    def test_it_is_structural_and_not_rendered_as_prose(self, tmp_path):
+        """It reaches the model through the conclusions it produces — the
+        compiled view's derived facts. A block of horn clauses in the
+        system message would be the runtime asking a 20B to do the
+        inference the runtime just did."""
+        prompt = load_skill(write(tmp_path, self.PACK)).prompt
+        assert "cognition" not in prompt
+        assert "admin_access" not in prompt
+
+    def test_a_block_that_is_not_a_mapping_is_refused(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: bad-pack
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            cognition: [rules]
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        assert "`cognition:`" in str(exc.value)
+
+    @pytest.mark.parametrize("block,expected", [
+        ("cognition: {nonsense: 1}", "unknown key(s): nonsense"),
+        ("cognition: {cardinality: [a, b]}", "`cardinality:` holds a list"),
+        ("cognition: {cardinality: {total_s: two}}", "'two'"),
+        ("cognition: {rules: {name: x}}", "`rules:` holds a dict"),
+        ("cognition: {rules: [[a, b]]}", "is a list; it is a mapping"),
+        ("cognition: {rules: [{head: [a, b, 1], body: [[a, b, 1]]}]}",
+         "has no `name`"),
+        ("cognition: {rules: [{name: x, body: [[a, b, 1]]}]}",
+         "rule 'x' head has no pattern"),
+        ("cognition: {rules: [{name: x, head: [a, b, 1]}]}",
+         "rule 'x' has no `body`"),
+        ("cognition: {rules: [{name: x, head: [a, b, 1], body: []}]}",
+         "rule 'x' has no `body`"),
+        ("cognition: {rules: [{name: x, head: [a, b], body: [[a, b, 1]]}]}",
+         "three terms, got 2"),
+        ("cognition: {goals: [{name: g}]}", "goal 'g' has no pattern"),
+        ("cognition: {goals: [{name: g, pattern: [a, b, 1], extra: 1}]}",
+         "unknown key(s): extra"),
+    ])
+    def test_every_malformed_shape_is_named(self, tmp_path, block, expected):
+        path = write(tmp_path, f"""\
+            ---
+            name: bad-pack
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            {block}
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        assert expected in str(exc.value)
+
+    def test_two_clauses_under_one_name_is_a_refusal(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: twice
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            cognition:
+              rules:
+                - {name: r, head: [a, b, 1], body: [[a, c, 1]]}
+                - {name: r, head: [a, d, 1], body: [[a, e, 1]]}
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        assert "declares 'r' twice" in str(exc.value)
+
+    def test_a_rule_and_a_goal_may_share_a_word(self, tmp_path):
+        """Different kinds of thing, unioned separately. A namespace
+        collision invented here would refuse a manifest over nothing."""
+        path = write(tmp_path, """\
+            ---
+            name: shared
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            cognition:
+              rules:
+                - {name: settled, head: ["?a", settled, true],
+                   body: [["?a", paid, true]]}
+              goals:
+                - {name: settled, pattern: ["?a", settled, true]}
+            ---
+            Body.
+            """)
+        assert len(load_skill(path).cognition["rules"]) == 1
+
+    def test_a_kernel_refusal_arrives_at_the_manifest_door(self, tmp_path):
+        """THE DRY RUN. Range restriction is the kernel's rule and this
+        loader does not re-implement it — the pack is run through a
+        throwaway `CognitiveState`, so what the kernel would refuse at the
+        first derive of a live mission is refused here instead."""
+        path = write(tmp_path, """\
+            ---
+            name: loose
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            cognition:
+              rules:
+                - name: loose
+                  head: ["?a", "owns", "?unbound"]
+                  body: [["?a", "paid", true]]
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        assert "?unbound" in str(exc.value)
+
+    def test_a_value_the_store_could_not_hold_is_refused_here(self, tmp_path):
+        """The kernel's other rule about a pattern: a triple's value is a
+        JSON scalar. A pack writing a list there would be a rule that can
+        never fire, and a rule that can never fire is a frontier that is
+        empty for a reason nobody can see."""
+        path = write(tmp_path, """\
+            ---
+            name: listy
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            cognition:
+              rules:
+                - {name: r, head: [a, b, [1, 2]], body: [[a, c, 1]]}
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        assert "JSON scalar" in str(exc.value)
+
+    def test_every_problem_in_the_pack_arrives_at_once(self, tmp_path):
+        """The module's idiom, and the reason a refusal lists everything:
+        an author with three malformed rules edits the file once."""
+        path = write(tmp_path, """\
+            ---
+            name: many-faults
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            cognition:
+              cardinality: {units: sometimes}
+              rules:
+                - {name: r, head: [a, b], body: [[a, c, 1]]}
+              goals:
+                - {pattern: [a, b, 1]}
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        message = str(exc.value)
+        assert "'sometimes'" in message
+        assert "three terms, got 2" in message
+        assert "has no `name`" in message
+
+
 class TestSdkImport:
     """What the platform is called to `import`, said by the platform.
 

@@ -162,7 +162,8 @@ sandbox.
 
 A manifest is content, not mechanism: `--skill` reads a `SKILL.md` — YAML
 frontmatter plus a Markdown body — that closes the tool set, states a
-grounding grammar and nothing else. Three ship inside the wheel, so a
+grounding grammar, may carry a `cognition:` rule pack, and nothing else.
+Three ship inside the wheel, so a
 `pip install` runs a governed mission with a real skill and no files of
 your own:
 
@@ -580,6 +581,7 @@ surface and may move. Table in `CLI_FLAGS` order:
 | `--gate-wait` | `MISSION_GATE_WAIT` | seconds a run waits at a gate for a `gate_decision` on `--control` before ending the turn at `awaiting_approval`. `0` = never wait; default 300 |
 | `--no-grounding` | `MISSION_NO_GROUNDING` | do not check this run's answers and do not ask a critic about them. The skill's `grounding:` block is still parsed — an unusable one still refuses at the door — and nothing is built from it: no validator, no critic, no repair turn, no caveat, no `grounding` record. For a conversational surface, where a figure comes from the tool catalogue rather than a tool result; not for one whose answers are governed findings |
 | `--cognition` | `JUDAIS_LOBI_COGNITION` | carry a **shadow** cognitive state through the mission: every tool receipt is harvested into propositions whose evidence is the receipt, and the kernel's event log is written as `reasoning.jsonl` beside the run's `events.jsonl`. Nothing reads it back — no prompt, call, gate or answer changes because it is on, and with it off the run is byte for byte what it always was. Needs a run directory (`JUDAIS_LOBI_RUNS` on) |
+| — (a manifest field) | — | **`cognition:` — the rule pack.** A `SKILL.md` may carry the clauses a run reasons under: `cardinality` (a field carries `one` value or `many`; `many` unless declared, because a false conflict is destructive), `rules` (positive horn clauses over `["?a", "field", "?v"]` patterns, loaded at `SKILL` authority through the kernel's propose-then-promote door), and `goals` (target patterns — every premise the store cannot satisfy becomes an obligation). With `--cognition` the pack loads before the first receipt, so receipts **derive** and the frontier says what is still owed; without it the block is still parsed — an unusable one refuses at the door — and does nothing. It can never gate, and several skills' packs union by name. See `PLATFORMS.md` |
 | `--compiled-context` | `JUDAIS_LOBI_COMPILED_CONTEXT` | put the runtime's **view of the problem** into each step's model input: one block, replacing the one before it, with the established facts as `entity · field = value` lines carrying the receipt handle each came from, both sides of every open conflict, and what is only a model's claim — each graded `verified` / `sourced` / `model-extracted` / `speculative`. Rides last, next to the current turn, so the cached prefix does not move; bounded to 4,000 characters, and what does not fit is named rather than dropped in silence. **Implies `--cognition`** and gates nothing: no answer is held, checked or refused against it |
 | `--replay` | `MISSION_REPLAY` | run a recorded mission again from its own recording — see [How it survives](#how-it-survives) |
 | `--grant` | — | pre-authorise capability scopes for this run — see [How it is governed](#how-it-is-governed) |

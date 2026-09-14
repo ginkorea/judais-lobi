@@ -1127,7 +1127,22 @@ Python first; deliberately replaceable; no native code.
 - Rules arrive through skills — a skill manifest may carry a rule pack, which
   makes rule authorship a named cost of the architecture rather than an
   unexamined assumption (the thought experiment's gap: it never budgeted for
-  who writes the rules).
+  who writes the rules). **Built.** A `cognition:` block beside `grounding:`
+  carries `cardinality`, `rules` and `goals`; `core.runtime.skills` holds it
+  raw and `core.runtime.cognition.RulePack` reads it, validated at the
+  manifest door and **dry-run through a throwaway kernel** so a mission
+  cannot start on a pack the kernel would refuse. With `--cognition` it is
+  written into the store at shadow-open, before the first receipt, in one
+  order (cardinality, rules, goals) and through the kernel's ordinary public
+  doors — so the log holds every clause, a rule's promotion from `PROPOSED`
+  to `SKILL` is an event somebody can read, and a resume replays the pack
+  rather than loading it twice. Several skills' packs union by name;
+  `cardinality` agrees per field or refuses. Without the flag the block is
+  parsed and inert, and the corpus guard says so. The v1 bound is written
+  down rather than hidden: an entity is one receipt, so a rule joins fields
+  of the same receipt for free and a cross-receipt join needs the plane to
+  put the relationship in one payload — richer entity resolution is a later
+  phase (`PLATFORMS.md`, *the rule pack*, has the worked example).
 
 Exit: the types survive the benchmark pack without redesign; replay
 reconstructs cognition; every proposition traces to evidence; corpus diff

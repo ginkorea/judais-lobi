@@ -970,7 +970,7 @@ read-only package data: stage them out with `core.skills.load(name)
 YAML frontmatter: YAML frontmatter between `---` fences, then a Markdown body. Point it
 at a directory holding several skills and it refuses, listing them by name.
 
-Four things come out of a manifest and nothing else does — and one thing it is
+Five things come out of a manifest and nothing else does — and one thing it is
 refused for.
 
 **`allowed_tools` — the closed set.** A list of tool names, intersected with
@@ -1006,7 +1006,10 @@ as `Label:\nvalue`. A skill is content, and a harness deciding that an
 unrecognised field is noise would be the framework overruling the platform on
 its own operational knowledge. Only the structural keys are held back — `name`,
 `skill_id`, `version`, `description`, `allowed_tools`, `grounding`,
-`sdk_import` — because each already reaches the model another way.
+`sdk_import`, `cognition` — because each already reaches the model another way
+(and `cognition` reaches it as the conclusions its clauses produce: horn
+clauses in a system message would be the runtime asking the model to do the
+inference the runtime just did).
 
 **`grounding` — the identifier grammar, and the tiers you switch on.** A
 mapping, interpreted by `core/runtime/grounding.py` and never by the loader.
@@ -1143,6 +1146,102 @@ that has already run has already run whatever it ran.
   has not been told reads `ENETUNREACH` as a broken tool and spends a turn
   retrying it.
 
+### `cognition` — the rule pack
+
+A manifest may carry the clauses a run *reasons* under. With `--cognition` on
+(`ROADMAP.md` §2.9.4) the block is loaded into the kernel at shadow-open —
+before the first receipt — and from then on the run's receipts **derive**, its
+goals **compute what is still owed**, and `--compiled-context` shows the model
+the conclusions beside the observations. With the flag off the block is still
+read and still refused if it is unusable, and it does nothing else. Like every
+other part of this layer it can never gate: a rule concludes, it does not
+block an answer, and a pack that fails to load costs the run its cognition and
+nothing else.
+
+```yaml
+cognition:
+  cardinality:            # optional: field -> one | many
+    total_s: one
+  rules:                  # optional: horn clauses, loaded at SKILL authority
+    - name: controls
+      head: ["?a", "controls", "?c"]
+      body:
+        - ["?a", "admin_access", "?c"]
+        - ["?a", "payment_link", "?c"]
+  goals:                  # optional: what the run is trying to establish
+    - name: owner_known
+      pattern: ["?a", "controls", "?c"]
+```
+
+* **`cardinality`** turns collision detection on for a field. A field carries
+  **many** values unless somebody declares `one`, because a false `CONTESTED`
+  is destructive — it is terminal and it takes everything derived from either
+  side — while a missed one costs a signal. Declare `one` for the fields whose
+  disagreement you want to *see*, and the store records both sides of the
+  conflict rather than holding the first quietly.
+* **`rules`** are positive horn clauses over triple patterns: three terms,
+  `"?name"` for a variable, anything else a literal (so **no literal may begin
+  with `?`**). Every variable in the head must appear in the body — a rule
+  cannot conclude about something it cannot name — the body may not be empty,
+  and **there is no negation**: a rule that fired on absence would fire on the
+  store's incompleteness, which is how this store says *unknown*. The positive
+  way to say "nothing else exists" is to have a tool **attest completeness as
+  a fact** and write the rule against that.
+* **`goals`** are target patterns. Nothing authors an obligation: the runtime
+  reads goals against trusted rules against what it holds, and every premise
+  it cannot satisfy becomes one. The `name` becomes the kernel goal's note.
+* **Rules arrive at `SKILL` authority through the wall's own door**: they are
+  added `PROPOSED` and then promoted, both as events in `reasoning.jsonl`, so
+  "who stands behind this clause" is a question the log answers. A model may
+  propose a rule at any time; proposing one never makes it derive.
+* **Refused at the door, whether or not you use it.** The block is validated
+  when the manifest loads — shape, pattern arity, variable spelling,
+  `one`/`many`, unique names — and then **dry-run through a throwaway kernel**,
+  so a rule the kernel would refuse is a manifest that does not load rather
+  than a mission that dies at its first step. Every problem arrives in one
+  message.
+* **A resume replays the pack out of the log and never loads it twice.** A
+  second load would mint a second rule id for each clause: one conclusion with
+  two derivations, and every obligation counted twice.
+
+**What a v1 rule can express, honestly.** An entity is `"{tool}#{seq}"` — one
+per *receipt* — so a rule joins fields **of the same receipt** for free:
+
+```yaml
+# the ledger entry that reports units and a route code is one receipt,
+# so one entity holds both fields and the join is free
+- name: northbound_volume
+  head: ["?e", "northbound_units", "?u"]
+  body:
+    - ["?e", "units", "?u"]
+    - ["?e", "route_code", 1]
+```
+
+Both premises are **numbers**, and that is the other v1 bound worth knowing
+before you write a pack: the harvest reads figures out of JSON receipts, one
+per key, so a string field (`"route": "north"`), a key holding several numbers
+and a key whose value is an object are all *not in the store* — a rule over
+them matches nothing and says nothing about why. Turning prose into claims is
+extraction, it is a model's job, and its reliability is a number this project
+measures rather than assumes (`ROADMAP.md` §2.9.3).
+
+A join **across** receipts needs the two receipts to share a value in the
+*entity* position, which v1 receipts do not: two reads of one ledger entry are
+`mcp.ledger_entry#r2` and `mcp.audit_count#r5`, and nothing in the store says
+they are about one thing. Two ways to write that today, both honest:
+
+* have the plane emit the relationship as a field of one receipt — a payload
+  carrying `{"entry_id": "led.a41", "audit_units": 98}` is one entity holding
+  both figures, and a rule over it is the same-entity join above;
+* write the rule over the **fields** and accept that it concludes about the
+  receipt rather than about the ledger entry, which is what the store actually
+  knows.
+
+Richer entity resolution — receipts about one real-world thing sharing an
+entity — is a later phase, and is deliberately not faked here: a store that
+guessed two receipts were about one entity would manufacture contradictions
+out of two tools that never disagreed.
+
 ### Composing skills
 
 `--skill` **repeats**, and several manifests become one mission — which is how
@@ -1207,6 +1306,18 @@ implementation of it would union them quietly. The rules are these:
   the same validator a single skill would have built. The merged block is then
   validated exactly as a written one is, so a merge that produced something
   unusable refuses at the door.
+* **The rule pack unions by name.** `rules` and `goals` from every skill are
+  kept, in first-seen order; a name declared twice with **different** content is
+  refused naming both skills, and an identical redeclaration — a family
+  restating the clause it shares — is deduplicated in silence. `cardinality`
+  follows the scalar discipline one field at a time: silence yields, agreement
+  is carried, and a disagreement is refused naming both skills, because a field
+  carries one value or many for the whole store and taking either answer would
+  leave the other skill's rules measured against a check it did not ask for.
+  A skill with no block contributes nothing; a block declared empty survives as
+  declared-empty; and the merged pack is validated exactly as a written one is,
+  so a merge that produced something the kernel would refuse refuses at the
+  door.
 * **What cannot be merged honestly is refused**, listing every problem at once:
   `identifier_pattern`, `number_pattern` or `max_repairs` declared by more than
   one skill with different values (there is no honest way to pick between two

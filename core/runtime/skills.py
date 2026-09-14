@@ -10,7 +10,7 @@ looks like, what must never be invented — belongs to whoever operates the
 platform being driven.  A manifest is how that half arrives, and this
 module is deliberately the only place that reads one.
 
-Three things come out of a manifest, and nothing else does:
+Five things come out of a manifest, and nothing else does:
 
 * a **closed tool subset**, intersected with what was actually
   discovered.  A skill that names a tool the server does not offer is a
@@ -24,6 +24,13 @@ Three things come out of a manifest, and nothing else does:
   the strictness a :mod:`core.runtime.grounding` validator enforces over
   the answer.  The grammar is content and lives in the file.  What the
   harness owns is the checking;
+* an optional **rule pack** (``cognition:``): the cardinalities, horn
+  clauses and goals a run reasons under when ``--cognition`` is on.  Read
+  by :class:`core.runtime.cognition.RulePack` and never here beyond its
+  shape — same division as ``grounding:``, and for the same reason.  It is
+  where ``ROADMAP.md`` §2.9.4 puts rule authorship: *rules arrive through
+  skills*, because a runtime that derives has to say who wrote the clauses
+  and what they cost to write;
 * an optional **SDK import name** (``sdk_import``): what a platform calls
   itself to Python.  A planner that can propose *code which fetches
   platform data itself* has to name the module that does the fetching,
@@ -124,9 +131,15 @@ _OPTIONAL = "?"
 #: agent that has not been told reads ``ENETUNREACH`` as a broken tool
 #: and spends a turn retrying it.  It renders like any other field the
 #: loader has never heard of — ``Sandbox: bwrap``.
+#:
+#: ``cognition`` is held back for the plainest of those reasons: it reaches
+#: the model through the *conclusions it produces* — the compiled view's
+#: derived facts — and a block of YAML horn clauses rendered into a system
+#: message would be the runtime asking a 20B to do the inference the
+#: runtime just did.
 _STRUCTURAL = frozenset({
     "name", "skill_id", "version", "description",
-    "allowed_tools", "grounding", "sdk_import",
+    "allowed_tools", "grounding", "sdk_import", "cognition",
 })
 
 #: Operational fields rendered first, in this order, with these labels.
@@ -290,6 +303,12 @@ class SkillManifest:
     #: The raw ``grounding:`` block, or ``None``.  Interpreted by
     #: :mod:`core.runtime.grounding`, never here.
     grounding: Optional[Dict[str, Any]] = None
+    #: The raw ``cognition:`` block — the skill's rule pack — or ``None``.
+    #: Interpreted by :class:`core.runtime.cognition.RulePack`, never here
+    #: beyond its shape, which is ``grounding``'s arrangement exactly.
+    #: ``None`` is a skill that wrote none; ``{}`` is a skill that wrote an
+    #: empty one, and composition keeps the difference.
+    cognition: Optional[Dict[str, Any]] = None
     #: What the platform's SDK is called to ``import``, or ``""``.  Read
     #: by :mod:`core.runtime.swarm` to compose the ``code+sdk`` rung, and
     #: the reason that rung is offered at all.  Empty is not a defect: a
@@ -409,6 +428,36 @@ class SkillManifest:
             )
             grounding = None
 
+        # The rule pack, validated ALL THE WAY DOWN at the door and stored
+        # raw. Shape is this module's (it is a mapping, or it is not a
+        # block); everything else is the kernel's, and `RulePack
+        # .from_mapping` answers it by dry-running the whole pack through a
+        # throwaway `CognitiveState` — the same trick the grounding merge
+        # plays with `GroundingConfig.from_mapping`, and for a sharper
+        # reason. A grounding block that does not compile costs a repair
+        # turn; a rule pack the kernel refuses would be found at the first
+        # derive of a mission that has already started, in the one module
+        # whose whole promise is that it cannot cost a mission anything. So
+        # a mission cannot START on a pack the kernel would refuse.
+        #
+        # Imported inside the function because `core.runtime.cognition`
+        # imports `core.runtime.grounding`, and a manifest loader has no
+        # business dragging the kernel in at import time.
+        cognition = fields.get("cognition")
+        if cognition is not None and not isinstance(cognition, Mapping):
+            problems.append(
+                f"`cognition:` holds a {type(cognition).__name__}; it is a "
+                f"mapping (cardinality, rules, goals) or absent"
+            )
+            cognition = None
+        elif cognition is not None:
+            from core.runtime.cognition import RulePack
+
+            try:
+                RulePack.from_mapping(cognition)
+            except ValueError as exc:
+                problems.append(f"`cognition:` {exc}")
+
         # Refused rather than coerced. `sdk_import: [acme]` would render as
         # "import ['acme']" in a sentence handed to a model, and the model
         # would write that line.
@@ -469,6 +518,7 @@ class SkillManifest:
             prompt=cls._render_prompt(name, fields, body, output),
             output_contract=output,
             grounding=dict(grounding) if grounding is not None else None,
+            cognition=dict(cognition) if cognition is not None else None,
             sdk_import=sdk_import,
             sandbox=sandbox,
             source=path,
@@ -896,7 +946,18 @@ def _declared(manifests: Sequence["SkillManifest"], key: str) -> bool:
     point is to tell *declared and empty* from *never mentioned*, which
     is the distinction ``get`` throws away.
     """
-    return any(key in m.grounding for m in manifests)
+    return _declares([m.grounding for m in manifests], key)
+
+
+def _declares(blocks: Sequence[Mapping], key: str) -> bool:
+    """:func:`_declared`'s rule, over the blocks themselves.
+
+    One owner for *composition may change a value, never a declared key's
+    presence*, because there are now two blocks it has to be true of —
+    ``grounding:`` and ``cognition:`` — and a second spelling of it is the
+    second place it silently stops being true.
+    """
+    return any(key in block for block in blocks)
 
 
 def _same_plane(one: Any, other: Any) -> bool:
@@ -1205,6 +1266,125 @@ def _merge_grounding(
     return merged
 
 
+def _merge_cognition(
+    manifests: Sequence["SkillManifest"], problems: List[str],
+) -> Optional[Dict[str, Any]]:
+    """One ``cognition:`` mapping out of several, appending every problem.
+
+    :func:`_merge_grounding`'s shape exactly — raw mappings in, a raw
+    mapping out, each input validated on its own first, every key any input
+    declared present in the result — and for its reason: the reader of this
+    block is :class:`core.runtime.cognition.RulePack`, and a merge that went
+    through it and took it apart again would be a second reader of one fact.
+
+    The three keys, and the two disciplines they follow:
+
+    * **``rules:`` and ``goals:`` union by name.**  A pack is a set of
+      named clauses; two skills that each bring their own bring both.  A
+      name declared twice with *different* content is refused naming both
+      skills, for the reason one plane name over two tool sets is: a name
+      is what a refusal, a log line and the next author's grep say, and
+      letting the first (or the last) win makes which clause a mission runs
+      under a fact about argument order.  An identical redeclaration is a
+      family restating the clause it shares, and is deduplicated in
+      silence — compared on :func:`_canonical`, so YAML style is not
+      content.
+    * **``cardinality:`` agrees or refuses, per field.**  It is the scalar
+      discipline (``identifier_pattern``'s), one field at a time: a field
+      is single-valued or it is not, the kernel refuses to hold both
+      answers about one field anyway, and choosing between two would switch
+      collision detection off for whichever skill lost while the store went
+      on reporting no disagreement.  Silence yields — a skill that never
+      mentioned a field has no opinion about it.
+
+    Strictness does not "only go up" here and could not: cognition gates
+    nothing, so there is no strictness to raise.  What replaces it is
+    *nobody's clause is dropped and nobody's clause is replaced*.
+    """
+    from core.runtime.cognition import RulePack
+
+    declared = [m for m in manifests if m.cognition is not None]
+    if not declared:
+        return None
+
+    usable: List["SkillManifest"] = []
+    for manifest in declared:
+        try:
+            RulePack.from_mapping(manifest.cognition)
+        except ValueError as exc:
+            problems.append(
+                f"skill {manifest.name!r} has a `cognition:` block that is "
+                f"not usable on its own, so there is nothing to merge: {exc}"
+            )
+            continue
+        usable.append(manifest)
+    if not usable:
+        return None
+
+    blocks = [m.cognition for m in usable]
+    merged: Dict[str, Any] = {}
+
+    cardinality: Dict[str, Any] = {}
+    owner: Dict[str, str] = {}
+    for manifest in usable:
+        for field, value in (manifest.cognition.get("cardinality") or {}).items():
+            key = str(field).strip()
+            if key not in cardinality:
+                cardinality[key] = value
+                owner[key] = manifest.name
+            elif _canonical(cardinality[key]) != _canonical(value):
+                problems.append(
+                    f"`cognition: cardinality: {key}` is declared by both "
+                    f"{owner[key]!r} ({cardinality[key]!r}) and "
+                    f"{manifest.name!r} ({value!r}). A field carries one "
+                    f"value or many for the whole store, and taking either "
+                    f"answer would leave the other skill's rules measured "
+                    f"against a collision check it did not ask for"
+                )
+    if _declares(blocks, "cardinality"):
+        merged["cardinality"] = cardinality
+
+    for key, identity in (("rules", ("head", "body")),
+                          ("goals", ("pattern",))):
+        entries: Dict[str, Any] = {}
+        wrote: Dict[str, str] = {}
+        for manifest in usable:
+            for entry in (manifest.cognition.get(key) or ()):
+                if not isinstance(entry, Mapping):
+                    continue    # its own block refused it; do not say so twice
+                name = str(entry.get("name") or "").strip()
+                if not name:
+                    continue
+                content = tuple(_canonical(entry.get(part))
+                                for part in identity)
+                if name not in entries:
+                    entries[name] = (dict(entry), content)
+                    wrote[name] = manifest.name
+                elif entries[name][1] != content:
+                    problems.append(
+                        f"`cognition: {key}` declares {name!r} twice over "
+                        f"with different content: {wrote[name]!r} and "
+                        f"{manifest.name!r} do not agree. One name is one "
+                        f"{'clause' if key == 'rules' else 'target'}: rename "
+                        f"one of them, or make the two declarations identical"
+                    )
+        if _declares(blocks, key):
+            merged[key] = [entry for entry, _content in entries.values()]
+
+    # Validated HERE, for `_merge_grounding`'s reason: a merge can produce a
+    # pack no skill wrote — one skill's rule concluding about a field
+    # another skill declared single-valued — and the door is where a mission
+    # finds that out.
+    try:
+        RulePack.from_mapping(merged)
+    except ValueError as exc:
+        problems.append(
+            f"the merged `cognition:` block is not one the kernel would "
+            f"take: {exc}"
+        )
+    return merged
+
+
 def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
     """Several manifests as the ONE a mission runs under, or a refusal.
 
@@ -1248,6 +1428,11 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
       merge that produced something unusable is a refusal at the door.
       Checking is unioned and never intersected: strictness asked for by
       any skill binds the run;
+    * the **rule pack**, merged by :func:`_merge_cognition`: ``rules`` and
+      ``goals`` union by name, ``cardinality`` agrees per field or refuses.
+      Nobody's clause is dropped and nobody's clause is replaced, because a
+      pack is a set of named things and a name is what everything
+      downstream says;
     * the ``sdk_import``, if exactly one distinct one was named, and the
       ``sandbox``, at the strictest thing anybody asked for.  The
       code-plane gate then runs over **each input manifest** under that
@@ -1385,6 +1570,8 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
                 f"be built from: {exc}"
             )
 
+    cognition = _merge_cognition(loaded, problems)
+
     composed = SkillManifest(
         name=primary.name,
         description=primary.description,
@@ -1395,6 +1582,7 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
         prompt=prompt,
         output_contract=primary.output_contract,
         grounding=grounding,
+        cognition=cognition,
         sdk_import=sdk_import,
         sandbox=sandbox,
         source=primary.source,

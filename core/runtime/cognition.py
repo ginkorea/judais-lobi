@@ -92,6 +92,28 @@ recorded *without* the flag and resumed *with* it begins believing at the
 resume, and :func:`open_shadow` writes :data:`RESUMED_NOTE` into the log as
 line two so that a short log is never mistaken for a complete one.
 
+## The rules, and where they come from
+
+A shadow with no rules and no goals derives nothing and owes nothing: the
+harvest fills a store and the frontier is empty because there is nothing to
+be missing *from*.  :class:`RulePack` is the other half, and
+``ROADMAP.md`` §2.9.4 says where it arrives from — **through the skill**.  A
+manifest may carry a ``cognition:`` block (``cardinality:``, ``rules:``,
+``goals:``); :mod:`core.runtime.skills` holds it raw exactly as it holds
+``grounding:``, this module reads it, and :func:`open_shadow` writes it into
+the store *before the first receipt* through the kernel's ordinary public
+doors — so it is in ``reasoning.jsonl``, so a resume replays it rather than
+loading it twice, and so a promoted rule's promotion is an event somebody
+can read.  Rule authorship is then a **named cost of the architecture**
+rather than an unexamined assumption, which is the gap the thought
+experiment left.
+
+Nothing about the floor changes: an unusable block is a refusal *at the
+manifest door* (the ``--no-grounding`` precedent — parsed always, acted on
+only when asked), a pack that fails to load at runtime turns cognition off
+for the run and writes :data:`UNLOADED_NOTE`, and a mission under a pack
+runs the mission it would have run.  Rules derive; they do not gate.
+
 :meth:`~core.runtime.run.Run._loop` closes the step.  That is the kernel
 review's M2 ruling written into the harness: :meth:`ShadowCognition.receipt`
 stages, and :meth:`ShadowCognition.close_step` is the **one defined flush
@@ -148,14 +170,17 @@ Five bounds, each stated because each is a thing the store does **not** know:
   numbers, and this kernel's store is single-valued per ``(entity, field)``
   unless a cardinality is declared — asserting them all would manufacture
   forty contradictions out of a list that contradicts nothing.  So such a
-  key is skipped and counted.  **This module declares no field cardinality
-  at all** — no call to
-  :meth:`~core.cognition.state.CognitiveState.declare_field` anywhere — and
-  that is a decision rather than an omission: undeclared is ``many`` at
-  event schema 2, so nothing the shadow asserts can contest anything on a
-  receipt that legitimately lists ten runs, and a declaration made here
-  would be this file guessing at a schema it is reading rather than
-  writing.  A rule pack that wants ``one`` for a field says so itself.
+  key is skipped and counted.  **The harvest declares no field cardinality
+  of its own** — no call to
+  :meth:`~core.cognition.state.CognitiveState.declare_field` anywhere in
+  it — and that is a decision rather than an omission: undeclared is
+  ``many`` at event schema 2, so nothing the shadow asserts can contest
+  anything on a receipt that legitimately lists ten runs, and a declaration
+  made here would be this file guessing at a schema it is reading rather
+  than writing.  **A rule pack that wants ``one`` for a field says so
+  itself**, and that is the one door a declaration comes through — see
+  :class:`RulePack`, which is a skill manifest's clauses and not this
+  module's opinion.
   Lifting the skip above still needs the per-row entity that the flat
   harvester's missing path is holding up, which is the same merge as the
   sink.
@@ -215,15 +240,17 @@ import json
 import math
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.cognition import EVENTS_KEY as KERNEL_EVENTS_KEY
 from core.cognition import SCHEMA_KEY as KERNEL_SCHEMA_KEY
 from core.cognition import COUNT_KEY as KERNEL_COUNT_KEY
-from core.cognition import (BUDGET_CHARS, EVENT_SCHEMA_VERSION, KERNEL_KEY,
-                            KERNEL_VERSION, CognitionError, CognitiveState,
-                            EvidenceAuthority, EvidenceRef, ReplayRefused,
+from core.cognition import (BUDGET_CHARS, CARDINALITIES, EVENT_SCHEMA_VERSION,
+                            KERNEL_KEY, KERNEL_VERSION, CognitionError,
+                            CognitiveState, EvidenceAuthority, EvidenceRef,
+                            ReplayRefused, RuleAuthority, check_pattern,
                             compile_view, deep_copy)
 from core.durable import fsync_append
 from core.runtime.grounding import harvest_fields, json_blocks
@@ -233,7 +260,9 @@ __all__ = [
     "REASONING_LOG", "REASONING_SCHEMA_VERSION", "SCHEMA_KEY",
     "KERNEL_SCHEMA_KEY", "KERNEL_KEY", "KERNEL_EVENTS_KEY",
     "KERNEL_COUNT_KEY", "NOTE_KEY", "RECEIPT_KIND", "RESUMED_NOTE",
-    "STOPPED_NOTE", "UNCOMPILED_NOTE",
+    "STOPPED_NOTE", "UNCOMPILED_NOTE", "UNLOADED_NOTE",
+    "COGNITION_KEYS", "GOAL_KEYS", "PACK_AUTHORITY", "RULE_KEYS",
+    "PackGoal", "PackRule", "RulePack",
     "ShadowCognition", "header_record", "observations_of", "open_shadow",
     "read_reasoning", "replay_reasoning",
 ]
@@ -271,12 +300,338 @@ STOPPED_NOTE = "cognition stopped; the mission was not told"
 UNCOMPILED_NOTE = ("the compiled context stopped; the harvest continued and "
                    "the mission was not told")
 
+#: The fourth note: a skill carried a ``cognition:`` block and it did not
+#: load.  Its own sentence, for :data:`UNCOMPILED_NOTE`'s reason — a reader
+#: that could not tell this from a store that harvested badly would go
+#: looking in the wrong file — and it says the mission was untouched because
+#: that is the floor rule: a pack that will not load costs a run its
+#: cognition and nothing else.
+UNLOADED_NOTE = ("the skill's rule pack did not load; cognition is off for "
+                 "this run and the mission was not told")
+
 #: The other note, and it is not an error: this log begins at a resume, so
 #: the receipts the run took before it were never offered to this store.
 #: See :func:`open_shadow` for why that is the correct behaviour and why it
 #: has to be written down rather than inferred from a short log.
 RESUMED_NOTE = ("this log begins at a resume; the receipts this run took "
                 "before it were not harvested")
+
+
+# ── the rule pack: a skill's clauses, as kernel writes ───────────────────────
+
+#: What a ``cognition:`` block may say.  Closed, and refused by name like
+#: :data:`core.runtime.grounding.GROUNDING_KEYS`: a key this reader has never
+#: heard of is a key an author believed was doing something.
+COGNITION_KEYS: Tuple[str, ...] = ("cardinality", "rules", "goals")
+
+#: What one entry of ``rules:`` may say.
+RULE_KEYS: Tuple[str, ...] = ("name", "head", "body")
+
+#: What one entry of ``goals:`` may say.
+GOAL_KEYS: Tuple[str, ...] = ("name", "pattern")
+
+#: The authority a pack's rules end up standing on, and the whole argument
+#: for the two-step load below.
+#:
+#: :meth:`~core.cognition.state.CognitiveState.add_rule` defaults to
+#: ``PROPOSED`` — the kernel's wall, where a clause nobody vouched for
+#: derives nothing — and :meth:`~core.cognition.state.CognitiveState
+#: .promote_rule` is the door through it.  A loader that passed ``SKILL``
+#: straight to ``add_rule`` would work and would walk *round* the wall: the
+#: log would hold one event where it should hold two, and the question
+#: "who promoted this clause, and when" would have no answer in the file.
+#: So a pack's rule arrives proposed and is promoted, in the log, in that
+#: order — the same sequence a human operator's would take.
+#:
+#: ``SKILL`` and not ``DOMAIN``: the rules came out of a skill manifest, and
+#: that is exactly what the authority says.
+PACK_AUTHORITY = RuleAuthority.SKILL
+
+
+@dataclass(frozen=True)
+class PackRule:
+    """One clause of a pack: a name, a head and a body, all validated."""
+
+    name: str
+    head: Tuple[Any, Any, Any]
+    body: Tuple[Tuple[Any, Any, Any], ...]
+
+
+@dataclass(frozen=True)
+class PackGoal:
+    """One target of a pack.  The *name* becomes the kernel goal's note.
+
+    The kernel's :class:`~core.cognition.types.Goal` has no name field and
+    should not grow one for this: a goal is identified by its pattern, and
+    the word a pack author wrote is what a reader of the log wants to see
+    beside it.  ``note`` is that field, and putting the name there is the
+    honest landing rather than a second identity the kernel would have to
+    keep unique.
+    """
+
+    name: str
+    pattern: Tuple[Any, Any, Any]
+
+
+@dataclass(frozen=True)
+class RulePack:
+    """A skill manifest's ``cognition:`` block, read once and applied once.
+
+    **This is the frontier made real** (``ROADMAP.md`` §2.9.4: *rules arrive
+    through skills*).  The shadow harvests receipts into propositions and,
+    with no rules and no goals, that is where it stops: nothing derives,
+    nothing is owed, and ``frontier()`` is empty by construction.  A pack is
+    the other half — the clauses that turn observations into conclusions and
+    the targets that turn what is missing into obligations — and it arrives
+    where the rest of a mission's operational knowledge arrives, in the
+    manifest, which is what makes rule authorship a **named cost** of this
+    architecture rather than an assumption nobody budgeted for.
+
+    **Read here and nowhere else.**  :mod:`core.runtime.skills` is the one
+    reader of a manifest and holds this block raw, exactly as it holds
+    ``grounding:``; what a block *means* is this module's, because this
+    module is the attachment and the kernel is what it attaches to.  The
+    same shape as grounding, for the same reason: two readers of one block
+    is the defect that costs a field the day they disagree.
+
+    **Refused at the door.**  :meth:`from_mapping` collects every problem in
+    one message — the module idiom an author fixing a file wants — and then
+    **dry-runs the whole pack through a throwaway kernel**, so a block the
+    kernel would refuse is a manifest that does not load rather than a
+    mission that dies at its first step.  The dry run is
+    :meth:`load_into` itself, against a fresh
+    :class:`~core.cognition.state.CognitiveState`: a second, simpler
+    "would this work" would be the second owner, and the day it disagreed
+    with the real load it would be the one that had been tested.
+    """
+
+    cardinality: Tuple[Tuple[str, str], ...] = ()
+    rules: Tuple[PackRule, ...] = ()
+    goals: Tuple[PackGoal, ...] = ()
+
+    def __bool__(self) -> bool:
+        """A pack that declares nothing is falsy, and is still a pack.
+
+        ``cognition: {}`` is a manifest saying *this skill has a cognitive
+        block and it is empty*, which composition has to keep (the
+        key-presence invariant).  Loading it writes nothing, which is the
+        correct amount.
+        """
+        return bool(self.cardinality or self.rules or self.goals)
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "RulePack":
+        """One ``cognition:`` block, or a ``ValueError`` naming every fault.
+
+        ``ValueError`` and not a :class:`~core.cognition.types
+        .CognitionError`, because the caller is a manifest loader and the
+        fault is in a file somebody wrote — the same exception
+        :meth:`~core.runtime.grounding.GroundingConfig.from_mapping` raises
+        for the same reason, so ``skills.py`` refuses both blocks through
+        one ``except``.
+        """
+        problems: List[str] = []
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, Mapping):
+            raise ValueError(
+                f"a `cognition:` block is a mapping "
+                f"({', '.join(COGNITION_KEYS)}), not a "
+                f"{type(raw).__name__}")
+
+        unknown = sorted(set(map(str, raw)) - set(COGNITION_KEYS))
+        if unknown:
+            problems.append(
+                f"unknown key(s): {', '.join(unknown)}. A cognition block "
+                f"sets {', '.join(COGNITION_KEYS)}")
+
+        cardinality = _read_cardinality(raw.get("cardinality"), problems)
+        rules = _read_rules(raw.get("rules"), problems)
+        goals = _read_goals(raw.get("goals"), problems)
+        pack = cls(cardinality=cardinality, rules=rules, goals=goals)
+
+        if not problems:
+            # THE DRY RUN, and it is the real load against a store nobody
+            # keeps. Everything the shape checks above cannot know lives in
+            # here: a head variable the body never binds, an empty body, two
+            # cardinalities for one field, a literal the kernel will not take
+            # as a value. A mission that started on one of those would die at
+            # its first derive, in a module whose whole promise is that it
+            # cannot cost a mission anything.
+            try:
+                pack.load_into(CognitiveState())
+            except CognitionError as exc:
+                problems.append(f"the kernel refuses this pack: {exc}")
+
+        if problems:
+            raise ValueError("; ".join(problems))
+        return pack
+
+    def load_into(self, state: CognitiveState) -> Tuple[int, int, int]:
+        """Write this pack into *state*.  Returns ``(fields, rules, goals)``.
+
+        **Deterministic order, and it is part of the file's meaning**:
+        cardinality, then rules, then goals, each in the order the manifest
+        wrote them.  A replayed reasoning log therefore holds the pack in the
+        order an author reading their own file expects, and two runs of one
+        manifest produce the same event sequence — which is what makes the
+        log a determinism proof rather than a diary.
+
+        Cardinality first because it is a statement about what the store is
+        allowed to notice, and a declaration arriving after the observations
+        it governs is a store whose ledger cannot be explained by its own
+        rules.  (The kernel is careful here too — ``declare_field`` applies
+        to what is already held — but an order that only works because the
+        other end is forgiving is an order nobody chose.)
+
+        Every write goes through the kernel's ordinary public doors, so every
+        one of them is an event in ``reasoning.jsonl`` and a resume rebuilds
+        the pack by replaying the log rather than by reading the manifest
+        again.  That is the whole of resume for a pack, and it is why
+        :func:`open_shadow` loads on the fresh path only.
+        """
+        for field, cardinality in self.cardinality:
+            state.declare_field(field, cardinality)
+        for rule in self.rules:
+            rid = state.add_rule(rule.name, rule.head, rule.body)
+            state.promote_rule(rid, PACK_AUTHORITY)
+        for goal in self.goals:
+            state.add_goal(goal.pattern, note=goal.name)
+        return (len(self.cardinality), len(self.rules), len(self.goals))
+
+
+def _read_cardinality(raw: Any, problems: List[str]) -> Tuple[Tuple[str, str], ...]:
+    """``cardinality:`` as ``((field, "one"|"many"), …)`` in file order."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, Mapping):
+        problems.append(
+            f"`cardinality:` holds a {type(raw).__name__}; it is a mapping of "
+            f"field name to {' or '.join(repr(c) for c in CARDINALITIES)}")
+        return ()
+    out: List[Tuple[str, str]] = []
+    for field, cardinality in raw.items():
+        name = str(field or "").strip()
+        if not name:
+            problems.append("`cardinality:` names a field with no name")
+            continue
+        if cardinality not in CARDINALITIES:
+            problems.append(
+                f"`cardinality: {name}` is {cardinality!r}; a field carries "
+                f"{' or '.join(repr(c) for c in CARDINALITIES)} values, and "
+                f"only {'one'!r} turns collision detection on")
+            continue
+        out.append((name, str(cardinality)))
+    return tuple(out)
+
+
+def _pattern(raw: Any, where: str, problems: List[str]
+             ) -> Optional[Tuple[Any, Any, Any]]:
+    """One triple pattern, through the kernel's own reader.
+
+    :func:`core.cognition.types.check_pattern` is the owner of *what a
+    pattern is* — three terms, a variable spelled ``?name``, a literal the
+    store would take — and asking it here rather than re-deciding is what
+    keeps a manifest and a rule agreeing about the ``?``.  It raises on the
+    first fault, which is why it is called once per pattern and the message
+    is collected: an author with three malformed rules fixes them once.
+    """
+    if raw is None:
+        problems.append(f"{where} has no pattern")
+        return None
+    if isinstance(raw, str) or not isinstance(raw, Sequence):
+        problems.append(
+            f"{where} is a {type(raw).__name__}; a pattern is three terms "
+            f"[entity, field, value], each a literal or a ?variable")
+        return None
+    try:
+        return check_pattern(raw)
+    except CognitionError as exc:
+        problems.append(f"{where}: {exc}")
+        return None
+
+
+def _entries(raw: Any, key: str, keys: Tuple[str, ...],
+             problems: List[str]) -> List[Tuple[str, Mapping]]:
+    """``(name, entry)`` for every usable entry of ``rules:`` / ``goals:``.
+
+    Names are required, non-empty and unique *within their own key*: a rule
+    and a goal may share a word, because they are different kinds of thing
+    and nothing composes them together, while two rules called one name are
+    the conflict :func:`core.runtime.skills.compose_manifests` is about to
+    have to reason over — and one that is already unanswerable inside a
+    single file.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, Mapping) or isinstance(raw, str) \
+            or not isinstance(raw, Sequence):
+        problems.append(
+            f"`{key}:` holds a {type(raw).__name__}; it is a list of "
+            f"mappings ({', '.join(keys)})")
+        return []
+    out: List[Tuple[str, Mapping]] = []
+    seen: List[str] = []
+    for index, entry in enumerate(raw):
+        where = f"`{key}:` entry {index + 1}"
+        if not isinstance(entry, Mapping):
+            problems.append(
+                f"{where} is a {type(entry).__name__}; it is a mapping "
+                f"({', '.join(keys)})")
+            continue
+        unknown = sorted(set(map(str, entry)) - set(keys))
+        if unknown:
+            problems.append(
+                f"{where} sets unknown key(s): {', '.join(unknown)}. An entry "
+                f"of `{key}:` sets {', '.join(keys)}")
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            problems.append(
+                f"{where} has no `name`; a pack's clauses are named because "
+                f"composition unions them by name and a refusal has to say "
+                f"which one it means")
+            continue
+        if name in seen:
+            problems.append(
+                f"`{key}:` declares {name!r} twice in one manifest. Two "
+                f"clauses under one name is one of them being talked about "
+                f"and the other silently not")
+            continue
+        seen.append(name)
+        out.append((name, entry))
+    return out
+
+
+def _read_rules(raw: Any, problems: List[str]) -> Tuple[PackRule, ...]:
+    out: List[PackRule] = []
+    for name, entry in _entries(raw, "rules", RULE_KEYS, problems):
+        head = _pattern(entry.get("head"), f"rule {name!r} head", problems)
+        body_raw = entry.get("body")
+        if body_raw is None or isinstance(body_raw, (str, Mapping)) \
+                or not isinstance(body_raw, Sequence) or not list(body_raw):
+            problems.append(
+                f"rule {name!r} has no `body`; a rule with no premises is an "
+                f"observation, and observations come with evidence")
+            continue
+        body: List[Tuple[Any, Any, Any]] = []
+        for index, item in enumerate(body_raw):
+            pattern = _pattern(
+                item, f"rule {name!r} body premise {index + 1}", problems)
+            if pattern is not None:
+                body.append(pattern)
+        if head is None or len(body) != len(list(body_raw)):
+            continue
+        out.append(PackRule(name=name, head=head, body=tuple(body)))
+    return tuple(out)
+
+
+def _read_goals(raw: Any, problems: List[str]) -> Tuple[PackGoal, ...]:
+    out: List[PackGoal] = []
+    for name, entry in _entries(raw, "goals", GOAL_KEYS, problems):
+        pattern = _pattern(entry.get("pattern"), f"goal {name!r}", problems)
+        if pattern is not None:
+            out.append(PackGoal(name=name, pattern=pattern))
+    return tuple(out)
 
 
 # ── a receipt, as propositions ───────────────────────────────────────────────
@@ -603,6 +958,53 @@ class ShadowCognition:
         #: How many times the compiler raised.  Never more than one: the
         #: first one stops compiling and leaves the harvest running.
         self.compile_failures = 0
+        #: The :class:`RulePack` this run's skill loaded, or ``None`` — for a
+        #: run with no pack, and for one whose pack did not load.  A caller
+        #: that wants to SAY a run is reasoning under rules reads this;
+        #: nothing in the loop does.
+        self.pack: Optional[RulePack] = None
+        #: ``(fields, rules, goals)`` the pack wrote.  Zeroes until one does.
+        self.loaded: Tuple[int, int, int] = (0, 0, 0)
+
+    # ── what the door calls, once ───────────────────────────────────────
+
+    def load_pack(self, block: Any) -> None:
+        """A skill's ``cognition:`` block, into this store.  Never raises.
+
+        **Before the first receipt**, which is the only moment it can happen
+        at: a rule promoted after the observations it would have fired on
+        still derives — the kernel joins a rule delta against the whole
+        store — but a *goal* added late means a frontier that was empty
+        while the mission was deciding what to do, and the obligations a
+        pack exists to produce would arrive after the steps they were for.
+        :func:`open_shadow` is the one caller, at the one moment.
+
+        Total, like everything else a mission can reach: a pack that will
+        not load **stops cognition for the run** and writes
+        :data:`UNLOADED_NOTE`.  Stopping is right rather than carrying on
+        without the rules — a shadow that harvested under a pack its author
+        thinks is loaded would report an empty frontier as a finding — and
+        stopping *the mission* would be wrong, which is the floor rule
+        (``ROADMAP.md`` §2.9.3: cognition-on never blocks an answer).
+
+        A block that is ``None`` is a skill that wrote no cognition, and a
+        pack that declares nothing writes nothing: both leave this object
+        exactly as it was, which is the shadow the flag alone has always
+        been.
+        """
+        if block is None or not self.on:
+            return
+        with self._lock:
+            try:
+                pack = (block if isinstance(block, RulePack)
+                        else RulePack.from_mapping(block))
+                counts = pack.load_into(self.state)
+                self._flush()
+            except Exception as exc:                # noqa: BLE001 - the point
+                self._unloaded(exc)
+                return
+            self.pack = pack
+            self.loaded = counts
 
     # ── what the loop calls ─────────────────────────────────────────────
 
@@ -777,6 +1179,33 @@ class ShadowCognition:
         except Exception:                           # pragma: no cover
             pass
 
+    def _unloaded(self, exc: BaseException) -> None:
+        """The pack did not load; this run has no cognition at all.
+
+        The sibling of :meth:`_stopped` with its own sentence, and the wider
+        of the two in what it turns off: a pack is the rules and the goals a
+        run was meant to reason under, and harvesting on without them would
+        leave a log whose empty frontier reads as a finding.  So the switch
+        goes, the note says which half failed, and the mission — which has
+        not started yet — is not told.
+
+        The store may hold half a pack when this runs, and the log does not:
+        the flush is what did not happen.  That is the honest pairing rather
+        than a defect to repair, because the log is the state and a state
+        nothing will read again is not worth reconciling; a reader that sees
+        this note knows the file is not a pack and never became one.
+        """
+        self.failures += 1
+        self.on = False
+        try:
+            fsync_append(self.path, canonical({
+                NOTE_KEY: UNLOADED_NOTE,
+                "error": f"{type(exc).__name__}: {exc}",
+                "written": self._written,
+            }))
+        except Exception:                           # pragma: no cover
+            pass
+
     def _stopped(self, exc: BaseException) -> None:
         """Cognition is over for this run, and the log says so.
 
@@ -801,7 +1230,8 @@ class ShadowCognition:
 
 def open_shadow(store: Any, run_id: str, *,
                 resumed: bool = False, compiling: bool = False,
-                budget_chars: int = BUDGET_CHARS) -> ShadowCognition:
+                budget_chars: int = BUDGET_CHARS,
+                cognition_block: Any = None) -> ShadowCognition:
     """The shadow for *run_id* in *store*: a new one, or the one on disk.
 
     *store* is a :class:`core.durable.RunStore`; it is asked for the run's
@@ -824,11 +1254,23 @@ def open_shadow(store: Any, run_id: str, *,
       enforced** on this path: a log written by an older engine replays
       into this one correctly — every op is applied through the same public
       method that wrote it — and what a different engine changes is which
-      ``pN`` a *derived* conclusion gets.  This module derives nothing,
-      because it declares no rules, so there is nothing here for the
-      difference to move; a consumer that persists an id out of one of
-      these logs is the one that needs the field, which is why it is
-      written down.
+      ``pN`` a *derived* conclusion gets.  A run under a
+      :class:`RulePack` does derive, which is exactly why the field is
+      written down; a consumer that persists an id out of one of these logs
+      is the one that needs it.
+
+    *cognition_block* is the composed manifest's ``cognition:`` block — a
+    :class:`RulePack`, or the raw mapping one is read from — and it is
+    loaded **on the fresh path only**, before the object is handed back and
+    therefore before the first receipt.  On the resume path it is
+    deliberately not loaded and not even compared: the log already holds
+    the ``declare_field``/``add_rule``/``promote_rule``/``add_goal`` events
+    of the process that loaded it, the replay above has just applied them,
+    and loading again would give the resumed store two copies of every
+    clause — a second rule id deriving the same conclusion a second way,
+    and a frontier counting each obligation twice.  The pack is in the log
+    because every write went through the kernel's ordinary doors, which is
+    the whole reason those doors are the only ones used.
 
     **The one call in this module that raises**, and deliberately: a log
     this reader or the kernel cannot trust is a
@@ -875,4 +1317,11 @@ def open_shadow(store: Any, run_id: str, *,
         # `STOPPED_NOTE` and it is not an error — this is a working shadow
         # that started late, not a broken one.
         fsync_append(path, canonical({NOTE_KEY: RESUMED_NOTE}))
-    return ShadowCognition(path, run_id, **view)
+    shadow = ShadowCognition(path, run_id, **view)
+    # The pack, after the header and the note and before anything else: the
+    # notes are about the FILE and the pack is the first thing the STORE
+    # believes. `load_pack` is total, so a block that will not load costs
+    # this run its cognition and costs the caller nothing — the same
+    # contract every other call on the object has.
+    shadow.load_pack(cognition_block)
+    return shadow
