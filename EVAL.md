@@ -343,8 +343,9 @@ the mission's declared obligation path — `expects_tools` plus the result
 store, counted per dispatch; `None` where no path is declared),
 `calls_to_chain` (the 1-based ordinal, within one emitter's own sequence, of
 the first call whose arguments carry every `expects_carried` literal at once;
-`None` where the chain never completed — an unpaid price is not a price of
-zero) and `premature` (an answer served while some declared tool was never
+across several emitters the CHEAPEST emitter's price is reported, which on a
+staged turn is not necessarily the first to complete; `None` where the chain
+never completed — an unpaid price is not a price of zero) and `premature` (an answer served while some declared tool was never
 called; `None` for a refusal, which is not premature, it is a refusal). Each
 is defined once, in `core.eval.score`, and every table that prints one reads
 it rather than recomputing. The
@@ -2109,7 +2110,7 @@ classes so the two cannot drift), and to the §6 spend columns it is read by:
 | class | mechanism | read by |
 |---|---|---|
 | multi-hop evidence | **W1/W4** — facts joined across receipts through declared identity | success, `unsupported`, `premature` |
-| dependency reasoning | **W1/W4** — `resolvable via:` on owed lines, the subject join | `dead_end_calls` (dispatches off the declared obligation path), `calls_to_chain` (the price of the first completed carried-chain) |
+| dependency reasoning | **W1/W4** — `resolvable via:` on owed lines, the subject join | `dead_end_calls` (dispatches off the declared obligation path), `calls_to_chain` (the cheapest emitter's price for a completed carried-chain — cheapest, not first-to-complete) |
 | contradictory evidence | **W1** — subject contests: two receipts, one subject, one field, both sides shown | conflict surfaced vs one side served — the caveat-accepting rubric (§14), the `staged_arithmetic` failure shape |
 | missing evidence | **W2** — the extraction door's abstention half | abstention/caveat correctness via the existing grounding checks |
 | misleading evidence | **W2/W4** — declared semantics: the wrong field beside the right one | grounding's `unsupported`, the attribution check |

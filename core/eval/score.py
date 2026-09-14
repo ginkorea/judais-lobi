@@ -73,6 +73,7 @@ from typing import (Any, Dict, Iterable, List, Mapping, Optional, Sequence,
                     Tuple, Union)
 
 from core.runtime import contract
+from core.runtime.results import RESULT_TOOL
 from core.eval.suite import (SPLITS, Mission, RubricChange, Suite,
                              missions_in)
 
@@ -465,12 +466,19 @@ def dead_ends(records: Sequence[Mapping[str, Any]], mission: Mission
     ``None``, never 0, for a mission that declares no ``expects_tools``:
     with no path declared there is no off-path fact, and a zero would read
     as a run that stayed on a road nobody drew.
+
+    **And one edge named so the column is read right**: ``expects_tools``
+    is not an exhaustive script — a useful call the rubric did not declare
+    still counts here.  The column prices *divergence from the declared
+    path*, never uselessness, and it is read PAIRED (did the arm move it),
+    not absolute (is the number bad).
     """
     if not mission.expects_tools:
         return None
-    # `mission_result` is the result store the runner adds to every plane:
-    # writing a result is on every obligation path there is.
-    on_path = set(mission.expects_tools) | {"mission_result"}
+    # The result store rides on every plane the runner builds: writing a
+    # result is on every obligation path there is.  Its name is the result
+    # module's, not a second spelling here.
+    on_path = set(mission.expects_tools) | {RESULT_TOOL}
     return len([record for record in _all(records, "tool_call")
                 if str(record.get("tool") or "") not in on_path])
 
