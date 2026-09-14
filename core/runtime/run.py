@@ -1634,6 +1634,12 @@ class Run:
         #: was on the bus and deliberately left out of the closed set can
         #: never wander into it later.
         self._baseline: Optional[set] = None
+        #: The compiled-context block this run last put in the message
+        #: list, held **by identity** so the next step can take that exact
+        #: message back out. One live view, never an accumulating log: see
+        #: :meth:`_compile_context`. ``None`` on every run that did not ask
+        #: for one, which is every run by default.
+        self._compiled: Optional[Dict[str, Any]] = None
         #: What changed since the last step boundary, rendered (``+mcp.x``,
         #: ``-mcp.y``) and waiting to be told to the model. Drained by
         #: :meth:`_plane_news`, which is the one place a step decides whether
@@ -2547,6 +2553,90 @@ class Run:
         if shadow is not None:
             shadow.close_step()
 
+    def _compile_context(self, messages: List[Dict[str, Any]]) -> None:
+        """Replace this run's compiled-context block, in place.
+
+        ``--compiled-context`` (ROADMAP §2.9.5, Phase 18).  One block per
+        step: the previous step's is taken out and the new one appended, so
+        the conversation carries **one live view** of the problem rather
+        than a log of every view it has ever had.  A run without the flag
+        gets ``""`` back from the shadow and this is one string test on
+        every step — the same cost ``--cognition`` off already pays at
+        :meth:`_close_cognitive_step`.
+
+        **Where it goes, and why here.**  Last, after the transcript and
+        after everything anybody says at this boundary — an operator's
+        ``inject``, the supervisor's note, a plane-changed sentence — and
+        immediately before :meth:`_fit` and the ask.  Two reasons, and they
+        point the same way:
+
+        * **Recency is the lever this harness measured.**  The reference
+          20B followed conduct roughly half the time from the middle of a
+          prompt and reliably from the end of it, which is why the conduct
+          moved below the catalogue (see :meth:`system_turn`).  The view is
+          the most volatile thing in the request — it is different every
+          step by construction — so it is exactly what §2.9.5 means by a
+          *volatile suffix* beside a stable prefix.
+        * **The pinned prefix is untouched.**  Persona, protocol, catalogue
+          and conduct are :meth:`seed`'s and they do not move, so the
+          longest byte-stable prefix a served endpoint can cache is the
+          prefix it was before this feature existed.  A view rendered up
+          there would move the cache on every single step, which is the one
+          way to make that arrangement worth nothing.
+
+        It goes after the operator and the supervisor rather than before
+        them because it is **state, not an instruction**: it asks for
+        nothing, so it displaces nobody's last word, and the person who
+        spoke at this boundary is still the last *instruction* the model
+        reads.
+
+        Before :meth:`_fit` and not after, so the block is inside the
+        window the mission is bounded to.  A block appended past the fit
+        would be a request larger than the window said it was — and
+        :class:`~core.runtime.context_window.MissionWindow` stays the one
+        owner of what fits, which is the whole reason this does not do any
+        measuring of its own.
+
+        The old message is removed **by identity**, not by matching its
+        text: an operator who injects a paragraph that happens to begin
+        like a view would otherwise have it silently deleted, and a
+        compaction that already evicted the block leaves this a no-op,
+        which is what it should be.
+
+        **One block per run object, compiled from one store.**  A child of
+        a staged turn has its own :class:`Run` and therefore its own
+        handle, and it shares its parent's :class:`Store` — so each stage's
+        conversation carries exactly one view, and every one of them is a
+        rendering of the *same* belief.  That is the kernel's single-writer
+        rule read from the other end: five stages do not hold five
+        opinions, they hold one, and the block each is shown is that one as
+        of its own step.  The turn that composes a staged *answer* is the
+        exception and it is deliberate — see
+        :meth:`core.runtime.swarm.SwarmRunner._synthesis_messages`, which
+        argues the silence and names what would revisit it.
+        """
+        if self._compiled is not None:
+            for position, message in enumerate(messages):
+                if message is self._compiled:
+                    del messages[position]
+                    break
+            self._compiled = None
+        shadow = self.store.cognition
+        if shadow is None:
+            return
+        block = shadow.compiled_block()
+        if not block:
+            return
+        # A plain `user` turn, which is what the other two speakers at this
+        # boundary use and the shape both protocols take here: under the
+        # native protocol a `user` turn between two `tool` messages is a
+        # 400 and one after all of them is not, and this is after all of
+        # them — see `_steer`, which appends the same way for the same
+        # reason.
+        message = {"role": "user", "content": block}
+        messages.append(message)
+        self._compiled = message
+
     def _reject(self, index: int, problem: str, **fields: Any) -> None:
         """One rejected reply: on the stream, and in front of the watcher.
 
@@ -2648,6 +2738,10 @@ class Run:
         # And the draft, for the same reason: a runner used twice must not
         # deliver the first run's abandoned answer as the second's.
         self._draft = ""
+        # And the compiled block it was holding: a message from the first
+        # run's list can never be in the second's, so the handle to it is a
+        # reference to a conversation that is over.
+        self._compiled = None
         offered = self.offered
         transcript = MissionTranscript(
             objective=objective, catalogue=list(offered),
@@ -2981,6 +3075,14 @@ class Run:
             # person outranks a watcher.
             review = self._supervise(objective, transcript, messages,
                                      injected)
+            # LAST before the fit and the ask, and the one place a step's
+            # model input gains the runtime's own view of the problem. The
+            # step that just ended has been closed above, so the state this
+            # compiles from is everything that has been derived — and the
+            # previous step's block comes out as this one goes in, so the
+            # conversation carries one view and not a log of them. See
+            # `_compile_context` for why it rides here and nowhere else.
+            self._compile_context(messages)
             # Before the ask, not after the reply: what is compacted is
             # what this step is about to send, and a watcher told about it
             # afterwards has already rendered the turn it applied to.

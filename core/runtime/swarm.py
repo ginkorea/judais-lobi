@@ -2063,6 +2063,23 @@ class SwarmRunner:
 
         On a small window this degrades to what it always did — the step
         summaries alone — and says so in the prompt.
+
+        **``--compiled-context`` is deliberately not here, and the silence
+        is worth naming** (ROADMAP §2.9.5).  Every sub-mission's steps get
+        the compiled view — they run :meth:`core.runtime.run.Run._loop`,
+        which injects it — and the turn that composes the staged *answer*
+        does not: this method builds its own prompt out of the step lines
+        and the evidence blocks, and nothing in it asks the shadow for a
+        view.  That is a v1 decision rather than an oversight.  The
+        synthesizer's input is already the union of every stage's results,
+        assembled by the rule above; adding a rendering of the same
+        receipts beside them would be the *second* emitter of one fact,
+        which is the defect this package spent Phase 11 removing, and it
+        would do it in the one prompt where the window is tightest.  The
+        case for revisiting it is real and is the measurement Phase 19
+        makes: if the view carries what a stage's raw output does not — a
+        conflict between two stages, a grade — then this is where a staged
+        answer would learn it.
         """
         order = self._settled_order(plan, results)
         lines = self._result_lines(order, plan, results)

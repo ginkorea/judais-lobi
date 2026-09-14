@@ -864,7 +864,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--gate-wait", "--replay", "--grant",
     "--campaign", "--campaign-plan",
     "--no-grounding",
-    "--cognition",
+    "--cognition", "--compiled-context",
     "--version",
 )
 
@@ -962,6 +962,20 @@ CLI_FLAGS: tuple[str, ...] = (
 #: It needs a run directory: with ``JUDAIS_LOBI_RUNS`` off there is nowhere
 #: to write the file and the harness says so rather than pretending.
 #:
+#: ``JUDAIS_LOBI_COMPILED_CONTEXT`` is the environment form of
+#: ``--compiled-context`` — set to anything non-empty and each step's model
+#: input carries one block of what that state holds, replacing the block the
+#: step before it had.  It **implies** ``JUDAIS_LOBI_COGNITION`` and turns it
+#: on rather than refusing.  It adds nothing to this contract either: no
+#: record type, no field, no outcome, and nothing new on the wire — what
+#: changes is the model's *input*, which is visible only in the run's own
+#: ``model.jsonl``.  It gates nothing: no answer is held, checked or refused
+#: against the block, and a compiler that fails leaves the mission as it was.
+#: A consumer that pins a release and compares recorded prompts should know
+#: that a run with this on asked different questions than the same run with
+#: it off — which is the point of the flag and the reason it is off by
+#: default.
+#:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
 #: the other gets the one it passed.
@@ -984,7 +998,7 @@ ENV_VARS: tuple[str, ...] = (
     "JUDAIS_LOBI_RUNS",
     "JUDAIS_LOBI_APPROVALS",
     "JUDAIS_LOBI_MEMORY", "JUDAIS_LOBI_MEMORY_PRINCIPAL",
-    "JUDAIS_LOBI_COGNITION",
+    "JUDAIS_LOBI_COGNITION", "JUDAIS_LOBI_COMPILED_CONTEXT",
 )
 
 

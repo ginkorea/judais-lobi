@@ -22,6 +22,17 @@ no call is made or withheld, no gate is added, and nothing on the wire moves.
 an exception inside one is counted, stops cognition for the rest of the run,
 writes one note into the log and returns.  A mission does not find out.
 
+**``--compiled-context`` is the one thing that changes a prompt**, and it is
+a *second* switch on this same object (:attr:`ShadowCognition.compiling`)
+rather than a second attachment: the state a view is compiled from is this
+one, and a run that compiled from somewhere else would be showing the model
+a belief the log does not hold.  It is still additive and still never a
+gate — :meth:`ShadowCognition.compiled_block` adds a block to a turn, takes
+nothing away, and holds, checks or refuses nothing — and it is still total:
+a compiler that raises stops *compiling* for the rest of the run, leaves the
+harvest running, writes one note and returns ``""``.  ``--cognition`` alone
+is exactly the shadow it was; the two switches move in one direction each.
+
 **It is not free, and "shadow" is a claim about *gating*, not about time.**
 Nothing here is awaited for *permission* — no call in this module returns a
 verdict a mission loop waits on — but the harvest and the flush run inside
@@ -34,6 +45,24 @@ noise; against ``--mission-seconds`` set tight, or a very long run, it is a
 real number, and a deployment that has budgeted its clock to the millisecond
 should know it is there.  Saying so is the point: a cost nobody wrote down is
 a cost somebody discovers.
+
+**``--compiled-context`` adds a second cost and it grows with the store.**
+:meth:`ShadowCognition.compiled_block` runs on the same thread, in the same
+step, and it walks every live proposition: one
+:meth:`~core.cognition.state.CognitiveState.support` per claim (a memoised
+DAG walk), one line rendered per claim, and then a cut chosen against prefix
+sums.  Measured on this tree (median of five, warm): **95 ms** for a store
+of four thousand live facts and **244 ms** for eight thousand — roughly
+2.6× for twice the store, which is the grading and not the cut — and a
+fraction of a millisecond for the dozens a real mission holds.  It scales with **what the store believes**,
+not with what the block shows, because a fact must be graded before it can
+be ranked out: the four-thousand-character cap bounds what the model
+reads, never what it costs to work out what to show it.  It was 482 ms
+before the review: the cut used to re-render the whole block once per
+dropped line, which is quadratic against a store that only grows.  A
+deployment that intends to run thousands of receipts through one mission
+should read that number as the one to watch, and Phase 19's measurement is
+where it gets watched.
 
 ## Where it attaches, and why there is one place
 
@@ -192,9 +221,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from core.cognition import EVENTS_KEY as KERNEL_EVENTS_KEY
 from core.cognition import SCHEMA_KEY as KERNEL_SCHEMA_KEY
 from core.cognition import COUNT_KEY as KERNEL_COUNT_KEY
-from core.cognition import (EVENT_SCHEMA_VERSION, KERNEL_KEY, KERNEL_VERSION,
-                            CognitionError, CognitiveState, EvidenceAuthority,
-                            EvidenceRef, ReplayRefused, deep_copy)
+from core.cognition import (BUDGET_CHARS, EVENT_SCHEMA_VERSION, KERNEL_KEY,
+                            KERNEL_VERSION, CognitionError, CognitiveState,
+                            EvidenceAuthority, EvidenceRef, ReplayRefused,
+                            compile_view, deep_copy)
 from core.durable import fsync_append
 from core.runtime.grounding import harvest_fields, json_blocks
 from core.runtime.replay import canonical
@@ -203,7 +233,7 @@ __all__ = [
     "REASONING_LOG", "REASONING_SCHEMA_VERSION", "SCHEMA_KEY",
     "KERNEL_SCHEMA_KEY", "KERNEL_KEY", "KERNEL_EVENTS_KEY",
     "KERNEL_COUNT_KEY", "NOTE_KEY", "RECEIPT_KIND", "RESUMED_NOTE",
-    "STOPPED_NOTE",
+    "STOPPED_NOTE", "UNCOMPILED_NOTE",
     "ShadowCognition", "header_record", "observations_of", "open_shadow",
     "read_reasoning", "replay_reasoning",
 ]
@@ -232,6 +262,14 @@ RECEIPT_KIND = "receipt"
 #: The one sentence a note line says.  One spelling, so a reader can find
 #: every run whose shadow stopped without matching on an exception message.
 STOPPED_NOTE = "cognition stopped; the mission was not told"
+
+#: The third note: ``--compiled-context`` was on and the compiler raised.
+#: Its own sentence and not :data:`STOPPED_NOTE`, because the two are
+#: different facts about the run — this one says the model stopped being
+#: shown the view while the store went on believing, and a reader that
+#: could not tell them apart would read a working shadow as a dead one.
+UNCOMPILED_NOTE = ("the compiled context stopped; the harvest continued and "
+                   "the mission was not told")
 
 #: The other note, and it is not an error: this log begins at a resume, so
 #: the receipts the run took before it were never offered to this store.
@@ -528,7 +566,8 @@ class ShadowCognition:
 
     def __init__(self, path: Any, run_id: str = "", *,
                  state: Optional[CognitiveState] = None,
-                 written: int = 0) -> None:
+                 written: int = 0, compiling: bool = False,
+                 budget_chars: int = BUDGET_CHARS) -> None:
         #: Where the log is.
         self.path = Path(path)
         #: The run whose receipts these are — the first term of every
@@ -553,6 +592,17 @@ class ShadowCognition:
         self.failures = 0
         #: Whether cognition is still running for this run.
         self.on = True
+        #: Whether this run's model input carries the compiled view —
+        #: ``--compiled-context``.  **Off unless somebody asked**, and the
+        #: only switch in this package that changes a prompt.
+        self.compiling = bool(compiling)
+        #: The compiler's hard cap, in characters.
+        self.budget_chars = int(budget_chars)
+        #: How many blocks were handed to the loop.
+        self.compiled = 0
+        #: How many times the compiler raised.  Never more than one: the
+        #: first one stops compiling and leaves the harvest running.
+        self.compile_failures = 0
 
     # ── what the loop calls ─────────────────────────────────────────────
 
@@ -598,6 +648,43 @@ class ShadowCognition:
                 self._flush()
             except Exception as exc:                # noqa: BLE001 - the point
                 self._stopped(exc)
+
+    def compiled_block(self) -> str:
+        """This step's compiled view, or ``""``.  Never raises.
+
+        The **whole** of what ``--compiled-context`` adds to a mission, and
+        it is one string: :func:`core.cognition.compile.compile_view` over
+        the state this object already holds, rendered under
+        :attr:`budget_chars`.  The loop appends it and nothing else
+        happens — no record, no file, no gate, and no second copy of the
+        state anywhere.
+
+        ``""`` for every reason there is not to show one, and the caller
+        cannot tell them apart because none of them is its business: the
+        flag is off, cognition stopped, the state is empty (a mission that
+        has taken no receipt has nothing to be shown), or the compiler
+        raised.
+
+        **Called after** :meth:`close_step`, which is what makes this a
+        cheap read: the kernel flushes on every read, and the flush the
+        step's own boundary already did leaves nothing staged for this one
+        to write.  Compiling before the boundary would move a ``derive``
+        event from the boundary to whoever looked first, which is the
+        defect ``M2`` of the kernel review was about.
+        """
+        if not self.compiling or not self.on:
+            return ""
+        with self._lock:
+            try:
+                view = compile_view(self.state,
+                                    budget_chars=self.budget_chars)
+            except Exception as exc:                # noqa: BLE001 - the point
+                self._uncompiled(exc)
+                return ""
+            if not view:
+                return ""
+            self.compiled += 1
+            return view.text
 
     # ── the inside ──────────────────────────────────────────────────────
 
@@ -670,6 +757,26 @@ class ShadowCognition:
             canonical(deep_copy(event)) for event in fresh))
         self._written = int(fresh[-1]["n"])
 
+    def _uncompiled(self, exc: BaseException) -> None:
+        """The view is over for this run; the store goes on believing.
+
+        The narrower sibling of :meth:`_stopped`, and narrow on purpose: a
+        compiler that cannot render is not a store that cannot hold.  The
+        harvest keeps running, the log keeps growing, and the only thing
+        that stops is the block the model was being shown — which is
+        exactly the mission that would have run with the flag off.
+        """
+        self.compile_failures += 1
+        self.compiling = False
+        try:
+            fsync_append(self.path, canonical({
+                NOTE_KEY: UNCOMPILED_NOTE,
+                "error": f"{type(exc).__name__}: {exc}",
+                "written": self._written,
+            }))
+        except Exception:                           # pragma: no cover
+            pass
+
     def _stopped(self, exc: BaseException) -> None:
         """Cognition is over for this run, and the log says so.
 
@@ -693,12 +800,17 @@ class ShadowCognition:
 
 
 def open_shadow(store: Any, run_id: str, *,
-                resumed: bool = False) -> ShadowCognition:
+                resumed: bool = False, compiling: bool = False,
+                budget_chars: int = BUDGET_CHARS) -> ShadowCognition:
     """The shadow for *run_id* in *store*: a new one, or the one on disk.
 
     *store* is a :class:`core.durable.RunStore`; it is asked for the run's
-    directory and nothing else.  The one door, so that "does this run
-    already have a reasoning log?" is answered once:
+    directory and nothing else.  *compiling* and *budget_chars* are
+    ``--compiled-context`` and its cap, carried straight onto the object on
+    both paths below — a door that resolved them on one path only is a
+    resumed run that quietly stopped showing the model its own view.  The
+    one door, so that "does this run already have a reasoning log?" is
+    answered once:
 
     * **no file** — a fresh state, and the header written now, so that a run
       whose first step harvests nothing still leaves a versioned log rather
@@ -729,15 +841,23 @@ def open_shadow(store: Any, run_id: str, *,
     """
     directory = Path(store.directory(run_id))
     path = directory / REASONING_LOG
+    view = {"compiling": compiling, "budget_chars": budget_chars}
     if path.exists():
         header, events, _notes = read_reasoning(path)
         # Through `_state_of`, which exists so that "what version was this
         # log written under" is answered in one place; re-spelling the
         # envelope here would be the second owner the function was written
         # to prevent.
+        #
+        # And this is the whole of `--resume` for the compiled view: the
+        # state comes back out of the log and the next block is compiled
+        # from it, so a resumed run's model reads what the first process
+        # believed. NOTHING extra is persisted for it — a view is a
+        # rendering of the store, and a rendering written down is a second
+        # copy of a fact that already has an owner.
         return ShadowCognition(path, run_id, state=_state_of(header, events),
                                written=(int(events[-1]["n"]) if events
-                                        else 0))
+                                        else 0), **view)
     fsync_append(path, canonical(header_record()))
     if resumed:
         # THE GAP, said out loud. A resumed run re-records its recorded
@@ -755,4 +875,4 @@ def open_shadow(store: Any, run_id: str, *,
         # `STOPPED_NOTE` and it is not an error — this is a working shadow
         # that started late, not a broken one.
         fsync_append(path, canonical({NOTE_KEY: RESUMED_NOTE}))
-    return ShadowCognition(path, run_id)
+    return ShadowCognition(path, run_id, **view)

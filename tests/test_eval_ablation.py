@@ -586,24 +586,48 @@ class TestTheArmTable:
             self):
         """`shadow`, `compiled-context` and `graph` are ROADMAP §2.9's
         pieces, declared before their flags existed so the column said
-        SKIPPED from the first run.  `--cognition` then LANDED (the shadow
-        lane, same night this suite merged), which is the graduation this
-        table was designed around: the arm becomes runnable with no edit
-        to this module.  This test pins both halves — the graduated arm's
-        flag is now published surface, and the still-future arms' flags
-        are still not — so it fails the day either fact changes without
-        the table meaning what it says."""
+        SKIPPED from the first run.  `--cognition` LANDED with the shadow
+        lane and `--compiled-context` with Phase 18, which is the
+        graduation this table was designed around: the arm becomes
+        runnable with no edit to this module.  This test pins both halves
+        — every graduated arm's flag is published surface, and the
+        still-future arm's flag is still not — so it fails the day either
+        fact changes without the table meaning what it says."""
         from core.runtime import contract
 
         by_name = {arm.name: arm for arm in ARMS}
-        graduated = by_name["shadow"]
-        assert set(graduated.flags) <= set(contract.CLI_FLAGS), (
-            "shadow's flag left the contract; its column would silently "
-            "go back to SKIPPED")
-        still_future = [by_name["compiled-context"], by_name["graph"]]
+        graduated = [by_name["shadow"], by_name["compiled-context"]]
+        for arm in graduated:
+            assert set(arm.flags) <= set(contract.CLI_FLAGS), (
+                f"{arm.name}'s flag left the contract; its column would "
+                f"silently go back to SKIPPED")
+        still_future = [by_name["graph"]]
         for arm in still_future:
             assert arm.flags, arm.name
             assert not set(arm.flags) & set(contract.CLI_FLAGS), arm.name
+
+    def test_this_checkout_s_own_help_makes_the_arm_runnable(self):
+        """The graduation, end to end, through the probe that decides it.
+
+        The two tests above read the *contract*; this one asks the program
+        the way an ablation does — the spawn line's own `--help`, scanned
+        for what it DECLARES — because that is the only thing availability
+        actually consults. A flag published in `CLI_FLAGS` and missing from
+        the help would leave the column SKIPPED with the table insisting
+        the arm had landed.
+
+        Bounded by `accepted_flags`' own timeout, and it spawns one help
+        page: no model, no server, no mission.
+        """
+        repo = Path(__file__).resolve().parent.parent
+        declared = accepted_flags(
+            [sys.executable, str(repo / "main.py"), "judais", "{objective}"],
+            timeout_s=120.0)
+        assert declared is not None, "this checkout's own help was unaskable"
+        notes = availability(ARMS, declared)
+        assert notes["compiled-context"] == "", notes["compiled-context"]
+        assert notes["shadow"] == "", notes["shadow"]
+        assert "--graph-context" in notes["graph"]
 
     def test_the_module_exports_what_it_documents(self):
         for name in mod.__all__:
