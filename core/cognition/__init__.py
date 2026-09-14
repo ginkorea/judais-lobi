@@ -157,8 +157,12 @@ nothing here imports it: the dependency runs one way, the way every other one
 in this package does.
 """
 
-from core.cognition.compile import (BANDS, BUDGET_CHARS, CompiledView, band,
-                                    compile_view, owed_line, violation_line)
+from core.cognition.compile import (BANDS, BUDGET_CHARS, STEERING_GROUP,
+                                    STEERING_GROUPS,
+                                    STEERING_LINES, STEERING_TITLE,
+                                    CompiledView, band,
+                                    compile_view, owed_line, steering_hint,
+                                    violation_line)
 from core.cognition.constraints import (CONSTRAINT_KEYS, OVER_KEYS,
                                         SOLVER_EXTRA, SOLVER_TIMEOUT_MS,
                                         VIOLATION_KIND,
@@ -244,6 +248,10 @@ __all__ = [
     "SOLVER_EXTRA",
     "SOLVER_TIMEOUT_MS",
     "STATUS_RANK",
+    "STEERING_GROUP",
+    "STEERING_GROUPS",
+    "STEERING_LINES",
+    "STEERING_TITLE",
     "SUBJECT_CAP",
     "SUBJECT_KIND_CHARS",
     "SUBJECT_SEPARATOR",
@@ -276,6 +284,7 @@ __all__ = [
     "parse_constraint",
     "resolve",
     "solver_names",
+    "steering_hint",
     "subject_entity",
     "subject_parts",
     "unify",

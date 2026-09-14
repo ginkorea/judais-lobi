@@ -1269,6 +1269,17 @@ class SwarmRunner:
             user_parts.append(
                 f"The previous plan failed: {failure}\n"
                 f"Plan a different route around that failure.")
+        # LAST, and after the instruction above, for the reason
+        # `core.runtime.run.Run._compile_context` rides last in a mission
+        # step: it is STATE and not an instruction, so it displaces
+        # nobody's last word, and rc4 measured that the reference 20B binds
+        # what it reads last. Built fresh from the shadow on every round,
+        # which is what makes it replaced rather than accumulated: a redraw
+        # is a new `user_parts`, so a stale hint cannot survive into it and
+        # the planner never reads two frontiers at once.
+        hint = self._planning_hint()
+        if hint:
+            user_parts.append(hint)
         messages = self._role_messages(system, "\n\n".join(user_parts))
 
         for _attempt in range(2):
@@ -1280,6 +1291,39 @@ class SwarmRunner:
                              "content": json.dumps(decision or {})})
             messages.append({"role": "user", "content": problem})
         return None
+
+    def _planning_hint(self) -> str:
+        """The frontier's independent groups for this planning round, or ``""``.
+
+        ROADMAP §2.9.7's *derived swarm*, in the form this phase builds and
+        no further: the planner is **told what is independent** and writes
+        whatever plan it writes.  The whole of the wiring is this read and
+        the one ``append`` above.
+
+        **Advisory, and there is no second half.**  Nothing downstream
+        knows the hint happened: :meth:`_read_plan` validates ids, rungs and
+        dependencies exactly as it did before and has never heard of a
+        group; no step is added, removed or reordered for it; no plan is
+        refused for ignoring it; and nothing reaches
+        :class:`~core.runtime.supervisor.Supervisor`.  A run whose shadow
+        offers nothing plans the prompt it would have planned with the flag
+        off, byte for byte — which is what the corpus guard holds.
+
+        **Asked for, not assumed**, and the call is inside the guard as
+        well as the lookup — :meth:`core.runtime.run.Run
+        ._cognitive_progress`'s argument, at the one place a duck-typed
+        stand-in can differ from the shipped shadow.  A stand-in with no
+        ``planning_hint`` and a stand-in whose ``planning_hint`` raises are
+        the same event: a turn that plans without one.  The layer that may
+        never end a run must not end one out of a planner either.
+        """
+        read = getattr(self._run.store.cognition, "planning_hint", None)
+        if not callable(read):
+            return ""
+        try:
+            return str(read() or "")
+        except Exception:                       # noqa: BLE001 - the point
+            return ""
 
     def _read_plan(self, decision: Optional[Dict[str, Any]]):
         """``(steps, "")`` or ``(None, problem)`` — mechanical, no judgement."""

@@ -910,7 +910,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--gate-wait", "--replay", "--grant",
     "--campaign", "--campaign-plan",
     "--no-grounding",
-    "--cognition", "--compiled-context",
+    "--cognition", "--compiled-context", "--swarm-steering",
     "--version",
 )
 
@@ -1022,6 +1022,18 @@ CLI_FLAGS: tuple[str, ...] = (
 #: it off — which is the point of the flag and the reason it is off by
 #: default.
 #:
+#: ``JUDAIS_LOBI_SWARM_STEERING`` is the environment form of
+#: ``--swarm-steering`` — set to anything non-empty and a **staged** turn's
+#: planner is offered the independent groups of what the run still owes,
+#: one bounded block per planning round.  It **implies**
+#: ``JUDAIS_LOBI_COGNITION`` for the same reason the one above does.  It
+#: adds nothing to this contract either: no record type, no field, no
+#: outcome, nothing new on the wire — what changes is one planning prompt,
+#: visible only in the run's own ``model.jsonl`` — and it decides nothing:
+#: no child is forced per group, no plan is refused for ignoring it,
+#: nothing reaches the supervisor, and a turn that is not staged asks the
+#: question it would have asked with the variable unset.
+#:
 #: ``JUDAIS_LOBI_MAX_OUTPUT_TOKENS`` is how many completion tokens the
 #: ``--provider local`` backend asks for when a caller names no number.
 #: It has **no flag**: it is configuration of the endpoint a deployment
@@ -1065,6 +1077,7 @@ ENV_VARS: tuple[str, ...] = (
     "JUDAIS_LOBI_APPROVALS",
     "JUDAIS_LOBI_MEMORY", "JUDAIS_LOBI_MEMORY_PRINCIPAL",
     "JUDAIS_LOBI_COGNITION", "JUDAIS_LOBI_COMPILED_CONTEXT",
+    "JUDAIS_LOBI_SWARM_STEERING",
 )
 
 

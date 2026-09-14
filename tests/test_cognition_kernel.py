@@ -877,6 +877,157 @@ class TestTheFrontierIsComputed:
         assert "payment_link" in " ".join(o.render() for o in state.frontier())
 
 
+class TestTheFrontierPartitionsIntoIndependentGroups:
+    """Which of the things still owed could be worked at the same time.
+
+    ROADMAP §2.9.7's *derived swarm*, asked as a question of the store.
+    Three things join two obligations and the class checks each on its own,
+    because a partition that got independence right for the wrong reason is
+    a partition that reports two groups on the day the right reason arrives:
+    a dependency, a name they both hold, and a **link**.
+
+    The link is the one that matters most, and it is the one this class
+    would silently lose: `mcp.jobs#r3` and `job:jl-731` share no character,
+    so a partition that did not go through `link()` would put two workers on
+    one job and call them independent.
+    """
+
+    def _groups(self, state):
+        return [[item.id for item in group]
+                for group in state.independent_frontier()]
+
+    def test_an_empty_frontier_has_no_groups(self):
+        """`()` and not one empty group: nothing owed is not a group of
+        work, and a consumer counting groups would read the one as work."""
+        assert CognitiveState().independent_frontier() == ()
+
+    def test_two_goals_about_different_things_are_two_groups(self):
+        state = CognitiveState()
+        state.add_goal(("job:one", "state", "?s"))
+        state.add_goal(("job:two", "state", "?s"))
+        assert len(self._groups(state)) == 2
+
+    def test_a_blocked_obligation_is_grouped_with_what_blocks_it(self):
+        """The second premise's entity comes from the first premise's value,
+        so nobody can work the second until the first is answered — and two
+        groups here would be the runtime telling a planner to run them at
+        once."""
+        state = CognitiveState()
+        state.add_rule(
+            "escalates", ("?a", "escalates", "?c"),
+            [("?a", "delegate", "?b"), ("?b", "admin_access", "?c")],
+            RuleAuthority.DOMAIN)
+        state.add_goal(("alice", "escalates", "acct-9"))
+        assert len(state.frontier()) == 2
+        assert len(self._groups(state)) == 1
+
+    def test_two_obligations_naming_one_entity_are_one_group(self):
+        state = CognitiveState()
+        state.add_goal(("job:one", "state", "?s"))
+        state.add_goal(("job:one", "owner", "?o"))
+        assert len(self._groups(state)) == 1
+
+    def test_a_link_joins_a_receipt_and_the_subject_it_is_about(self):
+        """THE assertion of this class. Two obligations about two names the
+        store was *told* are one thing are one group — and the telling is a
+        `link`, which is the kernel's only owner of that fact."""
+        state = CognitiveState()
+        state.assert_observation(("mcp.jobs#r3", "job_id", "jl-731"),
+                                 evidence=[RECEIPT])
+        state.link("mcp.jobs#r3", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.add_goal(("mcp.jobs#r3", "runtime_s", "?t"))
+        state.add_goal(("job:jl-731", "owner", "?o"))
+        assert len(state.frontier()) == 2
+        assert len(self._groups(state)) == 1, (
+            "the partition did not join through the store's own link")
+
+    def test_without_the_link_the_same_two_are_two_groups(self):
+        """The paired negative, so the test above is about the link and not
+        about the shape of the fixture."""
+        state = CognitiveState()
+        state.assert_observation(("mcp.jobs#r3", "job_id", "jl-731"),
+                                 evidence=[RECEIPT])
+        state.add_goal(("mcp.jobs#r3", "runtime_s", "?t"))
+        state.add_goal(("job:jl-731", "owner", "?o"))
+        assert len(self._groups(state)) == 2
+
+    def test_a_shared_field_is_not_a_shared_subject(self):
+        """Two jobs' `state` are two problems. The field position is never a
+        join key, and a partition that used it would report one group for
+        every store whose goals ask the same question twice."""
+        state = CognitiveState()
+        state.add_goal(("job:one", "state", "?s"))
+        state.add_goal(("job:two", "state", "?s"))
+        assert len(self._groups(state)) == 2
+
+    def test_a_value_the_store_does_not_know_is_not_a_name(self):
+        """Two obligations waiting for the literal `"ok"` are not about one
+        thing. A join on any ground value would make every store whose goals
+        share a word report one group."""
+        state = CognitiveState()
+        state.add_goal(("job:one", "state", "ok"))
+        state.add_goal(("job:two", "state", "ok"))
+        assert len(self._groups(state)) == 2
+
+    def test_a_value_the_store_does_know_is_a_name(self):
+        """And the other side of it: a value naming an entity this store
+        holds facts about is a name, so the two are one group."""
+        state = CognitiveState()
+        state.assert_observation(("acct-9", "kind", "checking"),
+                                 evidence=[RECEIPT])
+        state.add_goal(("job:one", "touches", "acct-9"))
+        state.add_goal(("acct-9", "owner", "?o"))
+        assert len(self._groups(state)) == 1
+
+    def test_the_groups_come_in_the_ranked_frontier_s_order(self):
+        """Groups by their best member, members by their rank — so a reader
+        taking the first group takes the one `next_obligation` would have
+        started with."""
+        state = CognitiveState()
+        state.add_goal(("job:one", "state", "?s"))
+        state.add_goal(("job:two", "state", "?s"))
+        ranked = [item.id for item in state.ranked_frontier()]
+        assert self._groups(state) == [[ranked[0]], [ranked[1]]]
+        assert state.next_obligation().id == ranked[0]
+
+    def test_every_obligation_lands_in_exactly_one_group(self):
+        state = CognitiveState()
+        state.add_goal(("job:one", "state", "?s"))
+        state.add_goal(("job:one", "owner", "?o"))
+        state.add_goal(("job:two", "state", "?s"))
+        placed = [oid for group in self._groups(state) for oid in group]
+        assert sorted(placed) == sorted(
+            item.id for item in state.ranked_frontier())
+        assert len(placed) == len(set(placed))
+
+    def test_it_is_deterministic(self):
+        def built():
+            state = CognitiveState()
+            state.add_goal(("job:one", "state", "?s"))
+            state.add_goal(("job:two", "state", "?s"))
+            state.add_goal(("job:one", "owner", "?o"))
+            return self._groups(state)
+        assert built() == built()
+
+    def test_a_truncated_walk_says_so_on_every_group(self):
+        """A group carries the whole WALK's flag and not one of its own,
+        because the obligation the walk never reached could have been the
+        one that joined two of these groups — so a cap puts the independence
+        itself in doubt, not merely the count."""
+        state = CognitiveState()
+        state.add_rule("wide", ("?a", "wide", "?c"),
+                       [("?a", "seen", "?b"), ("?b", "needs", "?c")],
+                       RuleAuthority.DOMAIN)
+        for index in range(300):
+            state.assert_observation(("alice", "seen", f"n{index}"),
+                                     evidence=[RECEIPT])
+        state.add_goal(("alice", "wide", "acct-9"))
+        assert state.ranked_frontier().truncated, "this fixture must cap"
+        groups = state.independent_frontier()
+        assert groups and all(group.truncated for group in groups)
+
+
 # ---------------------------------------------------------------------------
 # History
 # ---------------------------------------------------------------------------

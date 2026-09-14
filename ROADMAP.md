@@ -1250,7 +1250,24 @@ this is the thought experiment's remaining machinery, admitted piecewise:
   contracts (one obligation, bounded evidence, constrained tools; children
   return evidence, the parent commits — cognition stays single-writer). The
   swarm lessons already paid for (one window at the model's max, budgets to
-  their owners) apply unchanged.
+  their owners) apply unchanged. **The READING ships**
+  (`CognitiveState.independent_frontier()`, `--swarm-steering`): the frontier
+  is partitioned into groups that share no subject — joined by dependency, by
+  a ground term two obligations have in common, and by what `link()` says is
+  one subject, so the kernel stays the only owner of identity — and a staged
+  turn's planner is handed those groups as one bounded block of its planning
+  prompt, in the same `owed:` lines the compiled view prints. It is
+  **advisory and there is no second half**: the planner plans, no child is
+  forced per group, no plan is refused for ignoring it, the plan validator
+  has never heard of a group, and nothing reaches the supervisor. A walk that
+  hit `ENV_CAP` says so in the stronger words the case needs — an obligation
+  the walk never reached could have been the one that joined two of the
+  groups shown, so a capped walk puts the *independence* in doubt and not
+  merely the count. **The CONTRACTS stay behind this bullet's own gate**: a
+  child that is handed one obligation, bounded evidence and a constrained
+  plane is a new kind of `Run.child`, and what would have to be true first is
+  a measured lift from the hint — the `swarm-steering` ablation arm, read on
+  a suite whose missions actually stage.
 - **Constraint solver** (Z3-class) for the classes that deserve it —
   scheduling, dependency ordering, feasibility; the runtime recognizes the
   problem class, the model does not have to remember to ask. **The CHECKER
