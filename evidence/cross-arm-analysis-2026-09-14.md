@@ -113,3 +113,31 @@ discriminator narrows to: the vLLM launch line, version, chat template
 and reasoning-effort default **per serving process, per session**.
 Everything a recording can answer is answered across three windows and
 189 run directories, and none of it implicates the framework.
+
+## Addendum — the v1.3.1 arm, and the censoring correction
+
+* **v1.3.1's requests are bracketed, not hashed.** Its handover is
+  pane-event format with no model requests recorded. What is measured:
+  the pane's offered tool plane is byte-identical between the v1.3.1 and
+  v1.4.0 arms (one tool_plane hash, 42/42 each); the arm is verifiably
+  our tag (arm_sha = v1.3.1 = 605f919, venv parity 58/58); and the
+  prompt-owning modules' whole v1.2.0..v1.4.0 diff is confined to
+  mcp_client.py refusal-body capture, with both endpoints of the bracket
+  measured byte-identical from raw recordings. Strong bracketed
+  inference; the platform shipping the v1.3.1 arm's raw run dirs would
+  close it to measurement.
+* **Censoring correction.** In the one apples-to-apples per-turn
+  comparison (v1.3.1 vs v1.4.0, same pane format, same scorer), v1.3.1
+  generates MORE per call than v1.4.0 (415 vs 302 mean tokens/call) —
+  v1.4.0 looks smaller only because five of its turns were killed
+  before writing a ledger. Pane-format numbers are censored at exactly
+  the top of the distribution; a turn the pane kills writes no ledger.
+* **v1.3.1's plot stall anatomized**: a three-step turn — steps 0–1
+  normal (31 s + 2 s), then step 2 ran ≥171 s with no output and no
+  ledger before the 220.14 s kill (≈6,800 tokens at the four-window
+  decode rate). Same mechanism, different step index.
+* **The nine-runs table** (every `plot y=x^2` on 14 Sep, three releases,
+  two panes, ONE request hash): first-call tokens run 550 → 8,904; the
+  8,904 (v1.1.3 pane) and the 1,088 (champion pane) are thirteen
+  minutes apart on the same pool. The tail is lease/session-scoped,
+  not day-scoped — measured, not inferred.
