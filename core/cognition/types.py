@@ -44,6 +44,16 @@ not by a check somebody has to remember to write.
 JSON scalars, patterns use ``"?name"`` strings for variables (so no literal
 string in a pattern may begin with ``?``), and there is no negation in a rule
 body.  Each is noted again at the type it constrains.
+
+**Two kinds of entity, and the wall between them is spelling.**  A receipt
+entity is whatever the caller above calls one call's result (the shadow spells
+it ``tool#seq``); a *subject* entity is the thing receipts are about, spelled
+``kind:value`` — ``job:jl-731``, ``asset:led.a41``.  A subject is
+content-addressed: the same job named by two tools is one entity, which is the
+whole point of :class:`Link`.  :func:`check_subject` owns the spelling, and it
+refuses ``#`` inside a subject so that the two namespaces cannot meet — see
+that function for why "by construction" rather than "by convention" is the
+only version of this that holds.
 """
 
 from __future__ import annotations
@@ -318,6 +328,60 @@ class Proposition:
 
 
 @dataclass(frozen=True)
+class Link:
+    """One receipt entity and the subject it is about, at one revision.
+
+    ``(entity, subject)`` is the identity of the *link* and is stable across
+    revisions; :attr:`key` (``"l3@2"``) is the identity of the record, and
+    ``previous`` names the one it replaced — the edge-identity discipline
+    :mod:`core.cognition.graph` already keeps, for the same reason: re-stating
+    a link unions its evidence and raises its authority, and a record that was
+    edited in place would lose which of the two a given ref arrived with.
+
+    **A link is a claim, not a rename.**  It carries evidence (the receipt
+    fact that held the identifier, and a ref naming the declaration that said
+    the key was an identifier) and an authority stamped at
+    :meth:`~core.cognition.state.CognitiveState.link`'s own door.  A
+    deterministic linker enters at ``SOURCE`` and not ``DETERMINISTIC``: the
+    weakest premise under it is the platform's declaration that a key means
+    identity, and rounding that up would launder a declaration into a
+    measurement.
+
+    The ``MODEL_*`` grades are permitted at the door and nothing ships that
+    uses them (§2.2 reserves the rung until the extraction door is measured in
+    missions).  What they already do, so that the invariant cannot be lost
+    later: the projections of a model-graded link land ``HYPOTHESIZED``, so a
+    *guessed* identity can never contest an observation.
+    """
+
+    id: str
+    entity: str
+    subject: str
+    authority: EvidenceAuthority
+    evidence: Tuple[EvidenceRef, ...] = ()
+    revision: int = 1
+    previous: Optional[str] = None
+
+    @property
+    def key(self) -> str:
+        """The identity of this record, as opposed to the link."""
+        return f"{self.id}@{self.revision}"
+
+    @property
+    def kind(self) -> str:
+        """The subject's kind — ``job`` in ``job:jl-731``."""
+        return check_subject(self.subject)[0]
+
+    @property
+    def value(self) -> str:
+        """The subject's identifier — ``jl-731`` in ``job:jl-731``."""
+        return check_subject(self.subject)[1]
+
+    def render(self) -> str:
+        return f"({self.entity} is {self.subject})"
+
+
+@dataclass(frozen=True)
 class Rule:
     """A horn clause over triple patterns.
 
@@ -352,12 +416,25 @@ class Derivation:
 
     A conclusion may have several derivations — alternative proofs.  It never
     has a duplicate proposition.
+
+    ``link`` is set on exactly one kind of derivation: a *projection*, where
+    the rule is
+    :data:`~core.cognition.state.PROJECTION_RULE_ID` and the second premise is
+    a :class:`Link` rather than a proposition.  It is a field of its own rather
+    than a fourth entry in ``premises`` because ``premises`` is read as
+    proposition ids everywhere in the engine — by the retraction cascade, by
+    the confidence walk, by the proof walk — and smuggling a link id into that
+    tuple would be a second meaning for the one field all of them agree on.
+    The link is still a premise in every sense that matters: it caps the
+    conclusion's grade, its evidence is at the proof's leaves, and it is named
+    on the proof step.
     """
 
     id: str
     rule: str
     premises: Tuple[str, ...]
     conclusion: str
+    link: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -524,12 +601,20 @@ class Contradiction:
 
 @dataclass(frozen=True)
 class ProofStep:
-    """One rule application inside a :class:`Proof`."""
+    """One rule application inside a :class:`Proof`.
+
+    ``link`` names the :class:`Link` that licensed a *projection* step and is
+    ``None`` for every ordinary rule.  Without it a reader walking the proof of
+    a subject-level fact would see a step whose rule is ``projection`` and have
+    no way to ask *which* link it rested on — which is the one question a
+    wrong link makes urgent.
+    """
 
     derivation: str
     rule: str
     rule_name: str
     premises: Tuple["Proof", ...]
+    link: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -660,6 +745,140 @@ def value_tag(value: Any) -> str:
     if isinstance(value, (int, float)):
         return "num"
     return "str"
+
+
+# ── subject entities ────────────────────────────────────────────────────────
+
+#: What separates a subject entity's kind from its value: ``job:jl-731``.
+SUBJECT_SEPARATOR = ":"
+
+#: The character a subject may not carry, in either half. It is the one the
+#: shadow's receipt entities are spelled with (``tool#seq``), and banning it
+#: here is what makes the two namespaces disjoint rather than merely different
+#: by habit. See :func:`check_subject`.
+RECEIPT_MARKER = "#"
+
+#: What a subject's *kind* may carry. Deliberately narrow — a kind is a word a
+#: platform declares once (``job``, ``asset``, ``run``), it is read by people
+#: in a compiled view, and every character admitted here is one a renderer, a
+#: log reader and a pattern literal all have to survive.
+SUBJECT_KIND_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789_-.")
+
+#: How long either half of a subject may be, in the idiom of
+#: :data:`core.cognition.graph.store.NAME_CAP` and for the same reason: an
+#: unbounded name is an unbounded key in three indexes, an unbounded string in
+#: every log line, and an unbounded row in a compiled context. Generous enough
+#: for a URI or a fully-qualified identifier; small enough that a payload
+#: pasted into the value position is refused at the door rather than
+#: discovered in a working set.
+SUBJECT_CAP = 512
+
+
+def check_subject(subject: Any) -> Tuple[str, str]:
+    """``(kind, value)`` for a subject entity, or a refusal naming why not.
+
+    **The one owner of what a subject is spelled like.**  Every other question
+    in this package about subjects — is this string one (:func:`subject_parts`),
+    may this string be a link's *entity*
+    (:meth:`~core.cognition.state.CognitiveState.link`), what does a caller
+    spell for a kind and a value (:func:`subject_entity`) — is this function
+    asked.  A second idea of the spelling is a second namespace, and the two
+    would agree until the day a tool name carried a colon.
+
+    Four rules, and the third is the load-bearing one:
+
+    * exactly one split, at the **first** :data:`SUBJECT_SEPARATOR`; both
+      halves non-empty.  A value may itself carry ``:`` (``result:mcp://x``),
+      which costs nothing because the split is at the first one and never
+      ambiguous;
+    * the kind is drawn from :data:`SUBJECT_KIND_CHARS`, so it cannot contain
+      the separator and a kind is always exactly what precedes the first one;
+    * neither half carries :data:`RECEIPT_MARKER`.  **This is what keeps
+      subject entities and receipt entities disjoint by construction.**  The
+      kernel does not own the spelling of a receipt entity — the shadow above
+      it does — so "the two namespaces do not overlap" cannot be a promise
+      about the caller's habits.  What it can be is a promise about *this*
+      function: no string containing ``#`` is ever a subject, and
+      :meth:`~core.cognition.state.CognitiveState.link` refuses a
+      subject-spelled string in the entity position.  Between them, a
+      projection can never land on an entity a receipt could be named, and a
+      receipt can never be linked to itself under a second spelling;
+    * neither half carries whitespace or a control character, and neither
+      exceeds :data:`SUBJECT_CAP`.
+
+    A variable spelling (``?job``) is refused with the rest: ``?`` is not in
+    :data:`SUBJECT_KIND_CHARS`, so a pattern variable can never be mistaken
+    for a subject of kind ``?job``.
+    """
+    if not isinstance(subject, str) or not subject:
+        raise CognitionError(
+            "a subject entity is a non-empty string spelled "
+            f"'kind{SUBJECT_SEPARATOR}value', not "
+            f"{type(subject).__name__}")
+    kind, sep, value = subject.partition(SUBJECT_SEPARATOR)
+    if not sep or not kind or not value:
+        raise CognitionError(
+            f"{subject!r} is not a subject: a subject is spelled "
+            f"'kind{SUBJECT_SEPARATOR}value' with both halves present, "
+            "because a subject with no kind is a bare string two platforms "
+            "would collide on")
+    if not set(kind) <= SUBJECT_KIND_CHARS:
+        raise CognitionError(
+            f"{kind!r} is not a subject kind: a kind carries letters, digits, "
+            "'_', '-' and '.' and nothing else")
+    for half, what in ((kind, "kind"), (value, "value")):
+        if len(half) > SUBJECT_CAP:
+            raise CognitionError(
+                f"a subject's {what} is at most {SUBJECT_CAP} characters; "
+                f"this one is {len(half)}")
+    if RECEIPT_MARKER in value:
+        raise CognitionError(
+            f"{subject!r} carries {RECEIPT_MARKER!r}, which is how the layer "
+            "above spells a receipt entity; subjects and receipts are "
+            "disjoint by construction and not by agreement, so that a "
+            "projection can never land where a receipt's own facts live")
+    bad = [ch for ch in value
+           if ch.isspace() or ord(ch) < 32 or ord(ch) == 127]
+    if bad:
+        raise CognitionError(
+            f"a subject's value carries no whitespace and no control "
+            f"characters; {subject!r} has {bad[0]!r}")
+    return kind, value
+
+
+def subject_parts(entity: Any) -> Optional[Tuple[str, str]]:
+    """``(kind, value)`` if this string is spelled as a subject, else ``None``.
+
+    The total-function face of :func:`check_subject`, for the callers asking
+    *which namespace is this* rather than *give me this subject*.  It delegates
+    rather than re-deciding: one owner, and the refusal messages stay in the
+    one place that can explain them.
+    """
+    try:
+        return check_subject(entity)
+    except CognitionError:
+        return None
+
+
+def subject_entity(kind: Any, value: Any) -> str:
+    """Spell a subject from its two halves, or refuse.
+
+    The round trip is *checked* rather than assumed: a kind carrying the
+    separator would spell a string that parses back as a different subject
+    entirely, and a caller building one out of a declaration's kind and a
+    payload's value has no reason to have thought about that.
+    """
+    spelled = f"{kind}{SUBJECT_SEPARATOR}{value}"
+    parts = check_subject(spelled)
+    if parts != (str(kind), str(value)):
+        raise CognitionError(
+            f"{kind!r} and {value!r} spell {spelled!r}, which reads back as "
+            f"{parts[0]!r} and {parts[1]!r}; a subject's kind ends at the "
+            "first separator")
+    return spelled
 
 
 def is_variable(term: Any) -> bool:

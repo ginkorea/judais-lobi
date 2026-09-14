@@ -3,13 +3,35 @@
 """What is believed, why, what contradicts it, and what is still owed.
 
 One class, :class:`CognitiveState`.  It is the only thing in this package that
-changes, and it changes in exactly seven ways —
+changes, and it changes in exactly ten ways —
 :meth:`~CognitiveState.assert_observation`,
 :meth:`~CognitiveState.assert_hypothesis`, :meth:`~CognitiveState.add_rule`,
 :meth:`~CognitiveState.promote_rule`, :meth:`~CognitiveState.add_goal`,
-:meth:`~CognitiveState.refute` and :meth:`~CognitiveState.apply_delta` — each
-of which appends exactly one event and does nothing else that a replay cannot
-reproduce.  Everything else on the class is a read.
+:meth:`~CognitiveState.refute`, :meth:`~CognitiveState.declare_field`,
+:meth:`~CognitiveState.settle`, :meth:`~CognitiveState.link` and
+:meth:`~CognitiveState.apply_delta` — each of which appends exactly one event
+and does nothing else that a replay cannot reproduce.  Everything else on the
+class is a read.
+
+**Projection, and why linking does not rewrite anything.**  A
+:meth:`~CognitiveState.link` says one entity is about one subject; it edits no
+proposition.  What it does is license one built-in rule inside closure
+(:data:`PROJECTION_RULE`): for every live triple of a linked entity, the same
+field and value are *derived* about the subject, with the receipt fact as the
+premise and the link named on the derivation.  Rewriting the receipt's facts
+onto the subject was the alternative and it destroys the thing the store is
+for — a proposition's entity is where it was seen, its history is the record
+of that, and two receipts merged into one entity can no longer say which of
+them said what.  Projection instead reuses every mechanism already here:
+rules join across receipts because a subject is an ordinary entity their
+variables bind; a field declared ``one`` contests **at the subject**, where
+two receipts really do disagree, while both receipts stay live because a
+receipt does not disagree with itself; :meth:`prove` walks from the subject's
+fact to the receipt's; and a refuted receipt fact kills its projection through
+the retraction cascade below, with no new code path.  The costs are stated
+where they are paid: roughly double the propositions for a linked entity, and
+a closure that must be order-independent, because a link can arrive before or
+after the facts it projects.
 
 **Single writer.**  There is no lock here and there is not meant to be one.
 A store two things write to is a store whose insertion order depends on
@@ -92,13 +114,13 @@ from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
                                   STATUS_RANK, AuthorityRefused,
                                   CognitionError, Contradiction, Derivation,
                                   EvidenceAuthority, EvidenceRef, Frontier,
-                                  Goal, MatchStats, Obligation,
+                                  Goal, Link, MatchStats, Obligation,
                                   ObligationState, Proof, Proposition,
                                   PropositionStatus, ProofStep, ReplayRefused,
                                   Rule, RuleAuthority, RuleMalformed, Support,
-                                  UnknownId, check_pattern, check_value,
-                                  is_variable, render_pattern, value_tag,
-                                  variables_in)
+                                  UnknownId, check_pattern, check_subject,
+                                  check_value, is_variable, render_pattern,
+                                  subject_parts, value_tag, variables_in)
 
 #: **v1 bound.**  Obligation computation joins a rule body against the store
 #: and a rule with several matches per premise branches.  Beyond this many
@@ -110,6 +132,29 @@ from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
 #: is a claim about truth and truncating it would make the store wrong rather
 #: than incomplete.
 ENV_CAP = 256
+
+#: The id the projection's derivations name. It carries a ``:``, and every
+#: rule a caller adds is ``rN``, so the two can never collide — the same
+#: separator that keeps subjects out of the receipt namespace keeps the
+#: engine's own rule out of the caller's.
+PROJECTION_RULE_ID = "sys:projection"
+
+#: The one rule this engine owns, written out so that a proof step can name
+#: something and a reader can see what it claims.
+#:
+#: **It is built in because it cannot be written down.**  Its second premise is
+#: a :class:`~core.cognition.types.Link`, not a triple, and a rule's body is
+#: triples — so the head variable ``?subject`` is bound by nothing the body can
+#: state and :meth:`CognitiveState.add_rule` would refuse this clause for
+#: range restriction, correctly.  Holding it here rather than inserting it into
+#: every store's rule set also means a store that never links is byte-identical
+#: to the one the last release built: the rule is part of the *engine*, like
+#: the retraction cascade, and a digest that rendered it would be rendering the
+#: code.
+PROJECTION_RULE = Rule(id=PROJECTION_RULE_ID, name="projection",
+                       authority=RuleAuthority.SYSTEM,
+                       head=("?subject", "?field", "?value"),
+                       body=(("?entity", "?field", "?value"),))
 
 #: A memo miss. `None` is a real grade result — "this claim has none" —
 #: so a memo that used it as the miss marker would recompute every
@@ -133,13 +178,16 @@ DIGEST_KEYS = {
         "id", "revision", "previous", "entity", "field", "value", "text",
         "status", "authority", "derivation", "evidence", "history"}),
     "rules": frozenset({"id", "name", "authority", "head", "body"}),
-    "derivations": frozenset({"id", "rule", "premises", "conclusion"}),
+    "derivations": frozenset({"id", "rule", "premises", "conclusion",
+                              "link"}),
+    "links": frozenset({"id", "revision", "previous", "entity", "subject",
+                        "authority", "evidence", "history"}),
     "goals": frozenset({"id", "pattern", "note"}),
     "fields": frozenset({"field", "cardinality"}),
     "contradictions": frozenset({
         "id", "kind", "left", "right", "detail", "evidence", "settled",
         "kept"}),
-    "pending": frozenset({"propositions", "rules"}),
+    "pending": frozenset({"propositions", "rules", "links"}),
 }
 
 
@@ -188,6 +236,16 @@ class CognitiveState:
         self._by_premise: Dict[str, List[str]] = {}
         self._by_conclusion: Dict[str, List[str]] = {}
 
+        # Links, and the same three-index shape a proposition gets: the live
+        # revision, the whole chain, and the identity of the *link* — which is
+        # the pair, not the id, so the same pair stated twice is one record
+        # whose evidence unions.
+        self._links: Dict[str, Link] = {}
+        self._link_history: Dict[str, List[Link]] = {}
+        self._link_key: Dict[Tuple[str, str], str] = {}
+        self._links_by_entity: Dict[str, List[str]] = {}
+        self._links_by_subject: Dict[str, List[str]] = {}
+
         self._goals: Dict[str, Goal] = {}
         self._cardinality: Dict[str, str] = {}
         self._contradictions: Dict[str, Contradiction] = {}
@@ -202,8 +260,9 @@ class CognitiveState:
         # and a ten-thousand-receipt store never finished building.
         self._pending_props: Dict[str, None] = {}
         self._pending_rules: Dict[str, None] = {}
+        self._pending_links: Dict[str, None] = {}
 
-        self._counters = {"p": 0, "r": 0, "d": 0, "g": 0, "c": 0}
+        self._counters = {"p": 0, "r": 0, "d": 0, "g": 0, "c": 0, "l": 0}
         self.stats = MatchStats()
         # Bumped by anything that could change what the goals owe. The
         # obligation walk is a pure function of the store, so one computation
@@ -257,12 +316,14 @@ class CognitiveState:
         whether there is anything outstanding before it reads.
         """
         return {"propositions": tuple(self._pending_props),
-                "rules": tuple(self._pending_rules)}
+                "rules": tuple(self._pending_rules),
+                "links": tuple(self._pending_links)}
 
     @property
     def has_pending(self) -> bool:
         """Whether the next read would append a ``derive`` event."""
-        return bool(self._pending_props or self._pending_rules)
+        return bool(self._pending_props or self._pending_rules
+                    or self._pending_links)
 
     def snapshot(self) -> dict:
         """The whole state as one JSON-safe dict: a version and its events.
@@ -299,6 +360,12 @@ class CognitiveState:
         * an undeclared field is single-valued (schema 2 made it ``many``, and
           a v1 store contested values a v2 store leaves standing), and
         * a rule may be re-promoted laterally (schema 2 refuses it).
+
+        Schema 3 changed no default, so a schema-2 log replays under schema-3
+        code exactly as it did; what the resulting store keeps is the *floor*
+        — it refuses :meth:`link`, because a store whose log says it never
+        linked anything cannot be handed a link without its history stopping
+        being an explanation of it.
 
         Both were things a v1 store really did, so a v1 log can contain their
         consequences, and reading it under today's rules would silently
@@ -365,9 +432,17 @@ class CognitiveState:
         elif op == "settle":
             self.settle(record.get("contradiction"), record.get("keep"),
                         evidence=decode_evidence(record.get("evidence", ())))
+        elif op == "link":
+            self.link(record.get("entity"), record.get("subject"),
+                      evidence=decode_evidence(record.get("evidence", ())),
+                      authority=_authority(record.get("authority")))
         elif op == "derive":
+            # `links` is absent from every schema-2 `derive` and means the
+            # empty list — the only thing a log written before links existed
+            # could have meant.
             self.apply_delta(propositions=record.get("propositions", ()),
-                             rules=record.get("rules", ()))
+                             rules=record.get("rules", ()),
+                             links=record.get("links", ()))
         else:  # pragma: no cover — check_snapshot closed the set already
             raise ReplayRefused(f"no way to apply {op!r}")
 
@@ -627,6 +702,148 @@ class CognitiveState:
                     work.append(conclusion)
         return tuple(restored)
 
+    # ── writing: links ──────────────────────────────────────────────────────
+
+    def link(self, entity: str, subject: str, *,
+             evidence: Iterable[EvidenceRef],
+             authority: EvidenceAuthority) -> str:
+        """Claim that one entity is *about* one subject. Returns the link id.
+
+        ``subject`` is spelled ``kind:value``
+        (:func:`~core.cognition.types.check_subject`) and is content-addressed:
+        the same job named by two tools is one entity, which is the entire
+        mechanism.  ``entity`` is whatever the layer above calls a receipt, and
+        it may **not** be subject-spelled — see the refusals below.
+
+        **A first-class claim, with the same two obligations every claim in
+        this store has.**  ``evidence`` is required and non-empty (the receipt
+        fact that carried the identifier, and a ref naming the declaration that
+        said the key *was* an identifier), and ``authority`` is stamped onto
+        every ref at this door, over whatever the caller put there, exactly as
+        the two assertion doors do.  There is no default authority, on purpose
+        and permanently: a caller that does not say how it knows two receipts
+        are about one thing has not said it, and "probably deterministic" is
+        the guess this whole package exists to refuse.
+
+        A deterministic linker passes ``SOURCE``.  ``DETERMINISTIC`` is
+        accepted but is almost always wrong for one: the weakest premise under
+        a declared link is the platform's *declaration*, and grading the link
+        above it would launder a platform's word into a measurement.  The
+        ``MODEL_*`` grades are accepted too and nothing in this release passes
+        one; what they already do is described on
+        :class:`~core.cognition.types.Link` and enforced in :meth:`_project` —
+        their projections land ``HYPOTHESIZED``, so a guessed identity can
+        never contest an observation.
+
+        **Idempotent on the pair.**  The same ``(entity, subject)`` stated
+        again is the same link: its evidence unions, its authority rises to the
+        strongest offered, and a fresh revision is written only if something
+        changed — the edge-identity discipline of
+        :mod:`core.cognition.graph`.  The *event* is written either way, as
+        :meth:`refute`'s is and for the same reason: the log is what a replay
+        applies, and a call that changed nothing has to be in it for the
+        replay to reach the same store by the same route.  An upgraded link
+        re-measures its
+        projections (a model's guess later confirmed by a declaration promotes
+        what it projected) without minting a second proof of anything.
+
+        **Four refusals, and each one is a hole somebody would otherwise
+        find.**
+
+        * An ``entity`` the store holds nothing about.  A link is a claim that
+          *this receipt* is about that subject; a receipt this store never saw
+          is not a receipt, the subject would be born with nothing to project,
+          and the log would name an entity its own events cannot explain.
+        * A subject-spelled ``entity``.  This is the namespace wall, and it
+          does two jobs at once: it keeps a receipt from being linked under a
+          second spelling, and it makes "a projection never re-projects"
+          structural rather than a rule somebody has to remember — a subject
+          can never be the *source* end of a link, so a projected fact can
+          never project again.  Chaining subjects is a Phase 20 graph question
+          with its own evidence; in v1 it is refused with its reason.
+        * A self-link.  It is the same refusal as the one above (the entity
+          would have to be subject-spelled to equal the subject), which is why
+          there is no second check: one wall, not two that can drift apart.
+        * Evidence that is empty or is not
+          :class:`~core.cognition.types.EvidenceRef`.
+
+        **What is deliberately *not* a refusal:** a second subject for one
+        entity.  One receipt legitimately names a job *and* an asset, and its
+        facts project onto both.
+        """
+        self._require_schema(3, "link")
+        if not isinstance(entity, str) or not entity:
+            raise CognitionError("a link's entity is a non-empty string")
+        check_subject(subject)
+        if subject_parts(entity) is not None:
+            raise CognitionError(
+                f"{entity!r} is spelled as a subject, and a subject is never "
+                "the near end of a link: it is what receipts are about, not a "
+                "thing that is about something else. A projection that could "
+                "project again would let one declaration walk a chain nobody "
+                "declared")
+        if entity not in self._by_entity:
+            raise UnknownId(
+                f"this store holds nothing about {entity!r}, so there is "
+                "nothing for a link to be a claim about; assert what the "
+                "receipt showed before saying what it was about")
+        if not isinstance(authority, EvidenceAuthority):
+            raise CognitionError(
+                f"a link's authority is an EvidenceAuthority, not "
+                f"{type(authority).__name__}")
+        refs = tuple(evidence)
+        for ref in refs:
+            if not isinstance(ref, EvidenceRef):
+                raise CognitionError(
+                    f"evidence is EvidenceRef, not {type(ref).__name__}")
+        if not refs:
+            raise CognitionError(
+                "a link with no evidence is a guess about identity, which is "
+                "the one mistake in this design that manufactures "
+                "contradictions; name the receipt field and the declaration")
+        refs = tuple(ref.stamped(authority) for ref in refs)
+        self._append("link", entity=entity, subject=subject,
+                     authority=authority.value, evidence=encode_evidence(refs))
+        held = self._link_key.get((entity, subject))
+        if held is not None:
+            self._merge_link(held, authority, refs)
+            return held
+        self._counters["l"] += 1
+        lid = f"l{self._counters['l']}"
+        record = Link(id=lid, entity=entity, subject=subject,
+                      authority=authority, evidence=refs)
+        self._links[lid] = record
+        self._link_history[lid] = [record]
+        self._link_key[(entity, subject)] = lid
+        self._links_by_entity.setdefault(entity, []).append(lid)
+        self._links_by_subject.setdefault(subject, []).append(lid)
+        self._pending_links[lid] = None
+        return lid
+
+    def _merge_link(self, lid: str, authority: EvidenceAuthority,
+                    refs: Tuple[EvidenceRef, ...]) -> None:
+        """Union the evidence, take the strongest authority, revise if changed.
+
+        A link whose authority rose re-enters the delta, because the grade of
+        every fact it projected is capped by it: a link first guessed and later
+        declared lifts what it carried, and a store that left the projections
+        at the old grade would be understating its own evidence for as long as
+        nobody looked.
+        """
+        held = self._links[lid]
+        merged = _merge_evidence(held.evidence, refs)
+        stronger = (authority if AUTHORITY_RANK[authority]
+                    > AUTHORITY_RANK[held.authority] else held.authority)
+        if merged == held.evidence and stronger is held.authority:
+            return
+        fresh = Link(id=held.id, entity=held.entity, subject=held.subject,
+                     authority=stronger, evidence=merged,
+                     revision=held.revision + 1, previous=held.key)
+        self._links[lid] = fresh
+        self._link_history[lid].append(fresh)
+        if stronger is not held.authority:
+            self._pending_links[lid] = None
+
     # ── writing: fields, rules and goals ────────────────────────────────────
 
     def declare_field(self, field: str, cardinality: str) -> str:
@@ -788,15 +1005,18 @@ class CognitiveState:
         delta.  A flush with nothing staged does nothing and writes nothing.
         """
         return self.apply_delta(propositions=tuple(self._pending_props),
-                                rules=tuple(self._pending_rules))
+                                rules=tuple(self._pending_rules),
+                                links=tuple(self._pending_links))
 
     def apply_delta(self, propositions: Sequence[str] = (),
-                    rules: Sequence[str] = ()) -> Tuple[str, ...]:
+                    rules: Sequence[str] = (),
+                    links: Sequence[str] = ()) -> Tuple[str, ...]:
         """Semi-naive closure over a delta, to fixpoint. One ``derive`` event.
 
         ``propositions`` are ids that have just become live; ``rules`` are
-        ids that have just become trusted.  For a proposition delta only the
-        rules with a body premise on one of the delta's *fields* are
+        ids that have just become trusted; ``links`` are ids that have just
+        been made or whose authority has just risen.  For a proposition delta
+        only the rules with a body premise on one of the delta's *fields* are
         considered, and each such rule is joined once per body position that
         the delta can fill — the pinned position draws from the delta, every
         other position from the store.  That is what makes the work
@@ -804,14 +1024,29 @@ class CognitiveState:
         against the whole store once, which is the only honest thing to do
         with a clause nobody had run before.
 
+        **Projection runs from both ends of the delta, and that is the whole
+        of order-independence.**  A link in the delta projects the facts its
+        entity already holds; a fact in the delta projects onto the subjects
+        its entity is already linked to.  Neither direction is the "normal"
+        one — the shadow above links a receipt at the moment it harvests it,
+        and which of the two lands first is a detail of a loop nobody should
+        have to think about — so a store that only handled one would give a
+        different answer for the same mission depending on the order of two
+        calls in one step.  ``tests/test_cognition_kernel.py`` holds the two
+        orders to the same digest.
+
         Re-deriving something the store already holds adds a
         :class:`~core.cognition.types.Derivation` — an alternative proof — and
         never a second proposition.  Termination rests on that: derivations
         are deduplicated by ``(rule, premises, conclusion)``, so a cycle stops
-        producing new ones and the loop ends.
+        producing new ones and the loop ends.  A projection is deduplicated by
+        the same key with the link in it, and its conclusions land on subject
+        entities, which can never be the near end of a link — so projection
+        adds no cycle of its own.
         """
         unknown = ([pid for pid in propositions if pid not in self._props]
-                   + [rid for rid in rules if rid not in self._rules])
+                   + [rid for rid in rules if rid not in self._rules]
+                   + [lid for lid in links if lid not in self._links])
         if unknown:
             # Silently dropping them was a PARTIAL application: a `derive`
             # event naming a proposition this store never assigned is a log
@@ -822,17 +1057,20 @@ class CognitiveState:
                 "assigned; a delta is not applied in part")
         prop_delta = list(propositions)
         rule_delta = list(rules)
-        if not prop_delta and not rule_delta:
+        link_delta = list(links)
+        if not prop_delta and not rule_delta and not link_delta:
             return ()
         self._append("derive", propositions=list(propositions),
-                     rules=list(rules))
+                     rules=list(rules), links=list(links))
         for pid in propositions:
             self._pending_props.pop(pid, None)
         for rid in rules:
             self._pending_rules.pop(rid, None)
+        for lid in links:
+            self._pending_links.pop(lid, None)
 
         derived: List[str] = []
-        while prop_delta or rule_delta:
+        while prop_delta or rule_delta or link_delta:
             self.stats.delta_passes += 1
             produced: List[str] = []
             for rid in rule_delta:
@@ -860,10 +1098,102 @@ class CognitiveState:
                                          self._props[pid].triple) is not None]
                         if pool:
                             produced.extend(self._run(rule, position, pool))
+            if prop_delta or link_delta:
+                produced.extend(self._project(prop_delta, link_delta))
             derived.extend(produced)
             prop_delta = produced
             rule_delta = []
+            link_delta = []
         return tuple(derived)
+
+    def _project(self, facts: Sequence[str],
+                 links: Sequence[str]) -> List[str]:
+        """The built-in rule: every live triple of a linked entity, at its
+        subject.
+
+        Both directions of the delta in one walk, deduplicated on the
+        ``(link, fact)`` pair so that a step which carries *both* a new link
+        and new facts on its entity does the work once and in one order.  The
+        pairs are enumerated links-first and then facts-first, each in
+        insertion order, which is what makes the two arrival orders produce
+        the same store and not merely the same beliefs.
+
+        Three bounds, each stated where it is applied:
+
+        * **only live triples.**  A hypothesis does not project — it would
+          arrive at the subject as something a rule could join, which is
+          exactly the promotion the authority walls exist to stop — and
+          neither does a contested or refuted fact.  When a hypothesis is
+          later observed it becomes live, enters the delta, and projects then.
+        * **text does not project** (v1 bound).  A text proposition has no
+          entity at all in this store, so there is nothing to project it
+          *from*; a proposition carrying both a triple and text projects the
+          triple alone, because the text is prose about the receipt and this
+          kernel does not read English well enough to know whether it is also
+          prose about the subject.
+        * **a model-graded link projects hypotheses.**  The status is
+          ``DERIVED`` only if the link came through an observation-grade door;
+          otherwise the projection lands ``HYPOTHESIZED``, which keeps it out
+          of closure and out of every contest.  A guessed identity can report
+          a disagreement with a receipt and can never win one.
+
+        The authority is the weaker of the fact's and the link's, which is the
+        same rule :meth:`_run` applies to a derivation's premises — a chain is
+        worth its worst link, and here the link *is* one.
+        """
+        pairs: List[Tuple[str, str]] = []
+        for lid in links:
+            for pid in self._by_entity.get(self._links[lid].entity, ()):
+                pairs.append((lid, pid))
+        for pid in facts:
+            prop = self._props[pid]
+            if prop.entity is None:
+                continue
+            for lid in self._links_by_entity.get(prop.entity, ()):
+                pairs.append((lid, pid))
+        out: List[str] = []
+        seen: set = set()
+        for lid, pid in pairs:
+            if (lid, pid) in seen:
+                continue
+            seen.add((lid, pid))
+            prop = self._props[pid]
+            if prop.triple is None or not prop.live:
+                continue
+            link = self._links[lid]
+            status = (PropositionStatus.DERIVED
+                      if link.authority in OBSERVATION_AUTHORITIES
+                      else PropositionStatus.HYPOTHESIZED)
+            authority = min((prop.authority, link.authority),
+                            key=lambda a: AUTHORITY_RANK[a])
+            conclusion = (link.subject, prop.field, prop.value)
+            key = (PROJECTION_RULE_ID, (pid,), conclusion, lid)
+            proof = key not in self._derivation_keys
+            did = None
+            if proof:
+                # Allocated before the ingest and handed to it, so a projected
+                # proposition is born at revision 1 — the same reason `_run`
+                # does it in that order.
+                self._counters["d"] += 1
+                did = f"d{self._counters['d']}"
+            # An upgraded link re-ingests without a second proof: the merge
+            # rules lift the status and the authority of what it already
+            # projected, and a proof is not a change of belief.
+            cid, is_new = self._ingest(conclusion[0], conclusion[1],
+                                       conclusion[2], None, status, authority,
+                                       (), derivation=did, stage=False)
+            if proof:
+                self._derivations[did] = Derivation(
+                    id=did, rule=PROJECTION_RULE_ID, premises=(pid,),
+                    conclusion=cid, link=lid)
+                self._derivation_keys.add(key)
+                self._by_conclusion.setdefault(cid, []).append(did)
+                bucket = self._by_premise.setdefault(pid, [])
+                if did not in bucket:
+                    bucket.append(did)
+            if is_new:
+                out.append(cid)
+        return out
 
     def _candidate_rules(self, fields: Sequence[str]) -> List[str]:
         """Rules whose body mentions one of these fields, plus the wildcards.
@@ -1357,14 +1687,68 @@ class CognitiveState:
 
     def rule(self, rid: str) -> Rule:
         self.derive()
+        return self._rule_of(rid)
+
+    def _rule_of(self, rid: str) -> Rule:
+        """A rule by id, the engine's own included.
+
+        :data:`PROJECTION_RULE` is not in ``_rules`` — it is part of the
+        engine and no store authored it — but a projection's derivation names
+        it, so every reader that turns a derivation back into a rule comes
+        through here.  A ``KeyError`` out of :meth:`prove` would be the shape
+        of that omission, which is why there is one lookup and not two.
+        """
+        if rid == PROJECTION_RULE_ID:
+            return PROJECTION_RULE
         existing = self._rules.get(rid)
         if existing is None:
             raise UnknownId(f"no rule {rid!r}")
         return existing
 
     def rules(self) -> Tuple[Rule, ...]:
+        """The rules somebody added. The engine's own is not one of them.
+
+        :data:`PROJECTION_RULE` is reachable by id through :meth:`rule` and is
+        deliberately absent here: this read answers "what has this store been
+        told", and an engine built-in appearing in it would be the code
+        describing itself as content — in every store, identically, forever.
+        """
         self.derive()
         return tuple(self._rules.values())
+
+    def links(self) -> Tuple[Link, ...]:
+        """Every link, live revision, in the order they were first made."""
+        self.derive()
+        return tuple(self._links.values())
+
+    def link_record(self, lid: str) -> Link:
+        """The live revision of one link."""
+        self.derive()
+        held = self._links.get(lid)
+        if held is None:
+            raise UnknownId(f"no link {lid!r}")
+        return held
+
+    def links_for(self, entity: str) -> Tuple[Link, ...]:
+        """Every subject this entity has been claimed to be about.
+
+        More than one is ordinary: a receipt that names a job *and* the asset
+        it produced is about both, and its facts project onto each.
+        """
+        self.derive()
+        return tuple(self._links[lid]
+                     for lid in self._links_by_entity.get(entity, ()))
+
+    def linked_to(self, subject: str) -> Tuple[Link, ...]:
+        """Every entity claimed to be about this subject.
+
+        The read a consumer rendering a subject wants: the receipts behind it,
+        which is what turns a contested subject fact into "these two calls
+        disagree" rather than "the store is unhappy".
+        """
+        self.derive()
+        return tuple(self._links[lid]
+                     for lid in self._links_by_subject.get(subject, ()))
 
     def goals(self) -> Tuple[Goal, ...]:
         self.derive()
@@ -1480,6 +1864,16 @@ class CognitiveState:
             if not all(self._props[p].live for p in premises):
                 continue
             grades = []
+            # A projection's second premise is a link, and it caps the grade
+            # like any other: a fact read off a receipt at SOURCE, carried to
+            # a subject by a link the model guessed, is worth the guess. Taken
+            # live from the link rather than from the conclusion's stored
+            # authority, for the reason this whole method is a read — a link
+            # whose authority rose lifts everything it projected, and nothing
+            # re-derived because nothing needed to.
+            held_link = self._derivations[did].link
+            if held_link is not None:
+                grades.append(self._links[held_link].authority)
             for premise in premises:
                 grade, cyclic = self._grade(premise, path | {pid}, memo)
                 touched_cycle = touched_cycle or cyclic
@@ -1506,6 +1900,15 @@ class CognitiveState:
         out: List[EvidenceRef] = list(prop.evidence)
         touched_cycle = False
         for did in self._by_conclusion.get(pid, ()):
+            # The link's own evidence is a leaf of the proof: it is what
+            # answers "why do we think this receipt was about this job", which
+            # is the question a wrong subject fact makes urgent and the one
+            # the receipt's refs cannot answer.
+            held_link = self._derivations[did].link
+            if held_link is not None:
+                for ref in self._links[held_link].evidence:
+                    if ref not in out:
+                        out.append(ref)
             for premise in self._derivations[did].premises:
                 refs, cyclic = self._leaves(premise, path | {pid}, memo)
                 touched_cycle = touched_cycle or cyclic
@@ -1575,7 +1978,7 @@ class CognitiveState:
         touched_cycle = False
         for did in self._by_conclusion.get(pid, ()):
             derivation = self._derivations[did]
-            rule = self._rules[derivation.rule]
+            rule = self._rule_of(derivation.rule)
             premises = []
             for premise in derivation.premises:
                 proof, cyclic = self._prove(premise, path + (pid,), memo)
@@ -1583,7 +1986,8 @@ class CognitiveState:
                 premises.append(proof)
             steps.append(ProofStep(derivation=did, rule=rule.id,
                                    rule_name=rule.name,
-                                   premises=tuple(premises)))
+                                   premises=tuple(premises),
+                                   link=derivation.link))
         made = Proof(proposition=pid, status=prop.status,
                      authority=prop.authority, evidence=prop.evidence,
                      steps=tuple(steps))
@@ -1781,8 +2185,16 @@ class CognitiveState:
                       for rule in self._rules.values()],
             "derivations": [{"id": item.id, "rule": item.rule,
                              "premises": list(item.premises),
-                             "conclusion": item.conclusion}
+                             "conclusion": item.conclusion,
+                             "link": item.link}
                             for item in self._derivations.values()],
+            "links": [
+                {"id": item.id, "revision": item.revision,
+                 "previous": item.previous, "entity": item.entity,
+                 "subject": item.subject, "authority": item.authority.value,
+                 "evidence": encode_evidence(item.evidence),
+                 "history": [rev.key for rev in self._link_history[item.id]]}
+                for item in self._links.values()],
             "goals": [{"id": goal.id, "pattern": encode_pattern(goal.pattern),
                        "note": goal.note} for goal in self._goals.values()],
             "fields": [{"field": name, "cardinality": how}
@@ -1794,7 +2206,8 @@ class CognitiveState:
                  "settled": item.settled, "kept": item.kept}
                 for item in self._contradictions.values()],
             "pending": {"propositions": list(self._pending_props),
-                        "rules": list(self._pending_rules)},
+                        "rules": list(self._pending_rules),
+                        "links": list(self._pending_links)},
         }
         _check_digest_keys(digested)
         return digested

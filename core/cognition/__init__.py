@@ -100,6 +100,21 @@ this store's id) and the content-addressed obligation id.
   side — while a missed one costs a signal.
 * A hypothesis that disagrees with an observation is **reported and not
   acted on** — a ``"hypothesis"`` contradiction, no status moved either way.
+* Two receipts are about one thing only when somebody **says so**
+  (:meth:`~core.cognition.state.CognitiveState.link`).  Value coincidence
+  never links — a store that guessed two receipts were about one thing would
+  manufacture contradictions out of two tools that never disagreed — and
+  neither does key-name similarity.  A link is a claim with evidence and an
+  authority, like everything else here, and what it does is *project*: the
+  linked entity's live triples are derived about the subject, with the
+  receipt fact as the premise, so every subject-level fact proves down to the
+  call that showed it.  **v1 bounds on that**: text does not project, a
+  subject is never the near end of a link (so a projection never projects
+  again), and a model-graded link's projections land ``HYPOTHESIZED`` — a
+  guessed identity can report a disagreement with an observation and can
+  never win one.  Nothing in this release passes a model grade; the door
+  accepts it so that the invariant is written in code before the traffic
+  arrives.
 * Obligation computation caps its join at
   :data:`~core.cognition.state.ENV_CAP` environments and *says so*
   (:attr:`~core.cognition.types.Frontier.truncated`).  The frontier is the
@@ -127,7 +142,12 @@ sees).
 shadow and additive.  The division is one sentence: this package owns
 attribute claims and derivation, that one owns topology, an edge lives there
 once, and its ``as_propositions`` is a derived projection for when a rule here
-needs edges as triples.  It reuses this package's
+needs edges as triples.  A :class:`~core.cognition.types.Link` is not an edge
+and does not blur that line: an edge says two things are *related*, a link says
+one entity and one subject are the **same thing seen from a receipt**, which is
+a statement about identity and therefore about whose attribute claims join —
+this package's business.  When the Phase 20 graph arm lands, subjects are what
+give its nodes a principled identity.  It reuses this package's
 :class:`~core.cognition.types.EvidenceAuthority` and
 :class:`~core.cognition.types.EvidenceRef` rather than minting its own, and
 nothing here imports it: the dependency runs one way, the way every other one
@@ -141,21 +161,26 @@ from core.cognition.events import (COUNT_KEY, EVENT_OPS,
                                    KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY,
                                    deep_copy, freeze)
 from core.cognition.matching import resolve, unify, unify_patterns
-from core.cognition.state import DIGEST_KEYS, ENV_CAP, CognitiveState
+from core.cognition.state import (DIGEST_KEYS, ENV_CAP, PROJECTION_RULE,
+                                  PROJECTION_RULE_ID, CognitiveState)
 from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
                                   CONTRADICTION_KINDS,
                                   DEFAULT_CARDINALITY,
                                   HYPOTHESIS_AUTHORITIES,
                                   LIVE_STATUSES, OBSERVATION_AUTHORITIES,
-                                  STATUS_RANK, TRUSTED_RULE_AUTHORITIES,
+                                  RECEIPT_MARKER, STATUS_RANK,
+                                  SUBJECT_CAP, SUBJECT_KIND_CHARS,
+                                  SUBJECT_SEPARATOR, TRUSTED_RULE_AUTHORITIES,
                                   AuthorityRefused, CognitionError,
                                   Contradiction, Derivation, EvidenceAuthority,
-                                  EvidenceRef, Frontier, Goal, MatchStats,
+                                  EvidenceRef, Frontier, Goal, Link,
+                                  MatchStats,
                                   Obligation, ObligationState, Proof,
                                   ProofStep, Proposition,
                                   PropositionStatus, ReplayRefused, Rule,
                                   RuleAuthority, RuleMalformed, Support,
-                                  UnknownId, check_pattern, is_variable,
+                                  UnknownId, check_pattern, check_subject,
+                                  is_variable, subject_entity, subject_parts,
                                   value_tag)
 
 __all__ = [
@@ -185,20 +210,27 @@ __all__ = [
     "KERNEL_KEY",
     "KERNEL_VERSION",
     "LIVE_STATUSES",
+    "Link",
     "MatchStats",
     "OBSERVATION_AUTHORITIES",
     "Obligation",
     "ObligationState",
+    "PROJECTION_RULE",
+    "PROJECTION_RULE_ID",
     "Proof",
     "ProofStep",
     "Proposition",
     "PropositionStatus",
+    "RECEIPT_MARKER",
     "ReplayRefused",
     "Rule",
     "RuleAuthority",
     "RuleMalformed",
     "SCHEMA_KEY",
     "STATUS_RANK",
+    "SUBJECT_CAP",
+    "SUBJECT_KIND_CHARS",
+    "SUBJECT_SEPARATOR",
     "Support",
     "TRUSTED_RULE_AUTHORITIES",
     "UnknownId",
@@ -210,11 +242,18 @@ __all__ = [
     # message cannot use that, and a second idea of what a pattern is would
     # be the one that drifted.
     "check_pattern",
+    # The one owner of what a subject entity is spelled like. Exported
+    # because the layer that builds them from a platform's declarations has
+    # to ask before it spells one, and a second idea of the spelling is a
+    # second namespace.
+    "check_subject",
     "compile_view",
     "deep_copy",
     "freeze",
     "is_variable",
     "resolve",
+    "subject_entity",
+    "subject_parts",
     "unify",
     "unify_patterns",
     "value_tag",

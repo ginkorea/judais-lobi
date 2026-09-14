@@ -54,6 +54,7 @@ PACKAGE = Path(__file__).resolve().parent.parent / "core" / "cognition"
 RECEIPT = EvidenceRef(kind="receipt", locator="seq:1")
 OTHER = EvidenceRef(kind="receipt", locator="seq:2")
 GUESS = EvidenceRef(kind="extraction", locator="turn:1")
+DECLARED = EvidenceRef(kind="declaration", locator="job_status.job_id")
 
 
 def json_round_trip(value):
@@ -102,6 +103,8 @@ class TestEveryWriteIsOneEvent:
                                        evidence=[RECEIPT])
         state.assert_hypothesis(("alice", "risky", True), evidence=[GUESS])
         state.add_goal(("?who", "controls", "acct-9"))
+        state.link("alice", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
         state.derive()
         other = state.assert_observation(("alice", "admin_access", "acct-1"),
                                          evidence=[OTHER])
@@ -205,7 +208,23 @@ class TestEveryWriteIsOneEvent:
         pid = state.assert_observation(("alice", "admin_access", "acct-9"),
                                        evidence=[RECEIPT])
         assert state.has_pending
-        assert state.pending() == {"propositions": (pid,), "rules": ()}
+        assert state.pending() == {"propositions": (pid,), "rules": (),
+                                   "links": ()}
+        state.derive()
+        assert not state.has_pending
+
+    def test_a_link_stages_like_everything_else(self):
+        """The staging area has three compartments and a caller comparing
+        `pending()` sees all three. A link that closure had not run yet would
+        otherwise be invisible in exactly the shape `pending()` exists for."""
+        state = CognitiveState()
+        state.assert_observation(("t#1", "state", "done"), evidence=[RECEIPT])
+        state.derive()
+        lid = state.link("t#1", "job:jl-731", evidence=[DECLARED],
+                         authority=EvidenceAuthority.SOURCE)
+        assert state.has_pending
+        assert state.pending() == {"propositions": (), "rules": (),
+                                   "links": (lid,)}
         state.derive()
         assert not state.has_pending
 
@@ -249,7 +268,8 @@ class TestEveryWriteIsOneEvent:
         assert state.has_pending
         state.snapshot()
         assert not state.has_pending
-        assert state.pending() == {"propositions": (), "rules": ()}
+        assert state.pending() == {"propositions": (), "rules": (),
+                                   "links": ()}
 
     def test_that_version_is_the_kernels_own_number(self):
         """Not the wire contract's. They change for different reasons and at
@@ -401,6 +421,13 @@ def _script(seed, steps=60):
     actors = ["alice", "bob", "carol"]
     accounts = ["acct-1", "acct-9"]
     fields = ["admin_access", "payment_link", "owns", "delegate"]
+    # Two actors onto ONE subject and the third onto another, so the sweep
+    # reaches the shape the link exists for: two entities projecting onto one
+    # subject, over a field declared single-valued, contesting there while
+    # both entities stay live. Written as data rather than as a special case
+    # in the loop, because the combinations worth finding in a replay are the
+    # ones nobody curated.
+    subjects = {"alice": "party:red", "bob": "party:red", "carol": "party:blue"}
     # Two fields declared single-valued, so the sweep still reaches the
     # collision machinery; the other two left alone, so it also covers a
     # store where two values of one field sit side by side without comment.
@@ -416,8 +443,22 @@ def _script(seed, steps=60):
                    RuleAuthority.SYSTEM)
     promoted = False
     for _ in range(steps):
-        choice = rng.randrange(8)
-        if choice < 4:
+        choice = rng.randrange(9)
+        if choice == 8:
+            # A link, when there is something to link. Both grades appear, so
+            # the sweep covers a projection that derives and one that lands
+            # hypothesized — and, when the same pair is drawn twice, the
+            # upgrade from one to the other.
+            known = [actor for actor in actors
+                     if state.query((actor, "?f", "?v"), live=False)]
+            if known:
+                actor = rng.choice(known)
+                state.link(actor, subjects[actor],
+                           evidence=[rng.choice([DECLARED, RECEIPT])],
+                           authority=rng.choice([
+                               EvidenceAuthority.SOURCE,
+                               EvidenceAuthority.MODEL_INTERPRETATION]))
+        elif choice < 4:
             state.assert_observation(
                 (rng.choice(actors), rng.choice(fields), rng.choice(accounts)),
                 evidence=[rng.choice([RECEIPT, OTHER])])
@@ -484,6 +525,12 @@ class TestAStoreIsExactlyItsLog:
         assert digest["derivations"], "no closure happened"
         assert digest["contradictions"], "nothing ever collided"
         assert len(digest["propositions"]) > 5
+        assert digest["links"], "nothing was ever linked"
+        assert [row for row in digest["derivations"] if row["link"]], \
+            "no projection happened, so the sweep proves nothing about one"
+        assert [row for row in digest["propositions"]
+                if row["entity"] and row["entity"].startswith("party:")], \
+            "no subject-level fact exists"
 
     def test_a_bare_event_list_is_refused(self):
         """It used to be accepted, as a convenience for a consumer reading
@@ -815,7 +862,15 @@ class TestTheSchemaGrewWithoutBreakingAnOldLog:
         assert set(EVENT_OPS) >= {
             "assert_observation", "assert_hypothesis", "add_rule",
             "promote_rule", "add_goal", "refute", "derive"}
-        assert EVENT_SCHEMA_VERSION == 2
+        assert EVENT_SCHEMA_VERSION == 3
+
+    def test_the_ops_of_schema_two_are_still_all_there(self):
+        """Schema 3 added `link` and took nothing away. Written as its own
+        assertion rather than folded into the line above, because "append
+        only" is a promise per version and a version that quietly dropped one
+        of its predecessor's ops would pass a test about schema 1."""
+        assert set(EVENT_OPS) >= {"declare_field", "settle"}
+        assert "link" in EVENT_OPS
 
     def test_a_v1_log_contests_two_values_a_v2_store_would_leave_alone(self):
         """The divergence made concrete. The same two events replayed as v2
@@ -856,6 +911,78 @@ class TestTheSchemaGrewWithoutBreakingAnOldLog:
         with pytest.raises(ReplayRefused):
             CognitiveState.replay({SCHEMA_KEY: EVENT_SCHEMA_VERSION,
                                    COUNT_KEY: 2, EVENTS_KEY: events})
+
+    # A schema-2 log, hand-built the way `V1_LOG` is and for the same reason:
+    # a log this release produced cannot fail the promise even if the promise
+    # is broken. `derive` here carries no `links` key, because no schema-2
+    # writer had one — which is the shape the reader has to get right.
+    V2_LOG = {
+        SCHEMA_KEY: 2,
+        COUNT_KEY: 4,
+        EVENTS_KEY: [
+            {"n": 1, "op": "declare_field", "field": "state",
+             "cardinality": "one"},
+            {"n": 2, "op": "assert_observation",
+             "triple": ["job_status#r5", "state", "completed"], "text": None,
+             "authority": "source",
+             "evidence": [{"kind": "receipt", "locator": "seq:1",
+                           "note": "", "authority": "source"}]},
+            {"n": 3, "op": "assert_observation",
+             "triple": ["job_status#r5", "state", "running"], "text": None,
+             "authority": "source",
+             "evidence": [{"kind": "receipt", "locator": "seq:2",
+                           "note": "", "authority": "source"}]},
+            {"n": 4, "op": "derive", "propositions": ["p1"], "rules": []},
+        ],
+    }
+
+    def test_a_version_two_log_still_replays(self):
+        state = CognitiveState.replay(json_round_trip(self.V2_LOG))
+        assert state.fields() == {"state": "one"}
+        assert [c.kind for c in state.contradictions()] == ["value"]
+        assert state.links() == ()
+
+    def test_a_version_two_derive_means_the_empty_list_of_links(self):
+        """The optional field, read the only way it can honestly be read: a
+        log written before links existed cannot have meant anything else, and
+        a reader that refused it would have broken the append-only promise
+        for the logs the promise exists to protect.
+
+        The store writes the key back on the way out — a schema-2 store can
+        only ever write it empty, since `link` is refused there — and an
+        older reader ignores a field it has no name for, which is the half of
+        the compatibility rule an *optional* field lives under."""
+        state = CognitiveState.replay(json_round_trip(self.V2_LOG))
+        assert state.snapshot()[EVENTS_KEY][3]["links"] == []
+
+    def test_a_version_two_store_refuses_the_op_that_did_not_exist_under_it(
+            self):
+        """The same rule `declare_field` and `settle` are held to at v1: a
+        store whose log says it never linked anything cannot be handed a link
+        without its history stopping being an explanation of it."""
+        state = CognitiveState.replay(json_round_trip(self.V2_LOG))
+        with pytest.raises(Exception):
+            state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+
+    def test_a_version_three_log_carries_its_links_through_a_round_trip(self):
+        """And the new half: a link and the projection it licensed rebuild
+        from the log alone — the link's revision chain included, since the
+        digest compares it."""
+        state = CognitiveState()
+        state.assert_observation(("job_status#r5", "state", "completed"),
+                                 evidence=[RECEIPT])
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.MODEL_EXTRACTION)
+        state.link("job_status#r5", "job:jl-731", evidence=[RECEIPT],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        again = CognitiveState.replay(json_round_trip(state.snapshot()))
+        assert again.digest_json() == state.digest_json()
+        assert again.claim(("job:jl-731", "state", "completed"))
+        held, = again.links()
+        assert held.revision == 2
+        assert held.authority is EvidenceAuthority.SOURCE
 
     def test_a_replayed_v1_store_snapshots_back_as_v1(self):
         """Round trip, so the semantics a store runs under are stable rather
@@ -909,12 +1036,14 @@ class TestTheDigestRendersEverything:
                          "value", "text", "status", "authority", "derivation",
                          "evidence", "history"},
         "rules": {"id", "name", "authority", "head", "body"},
-        "derivations": {"id", "rule", "premises", "conclusion"},
+        "derivations": {"id", "rule", "premises", "conclusion", "link"},
+        "links": {"id", "revision", "previous", "entity", "subject",
+                  "authority", "evidence", "history"},
         "goals": {"id", "pattern", "note"},
         "fields": {"field", "cardinality"},
         "contradictions": {"id", "kind", "left", "right", "detail",
                            "evidence", "settled", "kept"},
-        "pending": {"propositions", "rules"},
+        "pending": {"propositions", "rules", "links"},
     }
 
     def test_the_sections_are_the_ones_declared(self):

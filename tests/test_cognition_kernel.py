@@ -2,7 +2,7 @@
 
 """What the epistemic kernel refuses, what it derives, and what it still owes.
 
-Four things are checked here and they are not the same thing.
+Five things are checked here and they are not the same thing.
 
 **That the authority walls hold in both directions.**  Model evidence cannot
 become an ``OBSERVED`` proposition and a ``PROPOSED`` rule derives nothing —
@@ -27,6 +27,15 @@ reads a goal against its rules against what it holds, and the premise it
 cannot satisfy is the answer to "what next" — the inversion the whole 2.0 arc
 is built on.
 
+**That a link carries facts to a subject without rewriting them.**  Two
+receipts are about one job only because somebody declared a key to be an
+identifier; the store then *projects*, so the subject's fact is derived, its
+proof walks back to the call that showed it, and two receipts that really
+disagree contest at the subject while both receipts stay live.  The property
+the projection engine has to be held to is order-independence: a link arrives
+before or after the facts it carries, and a store that answered differently
+depending on which would be answering about its own loop.
+
 Replay, the event log and the incrementality of closure are in
 ``tests/test_cognition_replay.py``.
 """
@@ -35,15 +44,23 @@ import pytest
 
 from core.cognition import (AUTHORITY_RANK, CONTRADICTION_KINDS,
                             HYPOTHESIS_AUTHORITIES,
-                            OBSERVATION_AUTHORITIES, TRUSTED_RULE_AUTHORITIES,
+                            OBSERVATION_AUTHORITIES, PROJECTION_RULE,
+                            PROJECTION_RULE_ID, RECEIPT_MARKER, SUBJECT_CAP,
+                            SUBJECT_SEPARATOR, TRUSTED_RULE_AUTHORITIES,
                             AuthorityRefused, CognitionError, CognitiveState,
                             EvidenceAuthority, EvidenceRef, ObligationState,
                             PropositionStatus, RuleAuthority, RuleMalformed,
-                            UnknownId, value_tag)
+                            UnknownId, check_subject, subject_entity,
+                            subject_parts, value_tag)
 
 RECEIPT = EvidenceRef(kind="receipt", locator="seq:1", note="read_file")
 OTHER = EvidenceRef(kind="receipt", locator="seq:2")
 EXTRACTED = EvidenceRef(kind="extraction", locator="turn:3")
+#: What a link's evidence actually is: the declaration that said a key was an
+#: identifier. Kept distinct from a receipt ref so a proof's leaves can be
+#: read for *which* of the two answers "why do we think this call was about
+#: this job".
+DECLARED = EvidenceRef(kind="declaration", locator="job_status.job_id")
 
 
 def door(ref, authority=EvidenceAuthority.SOURCE):
@@ -1995,3 +2012,848 @@ class TestTheStoreAnswersAboutItself:
         assert [c.id for c in state.contradictions_for(first)] == \
                [c.id for c in state.contradictions_for(second)]
         assert state.contradictions_for(other) == ()
+
+
+# ---------------------------------------------------------------------------
+# Subjects: the thing two receipts are about
+# ---------------------------------------------------------------------------
+
+def store_with_receipt(entity="job_status#r5", field="state",
+                       value="completed", authority=EvidenceAuthority.SOURCE):
+    """One receipt's fact, ready to be linked. The shape the shadow makes."""
+    state = CognitiveState()
+    pid = state.assert_observation((entity, field, value), evidence=[RECEIPT],
+                                   authority=authority)
+    return state, pid
+
+
+class TestASubjectCannotBeSpelledLikeAReceipt:
+    """The two namespaces are disjoint *by construction*, which is a claim
+    about `check_subject` and not about anybody's naming habits.
+
+    It has to be. The kernel does not own the spelling of a receipt entity —
+    the layer above does, and it spells one `tool#seq`. So the promise this
+    package can keep is the one it can enforce at its own door: no string
+    carrying `#` is ever a subject, and no subject-spelled string is ever
+    accepted as a link's near end. Between them a projection can never land
+    where a receipt's own facts live, and a receipt can never be linked to
+    itself under a second spelling.
+    """
+
+    def test_a_subject_is_a_kind_and_a_value(self):
+        assert check_subject("job:jl-731") == ("job", "jl-731")
+        assert subject_parts("asset:led.a41") == ("asset", "led.a41")
+
+    def test_the_split_is_at_the_first_separator(self):
+        """A value may carry the separator — `result:mcp://x` is a real
+        identifier shape — and the kind is always what precedes the first
+        one, because a kind cannot contain it."""
+        assert check_subject("result:mcp://x") == ("result", "mcp://x")
+
+    @pytest.mark.parametrize("receipt", [
+        "job_status#r5", "mcp.job_status#r5",
+        # The one that decides it: a tool whose own name carries a colon. It
+        # LOOKS subject-spelled and is not, because the `#` in the value is
+        # refused — which is the whole of why the marker is banned rather
+        # than merely discouraged.
+        "plugin:job_status#r5",
+    ])
+    def test_no_receipt_entity_parses_as_a_subject(self, receipt):
+        assert RECEIPT_MARKER in receipt
+        assert subject_parts(receipt) is None
+
+    def test_a_subject_may_not_carry_the_receipt_marker(self):
+        with pytest.raises(CognitionError):
+            check_subject("job:jl#731")
+
+    @pytest.mark.parametrize("bad", [
+        "", "job", ":jl-731", "job:", 7, None, "job:jl 731", "job:jl\n731",
+        "?job:jl-731", "jo b:jl-731", "job" + SUBJECT_SEPARATOR + "x" * 900,
+    ])
+    def test_what_is_not_a_subject(self, bad):
+        with pytest.raises(CognitionError):
+            check_subject(bad)
+        assert subject_parts(bad) is None
+
+    def test_a_variable_is_never_a_subject_kind(self):
+        """`?job` is the pattern spelling. If it parsed as a kind, a rule
+        variable and a subject would be the same string in two places."""
+        assert subject_parts("?job:anything") is None
+
+    def test_the_cap_is_a_named_bound(self):
+        assert subject_parts("job:" + "x" * SUBJECT_CAP) is not None
+        assert subject_parts("job:" + "x" * (SUBJECT_CAP + 1)) is None
+
+    def test_spelling_one_checks_its_own_round_trip(self):
+        """A caller building a subject out of a declaration's kind and a
+        payload's value has no reason to have thought about a kind carrying
+        the separator — which would spell a string that reads back as a
+        different subject entirely."""
+        assert subject_entity("job", "jl-731") == "job:jl-731"
+        with pytest.raises(CognitionError):
+            subject_entity("job:extra", "jl-731")
+
+
+class TestALinkIsAClaimAndNotARename:
+    """Every obligation a proposition has, a link has: evidence naming what
+    it rests on, an authority stamped at the door it came through, and an
+    event. A link that could be made on nothing would be the one mistake in
+    this design that manufactures evidence-shaped noise — two tools that
+    never disagreed, reported as a contradiction."""
+
+    def test_a_link_names_the_pair_and_returns_its_id(self):
+        state, _ = store_with_receipt()
+        lid = state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                         authority=EvidenceAuthority.SOURCE)
+        held, = state.links()
+        assert held.id == lid
+        assert (held.entity, held.subject) == ("job_status#r5", "job:jl-731")
+        assert held.kind == "job" and held.value == "jl-731"
+
+    def test_a_link_with_no_evidence_is_refused(self):
+        state, _ = store_with_receipt()
+        with pytest.raises(CognitionError):
+            state.link("job_status#r5", "job:jl-731", evidence=[],
+                       authority=EvidenceAuthority.SOURCE)
+        assert state.links() == ()
+
+    def test_evidence_is_stamped_by_the_door(self):
+        """Over whatever the caller put there, exactly as the two assertion
+        doors do — a caller able to write the stamp could file a guess as a
+        declaration by constructing the ref rather than by choosing a
+        grade."""
+        state, _ = store_with_receipt()
+        state.link("job_status#r5", "job:jl-731",
+                   evidence=[DECLARED.stamped(
+                       EvidenceAuthority.DETERMINISTIC)],
+                   authority=EvidenceAuthority.MODEL_INTERPRETATION)
+        held, = state.links()
+        assert {ref.authority for ref in held.evidence} == \
+            {EvidenceAuthority.MODEL_INTERPRETATION}
+
+    def test_the_authority_has_no_default(self):
+        """The same rule the graph's `add_edge` keeps, and permanently: a
+        caller that does not say how it knows two receipts are about one
+        thing has not said it, and "probably deterministic" is the guess this
+        package exists to refuse."""
+        state, _ = store_with_receipt()
+        with pytest.raises(TypeError):
+            state.link("job_status#r5", "job:jl-731", evidence=[DECLARED])
+
+    def test_an_entity_the_store_holds_nothing_about_is_refused(self):
+        """A link is a claim that *this receipt* is about that subject. A
+        receipt this store never saw is not a receipt: the subject would be
+        born with nothing to project and the log would name an entity its own
+        events cannot explain."""
+        state, _ = store_with_receipt()
+        with pytest.raises(UnknownId):
+            state.link("job_status#r9", "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+
+    def test_a_subject_is_never_the_near_end_of_a_link(self):
+        """Which is also how "a projection never projects again" is
+        structural rather than a rule somebody has to remember."""
+        state, _ = store_with_receipt()
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        with pytest.raises(CognitionError):
+            state.link("job:jl-731", "party:red", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+
+    def test_a_self_link_is_the_same_refusal(self):
+        """One wall, not two that can drift apart: the entity would have to
+        be subject-spelled to equal the subject."""
+        state, _ = store_with_receipt()
+        with pytest.raises(CognitionError):
+            state.link("job:jl-731", "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+
+    def test_a_subject_that_is_not_spelled_like_one_is_refused(self):
+        state, _ = store_with_receipt()
+        with pytest.raises(CognitionError):
+            state.link("job_status#r5", "jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+
+    def test_the_same_pair_twice_is_one_link(self):
+        """Idempotent on the pair, the edge-identity discipline the graph
+        keeps: evidence unions, a revision is written, and no second record
+        appears to be counted as a second claim."""
+        state, _ = store_with_receipt()
+        first = state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                           authority=EvidenceAuthority.SOURCE)
+        again = state.link("job_status#r5", "job:jl-731", evidence=[OTHER],
+                           authority=EvidenceAuthority.SOURCE)
+        assert again == first
+        held, = state.links()
+        assert held.revision == 2 and held.previous == "l1@1"
+        assert set(held.evidence) == {
+            DECLARED.stamped(EvidenceAuthority.SOURCE),
+            OTHER.stamped(EvidenceAuthority.SOURCE)}
+
+    def test_re_stating_a_link_unchanged_writes_no_revision(self):
+        state, _ = store_with_receipt()
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        held, = state.links()
+        assert held.revision == 1, "a retry is not a change of mind"
+
+    def test_the_authority_rises_and_never_falls(self):
+        state, _ = store_with_receipt()
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.MODEL_INTERPRETATION)
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.MODEL_HYPOTHESIS)
+        held, = state.links()
+        assert held.authority is EvidenceAuthority.SOURCE
+
+    def test_one_receipt_may_be_about_two_subjects(self):
+        """Not a refusal: a call that names a job *and* the asset it produced
+        is about both, and its facts belong at both."""
+        state, _ = store_with_receipt()
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.link("job_status#r5", "asset:led.a41", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert {link.subject for link in state.links_for("job_status#r5")} == \
+            {"job:jl-731", "asset:led.a41"}
+        assert state.claim(("job:jl-731", "state", "completed"))
+        assert state.claim(("asset:led.a41", "state", "completed"))
+
+    def test_the_store_answers_which_receipts_stand_behind_a_subject(self):
+        state, _ = store_with_receipt()
+        state.assert_observation(("compute#7", "state", "running"),
+                                 evidence=[OTHER])
+        for entity in ("job_status#r5", "compute#7"):
+            state.link(entity, "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+        assert [link.entity for link in state.linked_to("job:jl-731")] == \
+            ["job_status#r5", "compute#7"]
+
+
+class TestProjectionCarriesTheFactWithoutMovingIt:
+    """Linking never edits a proposition. The receipt's fact stays where it
+    was seen — its entity, its history, its evidence — and the subject gets a
+    *derived* copy whose premise is that fact.
+
+    Rewriting was the alternative and it destroys what the store is for: a
+    proposition's entity is where it was seen, and two receipts merged into
+    one entity can no longer say which of them said what.
+    """
+
+    @staticmethod
+    def _linked(fact=EvidenceAuthority.SOURCE,
+                link=EvidenceAuthority.SOURCE):
+        state, pid = store_with_receipt(authority=fact)
+        lid = state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                         authority=link)
+        state.derive()
+        return state, pid, lid
+
+    def test_the_subjects_fact_is_derived_from_the_receipts(self):
+        state, pid, lid = self._linked()
+        cid = state.claim(("job:jl-731", "state", "completed"))
+        assert state.proposition(cid).status is PropositionStatus.DERIVED
+        assert state.proposition(pid).status is PropositionStatus.OBSERVED
+        assert state.proposition(pid).entity == "job_status#r5", \
+            "the receipt's fact did not move"
+        proof, = state.derivations_for(cid)
+        assert proof.premises == (pid,)
+        assert proof.rule == PROJECTION_RULE_ID
+        assert proof.link == lid
+
+    def test_the_proof_walks_back_to_the_call_that_showed_it(self):
+        state, pid, lid = self._linked()
+        proof = state.prove(state.claim(("job:jl-731", "state", "completed")))
+        step, = proof.steps
+        assert step.rule_name == "projection"
+        assert step.link == lid
+        premise, = step.premises
+        assert premise.proposition == pid
+        assert premise.evidence == (RECEIPT.stamped(EvidenceAuthority.SOURCE),)
+
+    def test_the_links_evidence_is_at_the_leaves(self):
+        """"Why do we think this call was about this job" is the question a
+        wrong link makes urgent, and the receipt's own refs cannot answer
+        it."""
+        state, _pid, _lid = self._linked()
+        support = state.support(
+            state.claim(("job:jl-731", "state", "completed")))
+        assert set(support.evidence_leaves) == {
+            DECLARED.stamped(EvidenceAuthority.SOURCE),
+            RECEIPT.stamped(EvidenceAuthority.SOURCE)}
+
+    @pytest.mark.parametrize("fact,link,expected", [
+        (EvidenceAuthority.DETERMINISTIC, EvidenceAuthority.SOURCE,
+         EvidenceAuthority.SOURCE),
+        (EvidenceAuthority.SOURCE, EvidenceAuthority.DETERMINISTIC,
+         EvidenceAuthority.SOURCE),
+        (EvidenceAuthority.DETERMINISTIC, EvidenceAuthority.DETERMINISTIC,
+         EvidenceAuthority.DETERMINISTIC),
+    ])
+    def test_the_grade_is_the_weaker_of_the_fact_and_the_link(
+            self, fact, link, expected):
+        """Both ways round, because a rule that took the *stronger* would
+        pass a test written in one direction only — and would launder a
+        platform's declaration into a measurement, which is precisely what
+        the grade exists to stop."""
+        state, _pid, _lid = self._linked(fact=fact, link=link)
+        cid = state.claim(("job:jl-731", "state", "completed"))
+        assert state.proposition(cid).authority is expected
+        assert state.support(cid).grade is expected
+
+    def test_a_text_proposition_does_not_project(self):
+        """v1 bound, and structural: a text-only proposition has no entity at
+        all in this store, so there is nothing to project it from."""
+        state, _ = store_with_receipt()
+        state.assert_observation(text="the deployment declined, citing policy",
+                                 evidence=[RECEIPT])
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert [p.text for p in state.propositions()
+                if p.entity == "job:jl-731"] == [None]
+
+    def test_a_fact_carrying_both_projects_only_its_triple(self):
+        state = CognitiveState()
+        state.assert_observation(("job_status#r5", "state", "failed"),
+                                 text="OOM on the second shard",
+                                 evidence=[RECEIPT])
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        cid = state.claim(("job:jl-731", "state", "failed"))
+        assert state.proposition(cid).text is None, \
+            "prose about a receipt is not prose about a subject"
+
+    def test_a_hypothesis_does_not_project_until_it_is_observed(self):
+        state = CognitiveState()
+        state.assert_hypothesis(("job_status#r5", "state", "completed"),
+                                evidence=[EXTRACTED])
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert state.claim(("job:jl-731", "state", "completed")) is None
+        state.assert_observation(("job_status#r5", "state", "completed"),
+                                 evidence=[RECEIPT])
+        state.derive()
+        assert state.claim(("job:jl-731", "state", "completed"))
+
+    def test_a_second_link_on_the_same_entity_projects_again(self):
+        state, _pid, _lid = self._linked()
+        state.link("job_status#r5", "asset:led.a41", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert len(state.derivations()) == 2
+        assert {p.entity for p in state.propositions()} == {
+            "job_status#r5", "job:jl-731", "asset:led.a41"}
+
+
+def beliefs(state):
+    """What a store holds, with every name taken out of it.
+
+    Built out of `digest()` rather than beside it, so a field the digest
+    stops rendering stops being compared *here* too and the narrowing shows
+    up in one place instead of quietly weakening a second comparator.
+
+    Ids are deliberately gone. They are handed out in insertion order, so two
+    stores told the same things in a different order hold the same claims
+    under different names — the module docstring of `core.cognition.state`
+    states that as a property and `tests/test_cognition_replay.py` pins it.
+    What survives the renaming is every claim with its status and grade, and
+    every proof read as *triples*: the rule, its premises, its conclusion and
+    the link that licensed it. A projection that went missing, landed at the
+    wrong grade, or lost its link is a difference here.
+    """
+    digest = state.digest()
+    rows = {row["id"]: row for row in digest["propositions"]}
+    links = {row["id"]: (row["entity"], row["subject"], row["authority"])
+             for row in digest["links"]}
+
+    def claim(pid):
+        row = rows[pid]
+        return (row["entity"], row["field"], row["value"], row["text"])
+
+    return {
+        "claims": sorted((claim(pid), row["status"], row["authority"])
+                         for pid, row in rows.items()),
+        "proofs": sorted(
+            (row["rule"], tuple(sorted(claim(p) for p in row["premises"])),
+             claim(row["conclusion"]),
+             links[row["link"]] if row["link"] else None)
+            for row in digest["derivations"]),
+        "links": sorted(links.values()),
+        "contradictions": sorted(
+            (row["kind"], claim(row["left"]),
+             claim(row["right"]) if row["right"] else None)
+            for row in digest["contradictions"]),
+    }
+
+
+class TestTheLinkMayArriveBeforeOrAfterTheFacts:
+    """Order-independence, and it is the load-bearing property of the
+    projection engine.
+
+    The shadow above links a receipt at the moment it harvests it, and which
+    of the two lands first is a detail of a loop nobody should have to think
+    about. A store that answered differently depending on the order would be
+    answering about its own scheduling rather than about the world. So both
+    directions are in `apply_delta` and both arrival orders are compared.
+
+    **Compared as beliefs, and the exact digest is the wrong comparator
+    here** — which is worth saying rather than working around. The two orders
+    below present genuinely different deltas (one closes over the link with
+    the facts already held; the other closes over a fact with the link
+    already held), and a store that closes twice inserts a derived
+    proposition between two observations, so the same claims end up under
+    different `pN`. That is a documented property of this engine and not a
+    defect for this test to paper over. `beliefs()` compares everything the
+    renaming does not reach: every claim, every status, every grade, every
+    proof read as triples, every link.
+    """
+
+    @staticmethod
+    def _build(link_first):
+        """The same three things said, with the flush moved.
+
+        `link_first` closes the link against a store that holds one fact, and
+        the second fact then projects through the *fact* direction of the
+        delta; the other order closes both facts through the *link*
+        direction. Each arrangement exercises one direction on its own, which
+        is why dropping either one is caught.
+        """
+        state = CognitiveState()
+        state.assert_observation(("job_status#r5", "state", "completed"),
+                                 evidence=[RECEIPT])
+        if link_first:
+            state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+            state.derive()
+        state.assert_observation(("job_status#r5", "total_s", 154.024),
+                                 evidence=[RECEIPT])
+        if not link_first:
+            state.derive()
+            state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        return state
+
+    def test_the_two_orders_believe_the_same_thing(self):
+        assert beliefs(self._build(True)) == beliefs(self._build(False))
+
+    def test_and_both_of_them_actually_projected(self):
+        """A property test over a store where nothing happened proves
+        nothing: two empty stores believe the same thing."""
+        for state in (self._build(True), self._build(False)):
+            assert state.claim(("job:jl-731", "state", "completed"))
+            assert state.claim(("job:jl-731", "total_s", 154.024))
+            assert len(state.derivations()) == 2
+
+    def test_a_link_beside_new_facts_still_projects_the_older_ones(self):
+        """The hole between the two directions, and the one a test written
+        only from the two ends misses.
+
+        A step that carries a new link *and* new facts is the ordinary case
+        at the top of this package — a receipt harvested over two steps, the
+        identifier read on the second. The fact direction reaches only what
+        changed, and what changed is not everything the entity holds. A store
+        that let the fact half stand in for the link half here would leave the
+        receipt's *earlier* figures off the subject and say nothing.
+        """
+        state = CognitiveState()
+        state.assert_observation(("job_status#r5", "state", "completed"),
+                                 evidence=[RECEIPT])
+        state.derive()
+        state.assert_observation(("job_status#r5", "total_s", 154.024),
+                                 evidence=[RECEIPT])
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert state.claim(("job:jl-731", "total_s", 154.024)), "the new fact"
+        assert state.claim(("job:jl-731", "state", "completed")), \
+            "and the one the entity was already holding"
+
+    def test_one_step_carrying_both_does_the_work_once(self):
+        """The third arrangement, and the one where the exact digest *is* the
+        right comparator: a single flush carrying a new link and new facts
+        together. Both directions of `_project` reach the same pairs, and the
+        store that results is byte-for-byte the one that would have closed
+        over the link alone — deduplicated, in one order, with no second
+        proof of anything."""
+        def build(link_last):
+            state = CognitiveState()
+            state.assert_observation(("job_status#r5", "state", "completed"),
+                                     evidence=[RECEIPT])
+            if not link_last:
+                state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                           authority=EvidenceAuthority.SOURCE)
+            state.assert_observation(("job_status#r5", "total_s", 154.024),
+                                     evidence=[RECEIPT])
+            if link_last:
+                state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                           authority=EvidenceAuthority.SOURCE)
+            state.derive()
+            return state
+
+        assert build(True).digest_json() == build(False).digest_json()
+        assert len(build(True).derivations()) == 2, "and it did project"
+
+    def test_a_fact_arriving_after_the_link_projects_immediately(self):
+        """The direction a link-only engine would lose, stated on its own so
+        that the pair above cannot pass with half the work done."""
+        state, _pid, _lid = TestProjectionCarriesTheFactWithoutMovingIt \
+            ._linked()
+        state.assert_observation(("job_status#r5", "total_s", 154.024),
+                                 evidence=[OTHER])
+        state.derive()
+        assert state.claim(("job:jl-731", "total_s", 154.024))
+
+    def test_a_link_arriving_after_the_facts_projects_what_is_held(self):
+        """And the direction a fact-only engine would lose."""
+        state = CognitiveState()
+        state.assert_observation(("job_status#r5", "state", "completed"),
+                                 evidence=[RECEIPT])
+        state.derive()
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert state.claim(("job:jl-731", "state", "completed"))
+
+    def test_a_flush_between_the_two_changes_the_names_and_not_the_beliefs(
+            self):
+        """The one thing timing *does* reach, pinned rather than wished away:
+        ids are handed out in insertion order, and a flush between the writes
+        inserts a projection before the next observation arrives. Same claims,
+        same statuses — different names. The module docstring of
+        `core.cognition.state` owns that sentence; this is it with a link in
+        it."""
+        def build(flush):
+            state = CognitiveState()
+            state.assert_observation(("job_status#r5", "state", "completed"),
+                                     evidence=[RECEIPT])
+            state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+            if flush:
+                state.derive()
+            state.assert_observation(("job_status#r5", "total_s", 154.024),
+                                     evidence=[RECEIPT])
+            state.derive()
+            return state
+
+        early, late = build(True), build(False)
+        assert early.digest_json() != late.digest_json()
+        assert {(p.triple, p.status) for p in early.propositions()} == \
+               {(p.triple, p.status) for p in late.propositions()}
+
+    def test_projection_reaches_fixpoint_in_a_bounded_number_of_passes(self):
+        """Termination with a hard bound rather than by the suite not
+        hanging. A projection's conclusions land on subject entities, which
+        can never be the near end of a link, so projection adds no cycle of
+        its own — and a spinning closure does not fail a test, it takes the
+        machine."""
+        state = CognitiveState()
+        for index in range(50):
+            state.assert_observation(("job_status#r5", f"col{index}", index),
+                                     evidence=[RECEIPT])
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.stats.reset()
+        derived = state.derive()
+        assert len(derived) == 50
+        assert state.stats.delta_passes <= 3, state.stats
+        state.stats.reset()
+        state.derive()
+        assert state.stats.delta_passes == 0, \
+            "a settled store did more work when asked again"
+
+
+class TestTwoReceiptsDisagreeingAboutOneJob:
+    """The shape the whole spine was built for: two status tools, one job,
+    two answers. It is a real finding from a production transcript, and
+    before subjects the store could not see it — the two facts were about
+    different entities and nothing in a triple said they were about one
+    thing.
+
+    What must happen: the receipts stay live, because a receipt does not
+    disagree with itself; the two *projections* contest, because that is where
+    the disagreement is; the collision is settleable at the subject; and the
+    survivor still proves down to the call that showed it.
+    """
+
+    @staticmethod
+    def _pair():
+        state = CognitiveState()
+        state.declare_field("state", "one")
+        first = state.assert_observation(("derive_status#r1", "state",
+                                          "completed"), evidence=[RECEIPT])
+        second = state.assert_observation(("compute_job_status#r2", "state",
+                                           "running"), evidence=[OTHER])
+        for entity in ("derive_status#r1", "compute_job_status#r2"):
+            state.link(entity, "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        return state, first, second
+
+    def test_the_contest_is_at_the_subject(self):
+        state, _first, _second = self._pair()
+        clash, = [c for c in state.contradictions() if c.kind == "value"]
+        both = {state.proposition(clash.left).entity,
+                state.proposition(clash.right).entity}
+        assert both == {"job:jl-731"}
+        assert not state.proposition(clash.left).live
+        assert not state.proposition(clash.right).live
+
+    def test_the_receipts_stay_live(self):
+        """A receipt does not disagree with itself. If the collision reached
+        the receipts, one call's report of its own result would have been
+        retracted because another call said something else."""
+        state, first, second = self._pair()
+        assert state.proposition(first).status is PropositionStatus.OBSERVED
+        assert state.proposition(second).status is PropositionStatus.OBSERVED
+
+    def test_nothing_contests_while_the_field_carries_many(self):
+        """The contest is the declaration's doing and not the link's:
+        undeclared, both projections stand side by side and the store says
+        nothing."""
+        state = CognitiveState()
+        for entity, value in (("derive_status#r1", "completed"),
+                              ("compute_job_status#r2", "running")):
+            state.assert_observation((entity, "state", value),
+                                     evidence=[RECEIPT])
+            state.link(entity, "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert state.contradictions() == ()
+        assert len([p for p in state.propositions(live=True)
+                    if p.entity == "job:jl-731"]) == 2
+
+    def test_the_subject_level_collision_can_be_settled(self):
+        state, _first, second = self._pair()
+        clash, = [c for c in state.contradictions() if c.kind == "value"]
+        keep = state.claim(("job:jl-731", "state", "running"))
+        state.settle(clash.id, keep=keep, evidence=[OTHER])
+        assert state.proposition(keep).status is PropositionStatus.DERIVED
+        other = state.claim(("job:jl-731", "state", "completed"))
+        assert state.proposition(other).status is PropositionStatus.REFUTED
+        step, = state.prove(keep).steps
+        assert step.premises[0].proposition == second, \
+            "the survivor still names the call that showed it"
+
+    def test_the_receipts_are_named_on_both_sides(self):
+        """What a reader of the contest needs: not "the store is unhappy" but
+        "these two calls disagree"."""
+        state, _first, _second = self._pair()
+        clash, = [c for c in state.contradictions() if c.kind == "value"]
+        told = set()
+        for side in (clash.left, clash.right):
+            step, = state.prove(side).steps
+            told.add(step.premises[0].proposition)
+        assert len(told) == 2
+        assert {link.entity for link in state.linked_to("job:jl-731")} == \
+            {"derive_status#r1", "compute_job_status#r2"}
+
+
+class TestAGuessedIdentityNeverContestsAnObservation:
+    """The reserved rung, implemented now because the invariant is the part
+    that would be easy to lose later.
+
+    Nothing in this release passes a `MODEL_*` grade to `link` — §2.2 holds
+    the model-assisted linker until the extraction door is measured in
+    missions, because a wrong link manufactures evidence-shaped noise. The
+    door accepts the grade anyway, and what it does with it is the whole
+    guarantee: the projections land `HYPOTHESIZED`, so they stay out of
+    closure, out of every contest, and can only ever be *reported* against
+    what a receipt said.
+    """
+
+    @staticmethod
+    def _guessed(authority=EvidenceAuthority.MODEL_INTERPRETATION):
+        state = CognitiveState()
+        state.declare_field("state", "one")
+        state.assert_observation(("guess#r9", "state", "running"),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("job_status#r5", "state", "completed"),
+                                 evidence=[RECEIPT])
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        lid = state.link("guess#r9", "job:jl-731", evidence=[EXTRACTED],
+                         authority=authority)
+        state.derive()
+        return state, lid
+
+    @pytest.mark.parametrize("authority", HYPOTHESIS_AUTHORITIES)
+    def test_a_model_graded_link_projects_hypotheses(self, authority):
+        state, _lid = self._guessed(authority)
+        guessed = state.claim(("job:jl-731", "state", "running"))
+        assert state.proposition(guessed).status is \
+            PropositionStatus.HYPOTHESIZED
+        assert state.proposition(guessed).authority is authority
+
+    def test_it_is_reported_against_the_observation_and_moves_nothing(self):
+        state, _lid = self._guessed()
+        observed = state.claim(("job:jl-731", "state", "completed"))
+        assert state.proposition(observed).status is PropositionStatus.DERIVED
+        assert [c.kind for c in state.contradictions()] == ["hypothesis"], \
+            "a guessed identity may report a disagreement and never win one"
+
+    def test_confirming_the_link_lifts_what_it_carried(self):
+        """And the good direction: a link first guessed and later declared
+        promotes its projections, without anything re-deriving."""
+        state = CognitiveState()
+        state.assert_observation(("job_status#r5", "state", "completed"),
+                                 evidence=[RECEIPT])
+        state.link("job_status#r5", "job:jl-731", evidence=[EXTRACTED],
+                   authority=EvidenceAuthority.MODEL_EXTRACTION)
+        state.derive()
+        cid = state.claim(("job:jl-731", "state", "completed"))
+        assert state.proposition(cid).status is PropositionStatus.HYPOTHESIZED
+        before = len(state.derivations())
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert state.proposition(cid).status is PropositionStatus.DERIVED
+        assert state.support(cid).grade is EvidenceAuthority.SOURCE
+        assert len(state.derivations()) == before, "a proof is not a belief"
+
+
+class TestAProjectionFallsWithItsPremise:
+    """Retraction is free, and that is one of the arguments for projecting
+    rather than for teaching the matcher that two entities are one. A refuted
+    receipt fact kills its subject-level copy through the cascade that was
+    already here — no second code path, and no second place to get it
+    wrong."""
+
+    def test_refuting_the_receipts_fact_retracts_the_subjects(self):
+        state, pid, _lid = TestProjectionCarriesTheFactWithoutMovingIt \
+            ._linked()
+        cid = state.claim(("job:jl-731", "state", "completed"))
+        state.refute(pid, evidence=[OTHER])
+        assert state.proposition(cid).status is PropositionStatus.CONTESTED
+        assert "dead_premise" in [c.kind for c in state.contradictions()]
+
+    def test_a_contested_receipt_fact_takes_its_projection_too(self):
+        state = CognitiveState()
+        state.declare_field("total_s", "one")
+        state.assert_observation(("job_status#r5", "total_s", 154.024),
+                                 evidence=[RECEIPT])
+        state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        cid = state.claim(("job:jl-731", "total_s", 154.024))
+        state.assert_observation(("job_status#r5", "total_s", 186.7),
+                                 evidence=[OTHER])
+        state.derive()
+        assert state.proposition(cid).status is PropositionStatus.CONTESTED
+
+    def test_a_second_receipt_keeps_the_subjects_fact_standing(self):
+        """The other half, so that the rule is not simply "anything touching
+        a dead premise dies": a subject fact with a live second proof
+        stays."""
+        state = CognitiveState()
+        first = state.assert_observation(("derive_status#r1", "state",
+                                          "completed"), evidence=[RECEIPT])
+        state.assert_observation(("compute_job_status#r2", "state",
+                                  "completed"), evidence=[OTHER])
+        for entity in ("derive_status#r1", "compute_job_status#r2"):
+            state.link(entity, "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        cid = state.claim(("job:jl-731", "state", "completed"))
+        assert len(state.derivations_for(cid)) == 2, "two calls, one claim"
+        state.refute(first, evidence=[OTHER])
+        assert state.proposition(cid).status is PropositionStatus.DERIVED
+
+
+class TestASubjectIsAnOrdinaryEntity:
+    """Which is the entire reason projection was chosen over teaching the
+    matcher about equivalence classes. Rules bind it, goals name it,
+    obligations are computed over it and the confidence read grades it —
+    none of which needed a line of new code, and every one of which would
+    have been a separate place for a second implementation to drift."""
+
+    def test_a_rule_joins_two_receipts_at_the_subject(self):
+        """The join that was impossible before: `admin_access` from one call
+        and `payment_link` from another, meeting because both calls named the
+        same job."""
+        state, _rid = store_with_controls()
+        state.assert_observation(("tool_a#r1", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        state.assert_observation(("tool_b#r2", "payment_link", "acct-9"),
+                                 evidence=[OTHER])
+        for entity in ("tool_a#r1", "tool_b#r2"):
+            state.link(entity, "job:jl-731", evidence=[DECLARED],
+                       authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        assert state.claim(("job:jl-731", "controls", "acct-9")), \
+            "neither receipt could conclude this on its own"
+
+    def test_a_goal_naming_a_subject_binds(self):
+        state, _rid = store_with_controls()
+        state.add_goal(("job:jl-731", "controls", "acct-9"))
+        state.assert_observation(("tool_a#r1", "admin_access", "acct-9"),
+                                 evidence=[RECEIPT])
+        state.link("tool_a#r1", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        owed = [o.pattern for o in state.frontier()]
+        assert ("job:jl-731", "payment_link", "acct-9") in owed
+        assert ("job:jl-731", "admin_access", "acct-9") not in owed, \
+            "the projected premise is satisfied, so it is not still owed"
+
+    def test_the_summary_floor_is_the_weakest_of_the_subjects_facts(self):
+        state = CognitiveState()
+        state.assert_observation(("tool_a#r1", "state", "completed"),
+                                 evidence=[RECEIPT],
+                                 authority=EvidenceAuthority.DETERMINISTIC)
+        state.assert_observation(("tool_b#r2", "owner", "ops"),
+                                 evidence=[OTHER],
+                                 authority=EvidenceAuthority.DETERMINISTIC)
+        state.link("tool_a#r1", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.DETERMINISTIC)
+        state.link("tool_b#r2", "job:jl-731", evidence=[DECLARED],
+                   authority=EvidenceAuthority.SOURCE)
+        state.derive()
+        summary = state.summarize([
+            state.claim(("job:jl-731", "state", "completed")),
+            state.claim(("job:jl-731", "owner", "ops"))])
+        assert summary["floor_grade"] is EvidenceAuthority.SOURCE
+
+
+class TestTheProjectionRuleBelongsToTheEngine:
+    """It is not a rule anybody added and it is in no store's rule set — it
+    is part of the engine, like the retraction cascade. What it needs is a
+    name a proof step can carry and a lookup that cannot collide with a
+    caller's."""
+
+    def test_it_cannot_collide_with_a_rule_a_caller_adds(self):
+        state = CognitiveState()
+        rid = state.add_rule("controls", CONTROLS_HEAD, CONTROLS_BODY,
+                             RuleAuthority.DOMAIN)
+        assert rid.startswith("r")
+        assert SUBJECT_SEPARATOR in PROJECTION_RULE_ID
+        assert PROJECTION_RULE_ID not in [rule.id for rule in state.rules()]
+
+    def test_it_is_not_content_and_does_not_appear_in_the_rules(self):
+        state, _pid, _lid = TestProjectionCarriesTheFactWithoutMovingIt \
+            ._linked()
+        assert state.rules() == ()
+        assert state.rule(PROJECTION_RULE_ID) is PROJECTION_RULE
+
+    def test_it_is_built_in_because_it_cannot_be_written_down(self):
+        """Its second premise is a link, not a triple — so its head variable
+        is bound by nothing the body can state, and `add_rule` refuses it for
+        range restriction. Correctly: that is what "not expressible as a
+        rule" looks like from inside the rule language."""
+        state = CognitiveState()
+        with pytest.raises(RuleMalformed):
+            state.add_rule(PROJECTION_RULE.name, PROJECTION_RULE.head,
+                           PROJECTION_RULE.body, RuleAuthority.SYSTEM)
+
+    def test_it_derives_because_it_is_system_authority(self):
+        assert PROJECTION_RULE.authority is RuleAuthority.SYSTEM
+        assert PROJECTION_RULE.participates_in_closure

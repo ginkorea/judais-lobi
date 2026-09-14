@@ -24,8 +24,14 @@ is the kind of change that breaks a log, and nothing in this package may make
 one.  **An op is never removed and never changes meaning** — that is the whole
 of why a version-1 log still replays under version 2, and it is a promise and
 not an implementation detail: ``declare_field`` and ``settle`` are new in 2,
-every version-1 op reads exactly as it did, and the day one of them would have
-to mean something else it gets a new name instead.
+``link`` is new in 3, every older op reads exactly as it did, and the day one
+of them would have to mean something else it gets a new name instead.
+
+Schema 3 also adds an *optional field* to an op that already existed:
+``derive`` carries ``links``, the link ids in that delta.  That is the minor
+half of the compatibility rule above and it reads both ways — a schema-2 log's
+``derive`` has no ``links`` key and means the empty list, which is the only
+thing a log written before links existed could have meant.
 
 A replay refuses a log whose version is *higher* than the one it knows
 (:class:`~core.cognition.types.ReplayRefused`) rather than skipping what it
@@ -62,7 +68,8 @@ from core.cognition.types import EvidenceRef, ReplayRefused
 #:
 #: 1 — the first shape.
 #: 2 — ``declare_field`` and ``settle``. Every version-1 op unchanged.
-EVENT_SCHEMA_VERSION = 2
+#: 3 — ``link``, and ``links`` on ``derive``. Every version-2 op unchanged.
+EVENT_SCHEMA_VERSION = 3
 
 #: Which engine assigned the ids in a log. Not a distribution version and not
 #: this package's public API version: it is bumped when a change alters what
@@ -73,6 +80,12 @@ EVENT_SCHEMA_VERSION = 2
 #: 2 — semi-naive closure evaluates the pinned delta premise first, which
 #:     changes the order derived conclusions are enumerated in, and therefore
 #:     which ``pN`` each one gets. Same claims, different names.
+#:
+#: Unmoved by schema 3, and that is a statement rather than an omission: the
+#: projection engine only ever runs for a store that holds a link, links are
+#: new in 3, so no sequence of writes that an older log can contain enumerates
+#: anything in a different order than it did. A log with no ``link`` in it
+#: replays to the same ids under this engine as under the last one.
 KERNEL_VERSION = 2
 
 #: Every ``op`` this kernel writes and can read back, oldest first. **Append
@@ -91,6 +104,8 @@ EVENT_OPS = (
     # — schema 2 —
     "declare_field",
     "settle",
+    # — schema 3 —
+    "link",
 )
 
 #: The key a snapshot puts its version under.
