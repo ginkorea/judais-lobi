@@ -754,6 +754,19 @@ class CognitiveState:
           *this receipt* is about that subject; a receipt this store never saw
           is not a receipt, the subject would be born with nothing to project,
           and the log would name an entity its own events cannot explain.
+
+          A consequence worth meeting here rather than in a debugger: a
+          **handle-only receipt cannot be linked**.  The shadow's harvest
+          drops string leaves, so a receipt whose payload is nothing but
+          identifiers (``narrative_discovery`` returning ``job_id=jl-731`` —
+          the design's own motivating first half of "the handle is the join
+          key") harvests no triple, and this door refuses it for exactly the
+          reason above.  The answer is not a synthetic smuggled triple and
+          not a loosened door; it is the attachment layer's declared-scalar
+          sink — harvest the *declared identifier fields themselves* as
+          facts, which gives the receipt something true to hold and this
+          refusal nothing to refuse.  Until that lands, OWED cannot say
+          "handle held", and that is a known bound, not a bug.
         * A subject-spelled ``entity``.  This is the namespace wall, and it
           does two jobs at once: it keeps a receipt from being linked under a
           second spelling, and it makes "a projection never re-projects"
@@ -1115,8 +1128,10 @@ class CognitiveState:
         ``(link, fact)`` pair so that a step which carries *both* a new link
         and new facts on its entity does the work once and in one order.  The
         pairs are enumerated links-first and then facts-first, each in
-        insertion order, which is what makes the two arrival orders produce
-        the same store and not merely the same beliefs.
+        insertion order.  Same-store-not-merely-same-beliefs across arrival
+        orders is owned by ``_derivation_keys`` (the second visit to a pair
+        is a no-op there, with no counter burn and no id drift); the ``seen``
+        set here only spares that lookup the duplicate work within one call.
 
         Three bounds, each stated where it is applied:
 
