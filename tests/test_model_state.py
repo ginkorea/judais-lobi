@@ -28,6 +28,7 @@ behaves badly on purpose, per request, in three different ways.
 
 import asyncio
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -846,13 +847,19 @@ class TestTheServerThatWillNotStopAnswering:
 
     def test_the_detail_says_what_the_harness_watched_go_past(self, endpoint):
         """Not a guess about a server — a count of frames this backend
-        saw. That is the difference between this word and `queued`."""
+        saw. That is the difference between this word and `queued`, so
+        the NUMBERS are asserted and not just the nouns: prose naming
+        frames and characters without them would read the same and mean
+        nothing."""
         run = Recorded()
         self._trickling(endpoint)
         ask(run, self._long(endpoint), stream=True)
         detail = run.seen[0]["detail"]
         assert "still answering" in detail
-        assert "frames" in detail and "characters" in detail
+        frames, chars = re.findall(r"(\d+) frames and (\d+) characters",
+                                   detail)[0]
+        assert 1 <= int(frames) <= self.FRAMES
+        assert int(chars) >= 1
 
     def test_the_closing_record_says_how_much_arrived_in_the_end(self, endpoint):
         run = Recorded()
@@ -903,6 +910,30 @@ class TestTheServerThatWillNotStopAnswering:
         ask(run, self._long(endpoint, streaming_long_s=0.1), stream=True)
         assert state.STREAMING in run.states
         assert run.states[-1] == state.LOADED
+
+    def test_the_detail_states_no_elapsed_time_for_since_s_to_contradict(
+            self, endpoint):
+        """The clock has ONE owner, and re-arming is what proves it must.
+
+        A sentence naming the threshold is right on the first window and
+        wrong on every later one — and every record on the path the
+        re-arm newly enables comes from a later one. Here the call is
+        silent for three windows before it answers, so `since_s` is
+        several times the threshold; prose beside it saying the request
+        went out one threshold ago would be two fields of one record
+        disagreeing about one fact.
+        """
+        endpoint.stall_s = 0.3          # three windows before a frame
+        self._trickling(endpoint)
+        run = Recorded()
+        ask(run, self._long(endpoint, streaming_long_s=0.1), stream=True)
+        record = run.seen[0]
+        assert record["state"] == state.STREAMING
+        assert "ago" not in record["detail"]
+        assert "0.1" not in record["detail"]
+        # And the figure that would have been wrong, on the field that is
+        # entitled to carry it.
+        assert record["since_s"] > 0.2
 
     def test_and_a_call_that_never_starts_is_never_called_streaming(
             self, endpoint):

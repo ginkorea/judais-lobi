@@ -759,6 +759,18 @@ class LocalBackend(Backend):
         opens is closed by :meth:`_stream`, which reports ``loaded`` when
         the frames stop and ``failed`` when they stop because the stream
         died.
+
+        **The detail states no elapsed time**, and that is the re-arming
+        above forcing an honest split rather than a stylistic choice.
+        How long this call has been going is ``since_s``'s to say — the
+        emitter measures it from the request, per call, and is the only
+        thing here that knows which window fired.  A sentence naming
+        :attr:`streaming_long_s` would be right on the first window and
+        wrong on every later one: a call silent for 150s and then
+        trickling reports ``since_s: 180`` beside prose claiming sixty,
+        which is two fields of one record disagreeing about one fact.
+        So the counts — which this backend did watch go past — stay, and
+        the clock has one owner.
         """
         if not progress.arrived:
             return True
@@ -767,8 +779,7 @@ class LocalBackend(Backend):
             state.STREAMING,
             model=progress.model or str(body.get("model")
                                         or self._named_model()),
-            detail=(f"the request went out {self.streaming_long_s:g}s ago "
-                    f"and the model is still answering — {progress.frames} "
+            detail=(f"the model is still answering — {progress.frames} "
                     f"frames and {progress.chars} characters of content so "
                     f"far"))
         return False
