@@ -1784,8 +1784,14 @@ def _mission(elf, args, name, style):
     # on here rather than written back onto `args`, so that what the
     # operator typed stays what the operator typed.
     compiling = bool(getattr(args, "compiled_context", False))
+    # `--swarm-steering` implies `--cognition` for `--compiled-context`'s
+    # reason and by the same arithmetic: the groups are a read of the
+    # shadow's own frontier, so asking for the hint is asking for the
+    # state, and charging an operator for that implementation detail would
+    # be this harness making them type both.
+    steering = bool(getattr(args, "swarm_steering", False))
     shadow = None
-    if getattr(args, "cognition", False) or compiling:
+    if getattr(args, "cognition", False) or compiling or steering:
         if run_store is not None and run_id:
             try:
                 # `resumed` is what makes a short log readable: a resumed
@@ -1802,6 +1808,7 @@ def _mission(elf, args, name, style):
                 shadow = open_shadow(run_store, run_id,
                                      resumed=recorded is not None,
                                      compiling=compiling,
+                                     steering=steering,
                                      cognition_block=(manifest.cognition
                                                       if manifest else None))
             except Exception as exc:
@@ -1820,7 +1827,10 @@ def _mission(elf, args, name, style):
                     + (" — and with no store there is no state to compile, "
                        "so --compiled-context is off with it and this run's "
                        "prompts are the prompts it would have had"
-                       if compiling else ""),
+                       if compiling else "")
+                    + (" — and with no store there is no frontier to "
+                       "partition, so --swarm-steering offers the planner "
+                       "nothing either" if steering else ""),
                     style="yellow")
             else:
                 reasoning_path = run_store.directory(run_id) / REASONING_LOG
@@ -1884,6 +1894,16 @@ def _mission(elf, args, name, style):
                         "nothing: no answer is held, checked or refused "
                         "against it (implies --cognition)",
                         style=style)
+                if steering:
+                    console.print(
+                        "🧭 swarm steering: a STAGED turn's planner is "
+                        "offered the independent groups of what is still "
+                        "owed — the frontier partitioned by what the "
+                        "store's links say is one subject. It is added to "
+                        "the planning turn and decides nothing: no child "
+                        "is forced per group and no plan is refused for "
+                        "ignoring it (implies --cognition)",
+                        style=style)
         else:
             console.print(
                 f"🧩 cognition: asked for and NOT running — there is no run "
@@ -1891,6 +1911,9 @@ def _mission(elf, args, name, style):
                 f"off). The mission runs exactly as it would have"
                 + (" — and with no store there is no state to compile, so "
                    "--compiled-context adds nothing either" if compiling
+                   else "")
+                + (" — and no state means no frontier to partition, so "
+                   "--swarm-steering adds nothing either" if steering
                    else ""),
                 style="yellow")
 
@@ -3054,6 +3077,31 @@ def _main(AgentClass):
                              "it, and a compiler that fails leaves the "
                              "mission exactly as it was (env: "
                              "JUDAIS_LOBI_COMPILED_CONTEXT)")
+    parser.add_argument("--swarm-steering", action="store_true",
+                        default=bool((os.getenv(
+                            "JUDAIS_LOBI_SWARM_STEERING") or "").strip()),
+                        help="Offer a STAGED turn's planner the independent "
+                             "groups of what this run still owes: the "
+                             "frontier partitioned by what the store's own "
+                             "links say is the same subject, so obligations "
+                             "sharing no subject fall in different groups. "
+                             "The planner reads them and plans; the frontier "
+                             "informs and never decides. No child is forced "
+                             "per group, no plan is refused for ignoring it, "
+                             "nothing reaches the supervisor, and a turn "
+                             "that is not staged — or whose frontier has "
+                             "fewer than two independent groups — sends the "
+                             "prompt it would have sent with this off, byte "
+                             "for byte. One bounded block per planning "
+                             "round, replacing nothing because a round "
+                             "builds its prompt fresh; capped at 4 groups "
+                             "and 3 owed lines each, with both overflows "
+                             "named. This IMPLIES --cognition and turns it "
+                             "on rather than refusing, because the groups "
+                             "are computed from that state; a hint that "
+                             "fails stops for the run, writes one note and "
+                             "leaves the mission exactly as it was (env: "
+                             "JUDAIS_LOBI_SWARM_STEERING)")
     parser.add_argument("--no-grounding", action="store_true",
                         default=bool((os.getenv("MISSION_NO_GROUNDING")
                                       or "").strip()),

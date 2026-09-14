@@ -193,9 +193,13 @@ __all__ = [
     "DROP_ORDER",
     "FACTS_HEADING", "FRONTIER_CAPPED", "HYPOTHESES_HEADING", "MORE",
     "OMITTED", "OWED_OMITTED",
-    "OWED_HEADING", "RESOLVABLE", "RESOLVER_CAP", "SECTIONS", "TITLE",
+    "OWED_HEADING", "RESOLVABLE", "RESOLVER_CAP", "SECTIONS",
+    "STEERING_CAPPED", "STEERING_GROUP", "STEERING_GROUPS", "STEERING_LINES",
+    "STEERING_MORE", "STEERING_OVERFLOW", "STEERING_SENTENCE",
+    "STEERING_TITLE", "TITLE",
     "UNGRADED", "VIA", "VIA_CAP", "VIOLATIONS_OMITTED",
-    "CompiledView", "band", "compile_view", "owed_line", "violation_line",
+    "CompiledView", "band", "compile_view", "owed_line", "steering_hint",
+    "violation_line",
 ]
 
 
@@ -345,6 +349,72 @@ KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
 #: would be saying it about nothing at all.
 FRONTIER_CAPPED = ("+ more owed than these — the frontier walk reached the "
                    "store's cap and stopped")
+
+# ── the planner's hint (ROADMAP §2.9.7, Phase 20b) ───────────────────────────
+#
+# A second, much smaller rendering of the same frontier, for one reader: the
+# staged turn's planner, once per planning round. It is not a section of the
+# compiled view and it never rides in a mission step — see
+# `core.runtime.cognition.ShadowCognition.planning_hint`, which is the only
+# caller — and it is here rather than in the runtime because `owed_line` is
+# here and one spelling of an owed line is the whole point of that function.
+
+#: The hint's first words — what a reader (and a test) recognises it by.
+STEERING_TITLE = "INDEPENDENT WORK STILL OWED"
+
+#: The one sentence of the hint that is not a line of the frontier, and the
+#: only place in this module where the shape of the *answer* is discussed.
+#:
+#: **A fact, in the indicative.**  Nothing here says to write a step per
+#: group, to write one at all, or that a plan ignoring this is wrong: the
+#: owner's ruling of 13 September 2026 is that the cognitive layer is shadow
+#: and additive, and a hint in the imperative is the layer planning rather
+#: than reporting.  What it states is a property of the partition the store
+#: computed — the groups share no subject — and the consequence a planner can
+#: draw from it on its own.  The planner is free to ignore every word of it;
+#: there is no path from this string to a rejected plan, and
+#: :meth:`core.runtime.swarm.SwarmRunner._read_plan` has never heard of it.
+STEERING_SENTENCE = (
+    "Nothing in one group shares a subject with anything in another, so "
+    "work drawn from different groups does not depend on work in the rest.")
+
+#: One group's own line.  Numbered from 1, in the order
+#: :meth:`~core.cognition.state.CognitiveState.independent_frontier` gave
+#: them, which is the ranked frontier's order.
+STEERING_GROUP = "group {number}:"
+
+#: How many groups the hint shows.  A cap and not a budget in characters:
+#: what bounds this block is how many *distinct* things it claims can be
+#: worked at once, and a planner told about nine of them is a planner being
+#: handed a plan it could not fit under its own step cap
+#: (:data:`~core.runtime.swarm.MAX_PLAN_STEPS` is 8, and a real ceiling is
+#: usually smaller).  Four is the shape of a staged turn, not a guess about
+#: width.
+STEERING_GROUPS = 4
+
+#: How many owed lines the hint shows **per group**.  A group is named by
+#: what is owed in it, and three lines name it; the rest of the group is
+#: what the group is *for*, and a planner does not need the whole of it to
+#: write one step about it.
+STEERING_LINES = 3
+
+#: What a group with more owed than :data:`STEERING_LINES` says, inside the
+#: group, so the overflow is attached to the thing it overflowed from.
+STEERING_MORE = "+{count} more owed in this group"
+
+#: What the hint says when there were more groups than :data:`STEERING_GROUPS`
+#: — named, and never dropped in silence, which is this repository's rule
+#: about every budget it spends (see :data:`OMITTED`).
+STEERING_OVERFLOW = "+{count} more independent group(s) not shown here"
+
+#: What the hint says when the frontier walk itself stopped short.  It is a
+#: stronger statement than :data:`FRONTIER_CAPPED` makes about the OWED
+#: section and it is deliberately worded that way: an obligation the walk
+#: never reached could have been the one that joined two of these groups, so
+#: a capped walk does not just mean *more* groups, it means the groups shown
+#: may not really be independent.
+STEERING_CAPPED = ("+ the frontier walk reached the store's cap and stopped, "
+                   "so something not shown here may join two of these groups")
 
 #: The five authorities as the four bands a reader is asked to tell apart.
 #: The two model-only authorities below extraction collapse into one word:
@@ -777,6 +847,58 @@ def owed_line(obligation: Obligation,
              else obligation.state.value)
     return (f"owed: {obligation.render()} — for goal {obligation.goal}, "
             f"{where}{_resolvable(obligation, resolvers)}")
+
+
+def steering_hint(groups: Sequence[Sequence[Obligation]],
+                  resolvers: Optional[Mapping[str, Sequence[str]]] = None,
+                  *, max_groups: int = STEERING_GROUPS,
+                  max_lines: int = STEERING_LINES) -> str:
+    """The independent groups of the frontier, as one bounded block.
+
+    *groups* is what
+    :meth:`~core.cognition.state.CognitiveState.independent_frontier`
+    returns.  The result is the block the staged turn's planner is shown
+    once per planning round (ROADMAP §2.9.7), and ``""`` whenever there is
+    nothing a *planner* can do with it: no groups, or one.
+
+    **One group is not a hint.**  A frontier that is all one problem has
+    nothing independent in it, and rendering it here would be the second
+    emitter of the OWED section — which ``--compiled-context`` already owns,
+    in the one place the model reads the frontier as state.  So this returns
+    the empty string, and a run that wanted the frontier in front of its
+    planner asks for the view.
+
+    Bounded twice and **both overflows are named**: :data:`STEERING_GROUPS`
+    groups, :data:`STEERING_LINES` owed lines inside each, with
+    :data:`STEERING_OVERFLOW` and :data:`STEERING_MORE` saying what is not
+    shown.  A walk that was itself cut short adds :data:`STEERING_CAPPED`,
+    which says the stronger thing — that the *independence* is what the cap
+    put in doubt.  The flag is read off the first group, which carries the
+    whole walk's, exactly as ``independent_frontier`` documents.
+
+    Every owed line is :func:`owed_line`'s, so the planner's hint, the
+    compiled view's OWED section and the supervisor's stall sentence quote
+    one another word for word.  *resolvers* travels for the same reason it
+    travels there.
+    """
+    if len(groups) < 2:
+        return ""
+    shown = [group for group in groups[:max(1, int(max_groups))] if group]
+    if len(shown) < 2:
+        return ""
+    lines = [STEERING_TITLE, STEERING_SENTENCE]
+    for number, group in enumerate(shown, start=1):
+        lines.append(STEERING_GROUP.format(number=number))
+        kept = list(group)[:max(1, int(max_lines))]
+        lines.extend(f"  {owed_line(item, resolvers)}" for item in kept)
+        if len(group) > len(kept):
+            lines.append("  " + STEERING_MORE.format(
+                count=len(group) - len(kept)))
+    if len(groups) > len(shown):
+        lines.append(STEERING_OVERFLOW.format(count=len(groups) - len(shown)))
+    if getattr(groups[0], "truncated", False):
+        lines.append(STEERING_CAPPED)
+    return "\n".join(lines)
 
 
 def violation_line(violation: Violation) -> str:

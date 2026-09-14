@@ -134,7 +134,9 @@ class Arm:
 #: builds; each was declared here **before** it existed so that the table
 #: has its column from the first run and the column says SKIPPED until the
 #: flag lands, rather than appearing one day with no history behind it.
-#: Two have since landed and neither needed a line changed here.
+#: Two have since landed and neither needed a line changed here, and the
+#: fourth (``swarm-steering``) was added the day its flag was published —
+#: which is the same graduation read from the other end.
 ARMS: Tuple[Arm, ...] = (
     Arm(
         name="baseline",
@@ -166,6 +168,20 @@ ARMS: Tuple[Arm, ...] = (
         why="ROADMAP §2.9.7: the graph working set, which is conditional "
             "on Phase 19 reading positive. Declared now, skipped until "
             "the flag exists",
+    ),
+    Arm(
+        name="swarm-steering",
+        flags=("--swarm-steering",),
+        why="ROADMAP §2.9.7: the derived swarm's first half — a staged "
+            "turn's planner is offered the independent groups of what is "
+            "still owed, and plans whatever it plans. The question this "
+            "arm answers is whether a planner told what does NOT depend on "
+            "what writes a better plan. It is a CONDITIONAL reading: the "
+            "delta can only show on a mission the router staged and whose "
+            "frontier had two independent groups, so a suite of direct "
+            "missions will report this arm as a faithful null. Which "
+            "missions those were is the suite's business and not this "
+            "table's",
     ),
 )
 

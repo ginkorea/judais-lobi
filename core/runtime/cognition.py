@@ -312,7 +312,8 @@ from core.cognition import (BUDGET_CHARS, CARDINALITIES, CONSTRAINT_KEYS,
                             SOLVER_EXTRA, Violation, check_constraints,
                             check_pattern, compile_view, deep_copy, have_z3,
                             needs_solver, owed_line, parse_constraint,
-                            solver_names, subject_entity)
+                            solver_names, steering_hint,
+                            STEERING_GROUP, subject_entity)
 
 from core.durable import fsync_append
 from core.runtime.declarations import DECLARATIONS_KEY as _DECLARATIONS_KEY
@@ -334,6 +335,7 @@ __all__ = [
     "read_reasoning", "replay_reasoning",
     "UNWATCHED_NOTE", "Progress",
     "UNCHECKED_NOTE", "UNSOLVED_NOTE", "VIOLATION_NOTE",
+    "STEERING_NOTE", "UNSTEERED_NOTE",
 ]
 
 #: The shadow's file, in the run directory beside ``events.jsonl``.
@@ -447,6 +449,27 @@ UNSOLVED_NOTE = ("a constraint needs the solver and this box has none, so "
 #: is the store this run held, and a violation is a statement *about* that
 #: store rather than part of it.
 VIOLATION_NOTE = "a constraint the skill's pack declared does not hold"
+
+#: **Not a failure**: one line each time the staged turn's planner was
+#: offered the frontier's independent groups (ROADMAP §2.9.7, Phase 20b).
+#: One per *offer* — a turn plans once and re-plans rarely, so this is a
+#: handful of lines in the longest mission — and it carries how many groups
+#: the store found against how many the hint showed, because those are two
+#: different numbers whenever the cap bit and a reader asking "what was the
+#: planner actually told" needs both.
+#:
+#: A note and not a kernel event, for :data:`VIOLATION_NOTE`'s reason: what
+#: the planner was shown is a statement *about* the store, not part of it,
+#: and a replay of this log must rebuild the store this run held.
+STEERING_NOTE = "the planner was offered the frontier's independent groups"
+
+#: The eighth note: the planning hint raised, so the planner stops being
+#: offered anything for the rest of the run.  Its own sentence and its own
+#: switch, for :data:`UNWATCHED_NOTE`'s reason one reader further on — the
+#: narrowest failure in this module, because what stops is one optional
+#: paragraph in one prompt of one kind of turn.
+UNSTEERED_NOTE = ("the planner's steering hint stopped; the harvest "
+                  "continued and the mission was not told")
 
 
 #: The other note, and it is not an error: this log begins at a resume, so
@@ -1403,7 +1426,7 @@ class ShadowCognition:
                  written: int = 0, compiling: bool = False,
                  budget_chars: int = BUDGET_CHARS,
                  noted: Sequence[Tuple[str, str]] = (),
-                 unsolved: bool = False) -> None:
+                 unsolved: bool = False, steering: bool = False) -> None:
         #: Where the log is.
         self.path = Path(path)
         #: The run whose receipts these are — the first term of every
@@ -1479,6 +1502,18 @@ class ShadowCognition:
         self.watched = 0
         #: How many times :meth:`progress` raised.  Never more than one.
         self.watch_failures = 0
+        #: Whether a staged turn's planner is offered this run's independent
+        #: frontier — ``--swarm-steering``.  **Off unless somebody asked**,
+        #: and the second switch in this package that changes a prompt; it
+        #: is :attr:`compiling`'s sibling in every way, including that a
+        #: failure turns it off and leaves everything else running.
+        self.steering = bool(steering)
+        #: How many hints were handed to a planner.  Not one per step: a
+        #: turn plans once and re-plans rarely.
+        self.steers = 0
+        #: How many times :meth:`planning_hint` raised.  Never more than
+        #: one: the first one stops the hint for the rest of the run.
+        self.steer_failures = 0
         #: What the plane this run connected to declares about what its
         #: tools return — a
         #: :class:`core.runtime.declarations.PlaneDeclarations`, or ``None``
@@ -1802,6 +1837,81 @@ class ShadowCognition:
             return Progress(frontier=digest, obligations=len(frontier),
                             contradictions=clashes, propositions=held,
                             owed=top)
+
+    def planning_hint(self) -> str:
+        """What a staged turn's planner is offered, or ``""``.  Never raises.
+
+        ROADMAP §2.9.7's *derived swarm*, in the only form this phase
+        builds: the frontier's independent groups
+        (:meth:`~core.cognition.state.CognitiveState.independent_frontier`),
+        rendered by :func:`~core.cognition.compile.steering_hint` under its
+        own two caps, handed to
+        :meth:`core.runtime.swarm.SwarmRunner._plan` as one more paragraph
+        of its user turn.
+
+        **Advisory, and the word is meant literally.**  The planner reads
+        it and writes whatever plan it writes.  There is no path from this
+        string to a rejected plan — :meth:`~core.runtime.swarm.SwarmRunner
+        ._read_plan` validates ids, rungs and dependencies and has never
+        heard of a group — no child is forced per group, nothing here
+        reaches the supervisor, and a run whose hint is empty plans the
+        prompt it would have planned with the flag off, byte for byte.
+
+        ``""`` for every reason there is not to have one, and the caller
+        cannot tell them apart because none of them is its business:
+        ``--swarm-steering`` is off, cognition stopped, the hint stopped,
+        the store has fewer than two independent groups, or this read
+        raised.
+
+        **One note per offer**, which is the one thing this method writes.
+        A turn plans once and re-plans on a failure, so the log gains a
+        handful of lines rather than one a step — and the note carries what
+        the store found *and* what the hint showed, because the cap makes
+        those two numbers and a reader of the log is entitled to both.
+
+        **Called between planning rounds, not at a step boundary**, so
+        unlike :meth:`compiled_block` and :meth:`progress` this one may
+        find events staged — the planner runs before the turn's first
+        child has taken a receipt, and after a child has closed its own
+        step.  The kernel's own read-flushes-first rule handles it: the
+        frontier read derives, and whatever that appends is written by the
+        next :meth:`close_step` exactly as if this call had not happened.
+        """
+        if not self.on or not self.steering:
+            return ""
+        with self._lock:
+            try:
+                groups = self.state.independent_frontier()
+                text = steering_hint(groups, self.resolvers())
+            except Exception as exc:            # noqa: BLE001 - the point
+                self._unsteered(exc)
+                return ""
+            if not text:
+                return ""
+            self.steers += 1
+            # Counted off the rendered text through the renderer's OWN
+            # spelling of a group line, rather than by re-applying its cap
+            # here: the cap is `core.cognition.compile`'s and a second
+            # piece of arithmetic agreeing with it today is the one that
+            # disagrees with it after the constant moves.
+            rendered = set(text.splitlines())
+            shown = sum(1 for number in range(1, len(groups) + 1)
+                        if STEERING_GROUP.format(number=number) in rendered)
+            try:
+                fsync_append(self.path, canonical({
+                    NOTE_KEY: STEERING_NOTE,
+                    "groups": len(groups),
+                    "shown": shown,
+                    "written": self._written,
+                }))
+            except Exception:                   # pragma: no cover
+                # A note that could not be written must not cost a mission —
+                # and must not cost the HINT either: the planner is already
+                # being handed this text, and throwing it away because a
+                # disk refused a line of bookkeeping would make the model's
+                # input a function of the log's health.
+                pass
+            return text
 
     # ── the inside ──────────────────────────────────────────────────────
 
@@ -2180,6 +2290,27 @@ class ShadowCognition:
         except Exception:                           # pragma: no cover
             pass
 
+    def _unsteered(self, exc: BaseException) -> None:
+        """The planner's hint is over for this run; everything else runs.
+
+        The narrowest failure in this module, one step past
+        :meth:`_unwatched`: what stops is one optional paragraph offered to
+        one kind of turn, at one moment in it.  The store goes on believing,
+        the view goes on being compiled, the supervisor goes on being
+        watched, and the staged turn plans the prompt it would have planned
+        with the flag off.
+        """
+        self.steer_failures += 1
+        self.steering = False
+        try:
+            fsync_append(self.path, canonical({
+                NOTE_KEY: UNSTEERED_NOTE,
+                "error": f"{type(exc).__name__}: {exc}",
+                "written": self._written,
+            }))
+        except Exception:                           # pragma: no cover
+            pass
+
     def _stopped(self, exc: BaseException) -> None:
         """Cognition is over for this run, and the log says so.
 
@@ -2205,12 +2336,14 @@ class ShadowCognition:
 def open_shadow(store: Any, run_id: str, *,
                 resumed: bool = False, compiling: bool = False,
                 budget_chars: int = BUDGET_CHARS,
-                cognition_block: Any = None) -> ShadowCognition:
+                cognition_block: Any = None,
+                steering: bool = False) -> ShadowCognition:
     """The shadow for *run_id* in *store*: a new one, or the one on disk.
 
     *store* is a :class:`core.durable.RunStore`; it is asked for the run's
     directory and nothing else.  *compiling* and *budget_chars* are
-    ``--compiled-context`` and its cap, carried straight onto the object on
+    ``--compiled-context`` and its cap, and *steering* is
+    ``--swarm-steering``; all three are carried straight onto the object on
     both paths below — a door that resolved them on one path only is a
     resumed run that quietly stopped showing the model its own view.  The
     one door, so that "does this run already have a reasoning log?" is
@@ -2264,7 +2397,12 @@ def open_shadow(store: Any, run_id: str, *,
     """
     directory = Path(store.directory(run_id))
     path = directory / REASONING_LOG
-    view = {"compiling": compiling, "budget_chars": budget_chars}
+    # The three prompt-facing switches, resolved ONCE and carried onto both
+    # paths below. A door that resolved them on the fresh path only is a
+    # resumed run that quietly stopped showing the model its own view — and
+    # would now quietly stop offering its planner the frontier as well.
+    view = {"compiling": compiling, "budget_chars": budget_chars,
+            "steering": steering}
     if path.exists():
         header, events, notes = read_reasoning(path)
         # Through `_state_of`, which exists so that "what version was this

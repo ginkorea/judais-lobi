@@ -2214,6 +2214,116 @@ class CognitiveState:
                     key=lambda pair: (len(pair[1].depends_on), pair[0]))),
             truncated=computed.truncated)
 
+    def independent_frontier(self) -> Tuple[Frontier, ...]:
+        """The ranked frontier, partitioned into groups that share nothing.
+
+        ROADMAP §2.9.7's *derived swarm*, read as a question rather than as
+        machinery: **which of the things still owed could be worked at the
+        same time without two workers being about the same thing?**  Two
+        obligations land in one group when anything joins them, and in two
+        groups when nothing does.  Three things join them, and all three are
+        facts this store already holds — none of them is a heuristic and
+        none of them is a second spelling of an identity the kernel owns:
+
+        * **a dependency** — an obligation that names another in
+          :attr:`~core.cognition.types.Obligation.depends_on` is not
+          independent of it, and the whole chain is one group.  Only
+          dependencies still *on* the frontier count: one already resolved
+          is not something anybody has to wait for;
+        * **a shared name** — two obligations whose ground terms overlap are
+          about the same thing.  The entity position is a name by
+          construction; the value position counts only where the store
+          actually **knows** the term as a name (it holds propositions about
+          it, or a link mentions it), because ``"ok"`` appearing as the
+          value of two unrelated fields is a coincidence and joining on it
+          would report one group where there are two.  The *field* position
+          is never a join key: two jobs' ``status`` are two problems;
+        * **a link** — :meth:`link` is what says a receipt entity and a
+          subject are one thing, so an obligation about ``mcp.jobs#r3`` and
+          one about ``job:jl-731`` are one group when a link joins them.
+          The join goes through :attr:`_links` and nowhere else: the kernel
+          owns what a subject is, and a partition that re-derived identity
+          from a naming convention would be the second owner of that fact.
+
+        Order is :meth:`ranked_frontier`'s, twice over: the groups come in
+        the order their best member does, and the members of each come in
+        the order the ranking gave them.  So the first group leads with the
+        cheapest true thing to do next and a reader who takes one group has
+        taken the one :meth:`next_obligation` would have started with.
+
+        Pure, bounded and deterministic: the walk is over a frontier that is
+        already bounded by :data:`ENV_CAP`, and it decides nothing.  Every
+        group carries the whole walk's
+        :attr:`~core.cognition.types.Frontier.truncated` flag rather than
+        one of its own, and that is the honest reading rather than a
+        convenience: an obligation the join stopped short of could have been
+        the one that joined two of these groups into one, so a truncated
+        walk makes **independence itself** the thing that is not proven.
+        A consumer of this is advisory by construction; a consumer that
+        wanted a proof would have to read that flag and stop.
+
+        ``()`` for an empty frontier — no groups rather than one empty one,
+        because "nothing is owed" is not a group of work.
+        """
+        ranked = self.ranked_frontier()
+        if not ranked:
+            return ()
+        parent: Dict[Any, Any] = {}
+
+        def find(key: Any) -> Any:
+            parent.setdefault(key, key)
+            root = key
+            while parent[root] != root:
+                root = parent[root]
+            while parent[key] != root:      # path compression, iterative
+                parent[key], key = root, parent[key]
+            return root
+
+        def union(one: Any, other: Any) -> None:
+            left, right = find(one), find(other)
+            if left != right:
+                parent[right] = left
+
+        # A link is the store's own statement that two names are one thing.
+        for link in self._links.values():
+            union(("term", link.entity), ("term", link.subject))
+        present = {item.id for item in ranked}
+        for item in ranked:
+            mine = ("obligation", item.id)
+            find(mine)
+            for term in self._names_in(item.pattern):
+                union(mine, ("term", term))
+            for other in item.depends_on:
+                if other in present:
+                    union(mine, ("obligation", other))
+        grouped: Dict[Any, List[Obligation]] = {}
+        for item in ranked:
+            grouped.setdefault(find(("obligation", item.id)), []).append(item)
+        return tuple(Frontier(members, truncated=ranked.truncated)
+                     for members in grouped.values())
+
+    def _names_in(self, pattern: Sequence[Any]) -> List[str]:
+        """The terms of *pattern* that name something, for the join above.
+
+        The entity term when it is ground — that position names an entity by
+        construction — and the value term when it is ground **and the store
+        knows it**: a value is a name only where something in here is about
+        it, which is the difference between two obligations about
+        ``job:jl-731`` and two obligations that both happen to be waiting
+        for the string ``"ok"``.
+        """
+        entity, _field, value = tuple(pattern)
+        out: List[str] = []
+        if isinstance(entity, str) and not is_variable(entity):
+            out.append(entity)
+        if (isinstance(value, str) and not is_variable(value)
+                and value not in out
+                and (value in self._by_entity
+                     or value in self._links_by_entity
+                     or value in self._links_by_subject)):
+            out.append(value)
+        return out
+
     def next_obligation(self) -> Optional[Obligation]:
         """The cheapest true thing to do next, or ``None``.
 
