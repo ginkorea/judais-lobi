@@ -126,7 +126,8 @@ CONFORMANCE: Dict[str, Any] = {
               "--temperature", "--top-p", "--seed", "--protocol",
               "--no-stream", "--gate-wait", "--replay", "--grant",
               "--campaign", "--campaign-plan", "--no-grounding",
-              "--cognition", "--compiled-context", "--swarm-steering",
+              "--cognition", "--compiled-context", "--graph-context",
+              "--swarm-steering",
               "--version"),
 
     # The environment this platform exports into the child.
@@ -143,7 +144,7 @@ CONFORMANCE: Dict[str, Any] = {
             "JUDAIS_LOBI_RUNS", "JUDAIS_LOBI_APPROVALS",
             "JUDAIS_LOBI_MEMORY", "JUDAIS_LOBI_MEMORY_PRINCIPAL",
             "JUDAIS_LOBI_COGNITION", "JUDAIS_LOBI_COMPILED_CONTEXT",
-            "JUDAIS_LOBI_SWARM_STEERING"),
+            "JUDAIS_LOBI_GRAPH_CONTEXT", "JUDAIS_LOBI_SWARM_STEERING"),
 
     # The outcome words this platform branches on. A word it has no branch for
     # renders as whatever its default arm does, which for `budget_exhausted`
