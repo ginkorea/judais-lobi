@@ -38,6 +38,17 @@ class UnifiedClient:
 
     def chat(self, model: str, messages: List[Dict[str, Any]], stream: bool = False,
              **kwargs: Any):
+        """Forward to the routed backend, keywords and all.
+
+        Including ``json_schema=``, which every backend takes and answers
+        for itself: the ones declaring
+        ``capabilities.supports_json_schema`` put it in the request, the
+        ones that do not raise
+        :class:`~core.runtime.backends.base.UndeclaredCapability` at their
+        own door. Nothing is decided here — this class is a router, and a
+        second opinion about a capability is how two answers to one
+        question start to disagree.
+        """
         return self._backend.chat(model, messages, stream, **kwargs)
 
     @property

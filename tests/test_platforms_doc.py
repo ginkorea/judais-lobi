@@ -131,6 +131,13 @@ NOT_A_MISSION_FLAG = {
                 "developer's and a CI job's tool. Nothing spawns a mission "
                 "with it and no wire carries it, so it is not part of the "
                 "contract the same way --suite, --runs and --out are not",
+    "--constrained": "the same subcommand's (§9). It turns on constrained "
+                     "decoding for the extraction instrument's own calls — a "
+                     "library-and-backend seam (BackendCapabilities."
+                     "supports_json_schema), not a mission one: no mission "
+                     "reads it, no event carries it, and a platform that "
+                     "wants a grammar on a mission is asking for a feature "
+                     "that does not exist yet rather than for this flag",
 }
 
 #: Same, for environment variables, and scoped to the families this repository

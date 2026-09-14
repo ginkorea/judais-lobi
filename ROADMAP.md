@@ -1154,6 +1154,18 @@ experiment's own ordering on rc evidence.
   constrained decoding where the backend supports it (`vLLM`/`SGLang` class).
   The cheapest local-model amplifier on the board; it attacks the parse/retry
   failure class we have already watched a 20B produce.
+  **First half landed**, for the one operation that already has a measured
+  output language: `BackendCapabilities.supports_json_schema` is a declared
+  capability with a refusing door (`local` and `openai` declare it,
+  `mistral` and `anthropic` declare its absence with a reason), and
+  `core.eval extraction --constrained` compiles that instrument's own status
+  vocabulary and proposition keys into the schema it sends
+  (`core.eval.extraction.proposition_schema`, one owner with the validator).
+  The **lift is owed as a measurement, not assumed**: a constrained and an
+  unconstrained run of the same model are two experiments and the report's
+  identity and prompt fingerprint say which. What remains of this bullet is
+  the other operations — entity ids and the obligation vocabulary — and a
+  grammar on the mission path, which is not built.
 
 Exit: measured token and model-call reduction without success regression;
 structural-failure rate falls substantially; information-loss failures

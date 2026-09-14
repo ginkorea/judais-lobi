@@ -362,6 +362,8 @@ class LocalBackend(Backend):
         messages: List[Dict],
         stream: bool = False,
         max_tokens: Optional[int] = None,
+        *,
+        json_schema: Any = None,
         **extra: Any,
     ):
         """POST ``{base}/chat/completions``.
@@ -376,6 +378,12 @@ class LocalBackend(Backend):
         ``tool_choice``, ``parallel_tool_calls`` and ``response_format``
         reach an OpenAI-compatible server.
 
+        ``json_schema`` is the constrained decode, and it goes through
+        :meth:`~core.runtime.backends.base.Backend.constrained_response_format`
+        rather than through ``**extra``: the door checks the capability
+        and builds the envelope, and what comes back is written into the
+        body as ``response_format``.  Nothing is added when it is absent.
+
         WHAT THE CALLER SENDS DECIDES WHAT COMES BACK.  Native tool calls
         are always reported on :attr:`last_tool_calls`, whatever was
         asked.  What changes is the ``str`` this returns: by default a
@@ -387,6 +395,10 @@ class LocalBackend(Backend):
         ``tool_choice="required"`` or ``parallel_tool_calls=True``; see
         :meth:`_speaking_native`.
         """
+        # Asked BEFORE anything is cleared or sent: a schema this backend
+        # may not be asked for is a refusal about the request, not a call
+        # that happened.
+        constrained = self.constrained_response_format(json_schema)
         # Cleared before anything is sent: a call that raises must not
         # leave the previous call's numbers — or its tool calls — standing
         # for a ledger to count, or a runner to dispatch, a second time.
@@ -407,6 +419,14 @@ class LocalBackend(Backend):
         if limit is not None:
             body["max_tokens"] = limit
         body.update(extra)
+        if constrained is not None:
+            # AFTER the passthrough, so the typed argument wins over a
+            # `response_format` somebody also wrote into `**extra` — the
+            # same rule the rest of this repo reads a typed flag by. Two
+            # of them is a caller contradicting itself, and the one that
+            # went through the capability door is the one that was
+            # checked.
+            body["response_format"] = constrained
 
         # The request exists; nothing has been sent yet. `asking` never
         # reaches the wire — see `state.WAITING` — and what it does here
@@ -847,6 +867,24 @@ class LocalBackend(Backend):
         cannot outrun it: a server told it does not speak ``tools`` must
         not be reported as speaking a constrained form of them.
 
+        ``supports_json_schema`` is declared ``True``, and it is the one
+        declaration here that comes with an honest degradation.  Every
+        server this backend exists for speaks it — vLLM, SGLang and
+        TensorRT-LLM all take ``response_format={"type": "json_schema",
+        …}`` and hold the decode to the grammar — but a *different*
+        OpenAI-compatible server may accept the parameter and ignore it,
+        and no field of ``GET /models`` says which kind is listening.
+        There is no probe to run, so the promise this flag makes is
+        narrow: **the request will carry the schema**, not that the
+        endpoint honoured it.  A server that ignores it answers
+        unconstrained, and the CONSUMER's validator is what catches that
+        — see :mod:`core.eval.extraction`, whose ``--constrained`` run
+        counts a structurally invalid reply and says in the report that
+        the endpoint likely ignored the schema.  Declaring ``False`` to
+        avoid the case would refuse the servers the capability was built
+        for; declaring ``True`` and leaving the check downstream is the
+        arrangement that can tell the two apart.
+
         ``tool_choice="required"`` is the one of the two that was actually
         PROBED — 10 Aug 2026, vLLM 0.14.1 serving ``openai/gpt-oss-20b``,
         which returned a well-formed native call with ``content`` null.
@@ -865,6 +903,7 @@ class LocalBackend(Backend):
         return BackendCapabilities(
             supports_streaming=True,
             supports_json_mode=True,
+            supports_json_schema=True,
             supports_tool_calls=self._supports_tool_calls,
             supports_parallel_tool_calls=self._supports_tool_calls,
             supports_tool_choice_required=self._supports_tool_calls,

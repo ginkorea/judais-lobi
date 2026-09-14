@@ -194,6 +194,89 @@ class TestCLISmoke:
 
 
 
+class TestTheBinarySaysWhatItIs:
+    """`--version`, and the one rule it is built on.
+
+    Reported from the reference platform: operators identified a deployed
+    checkout with `pip show`, which answers for a NAME and not for the
+    thing on `PATH` — on a host where a source tree shadows an install
+    those are two different answers, and a platform that pins a release
+    could not ask the binary which release it got. So the flag reads the
+    metadata the installer wrote (the same source `pip show` reads) and,
+    where there is none, says so in words. **Never a number out of the
+    source tree**: `setup.py` is sitting right there, and reading it would
+    answer "what does this source say" to somebody who asked "what is
+    deployed here".
+    """
+
+    def _elf(self):
+        return TestCLISmoke()._make_mock_elf_class()
+
+    @patch("sys.argv", ["test", "--version"])
+    def test_it_prints_the_installed_version_and_exits_zero(self, capsys):
+        from importlib.metadata import version
+
+        from core.cli import DISTRIBUTION, _main
+
+        MockClass, _mock_elf = self._elf()
+        assert _main(MockClass) is None, "a version query is not a failure"
+        printed = capsys.readouterr().out.strip()
+        assert printed == f"{DISTRIBUTION} {version(DISTRIBUTION)}", (
+            "the version is the installer's answer, read back — not a "
+            "string typed into this repository")
+        MockClass.assert_not_called()
+
+    def test_the_number_comes_from_the_metadata_and_nowhere_else(
+            self, monkeypatch, capsys):
+        """The test above would still pass if somebody typed the current
+        version into this module as a string — it happens to be the same
+        number. This one cannot: the metadata is made to answer something
+        no source file in this tree contains, and that is what must be
+        printed."""
+        from importlib import metadata
+
+        from core.cli import _main
+
+        monkeypatch.setattr(metadata, "version", lambda _name: "0.0.0-probe")
+        MockClass, _mock_elf = self._elf()
+        with patch("sys.argv", ["test", "--version"]):
+            assert _main(MockClass) is None
+        assert "0.0.0-probe" in capsys.readouterr().out
+
+    @patch("sys.argv", ["test", "--version"])
+    def test_it_needs_no_message_and_builds_no_agent(self):
+        """The question is about the install, so it must not be answered
+        with a usage error about a positional nobody typed — which is what
+        `judais --version` did before this flag existed: exit 2."""
+        from core.cli import _main
+
+        MockClass, _mock_elf = self._elf()
+        assert _main(MockClass) is None
+        MockClass.assert_not_called()
+
+    def test_an_uninstalled_checkout_says_so_rather_than_guessing(
+            self, monkeypatch):
+        from importlib import metadata
+
+        from core.cli import UNINSTALLED, installed_version
+
+        def absent(_name):
+            raise metadata.PackageNotFoundError("judais-lobi")
+
+        monkeypatch.setattr(metadata, "version", absent)
+        answer = installed_version()
+        assert answer == UNINSTALLED
+        assert "uninstalled checkout" in answer
+        assert not any(ch.isdigit() for ch in answer), (
+            "a fallback carrying a number is a guess wearing a version's "
+            "clothes")
+
+    def test_the_flag_is_published(self):
+        from core.runtime import contract as c
+
+        assert "--version" in c.CLI_FLAGS
+
+
 class TestAnUnreachableServerIsANonZeroExit:
     """The `silence` clause of `EXIT_CONTRACT`, honoured on the one channel
     a consumer can read when there is no stream to read.

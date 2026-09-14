@@ -20,6 +20,15 @@ ignore.  The tool calls stay **plain dicts** rather than a class of their
 own so that the runtime never has to import a backend type to read a
 decision — the seam between the two halves of this repo is data.
 
+One thing that is asked *before* a call rather than read after it has a
+door of its own here: :meth:`Backend.constrained_response_format`, which
+turns a caller's ``json_schema=`` into the request a backend that
+declares :attr:`BackendCapabilities.supports_json_schema` sends, and
+raises :class:`UndeclaredCapability` on one that does not.  Refusing
+rather than dropping, for the reason ``--protocol native`` is refused at
+the CLI's door: a caller that asked for a constrained decode and quietly
+got prose would report the run as the thing it was not running.
+
 That distinction is the whole design of :class:`Usage`.  The only token
 number in this tree before it was ``core.context.formatter.estimate_tokens``
 — characters over four — which exists to keep a prompt inside a context
@@ -336,6 +345,24 @@ class ToolCallAccumulator:
 class BackendCapabilities:
     supports_streaming: bool = True
     supports_json_mode: bool = False
+    #: Whether the provider takes a **JSON schema it enforces while
+    #: decoding** — ``response_format={"type": "json_schema", …}`` on the
+    #: OpenAI-compatible surface, which is what vLLM, SGLang and
+    #: TensorRT-LLM put behind that parameter and what the hosted OpenAI
+    #: API calls structured outputs.  Wider than
+    #: :attr:`supports_json_mode`, which promises only that the reply will
+    #: be *some* JSON: this one promises the reply will be JSON of the
+    #: shape the caller handed over, so a parse failure and an
+    #: out-of-vocabulary status word become unrepresentable rather than
+    #: merely unlikely — ROADMAP §2.9.5's grammar compiler, as a
+    #: capability.
+    #:
+    #: Asked at the door by :meth:`Backend.constrained_response_format`,
+    #: which REFUSES a schema a backend has not declared rather than
+    #: dropping it: a caller that asked for a constrained decode and
+    #: silently got an unconstrained one would measure, and report, a
+    #: thing it was not running.
+    supports_json_schema: bool = False
     supports_tool_calls: bool = False
     #: Whether the provider honours ``parallel_tool_calls`` — more than one
     #: native call in a single reply.  Separate from
@@ -350,6 +377,84 @@ class BackendCapabilities:
     supports_tool_choice_required: bool = False
     max_context_tokens: int | None = None
     max_output_tokens: int | None = None
+
+
+#: The three keys a ``json_schema=`` argument carries.  ``name`` is what
+#: the provider files the grammar under and what comes back in its logs;
+#: ``schema`` is a plain JSON Schema object; ``strict`` is whether the
+#: server must hold the decode to it rather than treat it as a hint.
+JSON_SCHEMA_KEYS = ("name", "schema", "strict")
+
+#: ``strict`` when the caller did not say.  True because a schema that is
+#: only a suggestion is not the capability this door is about — a caller
+#: wanting the hint can pass ``strict`` False and say so.
+DEFAULT_STRICT = True
+
+
+class UndeclaredCapability(RuntimeError):
+    """A backend was asked for something its capabilities do not declare.
+
+    Raised rather than downgraded.  The rule is the one
+    :mod:`core.cli` states at its own door for ``--protocol native``: a
+    run that asked for a constrained decoder and silently got an
+    unconstrained one is MEASURED as the protocol it was not running,
+    which is the single outcome an experiment must not produce.  So the
+    ask fails, by name, before anything is sent.
+    """
+
+
+def json_schema_request(json_schema: Any) -> Dict[str, Any]:
+    """A caller's ``json_schema=`` as the ``json_schema`` body of a request.
+
+    The envelope is ``{"name": str, "schema": {...}}`` with an optional
+    ``strict``, and an **envelope rather than a bare schema** on purpose:
+    the OpenAI-compatible surface files a grammar under a name, that name
+    is what appears in a server's own logs beside the request, and a name
+    invented here would be a different one on every deployment.  Nothing
+    is guessed — an argument that is not that shape is refused with what
+    it is missing, because a schema that reached the wire malformed comes
+    back as somebody else's 400 an hour later.
+
+    Keys outside the three are refused rather than forwarded, and the
+    reason is **not** that no provider reads them — OpenAI's own
+    ``json_schema`` object takes a ``description`` as well.  It is that
+    this envelope is what EVERY backend declaring the capability has to
+    be able to send: a key passed through here is a promise about all of
+    them, so the set widens deliberately, in a commit that says which
+    backends honour the new key, and never by whatever a caller happened
+    to spell.  The narrowing also catches the misspelling — the reason a
+    probe's ``expect`` block refuses unknown keys in
+    :mod:`core.eval.extraction` — since a constraint that silently does
+    not apply is the failure mode both are guarding.
+    """
+    if not isinstance(json_schema, Mapping):
+        raise ValueError(
+            f"json_schema= takes a mapping "
+            f"{{{', '.join(JSON_SCHEMA_KEYS)}}}, not a "
+            f"{type(json_schema).__name__}")
+    unknown = sorted(set(json_schema) - set(JSON_SCHEMA_KEYS))
+    if unknown:
+        raise ValueError(
+            f"json_schema= carries {unknown}, which this door does not "
+            f"pass on; it takes {list(JSON_SCHEMA_KEYS)}. The envelope is "
+            f"narrowed on purpose — a provider may accept more (OpenAI's "
+            f"`description`, for one) and every key added here has to be "
+            f"true of every backend that declares the capability, so it "
+            f"is widened deliberately rather than by whatever a caller "
+            f"happened to pass")
+    name = json_schema.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(
+            "json_schema= needs a `name`: it is what the server files the "
+            "grammar under and what its own logs say beside the request")
+    schema = json_schema.get("schema")
+    if not isinstance(schema, Mapping) or not schema:
+        raise ValueError(
+            "json_schema= needs a non-empty `schema`: an empty one "
+            "constrains nothing and would be reported as a constrained run")
+    strict = json_schema.get("strict", DEFAULT_STRICT)
+    return {"name": name.strip(), "schema": dict(schema),
+            "strict": bool(strict)}
 
 
 @dataclass
@@ -500,6 +605,46 @@ class Backend(ABC):
     @property
     @abstractmethod
     def capabilities(self) -> BackendCapabilities: ...
+
+    # ── the door a constrained decode is asked through ───────────────────
+
+    def constrained_response_format(
+            self, json_schema: Any) -> Optional[Dict[str, Any]]:
+        """The ``response_format`` for *json_schema*, or ``None`` for none.
+
+        **The door, written once.**  Every backend below takes a
+        ``json_schema=`` argument and starts by calling this, so the
+        refusal sentence, the envelope's shape and the answer to "may this
+        backend be asked at all" have one owner rather than four that will
+        drift.  ``None`` in means ``None`` out and the request this
+        backend has always sent is still the request it sends.
+
+        The shape returned is the **OpenAI-compatible** one —
+        ``{"type": "json_schema", "json_schema": {"name", "schema",
+        "strict"}}`` — which is what every backend in this tree that
+        declares :attr:`BackendCapabilities.supports_json_schema` speaks,
+        hosted and local alike.  A provider that expressed the same
+        capability differently would override this method; the two here
+        that would have to (Anthropic's ``output_config``, and Mistral's
+        own vocabulary) are exactly the two that declare ``False``, and a
+        declaration is the honest place for that difference to live.
+
+        Where it goes afterwards is the backend's, because it differs:
+        a keyword argument to the SDK's ``create`` on one, a key in the
+        JSON body on the other.  Same dict, two placements.
+        """
+        if json_schema is None:
+            return None
+        if not self.capabilities.supports_json_schema:
+            raise UndeclaredCapability(
+                f"json_schema=: this backend ({self.provider_name or '?'}) "
+                f"does not declare supports_json_schema, so a schema sent "
+                f"to it would not constrain the decode. Drop the schema, or "
+                f"ask a backend that declares it — a run that fell back to "
+                f"unconstrained decoding would be reported as the "
+                f"constrained run it was not.")
+        return {"type": "json_schema",
+                "json_schema": json_schema_request(json_schema)}
 
     @abstractmethod
     def chat(self, model: str, messages: List[Dict], stream: bool = False):

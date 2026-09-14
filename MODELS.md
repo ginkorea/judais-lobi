@@ -19,10 +19,27 @@ process document that overclaims is worse than none.
 Any OpenAI-compatible endpoint works: `--provider local --model <name>`
 against vLLM, SGLang, or equivalent (hosted `openai`, `mistral` and
 `anthropic` providers are the same door). The backend carries a capability
-declaration — `supports_streaming`, `supports_tool_calls`,
-`supports_tool_choice_required` (`core/runtime/backends/base.py`) — and the
-runtime refuses at the door what the backend does not declare, rather than
-failing mid-mission.
+declaration (`core/runtime/backends/base.py`) and the runtime refuses at the
+door what the backend does not declare, rather than failing mid-mission:
+
+| capability | what it promises | who declares it today |
+|---|---|---|
+| `supports_streaming` | deltas arrive as they are produced | all four |
+| `supports_json_mode` | the reply will be *some* JSON | `local`, `openai`, `mistral` |
+| `supports_json_schema` | **the request carries a JSON schema** for the server to enforce while decoding (`response_format: {type: json_schema}`) — ROADMAP §2.9.5's grammar compiler. The promise stops at the request: whether the endpoint honours it is the endpoint's, and the consumer's validator is what catches a server that accepted the parameter and ignored it | `local`, `openai` |
+| `supports_tool_calls` | tools declared as functions | `local`, `openai`, `anthropic` |
+| `supports_parallel_tool_calls` | more than one call per reply | `local`, `openai`, `anthropic` |
+| `supports_tool_choice_required` | the decoder must emit a call, not prose | `local`, `openai`, `anthropic` |
+
+A declaration is a promise a caller plans against, so it is made from a
+measured or documented-and-implemented parameter and never from a model
+card: `mistral` declares the two constrained forms **absent** because
+nothing here has run them against the live endpoint, and `anthropic`
+declares `json_schema` absent because the Messages API expresses that
+capability as a different request (`output_config.format`, strict tool
+schemas) which this backend does not implement. Adapting a *new* backend
+means declaring honestly and leaving the door shut where it does not apply
+— a silently unconstrained run is the one outcome worse than a refused one.
 
 Protocol: `--protocol json` is the floor and the default — every
 instruction-following model speaks it. `--protocol native` (function
@@ -47,6 +64,15 @@ pairs its arms; a lucky single is not a result.
   grounding harvester) plus trap classes built from measured production
   misreads (elapsed-seconds-read-as-score, optional-filter fields). This
   number is what Phase 19's A/B and any fine-tune are judged against.
+  Run it **twice on a model that declares `supports_json_schema`**, once
+  with `--constrained` and once without: the difference in `structural`,
+  `first_try` and `repair` is what constrained decoding is worth on *this*
+  model, and it is usually the cheapest lift available (ROADMAP §2.9.5).
+  The two runs are two experiments and the instrument says so — the
+  fingerprint and the identity line carry the decoding, and `--baseline`
+  warns when a constrained report is paired against an unconstrained one.
+  A model whose backend cannot enforce a grammar is refused rather than
+  measured as if it had one.
 - Conduct adherence is a measured property of the model, not an assumption:
   the reference 20B binds instructions placed *last* (why the conduct
   renders after the catalogue), followed the conduct roughly half the time,
