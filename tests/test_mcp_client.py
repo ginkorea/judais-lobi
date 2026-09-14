@@ -580,6 +580,9 @@ def _refuser(status=503, body=b"", content_type="application/json",
             if hold_open:
                 self.released.wait(30)
 
+        # The same refusal on a GET, for the requests httpx does not stream.
+        do_GET = do_POST
+
     return _Handler
 
 
@@ -662,6 +665,13 @@ class TestReadingARefusalBody:
         said = parse_http_refusal(
             503, b'{"code": "busy", "limit": {"sessions": 8}}').sentence()
         assert "code `busy`" in said and "sessions" in said
+
+    def test_a_json_boolean_is_quoted_as_json_wrote_it(self):
+        """`True` is Python quoted at somebody who wrote JSON."""
+        said = parse_http_refusal(
+            503, b'{"code": "busy", "limit": true, "remedy": false}').sentence()
+        assert "limit: true" in said and "remedy: false" in said
+        assert "True" not in said and "False" not in said
 
     def test_control_characters_never_reach_the_message(self):
         said = parse_http_refusal(
@@ -871,6 +881,55 @@ class TestTheHookStaysOnOurSideOfTheSdk:
         transport = StreamableHttpTransport(url="https://spine.local/mcp")
         asyncio.run(transport._capture_refusal(object()))
         assert transport.refusal() == ""
+
+    def test_a_response_read_after_the_hook_still_has_its_body(self):
+        """The invariant, demonstrated on the shape that would break: a
+        request httpx does **not** stream is read by httpx itself right
+        after this hook, and a stream consumed and not put back would meet
+        that read as `StreamConsumed`. The bytes go back where `aread()`
+        keeps them, so the next reader finds a body."""
+        import asyncio
+
+        transport = StreamableHttpTransport(url="https://spine.local/mcp")
+        with _serving(_refuser(status=401,
+                               body=b'{"code": "no_seat"}')) as url:
+            async def _unstreamed_get():
+                client = transport._http_client_factory()(
+                    headers=None, timeout=None, auth=None)
+                async with client:
+                    response = await client.get(url)
+                    return response.status_code, response.text
+
+            status, text = asyncio.run(_unstreamed_get())
+
+        assert status == 401
+        assert "no_seat" in text            # httpx read it, after we did
+        assert "no_seat" in transport.refusal()
+
+    def test_a_helper_whose_signature_moved_still_connects(self, monkeypatch):
+        """The fallback's whole promise. A renamed helper and one whose
+        keywords changed are the same event to a caller, so the call is
+        inside the try with the import — otherwise a better error message
+        would break every connection this package makes."""
+        import types
+
+        stub = types.ModuleType("mcp.shared._httpx_utils")
+
+        def create_mcp_http_client(http_client=None):   # the keywords moved
+            raise AssertionError("our keywords cannot reach this")
+
+        stub.create_mcp_http_client = create_mcp_http_client
+        monkeypatch.setitem(sys.modules, "mcp.shared._httpx_utils", stub)
+
+        transport = StreamableHttpTransport(url="https://spine.local/mcp")
+        client = transport._http_client_factory()(
+            headers={"x-test": "1"}, timeout=None, auth=None)
+        assert transport._capture_refusal in client.event_hooks["response"]
+        assert client.headers["x-test"] == "1"
+
+        # and the connection it is for still happens, over a real socket
+        said = _refused_by(_refuser(body=b'{"code": "session_capacity"}'))
+        assert "session_capacity" in said
 
     def test_session_termination_is_left_to_the_sdk(self):
         """The DELETE is the one request the SDK does not stream; consuming

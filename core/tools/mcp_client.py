@@ -120,7 +120,12 @@ def _render_value(value: Any) -> str:
         return ""
     if isinstance(value, str):
         text = value
-    elif isinstance(value, (int, float, bool)):
+    elif isinstance(value, bool):
+        # Before the number check, because `bool` is an `int` — and quoted
+        # back as the server wrote it: a refusal that answers `"retryable":
+        # True` is quoting Python at somebody who wrote JSON.
+        text = "true" if value else "false"
+    elif isinstance(value, (int, float)):
         text = str(value)
     else:
         try:
@@ -483,6 +488,14 @@ def _sdk_http_client(headers: Any, timeout: Any, auth: Any) -> Any:
 
     try:
         from mcp.shared._httpx_utils import create_mcp_http_client
+
+        # The CALL is inside the `try` as well as the import, and `TypeError`
+        # counts: a helper that has been renamed and one whose keywords have
+        # changed are the same event to a caller, and the fallback exists so
+        # that either one degrades the refusal's manners instead of breaking
+        # every connection this package makes.
+        return create_mcp_http_client(
+            headers=headers, timeout=timeout, auth=auth)
     except Exception:
         # `timeout=None` means *no* timeout to httpx, which is not what an
         # absent timeout means to the SDK; this package's own bound is the
@@ -492,7 +505,6 @@ def _sdk_http_client(headers: Any, timeout: Any, auth: Any) -> Any:
             timeout=timeout if timeout is not None
             else httpx.Timeout(DEFAULT_TIMEOUT_S),
             auth=auth)
-    return create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
 
 
 class StreamableHttpTransport(McpTransport):
@@ -620,9 +632,29 @@ class StreamableHttpTransport(McpTransport):
 
         Only error responses are touched, so a 200 (the JSON answer, the SSE
         stream that the whole protocol rides on) is read by the SDK exactly
-        as it always was.  ``DELETE`` is skipped too: session termination is
-        the one request the SDK does *not* stream, and consuming its body
-        here would take it away from the library's own read.
+        as it always was.
+
+        **The invariant: a response the SDK reads for itself is not consumed
+        here.**  Everything the protocol rides on is streamed, and a streamed
+        error response is dropped unread — that is the whole opening.  The
+        exception is session termination, which the SDK sends with a plain
+        ``client.delete(...)``: httpx reads the body of a non-streamed
+        request itself, right after this hook, and a stream already consumed
+        would meet it as ``StreamConsumed``.  The method check below is the
+        current implementation of that invariant and not the invariant
+        itself; the body is also put back on the response (see there), so an
+        SDK that stops streaming some other request degrades to a truncated
+        body rather than to an exception.
+
+        **One slot is enough** because the handshake is single-in-flight:
+        the SDK opens its GET/SSE channel only when it sees the
+        ``notifications/initialized`` message go out
+        (``_is_initialized_notification`` → ``start_get_stream`` in the
+        SDK's ``client/streamable_http.py``, lines 549-550 as of mcp
+        1.29.0/1.29.1), so nothing else is in flight while the POST that
+        carries ``initialize`` is being refused.  Named with its source
+        because an SDK upgrade that changed it would make this a
+        last-writer-wins race, quietly.
         """
         try:
             status = int(getattr(response, "status_code", 0) or 0)
@@ -654,8 +686,19 @@ class StreamableHttpTransport(McpTransport):
                     size += len(chunk)
                     if size > HTTP_REFUSAL_BODY_CAP:
                         break
-            await response.aclose()
             raw = b"".join(chunks)
+            # Put the bytes back where httpx keeps a read body, so that a
+            # caller reading this response after us — `aread()`, `.text`,
+            # an auth flow, an SDK that stops streaming one of these
+            # requests — finds the body instead of `StreamConsumed`. It is
+            # what `aread()` itself sets and has been since httpx 0.23; it
+            # is also a PRIVATE attribute, so it is set defensively and the
+            # capture survives a version that renames it.
+            try:
+                response._content = raw
+            except Exception:  # pragma: no cover - a response that forbids it
+                pass
+            await response.aclose()
             self._refusal = parse_http_refusal(
                 status, raw[:HTTP_REFUSAL_BODY_CAP],
                 truncated=len(raw) > HTTP_REFUSAL_BODY_CAP)
