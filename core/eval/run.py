@@ -431,6 +431,13 @@ def _parser() -> argparse.ArgumentParser:
     from core.eval.suggest import add_parser as _add_suggest
     _add_suggest(subs)
 
+    # And after that, still the open list: `linker` runs the false-link
+    # probe corpus through the production attachment. Deterministic — no
+    # suite, no half, nothing to spawn, and no model anywhere in it. See
+    # `core.eval.linker`.
+    from core.eval.linker import add_parser as _add_linker
+    _add_linker(subs)
+
     return parser
 
 
@@ -472,6 +479,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "suggest-pack":
         from core.eval.suggest import from_args as _suggest
         return _suggest(args)
+    # And `linker`, which is the extraction door's deterministic sibling:
+    # a link probe is a receipt with its identity known, not a mission,
+    # and there is no suite for it to be held to.
+    if args.command == "linker":
+        from core.eval.linker import from_args as _linker
+        return _linker(args)
 
     try:
         suite = resolve_suite(args.suite)

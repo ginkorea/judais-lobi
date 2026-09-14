@@ -729,17 +729,39 @@ class TestTheArmTable:
         lane, `--compiled-context` with Phase 18 and `--graph-context`
         with Phase 20a, which is the graduation this table was designed
         around: the arm becomes runnable with no edit to this module's
-        machinery.  With all three landed the pin is one-sided — every
-        arm's flag is published surface — and it fails the day a flag
-        leaves the contract, because that arm's column would silently go
-        back to SKIPPED."""
+        machinery.
+
+        The pin is two-sided again, because the table holds a
+        declared-before-landing arm again: `extraction` is the design's
+        A4 and its `--extract` door is held for the owner (W5's rule: the
+        arm is DECLARED and mechanically skipped, never absent).  So
+        every LANDED arm's flag must stay published surface — it fails
+        the day a flag leaves the contract, because that column would
+        silently go back to SKIPPED — and every waiting arm must be
+        exactly the declared set, and must come back SKIPPED with the
+        reason, never run.  The day `--extract` lands, the second half
+        fails here and the graduation is retold, which is the ritual the
+        module docstring records for the three arms before it."""
         from core.runtime import contract
 
+        published = frozenset(
+            flag for flag in contract.CLI_FLAGS if flag.startswith("--"))
         for arm in ARMS[1:]:
             assert arm.flags, arm.name
-            assert set(arm.flags) <= set(contract.CLI_FLAGS), (
-                f"{arm.name}'s flag left the contract; its column would "
-                f"silently go back to SKIPPED")
+        landed = {arm.name for arm in ARMS[1:]
+                  if set(arm.flags) <= published}
+        waiting = {arm.name for arm in ARMS[1:]} - landed
+        assert {"shadow", "compiled-context", "graph",
+                "swarm-steering"} <= landed, (
+            "a graduated arm's flag left the contract; its column would "
+            "silently go back to SKIPPED")
+        assert waiting == {"extraction"}, (
+            f"the waiting set moved ({sorted(waiting)}): either a flag "
+            f"landed — retell the graduation here — or an arm was added "
+            f"without its declared-not-landed pin")
+        notes = availability(ARMS, published)
+        assert "does not accept" in notes["extraction"], notes["extraction"]
+        assert "will run the day the flag lands" in notes["extraction"]
 
     def test_this_checkout_s_own_help_makes_the_arm_runnable(self):
         """The graduation, end to end, through the probe that decides it.
@@ -767,3 +789,171 @@ class TestTheArmTable:
     def test_the_module_exports_what_it_documents(self):
         for name in mod.__all__:
             assert hasattr(mod, name), name
+
+
+# ── the design arms, and what the runs spent (EVAL.md §20) ──────────────────
+
+class TestTheSpineTally:
+    """`spine` reads the arm's OWN reasoning logs, through the one reader.
+
+    Which design arm a `compiled-context` column IS (A2 or A3) is a fact
+    about the plane, and the report reads it off the links the runs
+    recorded rather than off anybody's claim about the plane — so the
+    tally has to come from a real log written by the real writer, count a
+    log that will not replay rather than skip it, and answer `None` (not
+    zero) for an arm that left no log at all.
+    """
+
+    def _run_dir(self, tmp_path, name="run_x"):
+        run = tmp_path / "rep1" / "m1" / "runs" / name
+        run.mkdir(parents=True)
+        (run / "meta.json").write_text("{}", encoding="utf-8")
+        return run
+
+    def _log_with_one_link(self, run):
+        from core.durable import fsync_append
+        from core.runtime.cognition import (REASONING_LOG, ShadowCognition,
+                                            header_record)
+        from core.runtime.replay import canonical
+
+        path = run / REASONING_LOG
+        fsync_append(path, canonical(header_record()))
+        shadow = ShadowCognition(path, run_id=run.name)
+
+        class Plane:
+            def identifiers_for(self, tool):
+                return {"data.job_id": "job"}
+
+            def for_tool(self, tool):
+                return None
+
+        shadow.declarations = Plane()
+        shadow.receipt("mcp.job_status", 1, json.dumps(
+            {"data": {"job_id": "jl-1", "records": 2}}))
+        shadow.close_step()
+        return path
+
+    def test_links_are_counted_off_a_real_log(self, tmp_path):
+        self._log_with_one_link(self._run_dir(tmp_path))
+        result = ArmResult(arm=ARMS[1], reports=(_report({"m1": True}),),
+                           directories=(tmp_path,))
+        assert mod.spine(result) == {"links": 1, "logs": 1, "unreadable": 0}
+
+    def test_an_arm_with_no_reasoning_log_is_none_not_zero(self, tmp_path):
+        """Every arm without `--cognition`: an absent log and a log with
+        zero links are different facts, exactly as an unmeasured cost
+        differs from a cheap one."""
+        self._run_dir(tmp_path)
+        result = ArmResult(arm=ARMS[0], reports=(_report({"m1": True}),),
+                           directories=(tmp_path,))
+        assert mod.spine(result) is None
+        assert mod.spine(ArmResult(arm=ARMS[0], skipped="no")) is None
+
+    def test_a_log_that_will_not_replay_is_counted_not_skipped(
+            self, tmp_path):
+        from core.runtime.cognition import REASONING_LOG
+
+        run = self._run_dir(tmp_path)
+        (run / REASONING_LOG).write_text("not a log\n", encoding="utf-8")
+        result = ArmResult(arm=ARMS[1], reports=(_report({"m1": True}),),
+                           directories=(tmp_path,))
+        assert mod.spine(result) == {"links": 0, "logs": 0, "unreadable": 1}
+
+    def test_the_report_prints_the_tally_and_the_attribution_rules(
+            self, tmp_path):
+        """The reading rules ride IN the report — A2−A0 the view, A3−A2
+        the spine, A4−A3 extraction, never A4−A0 — because a table
+        outlives the person who knew how to read it."""
+        self._log_with_one_link(self._run_dir(tmp_path))
+        with_log = ArmResult(arm=ARMS[2], reports=(_report({"m1": True}),),
+                             directories=(tmp_path,))
+        text = Ablation(suite="toy", split="train",
+                        arms=(with_log,)).to_markdown()
+        assert "The design arms" in text
+        assert "1 subject link(s) across 1 reasoning log(s)" in text
+        assert "NEVER A4−A0" in text
+        payload = Ablation(suite="toy", split="train",
+                           arms=(with_log,)).as_dict()
+        assert payload["arms"][0]["spine"] == {"links": 1, "logs": 1,
+                                               "unreadable": 0}
+
+    def test_a_table_with_no_cognition_arm_says_nothing_about_spines(self):
+        text = Ablation(suite="toy", split="train", arms=(
+            ArmResult(arm=ARMS[0], reports=(_report({"m1": True}),)),
+        )).to_markdown()
+        assert "The design arms" not in text
+
+
+class TestWhatTheRunsSpent:
+    """`spend`: the W5 columns as one row per arm, means per graded run."""
+
+    def _result(self, kpis_by_key, infra=()):
+        from core.eval.score import Half, Totals
+
+        verdicts = tuple(
+            Verdict(key=key, flag="synthesis", split="train", passed=True,
+                    infra=("the stream is empty" if key in infra else ""),
+                    kpis=kpis)
+            for key, kpis in kpis_by_key.items())
+        half = Half(split="train", verdicts=verdicts, overall=Totals(),
+                    by_flag={})
+        return ArmResult(arm=ARMS[0], reports=(
+            Report(suite="toy", halves={"train": half}),))
+
+    def test_means_skip_what_nobody_reported(self):
+        """`None` KPIs are out of numerator AND denominator — the `usage`
+        rule — so one silent provider does not halve a cost."""
+        result = self._result({
+            "a": {"model_calls": 4, "tokens": 100, "dead_end_calls": 2,
+                  "calls_to_chain": 3, "premature": False},
+            "b": {"model_calls": None, "tokens": 300, "dead_end_calls": 0,
+                  "calls_to_chain": None, "premature": True},
+        })
+        from core.eval.context import ContextSummary
+        row = mod.spend(result, "train", ContextSummary())
+        assert row["model_calls"] == 4.0
+        assert row["tokens"] == 200.0
+        assert row["dead_end_calls"] == 1.0
+        assert row["calls_to_chain"] == 3.0
+        assert row["premature"] == [1, 2]
+        assert row["extraction_calls"] is None
+
+    def test_a_verdict_is_not_averaged_as_a_number(self):
+        """`premature` is a bool and bools are ints in Python: a mean that
+        swallowed it would print a rate wearing a cost's name."""
+        assert mod._mean_of([True, 2]) == 2.0
+        assert mod._mean_of([None, True, False]) is None
+        result = self._result({"a": {"premature": True}})
+        row = mod.spend(result, "train", __import__(
+            "core.eval.context", fromlist=["ContextSummary"]
+        ).ContextSummary())
+        assert row["premature"] == [1, 1]
+        assert row["model_calls"] is None
+
+    def test_an_infra_run_is_out_of_the_spend_as_well(self):
+        result = self._result(
+            {"a": {"model_calls": 4}, "b": {"model_calls": 400}},
+            infra=("b",))
+        from core.eval.context import ContextSummary
+        assert mod.spend(result, "train",
+                         ContextSummary())["model_calls"] == 4.0
+
+    def test_the_extraction_breakout_rides_the_recorded_kind(self):
+        from core.eval.context import ContextSummary
+        row = mod.spend(self._result({"a": {"model_calls": 2}}), "train",
+                        ContextSummary(runs=1, calls=5, extraction_calls=2,
+                                       chars=10))
+        assert row["extraction_calls"] == 2
+
+    def test_the_markdown_carries_the_spend_table(self):
+        result = self._result({
+            "a": {"model_calls": 3, "tokens": 120, "elapsed_s": 2.5,
+                  "unsupported": 1, "dead_end_calls": 2,
+                  "calls_to_chain": 3, "premature": True}})
+        text = Ablation(suite="toy", split="train", arms=(result,),
+                        keys={"train": ("a",)}).to_markdown()
+        assert "what the runs spent" in text
+        assert "dead ends/run" in text
+        assert "calls→chain" in text
+        assert "1/1" in text
+        assert "reads 0 until `--extract` exists" in text

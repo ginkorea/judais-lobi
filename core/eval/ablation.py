@@ -90,18 +90,22 @@ from typing import (Any, Dict, FrozenSet, List, Mapping, Optional, Sequence,
                     Tuple)
 
 from core.durable import atomic_write_text
-from core.eval.context import ContextSummary, summarise_runs
+from core.eval.context import ContextSummary, run_shaped, summarise_runs
 from core.eval.extraction import wilson
 from core.eval.measure import (Unmeasurable, _halves, _narrowed, _table,
                                _withheld, header, report_paths)
 from core.eval.run import DEFAULT_TIMEOUT_S, run_suite
 from core.eval.score import Report, score_suite
 from core.eval.suite import RubricChange, Suite, missions_in
+# For the spine tally only — a bounded read of the reasoning logs the
+# arm's own runs left behind, through the one reader that owns their
+# envelope.  Nothing here writes one.
+from core.runtime.cognition import REASONING_LOG, replay_reasoning
 
 __all__ = [
     "ARMS", "Arm", "ArmResult", "Ablation", "Unavailable", "BLOAT_NOTE",
-    "accepted_flags", "probe_argv", "availability", "ablate", "paired",
-    "band", "bloat", "add_parser", "from_args",
+    "SPINE_NOTE", "accepted_flags", "probe_argv", "availability", "ablate",
+    "paired", "band", "bloat", "spine", "spend", "add_parser", "from_args",
 ]
 
 
@@ -186,6 +190,20 @@ ARMS: Tuple[Arm, ...] = (
             "missions will report this arm as a faithful null. Which "
             "missions those were is the suite's business and not this "
             "table's",
+    ),
+    Arm(
+        name="extraction",
+        flags=("--extract",),
+        why="the design's A4, declared before the flag exists (the door is "
+            "held for the owner — Q1): the extraction door spends extra "
+            "model calls turning receipts the deterministic harvest cannot "
+            "read into HYPOTHESIZED propositions. The question this arm "
+            "answers is whether model-extracted facts and their call cost "
+            "buy missions — read as A4−A3 (against the spine on the same "
+            "declaring plane), NEVER as A4−A0. SKIPPED, loudly, until the "
+            "flag lands; the day it does, this row starts reporting with "
+            "no edit here, exactly as --cognition, --compiled-context and "
+            "--graph-context did",
     ),
 )
 
@@ -456,6 +474,24 @@ class ArmResult:
                 for outcome in outcomes]
         return (len([outcome for outcome in seen if outcome]), len(seen))
 
+    def column(self, half: str, key: str) -> List[Any]:
+        """One KPI's value off every graded run of *half*, repeats flat.
+
+        Infra runs are out, by :meth:`per_repeat`'s rule and for its
+        reason: a KPI of a run the endpoint ate is a number about the
+        network.  Missing keys come back as ``None`` and stay in the
+        list, so a caller averaging can tell "nothing reported" from
+        "reported zero" — the distinction every ``usage`` figure keeps.
+        """
+        out: List[Any] = []
+        for report in self.reports:
+            side = report.halves.get(half)
+            for verdict in (side.verdicts if side is not None else ()):
+                if verdict.infra:
+                    continue
+                out.append(verdict.kpis.get(key))
+        return out
+
 
 @dataclass(frozen=True)
 class Ablation:
@@ -565,6 +601,10 @@ class Ablation:
                               for half in self.keys},
                  "context": {half: self.context(result, half).as_dict()
                              for half in self.keys},
+                 "spine": spine(result),
+                 "spend": {half: spend(result, half,
+                                       self.context(result, half))
+                           for half in self.keys},
                  "infra": {half: [{"mission": key, "run_id": run_id,
                                    "why": why}
                                   for key, run_id, why
@@ -666,6 +706,122 @@ def bloat(ablation: "Ablation", half: str) -> List[Dict[str, Any]]:
     return out
 
 
+# ── the design arms: which one a column IS is a fact about the plane ────────
+
+#: The sentence the report prints about the subject spine, once, because it
+#: is the one thing about the five-arm design (EVAL.md §20) that a flag
+#: cannot say.  A3 is A2 **plus a plane that declares identifiers** — not a
+#: spawn-line token — so a second arm carrying A2's tokens would pair two
+#: identical configurations and report dice as the spine.  Instead the
+#: table stays flag-honest and the report reads the arm's OWN runs for
+#: whether the spine bound, off the links their reasoning logs recorded.
+SPINE_NOTE = (
+    "**The subject spine (the design's A3) is not a flag.** "
+    "`--compiled-context` shows subject lines exactly where the plane "
+    "declares identifiers (a server's `outputSchema`, a skill's `tools:` "
+    "block), so which design arm the `compiled-context` column IS here is "
+    "a fact about the plane, read off the runs' own reasoning logs above: "
+    "zero links means this plane declares nothing and the column is the "
+    "design's **A2** (the view without subjects); links mean it is "
+    "**A3**. The A3−A2 delta is therefore a paired reading of this same "
+    "table run twice — once against the declaring plane, once with the "
+    "declarations withheld — and never of two arms within one table. "
+    "Read A2−A0 as the view, A3−A2 as the spine, A4−A3 as extraction, "
+    "and NEVER A4−A0 as one number.")
+
+
+def spine(result: ArmResult) -> Optional[Dict[str, int]]:
+    """What this arm's own reasoning logs say the spine did, or ``None``.
+
+    A bounded read of the run directories the arm just wrote —
+    :func:`core.eval.context.run_shaped` bounds the walk, exactly as the
+    context column's does — replayed through
+    :func:`core.runtime.cognition.replay_reasoning`, which is the ONE
+    reader of that log's envelope, and counted off
+    :meth:`~core.cognition.state.CognitiveState.links`, which is the one
+    owner of what a link is.  A tally computed by grepping the file for an
+    op name would be the second emitter this repository has paid for.
+
+    ``None`` for an arm that left no reasoning log at all — every arm
+    without ``--cognition`` — which is a different fact from an arm whose
+    logs hold zero links, exactly as an unmeasured cost differs from a
+    cheap one.  A log that will not replay is **counted, not skipped
+    silently**: it is evidence the reader refused, and a spine tally over
+    only the logs that happened to read would be the denominator quietly
+    shrinking.
+    """
+    if not result.ran:
+        return None
+    links = logs = unreadable = 0
+    for root in result.directories:
+        for directory in run_shaped(Path(root)):
+            path = directory / REASONING_LOG
+            if not path.exists():
+                continue
+            try:
+                state = replay_reasoning(path)
+            except Exception:                   # noqa: BLE001 - counted
+                unreadable += 1
+                continue
+            logs += 1
+            links += len(state.links())
+    if not (logs or unreadable):
+        return None
+    return {"links": links, "logs": logs, "unreadable": unreadable}
+
+
+# ── what the runs spent ──────────────────────────────────────────────────────
+
+def _mean_of(values: Sequence[Any]) -> Optional[float]:
+    """The mean of the numbers in *values*, or ``None`` for none.
+
+    ``None`` entries are runs that did not report the figure and are out
+    of both numerator and denominator — the ``usage`` rule.  ``bool`` is
+    excluded because it is an ``int`` in Python and a column of verdicts
+    averaged as ones would be a rate wearing a cost's name.
+    """
+    numbers = [float(value) for value in values
+               if isinstance(value, (int, float))
+               and not isinstance(value, bool)]
+    if not numbers:
+        return None
+    return sum(numbers) / len(numbers)
+
+
+def spend(result: ArmResult, half: str, cost: ContextSummary
+          ) -> Dict[str, Any]:
+    """One arm's W5 spend columns over *half*, as one row.  One owner.
+
+    Every figure here is read off the verdicts' own KPI columns
+    (:func:`core.eval.score._kpis` and the mission-aware three beside it)
+    or off the context summary the arm's recordings produced — nothing is
+    recomputed, which is the six-of-ten-fields rule.  Means are per graded
+    run, with unreported figures out of the denominator; ``premature`` is
+    ``[k, n]`` — runs that answered with their path unwalked, over runs
+    the question applied to — because a bare k with a moving n is the
+    shape a reader mistakes for a rate.
+
+    *extraction_calls* is the recorded breakout
+    (:data:`core.eval.context.EXTRACTION_KIND`) and reads 0 until the
+    ``--extract`` door lands — the true count of every run made today,
+    beside the mean model calls it will one day be broken out of.
+    """
+    premature = [value for value in result.column(half, "premature")
+                 if value is not None]
+    return {
+        "model_calls": _mean_of(result.column(half, "model_calls")),
+        "extraction_calls": (cost.extraction_calls if cost.measured
+                             else None),
+        "tokens": _mean_of(result.column(half, "tokens")),
+        "elapsed_s": _mean_of(result.column(half, "elapsed_s")),
+        "unsupported": _mean_of(result.column(half, "unsupported")),
+        "dead_end_calls": _mean_of(result.column(half, "dead_end_calls")),
+        "calls_to_chain": _mean_of(result.column(half, "calls_to_chain")),
+        "premature": [len([value for value in premature if value]),
+                      len(premature)],
+    }
+
+
 # ── running it ───────────────────────────────────────────────────────────────
 
 def ablate(suite: Suite, template: Sequence[str], out: Path, *,
@@ -735,6 +891,13 @@ def ablate(suite: Suite, template: Sequence[str], out: Path, *,
 
 def _rate(passes: int, total: int) -> str:
     return "—" if not total else f"{passes / total:.0%}"
+
+
+def _num(value: Any, digits: int = 1) -> str:
+    """A mean as a cell, or ``—`` where nothing reported it."""
+    if value is None:
+        return "—"
+    return f"{value:,.{digits}f}"
 
 
 def _interval(result: ArmResult, half: str) -> str:
@@ -827,6 +990,26 @@ def _markdown(ablation: Ablation) -> str:
                  f"the first arm that ran.")
     lines.append("")
 
+    # The design arms (EVAL.md §20): which design arm a column IS, read
+    # off the runs' own reasoning logs, and the attribution rules beside
+    # it — in the report itself, because a table outlives the person who
+    # knew how to read it.
+    tallies = [(result, spine(result)) for result in ablation.arms]
+    if any(tally is not None for _result, tally in tallies):
+        lines.append("### The design arms")
+        lines.append("")
+        for result, tally in tallies:
+            if tally is None:
+                continue
+            unreadable = (f", {tally['unreadable']} log(s) REFUSED replay"
+                          if tally["unreadable"] else "")
+            lines.append(f"- `{result.arm.name}`: {tally['links']} subject "
+                         f"link(s) across {tally['logs']} reasoning "
+                         f"log(s){unreadable}")
+        lines.append("")
+        lines.append(SPINE_NOTE)
+        lines.append("")
+
     for half in ablation.keys:
         lines.append(f"## {half}")
         lines.append("")
@@ -873,6 +1056,48 @@ def _markdown(ablation: Ablation) -> str:
             "whose runs recorded no model log, which is not the same fact as "
             "a cheap one.")
         lines.append("")
+
+        ran_arms = [result for result in ablation.arms if result.ran]
+        if ran_arms:
+            lines.append(f"### {half} — what the runs spent")
+            lines.append("")
+            rows = []
+            for result in ran_arms:
+                row = spend(result, half, ablation.context(result, half))
+                done, total = row["premature"]
+                rows.append([
+                    f"`{result.arm.name}`",
+                    _num(row["model_calls"]),
+                    ("—" if row["extraction_calls"] is None
+                     else str(row["extraction_calls"])),
+                    _num(row["tokens"], 0),
+                    _num(row["elapsed_s"]),
+                    _num(row["unsupported"], 2),
+                    _num(row["dead_end_calls"], 2),
+                    _num(row["calls_to_chain"], 2),
+                    f"{done}/{total}" if total else "—",
+                ])
+            lines += _table(rows, ["arm", "calls/run", "extraction",
+                                   "tokens/run", "wall s/run",
+                                   "unsupported/run", "dead ends/run",
+                                   "calls→chain", "premature"])
+            lines.append("")
+            lines.append(
+                "Means are per graded run, unreported figures out of the "
+                "denominator. *extraction* is the RECORDED breakout — model "
+                "calls the extraction door made, counted off the recordings "
+                "by their own `kind` — and reads 0 until `--extract` "
+                "exists, which is the true count and not a placeholder. "
+                "*unsupported/run* is what the grounding verdict could not "
+                "find a receipt for; *dead ends/run* is dispatches off the "
+                "mission's declared obligation path, *calls→chain* the "
+                "price of the first completed carried-chain, and "
+                "*premature* the runs that answered with that path "
+                "unwalked, over the runs the question applied to — each "
+                "defined once, in `core.eval.score`, and read here rather "
+                "than recomputed.")
+            lines.append("")
+
         for result in ablation.arms:
             environment = result.environment(half) if result.ran else []
             if not environment:

@@ -2056,7 +2056,7 @@ missions:
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
 
-`python -m core.eval` has ten subcommands. The three a platform starts with
+`python -m core.eval` has eleven subcommands. The three a platform starts with
 are these:
 
 ```
@@ -2068,6 +2068,7 @@ python -m core.eval ablation --suite path/to/suite.yml --out DIR -- <your spawn 
 python -m core.eval corpus   --out corpus.jsonl --from-runs DIR --note "<your data>"
 python -m core.eval context  --runs DIR
 python -m core.eval suggest-pack --schemas tools_list.json --runs DIR --out draft.yml
+python -m core.eval linker   --probes path/to/link_probes.jsonl
 ```
 
 * **`check`** refuses a suite that cannot be graded, before anybody spends a GPU
@@ -2151,6 +2152,20 @@ python -m core.eval suggest-pack --schemas tools_list.json --runs DIR --out draf
   `ablation` prints its figures beside each arm's pass rate, so an arm that
   added context and no capability is flagged in the same table that scored
   it. See `EVAL.md` §18.
+* **`linker`** needs no model either — there is no model anywhere in it. It
+  runs a **false-link probe corpus** (receipts whose subject identity is fully
+  known, adversarial near-misses included) through the production identifier
+  attachment and reports the **false-link rate**, whose target is ~0: a wrong
+  link manufactures contradictions, which is the one failure the deterministic
+  linker exists to make impossible. It takes `--probes` rather than a suite,
+  the corpus this repository ships is
+  `tests/fixtures/cognition/link_probes.jsonl`, and a platform that declares
+  identifiers (§5's `tools:` block, or `outputSchema` on its servers) writes
+  probes from its own receipts the same way it writes its own suite — the
+  cheapest way to find out that a declared key was not the identity it was
+  declared to be, before a mission finds out instead. Deterministic: the
+  report's interpreter is the commit, and a rerun reproduces the bytes. See
+  `EVAL.md` §20.
 * **`suggest-pack`** measures nothing at all. It reads a **saved** `tools/list`
   response and your recorded `tools.jsonl` receipts, and prints a **draft**
   `cognition:`/`tools:` pack — an authoring aid for §5's manifest blocks, and

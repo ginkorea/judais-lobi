@@ -1018,3 +1018,24 @@ class TestNoMissionNamesAPlatform:
         passing because the grammar matches nothing."""
         for token in re.findall(SUITE.identifier_pattern, mission.prompt):
             assert token in SUITE.assets, token
+
+
+class TestTheClassMechanismMapping:
+    """EVAL.md §20's class → mechanism table, held as data beside the
+    classes it maps so the two cannot drift apart."""
+
+    def test_every_class_has_a_row_and_no_row_is_orphaned(self):
+        from core.eval.benchmark_suite import CLASS_MECHANISMS, CLASS_NAMES
+
+        assert set(CLASS_MECHANISMS) == set(CLASS_NAMES)
+
+    def test_recovery_is_conduct_and_maps_to_no_w_lane(self):
+        """The one deliberate hole: writing a mechanism there to complete
+        the table would be the table lying to complete itself."""
+        from core.eval.benchmark_suite import CLASS_MECHANISMS
+
+        assert "conduct" in CLASS_MECHANISMS["recovery"]
+        assert "no W lane" in CLASS_MECHANISMS["recovery"]
+        for name, mechanism in CLASS_MECHANISMS.items():
+            if name != "recovery":
+                assert re.search(r"\bW[124]\b", mechanism), (name, mechanism)

@@ -313,6 +313,138 @@ class TestTheKpis:
         assert score_run(a_clean_run(), a_mission()).kpis["protocol"] == "json"
 
 
+class TestTheW5SpendColumns:
+    """`dead_end_calls`, `calls_to_chain`, `premature`, `unsupported` —
+    EVAL.md §20's spend metrics, each a COLUMN and never a reason.
+
+    Every one is asserted both ways round AND asserted `None` where the
+    question does not apply, because for these columns the third answer is
+    load-bearing: a `0` where nothing was declared, an unpaid chain priced
+    at zero, or a refusal scored premature would each be a mean quietly
+    lying in the ablation table.
+    """
+
+    def test_a_dispatch_off_the_declared_path_is_a_dead_end_per_call(self):
+        """Per DISPATCH: wandering into the same wrong tool twice is two
+        dead-end actions, and `mission_result` is on every path."""
+        records = [started(), step(0), call("mcp.a"), result("mcp.a"),
+                   call("mcp.b"), result("mcp.b"), call("mcp.b"),
+                   result("mcp.b"), call("mission_result"),
+                   result("mission_result"), grounding(), answered(),
+                   finished()]
+        kpis = score_run(records,
+                         a_mission(expects_tools=("mcp.a",))).kpis
+        assert kpis["dead_end_calls"] == 2
+
+    def test_a_retry_of_an_on_path_tool_is_not_a_dead_end(self):
+        records = [started(), step(0), call("mcp.a"),
+                   result("mcp.a", ok=False), call("mcp.a"),
+                   result("mcp.a"), grounding(), answered(), finished()]
+        kpis = score_run(records,
+                         a_mission(expects_tools=("mcp.a",))).kpis
+        assert kpis["dead_end_calls"] == 0
+
+    def test_no_declared_path_means_none_not_zero(self):
+        """With no path declared there is no off-path fact, and a 0 would
+        read as a run that stayed on a road nobody drew."""
+        assert score_run(a_clean_run(),
+                         a_mission()).kpis["dead_end_calls"] is None
+
+    def test_the_chain_is_priced_at_the_call_that_carries_it_all(self):
+        records = [started(), step(0), call("mcp.entry"),
+                   result("mcp.entry", output={"token": "tok-1"}),
+                   call("mcp.release", arguments={"token": "tok-1"}),
+                   result("mcp.release"), grounding(), answered(),
+                   finished()]
+        kpis = score_run(records,
+                         a_mission(expects_carried=("tok-1",))).kpis
+        assert kpis["calls_to_chain"] == 2
+
+    def test_an_unpaid_chain_is_none_not_zero(self):
+        """A run that never completed the chain has no price, and a mean
+        over the column must skip it rather than average in a zero."""
+        kpis = score_run(a_clean_run(),
+                         a_mission(expects_carried=("tok-1",))).kpis
+        assert kpis["calls_to_chain"] is None
+        assert score_run(a_clean_run(),
+                         a_mission()).kpis["calls_to_chain"] is None
+
+    def test_the_chain_completes_within_one_emitter_s_own_sequence(self):
+        """A staged turn interleaves children on one stream: the chain's
+        price is counted within a branch, so a child that released on its
+        own first call pays 1 — not the flat ordinal of the whole
+        stream."""
+        records = [started(), step(0),
+                   call("mcp.x", branch="s0"), result("mcp.x", branch="s0"),
+                   call("mcp.x", branch="s0"), result("mcp.x", branch="s0"),
+                   call("mcp.release", branch="s1",
+                        arguments={"token": "tok-1"}),
+                   result("mcp.release", branch="s1"),
+                   grounding(), answered(), finished()]
+        kpis = score_run(records,
+                         a_mission(expects_carried=("tok-1",))).kpis
+        assert kpis["calls_to_chain"] == 1
+
+    def test_two_completing_emitters_price_at_the_cheapest(self):
+        """Two children both complete the chain: the run's price is the
+        cheapest emitter's, not the dearest — 'how cheaply CAN this be
+        done here' is the number the spine is supposed to move."""
+        records = [started(), step(0),
+                   call("mcp.x", branch="s0"), result("mcp.x", branch="s0"),
+                   call("mcp.release", branch="s0",
+                        arguments={"token": "tok-1"}),
+                   result("mcp.release", branch="s0"),
+                   call("mcp.release", branch="s1",
+                        arguments={"token": "tok-1"}),
+                   result("mcp.release", branch="s1"),
+                   grounding(), answered(), finished()]
+        kpis = score_run(records,
+                         a_mission(expects_carried=("tok-1",))).kpis
+        assert kpis["calls_to_chain"] == 1
+
+    def test_an_answer_with_the_path_unwalked_is_premature(self):
+        records = [started(), step(0), call("mcp.a"), result("mcp.a"),
+                   grounding(), answered(), finished()]
+        mission = a_mission(expects_tools=("mcp.a", "mcp.b"))
+        assert score_run(records, mission).kpis["premature"] is True
+
+    def test_an_answer_with_the_path_walked_is_not(self):
+        records = [started(), step(0), call("mcp.a"), result("mcp.a"),
+                   call("mcp.b"), result("mcp.b"), grounding(), answered(),
+                   finished()]
+        mission = a_mission(expects_tools=("mcp.a", "mcp.b"))
+        assert score_run(records, mission).kpis["premature"] is False
+
+    def test_a_refusal_is_not_premature_it_is_a_refusal(self):
+        """Scoring an abstention here would punish the one thing the
+        harness must never teach a model to skip."""
+        records = [started(), step(0), grounding(),
+                   answered(outcome="refused"),
+                   finished(outcome="refused")]
+        mission = a_mission(expects_tools=("mcp.a",),
+                            expects_outcome=None)
+        assert score_run(records, mission).kpis["premature"] is None
+        assert score_run(a_clean_run(),
+                         a_mission()).kpis["premature"] is None
+
+    def test_unsupported_is_read_off_the_final_grounding_verdict(self):
+        """The verdict is the last NON-repairing record — a run that died
+        mid-repair leaves an interim at the tail, and reading it would
+        score the answer by the report that triggered the repair."""
+        final = grounding()
+        final["unsupported"] = ["154.024"]
+        interim = grounding(grounded=False, repairing=True)
+        interim["unsupported"] = ["121.2%", "154.024"]
+        records = [started(), step(0), call(), result(), final,
+                   answered(), interim, finished()]
+        assert score_run(records, a_mission()).kpis["unsupported"] == 1
+
+    def test_no_grounding_record_is_none_not_a_clean_zero(self):
+        records = [started(), step(0), call(), result(), answered(),
+                   finished()]
+        assert score_run(records, a_mission()).kpis["unsupported"] is None
+
+
 class TestEnvelopesAndBareNdjson:
     """A run directory is a RunStore directory, and the store wraps.
 

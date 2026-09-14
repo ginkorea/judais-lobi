@@ -647,7 +647,7 @@ def band(grade: Optional[EvidenceAuthority]) -> str:
 
 
 def _value(value: Any) -> str:
-    """A triple's value, rendered so its *type* survives.
+    """A triple's value, rendered so its *type* survives.  **Total.**
 
     Through :func:`json.dumps`, which is the one rendering in which ``8``
     and ``"8"`` do not look alike — the distinction the shadow's whole
@@ -655,11 +655,28 @@ def _value(value: Any) -> str:
     :mod:`core.runtime.cognition`).  Anything JSON cannot carry falls back
     to ``repr``, which cannot happen for a value the kernel accepted and is
     here so a view never raises inside a render.
+
+    Total is load-bearing, because this runs while a line of model input
+    is being built and the store CAN hold an integer big enough to trip
+    CPython's decimal-conversion limit (``sys.set_int_max_str_digits``,
+    4,300 digits by default) — the harvest takes whatever figure a
+    receipt carried.  ``json.dumps`` raises ``ValueError`` out of ``str``
+    itself on such an int, and so would a ``repr`` fallback, so the limit
+    is described rather than hit: the same named escape
+    :func:`core.cognition.constraints._show` renders — DIGITS and not
+    bits called digits, through the same integer arithmetic (``643/2136``
+    is log10(2) to ten places).  A container carrying one gets a typed
+    escape instead of its contents, because the only bounded sentence
+    about it that is true is what it is.
     """
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except (TypeError, ValueError):             # pragma: no cover - defensive
+    except TypeError:                           # pragma: no cover - defensive
         return repr(value)
+    except ValueError:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return f"a {value.bit_length() * 643 // 2136 + 1}-digit integer"
+        return f"a {type(value).__name__} too large to print"
 
 
 @dataclass(frozen=True)

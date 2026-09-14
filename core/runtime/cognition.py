@@ -360,6 +360,7 @@ from core.cognition import (BUDGET_CHARS, CARDINALITIES, CONSTRAINT_KEYS,
                             STEERING_GROUP, subject_entity)
 
 from core.cognition.graph import GRAPH_COUNT_KEY, GRAPH_PACKAGE_KEY
+from core.cognition.graph import GRAPH_EVENTS_KEY
 from core.cognition.graph import GRAPH_EVENT_SCHEMA_VERSION
 from core.cognition.graph import GRAPH_PACKAGE_VERSION
 from core.cognition.graph import GRAPH_SCHEMA_KEY as GRAPH_EVENT_SCHEMA_KEY
@@ -1403,9 +1404,14 @@ def _graph_of(header: Optional[dict], events: List[dict]) -> KnowledgeGraph:
     """
     version = (header or {}).get(GRAPH_EVENT_SCHEMA_KEY,
                                  GRAPH_EVENT_SCHEMA_VERSION)
+    # The GRAPH package's own spelling of the events key, not the kernel's:
+    # the two values coincide today, and building this envelope out of
+    # `KERNEL_EVENTS_KEY` was correct only for as long as that stayed true.
+    # One owner per key, even where the values agree — ESPECIALLY where
+    # the values agree, because that is the case nothing would catch.
     return KnowledgeGraph.replay({GRAPH_EVENT_SCHEMA_KEY: version,
                                   GRAPH_COUNT_KEY: len(events),
-                                  KERNEL_EVENTS_KEY: events})
+                                  GRAPH_EVENTS_KEY: events})
 
 
 def related_rows(working: Any) -> Tuple[RelatedEdge, ...]:
@@ -2873,6 +2879,16 @@ def _open_graph(directory: Path, graphing: bool) -> Dict[str, Any]:
     Called **after** the reasoning log has been read or written, so a run
     whose reasoning log is refused leaves no graph header behind for a
     shadow that never opened.
+
+    The graph's failure latch (:meth:`ShadowCognition._ungraphed`) is
+    **per process, and that is a choice**: a run whose graphing stopped on
+    an exception stays stopped for the rest of that process, but a
+    ``--resume`` with the flag re-arms it through this door — the same
+    behaviour :meth:`~ShadowCognition._stopped` and
+    :meth:`~ShadowCognition._uncompiled` give the store and the view, and
+    for the same reason: the latch exists to stop a *failing* component
+    from raising once per step, not to brand the run, and a new process is
+    a new chance with a note in the log either way.
     """
     if not graphing:
         return {}

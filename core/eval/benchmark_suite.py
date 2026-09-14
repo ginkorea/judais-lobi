@@ -80,7 +80,7 @@ from core.eval.suite import (Mission, RubricChange, Suite,
                              check_the_suite_is_gradeable)
 
 __all__ = ["SUITE", "MISSIONS", "TOOLS", "ASSETS", "IDENTIFIER_PATTERN",
-           "CLASSES", "CLASS_NAMES", "RUBRIC_CHANGES"]
+           "CLASSES", "CLASS_NAMES", "CLASS_MECHANISMS", "RUBRIC_CHANGES"]
 
 
 #: Every wire name the bench plane serves, as the bridge names them
@@ -120,6 +120,44 @@ CLASS_NAMES: Tuple[str, ...] = (
     "multi_hop", "missing", "contradictory", "dependency", "recovery",
     "misleading",
 )
+
+#: Class name → the runtime mechanism the class exercises, for the reader
+#: of an ablation over this pack (``EVAL.md`` §20's mapping, held HERE as
+#: data because the classes are this suite's and a mapping kept only in a
+#: document drifts).  A class names a failure; a mechanism names the piece
+#: of ROADMAP §2.9's design that is supposed to prevent it — so when the
+#: five-arm table moves a class, this row says which lane's work moved it,
+#: and when it does not, which lane's premise is in question.  A class may
+#: legitimately map to no mechanism: ``recovery`` is conduct (the
+#: error-recovery sentences, rc5) and belongs to no cognitive arm, and
+#: writing a mechanism there to complete the table would be the table
+#: lying to complete itself.  The metrics each class is read by are the
+#: scorer's own columns — ``dead_end_calls``/``calls_to_chain`` for
+#: dependency, ``unsupported``/``premature`` for multi-hop, the
+#: caveat-accepting rubric for contradictory, the grounding checks for
+#: missing and misleading — one owner each, in :mod:`core.eval.score` and
+#: the grounding validator.
+CLASS_MECHANISMS: Dict[str, str] = {
+    "multi_hop": "W1/W4 — subject facts joined across receipts: the "
+                 "declared identifiers link the receipts, the compiled "
+                 "view holds the joined figures with their handles",
+    "missing": "W2 — the extraction door's abstention half: a field the "
+               "plane does not hold must land as a marked absence, never "
+               "a filled gap",
+    "contradictory": "W1 — subject contests: two receipts linked to one "
+                     "subject disagreeing about one field is a CONTESTED "
+                     "the view shows both sides of",
+    "dependency": "W1/W4 — `resolvable via:` on owed lines and the "
+                  "subject join: the token's field names the tool that "
+                  "establishes it, so the chain is offered rather than "
+                  "rediscovered",
+    "recovery": "conduct, not a cognitive arm — the error-recovery "
+                "sentences (an error naming the fix is an instruction); "
+                "mapped to no W lane on purpose",
+    "misleading": "W2/W4 — declared semantics: the wrong field beside "
+                  "the right one is exactly what a unit-carrying "
+                  "declaration and the attribution check exist to catch",
+}
 
 
 RUBRIC_CHANGES = (

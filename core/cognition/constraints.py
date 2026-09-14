@@ -1009,9 +1009,9 @@ def _show(value: Any) -> str:
     limit (``sys.set_int_max_str_digits``, 4,300 digits by default) raises
     ``ValueError`` out of ``str`` itself.  A store CAN hold one — the harvest
     takes whatever figure a receipt carried — so the limit is described
-    rather than hit.  (:func:`core.cognition.compile._value` has the same
-    exposure through ``json.dumps`` and is not this lane's file; it is
-    written down in the lane report rather than fixed here in passing.)
+    rather than hit.  (:func:`core.cognition.compile._value` had the same
+    exposure through ``json.dumps`` and now renders the same named escape,
+    through the same digit arithmetic.)
     """
     if isinstance(value, bool) or value is None:    # pragma: no cover - bound
         return repr(value)

@@ -608,3 +608,37 @@ class TestAFailingGraphDoesNotMarkTheRun:
         store = RunStore(tmp_path / "runs")
         listed = store.list()
         assert len(listed) == 1
+
+
+class TestOneOwnerPerEnvelopeKey:
+    """The 20a review's m1, pinned: the GRAPH envelope is spelled with the
+    GRAPH package's own constant.
+
+    The kernel's `EVENTS_KEY` and the graph's coincide today, which is
+    exactly why nothing behavioural can catch the wrong owner — the bug
+    would be silent until one package moved its spelling, and then it
+    would be a replay refusal in a resumed mission. So the ownership is
+    asserted at the source: `_graph_of` builds its envelope from
+    `GRAPH_EVENTS_KEY` and never from the kernel's.
+    """
+
+    def test_the_facade_exports_the_qualified_spelling(self):
+        from core.cognition.graph import EVENTS_KEY, GRAPH_EVENTS_KEY
+
+        assert GRAPH_EVENTS_KEY == EVENTS_KEY
+
+    def test_graph_of_uses_the_graph_s_own_key(self):
+        import inspect
+
+        from core.runtime import cognition as runtime_cognition
+
+        source = inspect.getsource(runtime_cognition._graph_of)
+        # Code only: the function's comments ARGUE about the kernel's
+        # constant, which is theirs to do — the assertion is about what
+        # the envelope is built from.
+        body = "\n".join(line for line in source.splitlines()
+                         if not line.lstrip().startswith("#"))
+        assert "GRAPH_EVENTS_KEY" in body
+        assert "KERNEL_EVENTS_KEY" not in body, (
+            "the graph envelope is being spelled with the kernel's "
+            "constant again — the values coincide, the owners do not")

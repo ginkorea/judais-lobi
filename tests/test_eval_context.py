@@ -43,10 +43,10 @@ from core.durable import RunStore
 from core.eval import ablation as ablation_mod
 from core.eval import context as mod
 from core.eval.ablation import (ARMS, Ablation, Arm, ArmResult, bloat)
-from core.eval.context import (MODEL_LOG, CallCost, ContextSummary,
-                               common_prefix, cost_of_run, head_of, is_block,
-                               profile, render_request, run_shaped,
-                               sections_in, summarise_runs)
+from core.eval.context import (EXTRACTION_KIND, MODEL_LOG, CallCost,
+                               ContextSummary, common_prefix, cost_of_run,
+                               head_of, is_block, profile, render_request,
+                               run_shaped, sections_in, summarise_runs)
 from core.eval.run import main as eval_main
 from core.eval.score import Half, Report, Totals, Verdict
 from core.runtime.replay import Recorder
@@ -389,6 +389,46 @@ class TestTheAttributionAddsUp:
         assert mod._merged_length([(0, 10), (4, 6)]) == 10
         assert mod._merged_length([(0, 10), (8, 14)]) == 14
         assert mod._merged_length([(0, 0), (3, 3)]) == 0
+
+
+class TestExtractionCallsAreBrokenOut:
+    """W5's rule: a call the extraction door made is counted APART.
+
+    The door does not exist yet (Q1 is held), so the contract is declared
+    from this side: an extraction call is a `model.jsonl` record whose
+    `kind` is `EXTRACTION_KIND`, the recorder's own partition. The column
+    therefore reads 0 on every run recorded today — the true count, which
+    these tests pin so it cannot become a placeholder — and starts moving
+    the day the door records under the declared kind, with no edit here.
+    """
+
+    def test_a_recorded_extraction_call_is_counted_apart(self, tmp_path):
+        directory = record(tmp_path, [
+            ("mission", request(("system", "S"), ("user", "u1"))),
+            (EXTRACTION_KIND, request(("system", "E"), ("user", "r1"))),
+            ("mission", request(("system", "S"), ("user", "u2"))),
+        ])
+        cost = cost_of_run(directory)
+        assert len(cost.calls) == 3
+        assert cost.extraction_calls == 1
+        summary = summarise_runs([tmp_path])
+        assert summary.calls == 3
+        assert summary.extraction_calls == 1
+        assert summary.as_dict()["extraction_calls"] == 1
+
+    def test_every_run_recorded_today_reads_zero_not_none(self, tmp_path):
+        """0 and not `None`, deliberately: 'no extraction calls' is a true
+        count of every current run, unlike an unmeasured cost — a recorder
+        that wrote the log at all wrote every call it made."""
+        directory = record(tmp_path, [
+            ("mission", request(("system", "S"), ("user", "u1")))])
+        assert cost_of_run(directory).extraction_calls == 0
+        assert summarise_runs([tmp_path]).extraction_calls == 0
+
+    def test_the_declared_kind_is_the_wire_word(self):
+        """The one-line contract the `--extract` lane records against; a
+        respelling here would strand every recording made before it."""
+        assert EXTRACTION_KIND == "extraction"
 
 
 # ── the shipped fixtures, pinned ─────────────────────────────────────────────
