@@ -1174,7 +1174,8 @@ def _mission(elf, args, name, style):
         ANSWER_FUNCTION, AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL,
         NATIVE_PROTOCOL,
     )
-    from core.runtime.cognition import REASONING_LOG, open_shadow
+    from core.runtime.cognition import (GRAPH_LOG, REASONING_LOG,
+                                        open_shadow)
     from core.runtime.mission_stream import (
         close_on_sigterm, exit_as_signalled, open_sink,
     )
@@ -1783,7 +1784,14 @@ def _mission(elf, args, name, style):
     # type both would be charging them for an implementation detail. Turned
     # on here rather than written back onto `args`, so that what the
     # operator typed stays what the operator typed.
-    compiling = bool(getattr(args, "compiled_context", False))
+    #
+    # `--graph-context` IMPLIES `--compiled-context` one door further in, for
+    # the same reason: RELATED is a section OF the view, so asking for the
+    # section is asking for the block, and the block is compiled from the
+    # state. One flag typed, three switches on, and the same rule about
+    # `args` — an implication is resolved here, never written back.
+    graphing = bool(getattr(args, "graph_context", False))
+    compiling = bool(getattr(args, "compiled_context", False)) or graphing
     shadow = None
     if getattr(args, "cognition", False) or compiling:
         if run_store is not None and run_id:
@@ -1802,6 +1810,7 @@ def _mission(elf, args, name, style):
                 shadow = open_shadow(run_store, run_id,
                                      resumed=recorded is not None,
                                      compiling=compiling,
+                                     graphing=graphing,
                                      cognition_block=(manifest.cognition
                                                       if manifest else None))
             except Exception as exc:
@@ -1883,6 +1892,20 @@ def _mission(elf, args, name, style):
                         "before it. It is added to the turn and gates "
                         "nothing: no answer is held, checked or refused "
                         "against it (implies --cognition)",
+                        style=style)
+                if graphing:
+                    graph_path = run_store.directory(run_id) / GRAPH_LOG
+                    console.print(
+                        f"🕸  graph context: {graph_path} — this run's links "
+                        f"kept as a topology beside the store, and the "
+                        f"block gains a RELATED section: what a bounded "
+                        f"walk out from the OWED lines is connected to, one "
+                        f"edge to a line, with the authority each arrived "
+                        f"on. Nothing in it was guessed — the edges are the "
+                        f"store's own links — and it is the first section "
+                        f"the budget drops. With no goals loaded there is "
+                        f"nothing owed to hydrate around and the section is "
+                        f"absent (implies --compiled-context)",
                         style=style)
         else:
             console.print(
@@ -3054,6 +3077,32 @@ def _main(AgentClass):
                              "it, and a compiler that fails leaves the "
                              "mission exactly as it was (env: "
                              "JUDAIS_LOBI_COMPILED_CONTEXT)")
+    parser.add_argument("--graph-context", action="store_true",
+                        default=bool((os.getenv(
+                            "JUDAIS_LOBI_GRAPH_CONTEXT") or "").strip()),
+                        help="Keep this run's links as a TOPOLOGY beside the "
+                             "store — written as graph.jsonl in the run "
+                             "directory, with its own versions — and add one "
+                             "RELATED section to the compiled block: the "
+                             "entities a bounded walk out from the OWED "
+                             "lines reaches, one edge to a line, each "
+                             "naming the relation and the authority it "
+                             "arrived on. Nothing in it is guessed: an edge "
+                             "is one of the store's own links, carrying that "
+                             "link's evidence, so no model proposal and no "
+                             "value coincidence can enter. It is a reason to "
+                             "look and never a finding, which is why it is "
+                             "the FIRST section the budget drops. With no "
+                             "goals loaded nothing is owed, so there is "
+                             "nothing to hydrate around and the section is "
+                             "simply absent. This IMPLIES "
+                             "--compiled-context (and through it "
+                             "--cognition) and turns them on rather than "
+                             "refusing, because RELATED is a section of that "
+                             "block. It gates nothing, and a graph that "
+                             "fails costs the section and leaves the "
+                             "harvest, the block and the mission exactly as "
+                             "they were (env: JUDAIS_LOBI_GRAPH_CONTEXT)")
     parser.add_argument("--no-grounding", action="store_true",
                         default=bool((os.getenv("MISSION_NO_GROUNDING")
                                       or "").strip()),

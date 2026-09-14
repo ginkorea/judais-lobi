@@ -157,8 +157,9 @@ nothing here imports it: the dependency runs one way, the way every other one
 in this package does.
 """
 
-from core.cognition.compile import (BANDS, BUDGET_CHARS, CompiledView, band,
-                                    compile_view, owed_line, violation_line)
+from core.cognition.compile import (BANDS, BUDGET_CHARS, CompiledView,
+                                    RelatedEdge, band, compile_view,
+                                    owed_line, related_line, violation_line)
 from core.cognition.constraints import (CONSTRAINT_KEYS, OVER_KEYS,
                                         SOLVER_EXTRA, SOLVER_TIMEOUT_MS,
                                         VIOLATION_KIND,
@@ -236,6 +237,7 @@ __all__ = [
     "Proposition",
     "PropositionStatus",
     "RECEIPT_MARKER",
+    "RelatedEdge",
     "ReplayRefused",
     "Rule",
     "RuleAuthority",
@@ -274,6 +276,7 @@ __all__ = [
     "needs_solver",
     "owed_line",
     "parse_constraint",
+    "related_line",
     "resolve",
     "solver_names",
     "subject_entity",

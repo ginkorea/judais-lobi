@@ -454,6 +454,7 @@ releases.
 | `--no-grounding` | `MISSION_NO_GROUNDING` | do not check the answers and do not ask a critic: no validator, no repair turn, no caveat, and no `grounding` record on the stream. The `grounding:` block is still parsed, so an unusable one still refuses at the door. For a conversational surface; not for one whose answers are governed findings |
 | `--cognition` | `JUDAIS_LOBI_COGNITION` | carry a **shadow** cognitive state through the mission: every tool receipt is harvested into propositions whose evidence is the receipt, and the kernel's event log is written as `reasoning.jsonl` beside the run's `events.jsonl`. No prompt changes, nothing is gated, and with it off the run is byte for byte what it always was. One thing does read it back: where the run has **goals** loaded, the supervisor's `frozen_frontier` signal (§ the supervisor) watches whether the belief is moving, and a run whose frontier freezes may spend one advisory review it would not otherwise have spent — a review that can nudge and can never end the run. No goals, no signal. Needs a run directory (`JUDAIS_LOBI_RUNS` on) |
 | `--compiled-context` | `JUDAIS_LOBI_COMPILED_CONTEXT` | put the runtime's **view of the problem** into each step's model input: one block, replacing the one before it, holding the established facts with the receipt handle each came from — a fact the runtime concluded rather than read is marked `derived`, since its receipts are its premises' — both sides of every open conflict, what is only a model's claim, and — where the run has goals — **OWED**, the ranked proof frontier, one line per unresolved obligation naming its goal and whether it is open or blocked. Owed lines are state and not instruction. **Implies `--cognition`** and needs the same run directory. Nothing new on the wire — what changes is the model's input, visible only in the run's own `model.jsonl` — and it gates nothing: no answer is held, checked or refused against it |
+| `--graph-context` | `JUDAIS_LOBI_GRAPH_CONTEXT` | keep this run's links as a **topology** beside the store — `graph.jsonl` beside `reasoning.jsonl`, its own versioned header — and add one **RELATED** section to the compiled block: what a bounded walk out from the OWED lines is connected to, one edge to a line, each naming the relation and the authority it arrived on. Every edge is one of the store's own links carrying that link's evidence, so nothing a model proposed and no value coincidence can enter; a line is a reason to look, never a finding, and the section is the first the budget drops. A run with no goals has nothing owed and no section. **Implies `--compiled-context`** (and through it `--cognition`); gates nothing, and a graph that fails costs the section and one note in `reasoning.jsonl`, never the mission |
 | `--version` | — | print the installed version and exit 0, starting no mission. **How a deployment identifies the checkout it pinned**: it is read from the metadata the installer wrote — the same source `pip show` reads — so it answers for the binary actually on `PATH`. A checkout being run in place says so in words instead of reporting a number out of the source tree |
 | `--approval` | `MISSION_APPROVAL` | spend one approved gate record on this run (§5) |
 | `--resume` | `MISSION_RESUME` | continue an unfinished run against a live model (§6) |
@@ -1505,7 +1506,12 @@ a link to be a claim about, and the alternative was manufacturing a
 cross-kind one. Its subjects are not lost, because the call that later
 establishes something about one of them links and projects normally; that is
 the two-phase flow this design is built on. A run's counters say how often
-it happened.
+it happened. What each `unlinked` receipt costs is every consequence of the
+link it did not get — no projection onto its subjects, no fold into their
+lines, and no edge in the `--graph-context` topology — and the author-side
+remedies are the two the guard cannot mistake: carry at least one real
+figure in that envelope beside the handles, or declare only one kind of
+identifier on that tool.
 
 There is no `unlink`. A wrong `identifiers` declaration is wrong for every
 receipt of that tool — links are made deterministically, from declarations

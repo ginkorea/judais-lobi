@@ -46,7 +46,8 @@ from core.cognition import (CognitiveState, EvidenceAuthority, EvidenceRef,
                             RuleAuthority, compile_view)
 from core.cognition.compile import (CONFLICTS_HEADING, DERIVED, DISPUTED,
                                     FACTS_HEADING, MORE, OWED_HEADING,
-                                    RESOLVABLE, VIA, VIA_CAP, owed_line)
+                                    RESOLVABLE, SIDE_SEP, VIA, VIA_CAP,
+                                    owed_line)
 from core.durable import RunStore
 from core.runtime.cognition import (DECLARATION_KIND, RECEIPT_KIND, Identity,
                                     identities_of, observations_of,
@@ -483,6 +484,26 @@ class TestAConclusionNeverBorrowsAReceiptHandle:
         assert f"{VIA}mcp.audit#r9" in line
         assert f"{VIA}mcp.job_status#r5" not in line
 
+    def test_the_concluded_side_carries_no_via_of_any_kind(self):
+        """The guard pinned per SIDE, not per handle.  The test above says
+        `r5` is not named; this one says **nothing** is: a fallback in
+        `_sided` that reached for anything when the premise is a conclusion
+        — the subject entity itself, an evidence leaf — would put a
+        citation-shaped mark on a side no call stands behind, and it would
+        slip past an assertion that only banned one spelling.  Split at the
+        separator so the observed side's honest `via` cannot mask it."""
+        state = concluded()
+        state.declare_field("fast", "one")
+        other = "mcp.audit#r9"
+        observe(state, other, "fast", False)
+        state.link(other, "job:jl-731", evidence=(receipt("r9"), DECLARED),
+                   authority=EvidenceAuthority.SOURCE)
+        line, = section(compile_view(state), CONFLICTS_HEADING)
+        sides = [side for side in line.split(SIDE_SEP) if "= true" in side]
+        assert sides, line
+        for side in sides:
+            assert VIA not in side, line
+
 
 class TestTheViewFoldsTheSubject:
     """One figure, one line — at the subject, with the receipt on it."""
@@ -613,7 +634,7 @@ class TestTheViewFoldsTheSubject:
         which lines exist and must not change which of them survive."""
         state = linked(6)
         assert compile_view(state, budget_chars=budget).text \
-            == _brute_force(state, budget)
+            == _brute_force(state, (), budget)
 
     @pytest.mark.parametrize("budget", [60, 130, 205, 333, 1000])
     def test_and_the_cap_is_never_exceeded(self, budget):

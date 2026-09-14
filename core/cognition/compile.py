@@ -98,13 +98,36 @@ the writes rather than of who looked.
    mixed in with the facts, and **only if the budget has room left after
    the facts and the conflicts**.  A guess crowding out a receipt is the
    one trade this block must never make.
+5. **RELATED** — ``--graph-context`` (``ROADMAP.md`` §2.9.7, Phase 20a),
+   and empty in every run without it.  The entities a bounded walk of the
+   run's own topology reaches from **what is owed**, one edge to a line,
+   with the relation named and the authority the edge arrived on.  It is
+   the one section that is not about what the store *believes*: an edge
+   says two things are related, which is a reason to look and never a
+   finding.  The caller passes the edges in (:func:`compile_view`'s
+   ``related``) for :data:`~core.cognition.constraints.VIOLATION_KIND`'s
+   reason one door further out — the graph is a sibling package this one
+   does not import, the runtime holds both, and a compiler that reached
+   for a topology store would have acquired the dependency the kernel's
+   constitution refuses.
 
 ## What goes first when it does not fit
 
 :data:`DROP_ORDER`, which is data because it is the one thing in this
 module somebody will want to move after Phase 19 measures the block.
-Hypotheses go first (a guess is the cheapest thing to lose), then facts
-**from the end** — the oldest entity — then owed, and conflicts last.
+Related goes first, then hypotheses (a guess is the next cheapest thing
+to lose), then facts **from the end** — the oldest entity — then owed,
+and conflicts last.
+
+Related **before** hypotheses, and the argument is the one the whole
+order runs on: what is the least this block can afford to lose.  A
+hypothesis is at least a claim somebody made about the problem; a related
+line is the runtime saying two names are connected, with no claim in it
+at all — it is a pointer to a *question*, the most speculative thing the
+block can carry, and the first thing a reader would skip.  It is also the
+only section whose loss costs nothing at all in reachability: the walk is
+re-hydrated from the frontier at every step, so what does not fit now
+renders as soon as there is room.
 
 The interesting placement is owed *above* facts, and the argument is the
 escape.  A dropped fact is still reachable: its line printed the handle,
@@ -193,9 +216,12 @@ __all__ = [
     "DROP_ORDER",
     "FACTS_HEADING", "FRONTIER_CAPPED", "HYPOTHESES_HEADING", "MORE",
     "OMITTED", "OWED_OMITTED",
-    "OWED_HEADING", "RESOLVABLE", "RESOLVER_CAP", "SECTIONS", "TITLE",
+    "OWED_HEADING", "RELATED", "RELATED_ARROW", "RELATED_CAPPED",
+    "RELATED_HEADING", "RELATED_OMITTED",
+    "RESOLVABLE", "RESOLVER_CAP", "SECTIONS", "TITLE",
     "UNGRADED", "VIA", "VIA_CAP", "VIOLATIONS_OMITTED",
-    "CompiledView", "band", "compile_view", "owed_line", "violation_line",
+    "CompiledView", "RelatedEdge", "band", "compile_view", "owed_line",
+    "related_line", "violation_line",
 ]
 
 
@@ -215,22 +241,26 @@ FACTS_HEADING = ("FACTS — established, with the receipt each came from; "
 CONFLICTS_HEADING = "CONFLICTS — both sides, unresolved"
 OWED_HEADING = "OWED — what the goals still require, cheapest first"
 HYPOTHESES_HEADING = "HYPOTHESES — claimed by a model, not established"
+RELATED_HEADING = ("RELATED — what the run's own topology connects to what "
+                   "is owed; a reason to look, not a finding")
 
 #: The sections, in the order they are **rendered**, and the order every
 #: tuple of per-section numbers in this module is written in.  One spelling,
-#: because four parallel tuples whose order is a convention is the shape
+#: because five parallel tuples whose order is a convention is the shape
 #: where a heading ends up over the wrong lines.
-SECTIONS: Tuple[str, ...] = ("facts", "conflicts", "owed", "hypotheses")
+SECTIONS: Tuple[str, ...] = ("facts", "conflicts", "owed", "hypotheses",
+                             "related")
 
 #: The order sections are **lost** in when the budget bites — first to go,
-#: first in the list.  Data rather than four lines of arithmetic: the module
+#: first in the list.  Data rather than five lines of arithmetic: the module
 #: docstring argues every position, and this is the one constant Phase 19's
 #: measurement is allowed to move.
-DROP_ORDER: Tuple[str, ...] = ("hypotheses", "facts", "owed", "conflicts")
+DROP_ORDER: Tuple[str, ...] = ("related", "hypotheses", "facts", "owed",
+                               "conflicts")
 
 #: What the headings are, in :data:`SECTIONS` order.
 HEADINGS: Tuple[str, ...] = (FACTS_HEADING, CONFLICTS_HEADING, OWED_HEADING,
-                             HYPOTHESES_HEADING)
+                             HYPOTHESES_HEADING, RELATED_HEADING)
 
 #: The sentence a dropped line leaves behind — **one** line for the whole
 #: block, naming each kind it lost.  One spelling, so that a reader can find
@@ -309,6 +339,30 @@ VIOLATIONS_OMITTED = ("{what} not shown at this budget — nothing to ask for: "
                       "every step, and what is not shown renders as soon as "
                       "there is room.")
 
+#: The clause a dropped **related** line leaves behind, and the fourth
+#: truth in this family.
+#:
+#: It is :data:`VIOLATIONS_OMITTED`'s shape for
+#: :data:`OWED_OMITTED`'s reason: a related line is *computed* — the working
+#: set is hydrated from the frontier against the graph at every step — so it
+#: is in no receipt and no result store, and the sentence that sent a model
+#: there would be the block promising what it knows is not there.  Its own
+#: clause and not folded into either neighbour, because a reader counting
+#: owed lines should not find edges in the number, and a reader counting
+#: violations should not either.
+#:
+#: **What a fourth clause costs**, in :data:`VIOLATIONS_OMITTED`'s own
+#: terms: the floor below which no block renders at all rises again, by
+#: about the length of this sentence, for a block that is losing all four
+#: kinds at once.  At the shipped :data:`BUDGET_CHARS` that is unreachable,
+#: and RELATED is the section that goes first — so in the ordinary tight
+#: block this clause is the only one of the four in play, and it is shorter
+#: than the line it replaced.
+RELATED_OMITTED = ("{what} not shown at this budget — nothing to ask for: "
+                   "the working set is hydrated from what is owed again at "
+                   "every step, and what is not shown renders as soon as "
+                   "there is room.")
+
 #: How each kind of line is counted, singular and plural, in one place so
 #: the header and the omission sentence cannot disagree about a word.
 KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
@@ -317,6 +371,7 @@ KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "conflicts": ("conflict", "conflicts"),
     "owed": ("owed line", "owed lines"),
     "hypotheses": ("hypothesis", "hypotheses"),
+    "related": ("related line", "related lines"),
     "violations": ("constraint violation", "constraint violations"),
 })
 
@@ -345,6 +400,37 @@ KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
 #: would be saying it about nothing at all.
 FRONTIER_CAPPED = ("+ more owed than these — the frontier walk reached the "
                    "store's cap and stopped")
+
+#: :data:`FRONTIER_CAPPED`'s sibling for the RELATED section: the **walk**
+#: hit its own budget (:attr:`core.cognition.graph.hydrate.WorkingSet
+#: .truncated`), so there is more connected to what is owed than this
+#: section holds.
+#:
+#: A third truncation with a third sentence, for the reason there are
+#: already two: the budget's answer points at the result store, the
+#: frontier's points nowhere because the rest was never computed, and this
+#: one points at the graph — which is still there, whole, and simply was not
+#: walked this far.  Saying "not shown at this budget" here would name the
+#: wrong cap and send a reader to the wrong number.
+#:
+#: **First** in the section, and **only over rows**, both for
+#: :data:`FRONTIER_CAPPED`'s reasons: lines go from the end, so the flag is
+#: the last thing lost, and a cap note over an empty section would announce
+#: a neighbourhood the block is not showing at all.
+RELATED_CAPPED = ("+ more connected than these — the working set reached its "
+                  "own node or edge budget and stopped")
+
+#: What a RELATED line begins with.  The line's own word, in the idiom of
+#: ``owed:`` and ``constraint:`` — a reader scanning a block should be able
+#: to tell what kind of statement a line is from its first token.
+RELATED = "related: "
+
+#: The relation, rendered between the two ends of a related line:
+#: ``mcp.job_status#r5 —about→ job:jl-731``.  The arrow carries the
+#: relation's name because a topology with one relation today will have
+#: several tomorrow, and a line that showed only the direction would make
+#: two different kinds of connection look like one.
+RELATED_ARROW = " —{relation}→ "
 
 #: The five authorities as the four bands a reader is asked to tell apart.
 #: The two model-only authorities below extraction collapse into one word:
@@ -805,6 +891,60 @@ def violation_line(violation: Violation) -> str:
             f"{violation.entity}{SIDE_SEP}{violation.detail}")
 
 
+@dataclass(frozen=True)
+class RelatedEdge:
+    """One edge of a working set, as this module needs to render it.
+
+    **Declared here rather than imported**, and it is not a preference.
+    :mod:`core.cognition.graph` is a *sibling* package that imports this
+    one's :mod:`~core.cognition.events` and :mod:`~core.cognition.types`; a
+    compiler that imported :class:`~core.cognition.graph.store.Edge` would
+    close that loop through :mod:`core.cognition`'s own facade, which
+    imports this module — an import cycle, and, underneath it, the wall the
+    package docstring states in one line: *nothing in the kernel imports the
+    graph*.  So the runtime, which holds both, hands over four fields, in
+    exactly the way it hands over ``resolvers`` for the same reason
+    (:func:`_resolvable` argues that one at length).  This is not a second
+    owner of an edge: nothing here is stored, compared or walked — it is the
+    shape of a line.
+
+    ``authority`` is the kernel's enum, because it is the kernel's enum in
+    the graph too: an edge carries where it came from, every read that
+    returns one returns it, and a rendering that dropped it would be the one
+    place in this block where a reader could not tell a reference from a
+    guess.  ``None`` renders as :data:`UNGRADED`, which is
+    :func:`band`'s rule and not a new one.
+    """
+
+    src: str
+    relation: str
+    dst: str
+    authority: Optional[EvidenceAuthority] = None
+
+
+def related_line(edge: RelatedEdge) -> str:
+    """One edge as one RELATED line.  **The one owner of this spelling.**
+
+    ``related: mcp.job_status#r5 —about→ job:jl-731  [sourced]``
+
+    Both ends go through :func:`_entity`, the same escape every fact line
+    uses, and for the same reason it exists: a subject whose value carries a
+    confusable renders as a line visually identical to another subject's,
+    and a reader deciding *which* thing to look at next on a line of pure
+    identity has nothing else to go on.
+
+    **A line of state, like every other line in this block.**  It says two
+    names are connected and on whose word; it does not say to follow the
+    edge, and nothing in the runtime does either.  The owner's ruling of 13
+    September 2026 binds here as it binds on :func:`owed_line`: the
+    cognitive layer reports, and a line in the imperative is the layer
+    steering with a verb.
+    """
+    return (f"{RELATED}{_entity(edge.src)}"
+            f"{RELATED_ARROW.format(relation=edge.relation)}"
+            f"{_entity(edge.dst)}  [{band(edge.authority)}]")
+
+
 def _entity_order(props: Sequence[Proposition]) -> List[str]:
     """The entities of *props*, most recently written first.
 
@@ -838,24 +978,27 @@ class CompiledView:
     #: number the header states, over the population the header's other
     #: numbers are about.
     receipts: int = 0
-    #: Facts, conflicts, owed lines and hypotheses **rendered**.  ``owed``
+    #: Facts, conflicts, owed lines, hypotheses and related lines
+    #: **rendered**.  ``owed``
     #: counts LINES and not obligations, so :data:`FRONTIER_CAPPED` is one
     #: of them: it is a line about what is owed, it costs the budget like
     #: one, and a counter that skipped it would disagree with the omission
     #: sentence about how many lines the section lost.  ``conflicts`` counts
     #: the section's lines for the same reason, so a constraint violation
-    #: rendered into it is one of them.
+    #: rendered into it is one of them, and so is :data:`RELATED_CAPPED` in
+    #: ``related``.
     facts: int = 0
     conflicts: int = 0
     owed: int = 0
     hypotheses: int = 0
-    #: And the same four, **dropped** for the budget.
+    related: int = 0
+    #: And the same five, **dropped** for the budget.
     #:
-    #: **Four, and no fifth pair for violations**, although the omission
+    #: **Five, and no sixth pair for violations**, although the omission
     #: sentence does tell them apart inside the conflicts count.  The counters
     #: here are the *sections*, one spelling shared with :data:`SECTIONS`, and
-    #: a fifth pair that was not a section would be the shape this class is
-    #: arranged to avoid (``test_and_the_view_carries_the_same_four_twice_over``
+    #: a sixth pair that was not a section would be the shape this class is
+    #: arranged to avoid (``test_and_the_view_carries_the_same_five_twice_over``
     #: states it).  A caller that wants to know how many of its violations
     #: were dropped passed them in and can say ``min(conflicts_omitted,
     #: len(violations))`` — which is exactly what the renderer does.
@@ -863,6 +1006,7 @@ class CompiledView:
     conflicts_omitted: int = 0
     owed_omitted: int = 0
     hypotheses_omitted: int = 0
+    related_omitted: int = 0
 
     def __bool__(self) -> bool:
         return bool(self.text)
@@ -871,7 +1015,8 @@ class CompiledView:
     def truncated(self) -> bool:
         """Whether the budget dropped anything at all."""
         return bool(self.facts_omitted or self.conflicts_omitted
-                    or self.owed_omitted or self.hypotheses_omitted)
+                    or self.owed_omitted or self.hypotheses_omitted
+                    or self.related_omitted)
 
     def digest(self) -> str:
         """A short, stable hash of the block.
@@ -910,10 +1055,12 @@ class _Cut:
     conflicts: int = 0
     owed: int = 0
     hypotheses: int = 0
+    related: int = 0
     facts_out: int = 0
     conflicts_out: int = 0
     owed_out: int = 0
     hypotheses_out: int = 0
+    related_out: int = 0
 
     @property
     def kept(self) -> Tuple[int, ...]:
@@ -1184,6 +1331,8 @@ def compile_view(state: CognitiveState, *,
                  budget_chars: int = BUDGET_CHARS,
                  violations: Sequence[Violation] = (),
                  resolvers: Optional[Mapping[str, Sequence[str]]] = None,
+                 related: Sequence[RelatedEdge] = (),
+                 related_capped: bool = False,
                  ) -> CompiledView:
     """*state* as one block of at most *budget_chars* characters.
 
@@ -1197,6 +1346,17 @@ def compile_view(state: CognitiveState, *,
     this same state, and the caller that ran the check is the caller that
     holds them.  Defaulting to nothing is what keeps every existing caller —
     and the recorded corpus — byte for byte what it was.
+
+    *related* is a parameter for a stronger version of the same reason: the
+    edges are in a **sibling package this one does not import** (see
+    :class:`RelatedEdge`), they are chosen by a walk whose bounds are that
+    package's (:func:`core.cognition.graph.harvest.working_set`), and the
+    runtime that holds both hands the result over.  *related_capped* is that
+    walk's own truncation flag, rendered as :data:`RELATED_CAPPED` — it is
+    not the budget's cap and not the frontier's, and the three say three
+    different things.  Both default to nothing, so a run without
+    ``--graph-context`` compiles the bytes it compiled before this section
+    existed, and the corpus is the proof.
 
     **One render, whatever the store holds.**  The cut is chosen
     arithmetically — :func:`_choose` walks the same candidates a renderer
@@ -1265,7 +1425,16 @@ def compile_view(state: CognitiveState, *,
     # the budget drops a section from the end, so a pack's arithmetic goes
     # before a disagreement the kernel itself recorded.
     clash_rows = [violation_line(item) for item in (violations or ())]
-    if not (live or guesses or open_clashes or owed_lines or clash_rows):
+    # The working set the caller hydrated, with its own cap note first — the
+    # same "flag first, and only over rows" rule the frontier's note keeps,
+    # and for the same two reasons: a section loses its lines from the end,
+    # so the flag is the last of them to go, and a note about more than
+    # these over nothing at all is a heading over nothing twice over.
+    related_lines = [related_line(edge) for edge in (related or ())]
+    if related_capped and related_lines:
+        related_lines.insert(0, RELATED_CAPPED)
+    if not (live or guesses or open_clashes or owed_lines or clash_rows
+            or related_lines):
         return CompiledView()
 
     support = _supports(state, live)
@@ -1311,7 +1480,8 @@ def compile_view(state: CognitiveState, *,
                 seen.update(ref.locator for ref in grade.evidence_leaves)
         receipts.append(len(seen))
 
-    sections = (fact_lines, clash_lines, owed_lines, guess_lines)
+    sections = (fact_lines, clash_lines, owed_lines, guess_lines,
+                related_lines)
     totals = tuple(len(lines) for lines in sections)
     prefixes = tuple(_prefix(lines) for lines in sections)
 
@@ -1332,9 +1502,10 @@ def compile_view(state: CognitiveState, *,
     return CompiledView(
         text=text, receipts=receipts[cut.facts],
         facts=cut.facts, conflicts=cut.conflicts, owed=cut.owed,
-        hypotheses=cut.hypotheses,
+        hypotheses=cut.hypotheses, related=cut.related,
         facts_omitted=cut.facts_out, conflicts_omitted=cut.conflicts_out,
         owed_omitted=cut.owed_out, hypotheses_omitted=cut.hypotheses_out,
+        related_omitted=cut.related_out,
     )
 
 
@@ -1393,15 +1564,16 @@ def _omission(dropped: Sequence[int], violations: int = 0) -> str:
     they are last in that section and a section loses its lines from the end,
     so they are also the first of it to go.
 
-    **Three clauses and not one**, on one line, because three kinds of loss
-    have three different truths: what came off a receipt is still in the
+    **Four clauses and not one**, on one line, because four kinds of loss
+    have four different truths: what came off a receipt is still in the
     result store (:data:`OMITTED`), an owed line is in no store at all
-    (:data:`OWED_OMITTED`), and a violation is computed rather than stored
-    (:data:`VIOLATIONS_OMITTED`).  Each clause appears only when something it
-    is true of was dropped, so a block that lost only owed lines never points
-    at a store, a block that lost no violations reads exactly as it did
-    before they existed, and no sentence ever sends a model to look for
-    something that was never there.
+    (:data:`OWED_OMITTED`), a violation is computed rather than stored
+    (:data:`VIOLATIONS_OMITTED`), and a related line is hydrated from the
+    frontier every step (:data:`RELATED_OMITTED`).  Each clause appears only
+    when something it is true of was dropped, so a block that lost only owed
+    lines never points at a store, a block that lost no violations reads
+    exactly as it did before they existed, and no sentence ever sends a model
+    to look for something that was never there.
     """
     # The violations come OUT of the conflicts count in place, so the losses
     # stay in `SECTIONS` order: the sentence names them in the order the
@@ -1409,10 +1581,18 @@ def _omission(dropped: Sequence[int], violations: int = 0) -> str:
     # re-ordering would quietly take away.
     lost = [(count - (violations if kind == "conflicts" else 0), kind)
             for count, kind in zip(dropped, SECTIONS)]
+    # `stored` is what the result store really holds — so `owed` and
+    # `related` are named out of it rather than filtered by a `!=` chain
+    # somebody would add a section to and forget: a kind that is not in one
+    # of the three lists below is a kind nothing says anything about, which
+    # is louder than a kind quietly pointed at the wrong place.
+    computed = ("owed", "related")
     stored = [f"+{_plural(count, kind)}"
-              for count, kind in lost if count > 0 and kind != "owed"]
+              for count, kind in lost if count > 0 and kind not in computed]
     owed = [f"+{_plural(count, kind)}"
             for count, kind in lost if count > 0 and kind == "owed"]
+    related = [f"+{_plural(count, kind)}"
+               for count, kind in lost if count > 0 and kind == "related"]
     clauses = []
     if stored:
         clauses.append(OMITTED.format(what=", ".join(stored)))
@@ -1421,6 +1601,8 @@ def _omission(dropped: Sequence[int], violations: int = 0) -> str:
     if violations:
         clauses.append(VIOLATIONS_OMITTED.format(
             what=f"+{_plural(violations, 'violations')}"))
+    if related:
+        clauses.append(RELATED_OMITTED.format(what=", ".join(related)))
     return " ".join(clauses)
 
 

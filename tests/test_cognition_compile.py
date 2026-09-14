@@ -34,9 +34,12 @@ from core.cognition import compile as mod
 from core.cognition.compile import (BANDS, BUDGET_CHARS, CONFLICTS_HEADING,
                                     DISPUTED, DROP_ORDER, FACTS_HEADING,
                                     FRONTIER_CAPPED, HYPOTHESES_HEADING,
-                                    OMITTED, OWED_HEADING, SECTIONS,
-                                    TITLE, UNGRADED, CompiledView, band,
-                                    owed_line)
+                                    OMITTED, OWED_HEADING, RELATED,
+                                    RELATED_CAPPED, RELATED_HEADING,
+                                    RELATED_OMITTED, SECTIONS,
+                                    TITLE, UNGRADED, CompiledView,
+                                    RelatedEdge, band, owed_line,
+                                    related_line)
 from core.cognition.state import ENV_CAP
 from core.cognition.types import RuleAuthority
 
@@ -675,15 +678,16 @@ class TestTheFourBands:
 
 
 class TestTheSectionsAreOneList:
-    """Five structures, four names, and nothing but this keeps them in step.
+    """Five structures, five names, and nothing but this keeps them in step.
 
     :data:`SECTIONS` is the order the block renders in; :data:`HEADINGS` is
-    parallel to it; :data:`DROP_ORDER` is the same four names in another
+    parallel to it; :data:`DROP_ORDER` is the same five names in another
     order; and both ``_Cut`` and :class:`CompiledView` carry a field per
     name and a second field per name for what was lost. The module says
-    the reason out loud — *four parallel tuples whose order is a
+    the reason out loud — *five parallel tuples whose order is a
     convention is the shape where a heading ends up over the wrong lines*
-    — and a fifth section, or a rename, is the edit that would prove it.
+    — and RELATED was the fifth section that proved it: it landed in Phase
+    20a by adding one name to each of these and nothing else.
     """
 
     def _fields(self, cls):
@@ -695,14 +699,32 @@ class TestTheSectionsAreOneList:
         assert len(set(SECTIONS)) == len(SECTIONS)
         assert len(mod.HEADINGS) == len(SECTIONS)
 
-    def test_the_drop_order_is_the_same_four_names(self):
+    def test_the_drop_order_is_the_same_five_names(self):
         assert sorted(DROP_ORDER) == sorted(SECTIONS)
+
+    def test_related_is_the_first_thing_the_budget_takes(self):
+        """The Phase 20a placement, as data rather than as a rendering.
+
+        A related line is the most speculative thing the block carries — two
+        names and a relation, with no claim in it at all — and losing one
+        costs nothing in reachability, because the walk is re-hydrated from
+        the frontier at every step. So it goes before a hypothesis, which is
+        at least somebody's claim about the problem.
+        """
+        assert DROP_ORDER[0] == "related"
+        assert DROP_ORDER.index("related") < DROP_ORDER.index("hypotheses")
+
+    def test_and_it_is_rendered_last_where_it_can_be_lost_first(self):
+        """Rendered last and dropped first are the same decision seen twice:
+        lines go from the end of a section and sections go in this order, so
+        the block's last lines are the first to leave it."""
+        assert SECTIONS[-1] == "related"
 
     def test_the_cut_carries_one_field_per_section_and_one_per_loss(self):
         assert self._fields(mod._Cut) == \
             list(SECTIONS) + [f"{name}_out" for name in SECTIONS]
 
-    def test_and_the_view_carries_the_same_four_twice_over(self):
+    def test_and_the_view_carries_the_same_five_twice_over(self):
         section_fields = [name for name in self._fields(CompiledView)
                           if name in set(SECTIONS)
                           or name.endswith("_omitted")]
@@ -710,11 +732,161 @@ class TestTheSectionsAreOneList:
             list(SECTIONS) + [f"{name}_omitted" for name in SECTIONS]
 
     def test_and_the_kept_and_out_tuples_read_in_section_order(self):
-        cut = mod._cut_at(0, (4, 3, 2, 1))
-        assert cut.kept == (4, 3, 2, 1)
+        cut = mod._cut_at(0, (4, 3, 2, 1, 5))
+        assert cut.kept == (4, 3, 2, 1, 5)
         assert cut.kept == tuple(getattr(cut, name) for name in SECTIONS)
         assert cut.out == tuple(getattr(cut, f"{name}_out")
                                 for name in SECTIONS)
+
+
+# ── what the graph adds, and only when it is handed over ─────────────────────
+
+
+def edge(src="mcp.job_status#r5", dst="job:jl-731", relation="about",
+         authority=EvidenceAuthority.SOURCE) -> RelatedEdge:
+    """One working-set row, in the shape the runtime hands over."""
+    return RelatedEdge(src=src, relation=relation, dst=dst,
+                       authority=authority)
+
+
+class TestTheRelatedSectionIsAbsentUntilSomethingIsPassedIn:
+    """Phase 20a's byte-identity claim, at the compiler's own door.
+
+    ``--graph-context`` is off in every run that did not ask for it, and the
+    parameter defaults to nothing — so the block a store compiles to is the
+    block it compiled to before this section existed.  The run corpus proves
+    the same thing one layer up; this proves it without a mission.
+    """
+
+    def test_a_view_with_no_edges_is_the_view_it_always_was(self, ledger):
+        assert compile_view(ledger).text == \
+            compile_view(ledger, related=()).text
+
+    def test_and_carries_no_heading_for_a_section_it_has_no_lines_for(
+            self, ledger):
+        assert RELATED_HEADING not in compile_view(ledger).text
+
+    def test_the_counters_are_zero(self, ledger):
+        view = compile_view(ledger)
+        assert (view.related, view.related_omitted) == (0, 0)
+
+    def test_an_empty_store_with_edges_still_compiles_them(self):
+        """The mirror of "an empty state is an empty view": a run whose
+        store holds nothing but whose topology connects two names has
+        something to say, and a block that refused to say it would make the
+        section a passenger of the FACTS section."""
+        view = compile_view(CognitiveState(), related=(edge(),))
+        assert section(view, RELATED_HEADING) == [related_line(edge())]
+
+
+class TestOneEdgeIsOneLine:
+    def test_the_line_names_both_ends_the_relation_and_the_band(self):
+        assert related_line(edge()) == \
+            "related: mcp.job_status#r5 —about→ job:jl-731  [sourced]"
+
+    def test_a_model_graded_edge_says_so_in_the_same_words_a_fact_does(self):
+        """One band vocabulary for the whole block: an edge a model proposed
+        must read as speculative in exactly the word a figure it proposed
+        would read as, or the section becomes a second scale."""
+        line = related_line(
+            edge(authority=EvidenceAuthority.MODEL_HYPOTHESIS))
+        assert line.endswith("[speculative]")
+
+    def test_an_ungraded_edge_is_not_a_low_band(self):
+        assert related_line(edge(authority=None)).endswith(f"[{UNGRADED}]")
+
+    def test_a_confusable_in_a_subject_is_escaped_like_a_fact_line_s(self):
+        """The one reason this line does not use the graph package's own
+        ``Edge.render``: two subjects that render identically are two
+        subjects a reader cannot tell apart, and this section is nothing but
+        identity."""
+        line = related_line(edge(dst="job:jl‍731"))
+        assert "\\u200d" in line
+
+    def test_the_lines_are_in_the_order_they_were_handed_over(self):
+        rows = (edge(dst="job:a"), edge(dst="job:b"), edge(dst="job:c"))
+        view = compile_view(CognitiveState(), related=rows)
+        assert section(view, RELATED_HEADING) == \
+            [related_line(row) for row in rows]
+
+    def test_the_section_renders_last(self):
+        """Rendered last, dropped first — see `TestTheSectionsAreOneList`.
+        A reader meets what is established before what is merely
+        connected."""
+        state = CognitiveState()
+        observe(state, "mcp.ledger_entry#r1", "units", 12)
+        text = compile_view(state, related=(edge(),)).text
+        assert text.index(FACTS_HEADING) < text.index(RELATED_HEADING)
+
+
+class TestTheWalksOwnCapIsItsOwnSentence:
+    """Three truncations, three sentences: the budget's, the frontier's and
+    the walk's.  Saying "not shown at this budget" for a working set that
+    hit its own node cap would name the wrong number and send a reader to
+    change the wrong one."""
+
+    def test_the_note_is_first_in_the_section(self):
+        view = compile_view(CognitiveState(), related=(edge(),),
+                            related_capped=True)
+        assert section(view, RELATED_HEADING)[0] == RELATED_CAPPED
+
+    def test_it_is_counted_as_one_of_the_section_s_lines(self):
+        view = compile_view(CognitiveState(), related=(edge(),),
+                            related_capped=True)
+        assert view.related == 2
+
+    def test_a_capped_walk_that_reached_nothing_renders_no_section(self):
+        """Only over rows, exactly as `FRONTIER_CAPPED` is: a note about
+        more than these, over nothing at all, announces a neighbourhood the
+        block is not showing."""
+        assert not compile_view(CognitiveState(), related=(),
+                                related_capped=True).text
+
+    def test_an_uncapped_walk_says_nothing_about_a_cap(self):
+        view = compile_view(CognitiveState(), related=(edge(),))
+        assert RELATED_CAPPED not in view.text
+
+
+class TestADroppedRelatedLineSendsNobodyLooking:
+    """The fourth omission clause, and the reason there are four.
+
+    A related line is computed — hydrated from the frontier against the
+    graph, every step — so it is in no receipt and no result store, and the
+    sentence that sent a model there would be the block promising what it
+    knows is not there.
+    """
+
+    def _tight(self, count: int = 6, budget: int = 420):
+        rows = tuple(edge(src=f"mcp.job_status#r{index}",
+                          dst=f"job:jl-{index}") for index in range(count))
+        return compile_view(CognitiveState(), related=rows,
+                            budget_chars=budget)
+
+    def test_the_lines_that_did_not_fit_are_named(self):
+        view = self._tight()
+        assert view.related_omitted
+        assert f"+{view.related_omitted} related line" in view.text
+
+    def test_the_clause_does_not_point_at_the_result_store(self):
+        assert OMITTED.split("{what}")[1][:40] not in self._tight().text
+
+    def test_it_says_the_walk_runs_again(self):
+        assert RELATED_OMITTED.split("{what}")[1] in self._tight().text
+
+    def test_a_block_that_lost_nothing_says_nothing(self):
+        assert RELATED_OMITTED.split("{what}")[1] not in \
+            compile_view(CognitiveState(), related=(edge(),)).text
+
+    def test_edges_go_before_a_hypothesis_does(self):
+        """The drop order, rendered rather than asserted as data: a guess is
+        at least somebody's claim about the problem, and a related line is
+        not a claim at all."""
+        state = CognitiveState()
+        guess(state, "mcp.guess#g0", "route", "road-0")
+        rows = tuple(edge(src=f"mcp.job_status#r{index}",
+                          dst=f"job:jl-{index}") for index in range(4))
+        view = compile_view(state, related=rows, budget_chars=430)
+        assert view.related_omitted and not view.hypotheses_omitted
 
 
 # ── what the budget does ─────────────────────────────────────────────────────
@@ -939,15 +1111,19 @@ class TestTheBudgetIsHardAndNeverSilent:
 
 
 #: The shapes the oracle below is run over, as ``(facts, conflicts, owed,
-#: hypotheses)``.  Small on purpose — the oracle renders every cut of every
-#: shape at every budget, and a few hundred pairs settle the question that
-#: a thousand would settle no better.  Each shape reaches a different
-#: branch: nothing to drop but facts; a section that empties; a store whose
-#: conflicts have to outlive its facts; a frontier with no receipts under
-#: it at all; and a block in which every one of the four sections has to
-#: give something up.
-_SHAPES = {(12, 0, 0, 0), (20, 0, 0, 4), (8, 2, 0, 3), (30, 1, 0, 0),
-           (5, 3, 0, 5), (0, 0, 6, 0), (10, 1, 4, 3), (6, 2, 9, 2)}
+#: hypotheses, related)``.  Small on purpose — the oracle renders every cut
+#: of every shape at every budget, and a few hundred pairs settle the
+#: question that a thousand would settle no better.  Each shape reaches a
+#: different branch: nothing to drop but facts; a section that empties; a
+#: store whose conflicts have to outlive its facts; a frontier with no
+#: receipts under it at all; a block in which every one of the five sections
+#: has to give something up; and — Phase 20a's — a block that is nothing but
+#: related lines, and one where related lines have to go while a hypothesis
+#: stays.
+_SHAPES = {(12, 0, 0, 0, 0), (20, 0, 0, 4, 0), (8, 2, 0, 3, 0),
+           (30, 1, 0, 0, 0), (5, 3, 0, 5, 0), (0, 0, 6, 0, 0),
+           (10, 1, 4, 3, 0), (6, 2, 9, 2, 0),
+           (0, 0, 0, 0, 5), (4, 0, 0, 2, 6), (6, 1, 3, 2, 4)}
 
 #: The budgets each shape is measured at: a stride across the whole range
 #: from "not even the header" to "everything fits", chosen with a stride
@@ -955,16 +1131,21 @@ _SHAPES = {(12, 0, 0, 0), (20, 0, 0, 4), (8, 2, 0, 3), (30, 1, 0, 0),
 _BUDGETS = tuple(range(120, 1400, 17))
 
 
-def _shaped(shape) -> CognitiveState:
-    """A store of exactly *shape*, one receipt per fact.
+def _shaped(shape):
+    """``(state, related)`` of exactly *shape*, one receipt per fact.
 
     One receipt per fact is what lets the oracle know the header's receipt
     count without re-deriving it: it is the number of facts shown.  The
     conflicts are model-against-receipt disagreements, which is the kind a
     shadow run actually produces, and the owed lines are one goal's worth
     of premises nothing satisfies.
+
+    The related edges are handed back **beside** the state rather than put
+    into it, because that is what they are: a working set the caller
+    hydrated out of a sibling package and passed in, exactly as the runtime
+    does (:func:`core.runtime.cognition.related_rows`).
     """
-    facts, conflicts, owed, hypotheses = shape
+    facts, conflicts, owed, hypotheses, related = shape
     state = CognitiveState()
     state.declare_field("units", "one")
     for index in range(facts):
@@ -975,10 +1156,14 @@ def _shaped(shape) -> CognitiveState:
         guess(state, f"mcp.guess#g{index}", "route", f"road-{index}")
     if owed:
         owes(state, chain(owed))
-    return state
+    edges = tuple(RelatedEdge(src=f"mcp.job_status#r{index}",
+                              relation="about", dst=f"job:jl-{index}",
+                              authority=EvidenceAuthority.SOURCE)
+                  for index in range(related))
+    return state, edges
 
 
-def _brute_force(state: CognitiveState, budget: int) -> str:
+def _brute_force(state: CognitiveState, related, budget: int) -> str:
     """What a renderer alone would choose: the first cut in order that fits.
 
     No arithmetic, no prefix sums, no reserved lengths — every cut in the
@@ -990,30 +1175,37 @@ def _brute_force(state: CognitiveState, budget: int) -> str:
     The drop order is **spelled out here** rather than imported from
     :data:`~core.cognition.compile.DROP_ORDER`, which is the whole point of
     an oracle: a second statement of the property, written by hand, that
-    disagrees when the first one moves.  Hypotheses, then facts, then owed,
-    then conflicts — and the interesting one is owed above facts, because a
-    dropped fact is still in the result store under the handle its line
-    printed and a dropped obligation is nowhere at all.
+    disagrees when the first one moves.  Related, then hypotheses, then
+    facts, then owed, then conflicts — and two of the five are interesting.
+    Owed above facts, because a dropped fact is still in the result store
+    under the handle its line printed and a dropped obligation is nowhere at
+    all; and related above everything, because a related line is two names
+    and a relation with no claim in it, and the walk that produced it runs
+    again next step.
     """
-    whole = compile_view(state, budget_chars=1_000_000)
-    held = (whole.facts, whole.conflicts, whole.owed, whole.hypotheses)
+    whole = compile_view(state, related=related, budget_chars=1_000_000)
+    held = (whole.facts, whole.conflicts, whole.owed, whole.hypotheses,
+            whole.related)
     headings = (FACTS_HEADING, CONFLICTS_HEADING, OWED_HEADING,
-                HYPOTHESES_HEADING)
+                HYPOTHESES_HEADING, RELATED_HEADING)
     lines = [section(whole, heading) if count else []
              for heading, count in zip(headings, held)]
-    facts, clashes, owed, guesses = (len(rows) for rows in lines)
-    for dropped in range(facts + clashes + owed + guesses + 1):
-        out_guesses = min(dropped, guesses)
-        out_facts = min(dropped - out_guesses, facts)
-        out_owed = min(dropped - out_guesses - out_facts, owed)
-        out_clashes = min(dropped - out_guesses - out_facts - out_owed,
-                          clashes)
+    facts, clashes, owed, guesses, edges = (len(rows) for rows in lines)
+    for dropped in range(facts + clashes + owed + guesses + edges + 1):
+        out_edges = min(dropped, edges)
+        out_guesses = min(dropped - out_edges, guesses)
+        out_facts = min(dropped - out_edges - out_guesses, facts)
+        out_owed = min(dropped - out_edges - out_guesses - out_facts, owed)
+        out_clashes = min(
+            dropped - out_edges - out_guesses - out_facts - out_owed,
+            clashes)
         kept = (facts - out_facts, clashes - out_clashes, owed - out_owed,
-                guesses - out_guesses)
+                guesses - out_guesses, edges - out_edges)
         text = mod._render([rows[:keep] for rows, keep in zip(lines, kept)],
                            # one receipt per fact — see `_shaped`
                            kept[0],
-                           (out_facts, out_clashes, out_owed, out_guesses))
+                           (out_facts, out_clashes, out_owed, out_guesses,
+                            out_edges))
         if len(text) <= budget:
             return text
     return ""
@@ -1091,10 +1283,11 @@ class TestTheCutIsArithmeticAndNotRepeatedRendering:
         that only asked "does one more line fit at a slightly larger
         budget" passed through all of it.
         """
-        state = _shaped(shape)
+        state, related = _shaped(shape)
         for budget in _BUDGETS:
-            assert compile_view(state, budget_chars=budget).text == \
-                _brute_force(state, budget), (shape, budget)
+            assert compile_view(state, related=related,
+                                budget_chars=budget).text == \
+                _brute_force(state, related, budget), (shape, budget)
 
     def test_the_renderer_and_the_arithmetic_are_checked_against_each_other(
             self, monkeypatch):

@@ -67,9 +67,12 @@ an answer.  Nothing in here reads the clock or a random source, so two runs of
 the same log under different ``PYTHONHASHSEED`` values produce the same ids,
 the same neighbours, the same paths and the same working sets.
 
-Three modules: :mod:`~core.cognition.graph.store` (the records, the store and
+Four modules: :mod:`~core.cognition.graph.store` (the records, the store and
 its reads), :mod:`~core.cognition.graph.events` (the log and its own version),
-:mod:`~core.cognition.graph.hydrate` (the bounded working set).
+:mod:`~core.cognition.graph.hydrate` (the bounded working set), and
+:mod:`~core.cognition.graph.harvest` (where the edges come from: the kernel's
+own links, translated and never guessed, plus the seeds an owed line implies
+and the bounds this release hydrates at).
 """
 
 from core.cognition.graph.events import COUNT_KEY as GRAPH_COUNT_KEY
@@ -84,6 +87,9 @@ from core.cognition.graph.events import PACKAGE_KEY as GRAPH_PACKAGE_KEY
 # two different strings and no error anywhere — the shadow lane reads both
 # logs and is exactly the caller this would happen to.
 from core.cognition.graph.events import SCHEMA_KEY as GRAPH_SCHEMA_KEY
+from core.cognition.graph.harvest import (HOP_BOUND, LINK_RELATION, MAX_EDGES,
+                                          MAX_NODES, LinkHarvest, seeds_from,
+                                          working_set)
 from core.cognition.graph.hydrate import WorkingSet, hydrate
 from core.cognition.graph.store import (DIGEST_KEYS, DIRECTIONS, EDGE_KEYS,
                                         KIND_KEYS, NAME_CAP, STATS_KEYS, Edge,
@@ -101,12 +107,19 @@ __all__ = [
     "GRAPH_PACKAGE_KEY",
     "GRAPH_PACKAGE_VERSION",
     "GRAPH_SCHEMA_KEY",
+    "HOP_BOUND",
     "KIND_KEYS",
     "KnowledgeGraph",
+    "LINK_RELATION",
+    "LinkHarvest",
+    "MAX_EDGES",
+    "MAX_NODES",
     "NAME_CAP",
     "NodeKind",
     "NodeView",
     "STATS_KEYS",
     "WorkingSet",
     "hydrate",
+    "seeds_from",
+    "working_set",
 ]
