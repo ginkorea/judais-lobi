@@ -1723,7 +1723,7 @@ missions:
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
 
-`python -m core.eval` has seven subcommands. The three a platform starts with
+`python -m core.eval` has nine subcommands. The three a platform starts with
 are these:
 
 ```
@@ -1733,6 +1733,7 @@ python -m core.eval score    --suite path/to/suite.yml --runs DIR
 python -m core.eval measure  --suite path/to/suite.yml --out DIR -- <your spawn line>
 python -m core.eval ablation --suite path/to/suite.yml --out DIR -- <your spawn line>
 python -m core.eval corpus   --out corpus.jsonl --from-runs DIR --note "<your data>"
+python -m core.eval context  --runs DIR
 ```
 
 * **`check`** refuses a suite that cannot be graded, before anybody spends a GPU
@@ -1798,6 +1799,22 @@ python -m core.eval corpus   --out corpus.jsonl --from-runs DIR --note "<your da
   over your infrastructure. **It does not route**: that is ROADMAP §2.9.7 and
   it is gated on differences being statistically meaningful. See `EVAL.md`
   §16 and `MODELS.md` §5.
+* **`context`** runs nothing either, and answers the question every switch
+  above eventually raises: *what does it cost*. Point it at run directories
+  you already have — your archive, or an ablation's own output directory —
+  and it reads
+  the `model.jsonl` the recorder wrote and reports, per model call, how large
+  the request was, how much of it was the **pinned prefix** (the longest
+  common prefix of that conversation's requests, which is what a provider's
+  cache keys on), how much was the compiled view, and how much was
+  everything else; per run it reports the growth curve, the peak, and
+  **whether the pinned head stayed byte-stable** — the regression a per-step
+  rewrite of the system prompt causes and nothing else catches. Characters
+  always; tokens where your provider reported `usage`, and a report over a
+  recording without one says *characters only* rather than dividing by four.
+  `ablation` prints its figures beside each arm's pass rate, so an arm that
+  added context and no capability is flagged in the same table that scored
+  it. See `EVAL.md` §18.
 
 `live` — a platform's own suite driven against a running deployment rather than
 against an archive — is the one that has not landed.

@@ -73,6 +73,14 @@ pairs its arms; a lucky single is not a result.
   warns when a constrained report is paired against an unconstrained one.
   A model whose backend cannot enforce a grammar is refused rather than
   measured as if it had one.
+- `core.eval context --runs DIR` — not a rate: the **price**. What the runs
+  you already recorded cost in context, per model call, split into the
+  pinned prefix (the longest common prefix of that conversation's requests,
+  which is what a provider's cache keys on), the compiled view's block and
+  the rest, with the growth curve and a byte-stability check on the pinned
+  head. Characters always; tokens where your provider reported `usage`.
+  Read it beside a rate, never instead of one — an arm that adds context
+  and no capability is what it exists to make visible (`EVAL.md` §18).
 - `core.eval corpus` is not an instrument and measures nothing — it is
   step 4.1's builder, listed here only because the same reports feed both:
   a report you measured with is a report you can train from.

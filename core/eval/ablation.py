@@ -59,6 +59,18 @@ endpoint; every table here carries the provider, the model and the commit
 under it, out of :func:`core.eval.measure.header`, which is the one owner
 of that header.
 
+**Every arm's price prints beside its rate.**  The owner's commissioning
+criterion for the whole cognitive arc is that *all of this we add, does not
+make the context bloated and the agent less capable* — two halves, and this
+module only ever measured the second.  So each arm's row carries the mean
+request size and the compiled view's share of it, computed by
+:func:`core.eval.context.summarise_runs` over the arm's **own recorded
+runs**, and the paired table carries the delta of that beside the delta in
+missions passed.  "This arm gained four and cost 2.1 KB a step" is then one
+line rather than two beliefs.  Where an arm cost context and passed no more
+than the baseline, :func:`bloat` says so in as many words — a flag and not a
+verdict, because the run that says it is one run.
+
 **Nothing here spawns anything.**  :func:`core.eval.run.run_suite` is the
 one spawner in this package, as it is for ``measure``.
 """
@@ -77,6 +89,7 @@ from typing import (Any, Dict, FrozenSet, List, Mapping, Optional, Sequence,
                     Tuple)
 
 from core.durable import atomic_write_text
+from core.eval.context import ContextSummary, summarise_runs
 from core.eval.extraction import wilson
 from core.eval.measure import (Unmeasurable, _halves, _narrowed, _table,
                                _withheld, header, report_paths)
@@ -85,9 +98,9 @@ from core.eval.score import Report, score_suite
 from core.eval.suite import RubricChange, Suite, missions_in
 
 __all__ = [
-    "ARMS", "Arm", "ArmResult", "Ablation", "Unavailable",
+    "ARMS", "Arm", "ArmResult", "Ablation", "Unavailable", "BLOAT_NOTE",
     "accepted_flags", "probe_argv", "availability", "ablate", "paired",
-    "band", "add_parser", "from_args",
+    "band", "bloat", "add_parser", "from_args",
 ]
 
 
@@ -464,6 +477,31 @@ class Ablation:
             out[name] = (done + int(value), total + 1)
         return out
 
+    def context(self, result: "ArmResult", half: str) -> ContextSummary:
+        """What this arm's runs of *half* cost in context.
+
+        Per half and not per arm, because the run directories are per
+        mission: the half's keys name exactly the directories its missions
+        left, and a single per-arm figure would quietly average a held-out
+        mission's cost into the training half's.  A path that is not there
+        contributes nothing — a skipped arm has no runs and gets the empty
+        summary, which renders as ``—`` rather than as a zero.
+
+        One owner of every figure in it:
+        :func:`core.eval.context.summarise_runs`, which is the same code
+        ``python -m core.eval context`` reports from.  A second tally here
+        is the six-of-ten-fields bug with a new place to happen.
+
+        Recomputed on each call rather than cached.  It is a bounded read
+        of the directories this ablation just wrote, at the end of a run
+        that spent minutes per mission, and a cache with no invalidation
+        on a report that can be rendered either side of a change is the
+        more expensive mistake.
+        """
+        return summarise_runs([directory / key
+                               for directory in result.directories
+                               for key in self.keys.get(half, ())])
+
     @property
     def baseline(self) -> Optional[ArmResult]:
         """The arm every other one is read against: the first that ran.
@@ -505,6 +543,8 @@ class Ablation:
                               for half in self.keys} if self.classes else {},
                  "interval": {half: list(band(result, half))
                               for half in self.keys},
+                 "context": {half: self.context(result, half).as_dict()
+                             for half in self.keys},
                  "infra": {half: [{"mission": key, "run_id": run_id,
                                    "why": why}
                                   for key, run_id, why
@@ -515,6 +555,11 @@ class Ablation:
                  else {},
                  "reports": [report.as_dict() for report in result.reports]}
                 for result in self.arms],
+            # Machine-readable beside the sentence in the Markdown, so a
+            # platform can gate on the owner's criterion without matching
+            # on prose.
+            "capability_vs_cost": {half: bloat(self, half)
+                                   for half in self.keys},
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -539,6 +584,66 @@ def paired(baseline: Optional[ArmResult], arm: ArmResult, half: str
     after = arm.passed(half)
     return {key: int(after[key]) - int(before[key])
             for key in before if key in after}
+
+
+# ── the owner's criterion ────────────────────────────────────────────────────
+
+#: The sentence an arm earns by costing context and buying nothing.
+#:
+#: One spelling, in the words the criterion was set in, because it is the
+#: line a reader will search the report for.  It is a **flag and not a
+#: verdict**: one ablation is one run of twenty dice, and the arm that was
+#: flat here may be the arm that carries the next suite.  What is not
+#: arguable is the arithmetic — the context went up and the missions did
+#: not — and that is all this says.
+BLOAT_NOTE = (
+    "**`{arm}` added context and no capability.** Against `{baseline}` it "
+    "moved the missions passed by {passes:+d} while adding {chars:,.0f} "
+    "characters to the mean model call ({before:,.0f} → {after:,.0f}). The "
+    "owner's criterion — *does not make the context bloated and the agent "
+    "less capable* — is not met by this arm on this run. Flagged, not "
+    "judged: one ablation is one run.")
+
+
+def bloat(ablation: "Ablation", half: str) -> List[Dict[str, Any]]:
+    """Every arm that cost context and passed no more than the baseline.
+
+    The condition is deliberately the weak one — *pass delta ≤ 0 while
+    context delta > 0* — rather than "made things worse".  An arm that
+    breaks nothing and fixes nothing is the one the owner's sentence is
+    about: it is invisible in a pass-rate table and it is spending the
+    window every step.
+
+    Silent where either side was not measured.  An arm whose runs recorded
+    no ``model.jsonl`` has no cost figure, and inventing one so that a note
+    can fire would be the report manufacturing its own evidence.
+    """
+    base = ablation.baseline
+    if base is None:
+        return []
+    before = ablation.context(base, half)
+    out: List[Dict[str, Any]] = []
+    for result in ablation.arms:
+        if not result.ran or result is base:
+            continue
+        after = ablation.context(result, half)
+        if not (before.measured and after.measured):
+            continue
+        deltas = paired(base, result, half)
+        passes = sum(1 for value in deltas.values() if value > 0) \
+            - sum(1 for value in deltas.values() if value < 0)
+        chars = after.mean_chars - before.mean_chars
+        if passes > 0 or chars <= 0:
+            continue
+        out.append({"arm": result.arm.name, "baseline": base.arm.name,
+                    "half": half, "passes": passes, "chars": round(chars, 1),
+                    "before": round(before.mean_chars, 1),
+                    "after": round(after.mean_chars, 1),
+                    "note": BLOAT_NOTE.format(
+                        arm=result.arm.name, baseline=base.arm.name,
+                        passes=passes, chars=chars,
+                        before=before.mean_chars, after=after.mean_chars)})
+    return out
 
 
 # ── running it ───────────────────────────────────────────────────────────────
@@ -617,6 +722,28 @@ def _interval(result: ArmResult, half: str) -> str:
     return "—" if not edges else f"{edges[0]:.0%}–{edges[1]:.0%}"
 
 
+def _chars(summary: ContextSummary) -> str:
+    """One arm's mean request size, or ``—`` for an arm with no recording.
+
+    ``—`` and never ``0``: an arm whose runs recorded no ``model.jsonl``
+    did not send a zero-character request, it sent requests nobody wrote
+    down.  See :func:`core.eval.context.cost_of_run`, which refuses such a
+    directory by name for the same reason.
+    """
+    return f"{summary.mean_chars:,.0f}" if summary.measured else "—"
+
+
+def _block_share(summary: ContextSummary) -> str:
+    return f"{summary.block_share:.1%}" if summary.measured else "—"
+
+
+def _context_delta(before: ContextSummary, after: ContextSummary) -> str:
+    """The arm's context cost against the baseline's, per model call."""
+    if not (before.measured and after.measured):
+        return "—"
+    return f"{after.mean_chars - before.mean_chars:+,.0f}"
+
+
 def _identity(meta: Mapping[str, Any]) -> str:
     """The model, for printing beside a number.  Never omitted."""
     return (f"{meta.get('provider') or '—'}/{meta.get('model') or '—'}")
@@ -689,6 +816,7 @@ def _markdown(ablation: Ablation) -> str:
                 continue
             missions = result.passed(half)
             runs_passed, runs_total = result.runs(half)
+            cost = ablation.context(result, half)
             rows.append([
                 f"`{result.arm.name}`", f"`{identity}`",
                 f"{len([v for v in missions.values() if v])}/{len(missions)}",
@@ -696,9 +824,11 @@ def _markdown(ablation: Ablation) -> str:
                 _rate(runs_passed, runs_total),
                 _interval(result, half),
                 str(len(result.environment(half))),
+                _chars(cost), _block_share(cost),
             ])
         lines += _table(rows, ["arm", "model", "missions (all repeats)",
-                               "runs k/n", "rate", "95% Wilson", "infra"])
+                               "runs k/n", "rate", "95% Wilson", "infra",
+                               "chars/call", "view share"])
         lines.append("")
         lines.append(
             "*missions* is all-must-pass: a mission counts for an arm only "
@@ -708,6 +838,15 @@ def _markdown(ablation: Ablation) -> str:
             "of k, out of n and out of the interval, and listed below — a "
             "flag delta cannot be credited or blamed for a run the endpoint "
             "ate.")
+        lines.append("")
+        lines.append(
+            "*chars/call* is the mean size of the requests this arm's runs "
+            "actually sent, and *view share* the compiled view's part of "
+            "them, out of the recordings themselves — `python -m core.eval "
+            "context --runs <the directory below>` prints the whole profile, "
+            "including the growth curve and whether the pinned prefix held. "
+            "`—` is an arm whose runs recorded no model log, which is not "
+            "the same fact as a cheap one.")
         lines.append("")
         for result in ablation.arms:
             environment = result.environment(half) if result.ran else []
@@ -763,6 +902,7 @@ def _markdown(ablation: Ablation) -> str:
             lines.append(f"### {half} — paired against `{base.arm.name}`")
             lines.append("")
             rows = []
+            before = ablation.context(base, half)
             for result in others:
                 deltas = paired(base, result, half)
                 fixed = sorted(k for k, d in deltas.items() if d > 0)
@@ -771,16 +911,28 @@ def _markdown(ablation: Ablation) -> str:
                     f"`{result.arm.name}`", f"`{result.arm.delta}`",
                     f"+{len(fixed)}", f"-{len(broke)}",
                     str(len(deltas) - len(fixed) - len(broke)),
+                    _context_delta(before, ablation.context(result, half)),
                     ", ".join(f"`{k}`" for k in fixed) or "—",
                     ", ".join(f"`{k}`" for k in broke) or "—",
                 ])
             lines += _table(rows, ["arm", "flag delta", "fixed", "broke",
-                                   "unchanged", "which fixed", "which broke"])
+                                   "unchanged", "Δ chars/call", "which fixed",
+                                   "which broke"])
             lines.append("")
             lines.append(f"Paired, mission by mission, `{identity}`: the "
                          f"same prompt and the same plane on both sides, "
-                         f"one flag delta between them.")
+                         f"one flag delta between them. **Δ chars/call is "
+                         f"the price of that delta** — what the arm added "
+                         f"to the mean model call against `{base.arm.name}` "
+                         f"— so what an arm bought and what it cost are one "
+                         f"line.")
             lines.append("")
+            flagged = bloat(ablation, half)
+            if flagged:
+                lines.append(f"#### {half} — capability vs cost")
+                lines.append("")
+                lines += [entry["note"] for entry in flagged]
+                lines.append("")
 
     lines.append("Train and test are reported apart, always.")
     lines.append("")
