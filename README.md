@@ -418,6 +418,7 @@ python -m core.eval measure --out DIR -- …    # the same suite over a matrix o
 python -m core.eval score   --runs DIR        # score run directories that already exist — no GPU
 python -m core.eval corpus  --out FILE …       # validated traces → fine-tune examples, no GPU
 python -m core.eval context --runs DIR        # what the recorded runs COST in context — no GPU
+python -m core.eval suggest-pack --schemas tools_list.json --runs DIR   # DRAFT a `cognition:`/`tools:` pack from a plane's own schemas and its receipts — advisory, never loaded, every line carrying its evidence
 ```
 
 A behavioural change nobody scored is a change nobody can defend, which is
@@ -827,7 +828,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/skills/library/` — the three first-party packs, loaded by `core.skills.load`/`packs`
 * `core/runtime/grounding.py`, `results.py`, `reading.py` — the claim validator, the per-mission result store, the field-misreading tier
 * `core/runtime/replay.py` — recorded model/tool calls and `--replay`
-* `core/eval/` — the eval harness: suite, run, score, measure, ablation, extraction, corpus, registry, context
+* `core/eval/` — the eval harness: suite, run, score, measure, ablation, extraction, corpus, registry, context, suggest-pack
 * `core/critic/mission.py` — the mission-tier critic (`advisory: true`, local first)
 * `core/runtime/schema_check.py` — argument validation against a tool's own JSON Schema
 * `core/runtime/answer_stream.py` — `answer_delta` fragments out of a half-written reply

@@ -131,6 +131,11 @@ NOT_A_MISSION_FLAG = {
                 "developer's and a CI job's tool. Nothing spawns a mission "
                 "with it and no wire carries it, so it is not part of the "
                 "contract the same way --suite, --runs and --out are not",
+    "--out": "the harness's own output path (§9) — `run`, `measure`, "
+             "`ablation`, `corpus` and `suggest-pack` all take one, and §9 "
+             "names it in prose where `suggest-pack` refuses a path inside a "
+             "skill. Nothing spawns a mission with it and no wire carries it; "
+             "the --probes reason above has always named it as the example",
     "--constrained": "the same subcommand's (§9). It turns on constrained "
                      "decoding for the extraction instrument's own calls — a "
                      "library-and-backend seam (BackendCapabilities."

@@ -64,7 +64,8 @@ __all__ = [
     "ESTABLISHES", "IDENTIFIERS", "PRODUCES", "SHAPE", "VERBS", "WIRE_VERBS",
     "MANIFEST", "WIRE", "PROBLEM_SEP",
     "DeclarationError", "Discrepancy", "PlaneDeclarations", "Produced",
-    "ToolDeclaration", "ToolEntry", "ToolsBlock", "thawed",
+    "ToolDeclaration", "ToolEntry", "ToolsBlock", "properties_of",
+    "read_identifiers", "thawed",
 ]
 
 #: The key the ``reasoning.jsonl`` declarations record states its own
@@ -572,7 +573,7 @@ class ToolsBlock:
                 f"JSON-schema mapping, and only for a server that publishes "
                 f"none of its own — where one is published the wire's wins")
             shape = None
-        elif shape is not None and not _properties(shape):
+        elif shape is not None and not properties_of(shape):
             # *Does this schema say anything* has ONE owner, and it is the
             # same function on both sides of the door: a manifest fallback
             # of `{}` or `{type: object}` narrows nothing, exactly as a
@@ -613,7 +614,7 @@ class ToolsBlock:
 # ── door 1: the wire ─────────────────────────────────────────────────────────
 
 
-def _properties(schema: Any) -> Dict[str, Any]:
+def properties_of(schema: Any) -> Dict[str, Any]:
     """The keys a published schema says a result carries, or nothing.
 
     **This is what "a bare object declares nothing" is made of**, and it is
@@ -628,6 +629,13 @@ def _properties(schema: Any) -> Dict[str, Any]:
     A second predicate saying the same thing in its own words is the second
     answer to *does this schema say anything*, and the day the two disagree
     is the day a fallback-shaped tool starts refusing something.
+
+    **Public, because a second reader exists now.**  Promoted out of
+    ``_properties`` the way ``harvest_fields``' ``scalars`` sink was, and
+    for the same reason: :mod:`core.eval.suggest` reads saved ``tools/list``
+    schemas to draft a pack, and the alternative to importing this one was a
+    private import across packages or a fourth spelling of *does this schema
+    say anything*.
     """
     return dict(schema.get("properties") or {}) if _is_mapping(schema) else {}
 
@@ -835,7 +843,7 @@ class PlaneDeclarations:
           costs nothing and it is what the author wrote) and the reader is
           told;
         * **a bare object contributes nothing and refuses nothing** — see
-          :func:`_properties`, which is where that is true rather than a
+          :func:`properties_of`, which is where that is true rather than a
           rule restated here.
         """
         block = (manifest if isinstance(manifest, ToolsBlock)
@@ -915,7 +923,7 @@ class PlaneDeclarations:
                        f"could not use, so it contributes nothing: {problem}"))
 
         shape = base.shape
-        if _properties(schema):
+        if properties_of(schema):
             shape = WIRE
             if entry is not None and entry.shape is not None:
                 notes.append(Discrepancy(
@@ -975,8 +983,8 @@ class PlaneDeclarations:
         # * only keys the ENTRY declared. `defaults` are a statement about
         #   the plane, and a tool that does not carry the envelope's handle
         #   is an ordinary tool, not a stale memory of one.
-        if sources.get(IDENTIFIERS) == MANIFEST and _properties(schema):
-            root = set(_properties(schema))
+        if sources.get(IDENTIFIERS) == MANIFEST and properties_of(schema):
+            root = set(properties_of(schema))
             entry_keys = set(entry.identifiers) if entry is not None else set()
             for path in sorted(set(identifiers) & entry_keys):
                 head = path.split(".", 1)[0].removesuffix("[]")

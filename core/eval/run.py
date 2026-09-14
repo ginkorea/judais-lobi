@@ -1,12 +1,13 @@
 # core/eval/run.py — spawn the missions, capture the streams, score them
 
 """The harness's command line: ``run``, ``measure``, ``ablation``,
-``score``, ``check``, ``extraction``, ``corpus``, ``registry``, ``context``.
+``score``, ``check``, ``extraction``, ``corpus``, ``registry``, ``context``,
+``suggest-pack``.
 
-Nine subcommands because there are nine jobs, and only four of them need a
+Ten subcommands because there are ten jobs, and only four of them need a
 model (``run``, ``measure``, ``ablation``, ``extraction``); ``score``,
-``check``, ``corpus``, ``registry`` and ``context`` work entirely from what
-was already recorded:
+``check``, ``corpus``, ``registry``, ``context`` and ``suggest-pack`` work
+entirely from what was already recorded:
 
 ``run``
     Spawns the mission command once per mission — the platform's own spawn
@@ -69,6 +70,14 @@ was already recorded:
     second was measured.  It reads ``model.jsonl``, spends no model, and
     ``ablation`` calls into it so that the price of an arm prints beside
     its pass rate.  See :mod:`core.eval.context`.
+``suggest-pack``
+    The one that measures nothing: a saved ``tools/list`` and recorded
+    ``tools.jsonl`` receipts in, a **draft** ``cognition:``/``tools:`` pack
+    out, every line carrying the evidence behind it and none of it loaded
+    by anything.  The subject-spine design's answer to authoring cost, and
+    its whole discipline is that a schema-derived line is better grounded
+    than an induced one and neither is auto-committed — see
+    :mod:`core.eval.suggest`.
 
 **A run directory is a RunStore directory.**  That is the whole agreement
 between this harness, the recorder and a platform's archive: one directory per
@@ -415,6 +424,13 @@ def _parser() -> argparse.ArgumentParser:
     from core.eval.context import add_parser as _add_context
     _add_context(subs)
 
+    # And after that, under the same open-list rule: `suggest-pack` reads a
+    # saved schema file and recorded receipts and drafts a pack nobody
+    # loads. No `common` either — no suite, no half, nothing to spawn, and
+    # no model. See `core.eval.suggest`.
+    from core.eval.suggest import add_parser as _add_suggest
+    _add_suggest(subs)
+
     return parser
 
 
@@ -450,6 +466,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "context":
         from core.eval.context import from_args as _context
         return _context(args)
+    # And the furthest of all: `suggest-pack` opens a file somebody saved
+    # off a server and receipts somebody recorded, and writes a page for a
+    # person to read. There is no suite anywhere in that sentence.
+    if args.command == "suggest-pack":
+        from core.eval.suggest import from_args as _suggest
+        return _suggest(args)
 
     try:
         suite = resolve_suite(args.suite)

@@ -25,7 +25,8 @@ The package is six modules and one rule:
 * :mod:`core.eval.score` — the verdict, computed **only** from the recorded
   stream.
 * :mod:`core.eval.run` — ``python -m core.eval
-  run|measure|ablation|score|check|extraction|corpus|registry|context``.
+  run|measure|ablation|score|check|extraction|corpus|registry|context|
+  suggest-pack``.
 * :mod:`core.eval.corpus` — ROADMAP §2.9.8's first step: validated traces
   in, fine-tune examples out.  The only module here that writes training
   data, and the only rule it has is that a completion is copied and never
@@ -56,6 +57,12 @@ The package is six modules and one rule:
   averaged across interpreters and nothing under the sample floor given an
   interval.  `MODELS.md` §5.  It does not route; it is the evidence a
   router would have to read first.
+* :mod:`core.eval.suggest` — the **draft**: a saved ``tools/list`` and
+  recorded receipts in, a ``cognition:``/``tools:`` pack out that nothing
+  loads.  The only module here whose output is meant to be *edited* rather
+  than read, and the only one whose whole discipline is an epistemic
+  ranking — a line the plane declared is better grounded than a line we
+  induced, and neither is auto-committed.
 
 The rule is the third bullet.  An agent's summary is evidence about its
 reporting, never about its behaviour, so every machine check is answered from
@@ -107,6 +114,16 @@ from core.eval.corpus import (ABSTAINING, ABSTENTION_FLOOR,
                               STANCES, CorpusRefused, Example, balance,
                               from_extraction, from_runs, residue_in,
                               stance_of)
+# The `suggest` FUNCTION is deliberately not re-exported, for the reason
+# `measure` is not: binding that name here would shadow the submodule of
+# the same name, and the next `from core.eval import suggest` would get a
+# function where it wanted a module. `core.eval.suggest.suggest` is the one
+# way in. Nor are that module's `SCHEMA`/`OBSERVED` — `SCHEMA` is already
+# the registry's on this facade, and two owners of one name on one
+# namespace is a name that means whichever module was imported last.
+from core.eval.suggest import (Draft, Evidence, Receipt, Suggestion,
+                               SuggestRefused, kind_of, read_receipts,
+                               read_schemas, skill_directory_above)
 from core.eval.suite import (FLAGS, HARNESS_OWNED_FLAGS, MIN_TEST_MISSIONS,
                              RUBRIC_CHANGES, SPLITS, TEST_SHARE, Mission,
                              MissionMisdeclared, RubricChange, Split, Suite,
@@ -136,4 +153,6 @@ __all__ = [
     "CallCost", "ContextProfile", "ContextSummary", "Conversation", "Part",
     "RunCost", "common_prefix", "cost_of_run", "render_request", "summarise",
     "summarise_runs",
+    "Draft", "Evidence", "Receipt", "Suggestion", "SuggestRefused", "kind_of",
+    "read_receipts", "read_schemas", "skill_directory_above",
 ]

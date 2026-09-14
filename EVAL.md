@@ -168,6 +168,7 @@ python -m core.eval extraction --probes PATH [--provider P] [--model M] [--tempe
 python -m core.eval corpus   --out PATH [--from-extraction REPORT … --probes PATH] [--from-runs DIR …] [--flag-filter K=V …] [--note TEXT] [--floor SHARE] [--balance] [--seed N] [--json]
 python -m core.eval registry [--registry evidence/registry.json] add REPORT.json | show [--model NAME] [--json] | rm DIGEST
 python -m core.eval context  --runs DIR [--json] [--report STEM]
+python -m core.eval suggest-pack [--schemas PATH] [--runs DIR …] [--min-receipts 2] [--out FILE] [--json]
 ```
 
 `--suite` takes two in-repo names and otherwise a path. **`stub`** (the
@@ -1868,3 +1869,125 @@ manufacturing its own evidence.
 It is not a verdict and it is not a budget. A block that costs characters and
 buys capability is the trade this runtime is for; the accounting exists so
 that the trade is visible, priced per arm, in the same table that scored it.
+
+---
+
+## 19. Drafting a pack
+
+`python -m core.eval suggest-pack` — a saved `tools/list` and recorded receipts
+in, a **draft** `cognition:`/`tools:` pack out. It spawns nothing, scores
+nothing and spends no model. It is the only subcommand in this package whose
+output is meant to be **edited** rather than read.
+
+It exists because of a cost the subject-spine design named out loud: the
+cognitive layer is paid for in *authoring*. Somebody has to sit down with a
+plane of forty tools and write which keys are identities and which fields hold
+one value, and until they do, `frontier()` is empty, `CONFLICTS` never fires,
+and the machinery is a bill with no purchase against it. This turns that
+afternoon of pack archaeology into a review pass.
+
+```
+python -m core.eval suggest-pack \
+  --schemas tools_list.json \
+  --runs ~/runs/last-week \
+  --out /tmp/draft-pack.yml
+```
+
+### The hierarchy, and why it is printed on the page
+
+Every line carries one of two marks, and they are **not equally good**:
+
+| mark | where it came from | what it is worth |
+|---|---|---|
+| `schema:` | the plane's own published `outputSchema` — an `enum` a server declared, a key it named `job_id`, a `format: uuid` | better grounded: a server said this about itself |
+| `observed:` | **induced** from recorded receipts | an inference from the receipts that happened to exist |
+
+The induced half is the one with the trap in it, so it is labelled at every
+line: **the absence of a second value is not evidence that a field is
+single-valued.** A field that held one value in fourteen receipts is a field
+nobody has seen contested, which is a weaker sentence, and it is the sentence
+the comment prints — with the fourteen in it.
+
+Neither half is auto-committed. The header says so in the words the design
+used:
+
+```
+# DRAFT — nothing here is loaded; review, prune, ship in a skill.
+…
+# A model may propose; proposing never makes it true — and a generator
+# is no different.
+```
+
+That is the same rule the linking design applies to a model-proposed link and
+the extraction door applies to a model-extracted fact. It generalises to every
+inference tool this project builds, and a generator is not the exception.
+
+### What it draws, from each source
+
+**From the schemas** (`--schemas`, a saved MCP `tools/list` response — the
+response itself, the bare list, or a mapping of name → schema):
+
+* an `enum` of two or more values → a `cardinality: <field>: one` candidate,
+  named by the **bare field**, because that is what `harvest_fields` reports
+  and therefore what a `cognition:` line binds. A one-value enum says the key
+  is a constant, which is a statement about the value and not about how many
+  of them one entity holds, and is not drafted;
+* a key named `*_id`/`*_ref`, or one carrying `format: uuid` → an `identifiers:`
+  candidate, with a kind guessed mechanically from the name (`job_id` → `job`,
+  `corpus_asset_id` → `asset`, `result_ref` → `result`, `source_assets[]` →
+  `asset`);
+* a handle-shaped key that **every** tool publishing a shape carries → the same
+  candidate in `tools: defaults:`, which is what `defaults:` is for. A
+  bare-object adapter does not veto the envelope: most of a real plane's
+  adapters publish bare objects, and intersecting an empty set into the others
+  would delete the envelope from every plane that has one. An envelope key that
+  is *not* handle-shaped (`handling_summary`) is left alone.
+
+**From the receipts** (`--runs`, repeatable; the run directories are found by
+the same bounded walk `context` uses, and the payload read is the dispatch's
+`stdout` — the door the shadow harvests through):
+
+* a field that held **one** value in every receipt it appeared in →
+  a `cardinality: one` candidate, with the receipt count. A receipt that
+  carried *two* values for a field has shown the field is not single-valued
+  and refutes the candidate outright — that half is not induction;
+* a string seen under **two different tools'** keys → a cross-receipt
+  `identifiers:` candidate, naming the value and both places. Bounded: a key
+  whose values repeat across receipts is a *status*, not an identity, so
+  `"ready"` under two tools' `state` is never proposed. A draft that offered
+  `state` as a join key would manufacture exactly the contradictions the
+  linking design exists to avoid.
+
+`--min-receipts` (default 2) is the floor under the induced half. One receipt
+holding one value says nothing about a second receipt.
+
+### Two promises it keeps
+
+**The draft loads.** The rendered YAML is fed — in the tests, every time — to
+the two real readers, `RulePack.from_mapping` and `ToolsBlock.from_mapping`,
+and not to a validator written beside the generator, which would only ever
+agree with it. Candidates are filtered through `read_identifiers`, the same
+reader the wire and the manifest go through, so a payload key a declaration
+cannot name (`2024`, `a b`) is dropped rather than printed. If a draft ever
+fails those doors the subcommand prints the refusal to stderr and exits 1
+rather than handing somebody lines to paste.
+
+**It never writes into a skill.** An `--out` path with a `SKILL.md` above it
+is refused by name, before anything is read. A draft written beside a manifest
+is one `git add` from being a declaration nobody reviewed, and this is the one
+place that boundary is enforceable.
+
+### What it is not
+
+It is not a declaration and it is not a measurement. Every line is a
+hypothesis for a person who knows the plane, and the two things only that
+person can supply are exactly the two this tool cannot: whether a string is an
+*identity* (a semantic claim about the platform's world) and whether a field
+that has held one value will keep to one.
+
+One artefact of that is left visible on purpose: a tool a server advertises as
+`runs_get` and a bridge registered as `mcp.runs_get` gets **two entries**, one
+per source. Those are different tools to `entry_for`, and a generator that
+merged them would be guessing which spelling a manifest should use. Keeping one
+spelling is the first thing a reviewer of the page does — which is what the
+header asked for.
