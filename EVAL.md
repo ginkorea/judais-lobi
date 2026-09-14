@@ -167,6 +167,7 @@ python -m core.eval ablation --out DIR [--report PATH] [--arms A,B] [--only KEY 
 python -m core.eval extraction --probes PATH [--provider P] [--model M] [--temperature T] [--repeats N] [--only ID …] [--max-seconds S] [--report STEM] [--baseline PATH] [--json]
 python -m core.eval corpus   --out PATH [--from-extraction REPORT … --probes PATH] [--from-runs DIR …] [--flag-filter K=V …] [--note TEXT] [--floor SHARE] [--balance] [--seed N] [--json]
 python -m core.eval registry [--registry evidence/registry.json] add REPORT.json | show [--model NAME] [--json] | rm DIGEST
+python -m core.eval context  --runs DIR [--json] [--report STEM]
 ```
 
 `--suite` takes two in-repo names and otherwise a path. **`stub`** (the
@@ -195,6 +196,9 @@ difference between arms — §14.
 `registry` takes no `--suite` either, and runs nothing at all: it ingests the
 report *files* the three measuring subcommands write and keeps a per-model
 profile of what has actually been measured — §16. It does not route.
+
+`context` is the fourth with no suite and the fourth that spends no model: it
+reads the requests the recorder wrote and reports what they **cost** — §18.
 
 `score` scores run directories that already exist — **the no-GPU path**. A run
 directory is a `RunStore` directory: one directory per run with an
@@ -1726,3 +1730,141 @@ it names no model, no provider and no temperature anywhere in it. There is no
 honest partial ingestion of it; a row saying "80% → 96.7%" under a model
 heading would be attributing a framework result to a model. It stays a document
 in `evidence/head-to-head/` and the registry says why it will not take it.
+
+---
+
+## 18. Context accounting
+
+`python -m core.eval context --runs DIR` — recorded runs in, a context-cost
+profile out. Nothing is spawned, nothing is scored and no model is spent.
+
+It exists because of one sentence, said when the cognitive arc was
+commissioned:
+
+> one thing we need to ensure. is that all of this we add, does not make the
+> context bloated and the agent less capable
+
+`ablation` (§15) already answers the second half — it says whether an arm moved
+the pass rate. This answers the first, so that the trade is a **measured
+column and never an inference**. "This arm gained four missions and cost
+2.1 KB a step" is one line in one table; before this, it was two beliefs.
+
+### What it reads
+
+`model.jsonl`, which the recorder writes beside `events.jsonl` for every run
+with a run store on — one line per model call, carrying the **full request**.
+So a profile can be computed for a run that happened last month on somebody
+else's machine. A run directory with no `model.jsonl` is **refused by name**:
+a run that was never recorded and a run that was cheap are two different facts
+and only one is a measurement.
+
+The walk is bounded and finds an `ablation`'s recordings under
+`<out>/<arm>/<rep>/<mission>/runs/<run id>/`, so `--runs <the ablation's --out>`
+works. The harness's own per-mission directory — which holds the captured
+stream and, under `runs/`, the child's recording — is not reported as a
+missing one.
+
+### What one call is measured as
+
+The request is rendered into one string in the order a chat template renders
+it — the tool declarations, then every message's content in wire order — and
+three regions of that string are attributed:
+
+| region | what it is |
+|---|---|
+| `pinned` | the **longest common prefix** of this conversation's requests, computed and never assumed. That is the region a provider's prefix cache can key on: the leading text that did not change |
+| `block` | the compiled view, identified by **two** things: a part beginning with `compile.TITLE` *and* sitting under the role the runtime injects it under (`context.BLOCK_ROLE`). A title is a string — a tool result that echoes the block back begins with the same words and is not the view. Which of its sections rode along is read off `compile.HEADINGS` as whole lines, so a section a later phase adds is counted with no edit here |
+| `rest` | the transcript, the tool results, the steering — everything else |
+
+**The attribution adds up**: `pinned + block-outside-the-pinned-prefix + rest
+== chars`, on every call, because the three come out of one interval algebra
+over the same spans rather than three tallies that agree by convention. A
+compiled view that did not change between two steps would lie *inside* the
+pinned prefix and is charged there **once** — a reader shown its characters a
+second time would conclude it cost twice what it did. The raw `block` figure
+is printed beside it, so nothing is lost.
+
+**That overlap is not reachable in a recording made today, and the algebra is
+kept anyway.** The runtime appends the view LAST, after the whole transcript
+(`Run._compile`), so the common prefix always stops before it and the block is
+entirely new on every call this release can record. The union is what makes
+the three regions *provably* disjoint rather than disjoint by argument, and
+the day a lane pins the view into the head — a cached preamble, a view that
+leads the request — three independent sums would silently report a request
+larger than the request. It costs one interval merge.
+
+A run is grouped into conversations by the recorded `kind` before any of this.
+A swarm records its router, its children and its synthesis in one
+`model.jsonl` and they share no system prompt; one "longest common prefix of
+this run" over all of them would be the few words three unrelated prompts
+happen to start with, reported as the thing a cache keeps.
+
+### Characters, and tokens where the recording has them
+
+**Characters, and never bytes.** Every size here is a count of Python
+characters; a request in a non-Latin script runs to three times that in
+UTF-8, so the two are not interchangeable and every column is labelled
+`chars` for that reason. It is the right unit for this instrument — what a
+lane adds to a prompt is text — and it is not the unit a wire is billed in.
+
+Characters are always computable. Tokens are what a window is actually spent
+in, and the only honest source is the provider's own `usage` — `prompt_tokens`,
+which the recorder copies into every line whose provider reported one. A
+report over a recording with no usage says **characters only** rather than
+dividing by four and calling the result a measurement, and a run where only
+some calls reported usage gets no total at all: a sum over the calls that
+happened to report is a smaller number wearing the shape of the whole run's
+cost.
+
+### What the profile is read for
+
+* the **growth curve** — chars per call in call order, with the mean, the peak
+  and the per-step slope. A runtime that is quietly quadratic shows here
+  before it shows in a timeout;
+* the **view's share** — what fraction of each request the compiled block is;
+* **prefix stability** — `byte-stable: YES/NO`, and the first call at which it
+  was not. This one really is byte-for-byte: it is an *identity* check on the
+  system-side head, not a length. It is a regression detector, and the one an
+  inserted timestamp, a shuffled tool catalogue or a per-step rewrite of the
+  system prompt trips. The caching claim is exactly the claim that this stays
+  YES. A conversation of one call had nothing to compare and answers **neither**
+  — the report says *no prefix measurable* and the JSON carries `null`, not
+  `true`.
+
+### In the ablation table
+
+Each arm's row in the rate table gains `chars/call` and `view share`, over
+**that arm's own recordings for that half**, and the paired table gains
+`Δ chars/call` — what the arm added to the mean model call against the
+baseline — beside what it fixed and broke. `—` is an arm whose runs recorded no
+model log, which is not the same fact as a cheap one.
+
+**`view share` and `Δ chars/call` are different quantities and neither derives
+from the other.** The share is the view's RAW characters against this arm's own
+requests; the delta is marginal, against the baseline's requests. An arm whose
+block displaces transcript the baseline was carrying shows a real share and a
+small delta, and an arm that adds a block on top of everything shows both. Read
+the delta for what the flag cost and the share for what the block is.
+
+Where an arm's pass delta is `≤ 0` while its context delta is positive, the
+report says so in as many words:
+
+> **`shadow` added context and no capability.** Against `baseline` it moved
+> the missions passed by +0 while adding 214 characters to the mean model call
+> … The owner's criterion — *does not make the context bloated and the agent
+> less capable* — is not met by this arm on this run. Flagged, not judged: one
+> ablation is one run.
+
+The condition is deliberately the weak one. An arm that breaks nothing and
+fixes nothing is invisible in a pass-rate table and is spending the window
+every step — that is the arm the sentence was about. The same finding is in
+the JSON under `capability_vs_cost`, so a platform can gate on it without
+matching on prose. It is **silent** where either side recorded nothing:
+inventing a cost figure so that a note can fire would be the report
+manufacturing its own evidence.
+
+### What it is not
+
+It is not a verdict and it is not a budget. A block that costs characters and
+buys capability is the trade this runtime is for; the accounting exists so
+that the trade is visible, priced per arm, in the same table that scored it.

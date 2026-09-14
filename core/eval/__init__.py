@@ -25,7 +25,7 @@ The package is six modules and one rule:
 * :mod:`core.eval.score` — the verdict, computed **only** from the recorded
   stream.
 * :mod:`core.eval.run` — ``python -m core.eval
-  run|measure|ablation|score|check|extraction|corpus|registry``.
+  run|measure|ablation|score|check|extraction|corpus|registry|context``.
 * :mod:`core.eval.corpus` — ROADMAP §2.9.8's first step: validated traces
   in, fine-tune examples out.  The only module here that writes training
   data, and the only rule it has is that a completion is copied and never
@@ -44,6 +44,12 @@ The package is six modules and one rule:
   interval on each arm's rate.  An arm whose flags the spawn line does not
   accept is skipped with the reason, so a piece that has not been built yet
   still has its column.
+* :mod:`core.eval.context` — the **price**: what a recorded run cost in
+  context, split into the pinned prefix, the compiled view's block and the
+  rest, with the growth curve and a prefix-stability check.  ``ablation``
+  prints its figures beside each arm's pass rate, so the owner's criterion
+  — *does not make the context bloated and the agent less capable* — is a
+  measured column and never an inference.
 * :mod:`core.eval.registry` — the **profile store**: what has actually been
   measured about each model, ingested only from the reports the three
   measuring subcommands write, every figure with its ``k``/``n``, nothing
@@ -80,6 +86,13 @@ from core.eval.ablation import (ARMS, Ablation, Arm, ArmResult, Unavailable,
                                 ablate, accepted_flags, band, paired)
 from core.eval.measure import (MEASUREMENTS, Configured, Matrix, Measurement,
                                Unmeasurable)
+# Same rule as `measure` and `registry` below: nothing here binds the NAME
+# `context`, so `from core.eval import context` keeps getting the module —
+# and `core.context`, the unrelated package one level up, keeps its own.
+from core.eval.context import (CallCost, ContextProfile, ContextSummary,
+                               Conversation, Part, RunCost, common_prefix,
+                               cost_of_run, render_request, summarise,
+                               summarise_runs)
 # Same rule as `measure` above: the MODULE `core.eval.registry` is not
 # shadowed by a binding of that name here, so `from core.eval import
 # registry` keeps getting the module. `Registry` is the class.
@@ -120,4 +133,7 @@ __all__ = [
     "DEFAULT_REGISTRY", "FLOOR_N", "SCHEMA", "Delta", "Entry", "Figure",
     "Registry", "Unregisterable", "deltas", "endpoint_kind", "read_report",
     "render", "source_of", "staleness",
+    "CallCost", "ContextProfile", "ContextSummary", "Conversation", "Part",
+    "RunCost", "common_prefix", "cost_of_run", "render_request", "summarise",
+    "summarise_runs",
 ]

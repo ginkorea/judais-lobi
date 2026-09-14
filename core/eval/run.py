@@ -1,12 +1,12 @@
 # core/eval/run.py — spawn the missions, capture the streams, score them
 
 """The harness's command line: ``run``, ``measure``, ``ablation``,
-``score``, ``check``, ``extraction``, ``corpus``, ``registry``.
+``score``, ``check``, ``extraction``, ``corpus``, ``registry``, ``context``.
 
-Eight subcommands because there are eight jobs, and only four of them need a
+Nine subcommands because there are nine jobs, and only four of them need a
 model (``run``, ``measure``, ``ablation``, ``extraction``); ``score``,
-``check``, ``corpus`` and ``registry`` work entirely from what was already
-recorded:
+``check``, ``corpus``, ``registry`` and ``context`` work entirely from what
+was already recorded:
 
 ``run``
     Spawns the mission command once per mission — the platform's own spawn
@@ -60,6 +60,15 @@ recorded:
     interval under the sample floor, nothing averaged across interpreters,
     nothing hand-entered).  It does not route, and no suite is resolved for
     it: the run it reads already happened, possibly on another machine.
+``context``
+    What the recorded runs under a directory COST in context: the growth
+    curve per step, the compiled view's share of each request, and whether
+    the pinned prefix held byte-stable across a conversation's calls.  The
+    owner's criterion — *does not make the context bloated and the agent
+    less capable* — has two halves, and until this subcommand only the
+    second was measured.  It reads ``model.jsonl``, spends no model, and
+    ``ablation`` calls into it so that the price of an arm prints beside
+    its pass rate.  See :mod:`core.eval.context`.
 
 **A run directory is a RunStore directory.**  That is the whole agreement
 between this harness, the recorder and a platform's archive: one directory per
@@ -400,6 +409,12 @@ def _parser() -> argparse.ArgumentParser:
     from core.eval.registry import add_parser as _add_registry
     _add_registry(subs)
 
+    # Appended after it, under the same open-list rule: `context` reads the
+    # requests a recorder already wrote, so it takes no `common` either —
+    # no suite, no half, nothing to spawn. See `core.eval.context`.
+    from core.eval.context import add_parser as _add_context
+    _add_context(subs)
+
     return parser
 
 
@@ -428,6 +443,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "registry":
         from core.eval.registry import from_args as _registry
         return _registry(args)
+    # And the same, one step further from a mission than any of them:
+    # `context` opens the requests a recorder wrote and measures them.
+    # There is no suite in this checkout to hold a recording to, and the
+    # run it reads may have happened on another machine a month ago.
+    if args.command == "context":
+        from core.eval.context import from_args as _context
+        return _context(args)
 
     try:
         suite = resolve_suite(args.suite)
