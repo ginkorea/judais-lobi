@@ -120,3 +120,16 @@ Each cell is `outcome elapsed_s`, with `!` where a turn did not end
 
 Every number above is derived from those files and from
 nothing else.
+
+## Erratum (from the measuring session, after this file was handed over)
+
+The `plot` row above calls run 3 "PASS 220s !". The lane's final write-up
+corrects this: `plot` hit the harness's turn ceiling in ALL THREE runs —
+`elapsed_s` exactly 220.0 with `ended: ["timeout"]` against
+`DEFAULT_TURN_WAIT = 220.0`. v1.2.0 finished the same mission in 44/76/72 s
+with every turn `finished`. Two more long turns share the signature: coref
+292 s (turn 2 timeout, run 1) and followup_plot 260 s (turn 2 timeout,
+run 2). The completion regression is the sturdy finding (3/3, identical
+signature); the accuracy gap is suggestive (70→80→100 across runs).
+Dependency parity was exact — 58 packages identical, setup.py differs by
+the VERSION line only.
