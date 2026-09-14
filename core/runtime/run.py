@@ -1239,7 +1239,7 @@ class _ModelStates:
     that worked, ``step_started`` and ``answer`` already say so, and a
     scripted model that answers immediately therefore produces not one
     ``model_state`` record.  **A wait is announced once and closed
-    once**: the five words of
+    once**: the words of
     :data:`~core.runtime.backends.state.WAITING` go out on the
     transition into them, and the ``loaded`` that follows goes out
     because it is the end of something a consumer is rendering.

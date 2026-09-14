@@ -260,11 +260,22 @@ MISSION_FINISHED = "mission_finished"
 #: reply came back — is already on the stream as ``step_started`` and then
 #: ``tool_call`` or ``answer``, so a run against a model that answers
 #: emits not one of these, and every stream ever recorded is the stream it
-#: was.  What reaches a consumer is the five words of
+#: was.  What reaches a consumer is the six words of
 #: :data:`core.runtime.backends.state.WAITING` — ``cold``, ``queued``,
-#: ``loading``, ``failed``, ``absent`` — and then ``loaded`` when whatever
-#: they described is over.  ``asking`` is a word the backends report and
-#: this stream never carries.
+#: ``loading``, ``streaming``, ``failed``, ``absent`` — and then
+#: ``loaded`` when whatever they described is over.  ``asking`` is a word
+#: the backends report and this stream never carries.
+#:
+#: ``streaming`` is the one of those six that is not a fault.  It says the
+#: model answered and is **still** answering a long time later, with what
+#: the harness watched go past — frames and characters — in ``detail``.
+#: It exists because a call that trickles is otherwise invisible: the
+#: first-byte instrument stands down the moment a token arrives, so before
+#: this word a two-hundred-second completion was a hole in the stream
+#: between ``step_started`` and nothing, which is what
+#: ``evidence/diagnosis-v1.4.0-regression-2026-09-14.md`` spent six passes
+#: reconstructing.  Said once per call, and closed by the ``loaded`` that
+#: follows when the frames stop.
 #:
 #: It exists because a pane showing nothing for ninety seconds is showing
 #: at least four different situations and an operator can act on none of
@@ -298,20 +309,30 @@ EVENTS: tuple[str, ...] = (
     MODEL_STATE,
 )
 
-#: Every value ``model_state.state`` can carry — the seven words of
+#: Every value ``model_state.state`` can carry — the eight words of
 #: :data:`core.runtime.backends.state.STATES`, restated here as data for
 #: the same reason :data:`OUTCOMES` is: a consumer vendoring this one file
 #: gets the whole seam and must not have to import a backend package to
 #: learn what a field can say.
 #:
-#: Seven declared, six emitted.  ``asking`` is reported by the backends
+#: Eight declared, seven emitted.  ``asking`` is reported by the backends
 #: and dropped by the emitter — see :data:`MODEL_STATE` — and it is
 #: declared anyway because a closed set a consumer asserts should be the
 #: set the harness *has*, not the subset today's emitter happens to use.
 #: A test holds this equal to the backends' own tuple, so the two cannot
 #: drift.
+#:
+#: ``streaming`` is the eighth and the newest, and **adding a value here is
+#: additive**: it does not bump :data:`SCHEMA_VERSION`, for the reason a
+#: new record type does not.  A consumer that has never heard of the word
+#: meets it exactly where it already meets an unknown ``model_state``, and
+#: this contract's answer there is *drop it*.  A consumer that asserts this
+#: tuple against its own list will see it grow — that is the assertion
+#: doing its job, not an incompatibility: render the word or ignore it, but
+#: do not read the growth as a break.
 MODEL_STATES: tuple[str, ...] = (
-    "cold", "asking", "queued", "loading", "loaded", "failed", "absent",
+    "cold", "asking", "queued", "loading", "loaded", "streaming", "failed",
+    "absent",
 )
 
 
@@ -613,6 +634,31 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: rides the three records that follow a model call — ``tool_call``,
     #: ``answer`` and ``reply_rejected`` — and is the cost of THAT call, not a
     #: running total.
+    #:
+    #: **``prompt_tokens`` here is one call's**, and it is the number to read
+    #: when a turn is slow or a base prompt is suspected of having moved.
+    #: The running total lives on ``mission_finished`` and nowhere else, so
+    #: dividing that total by ``calls`` to recover a per-call figure is
+    #: reading the wrong record: the per-call number is already on the three
+    #: records above, and it is exact where the division is an average.  The
+    #: calls this harness makes that produce none of those three records —
+    #: a supervisor's review, a staged turn's router and synthesizer — are
+    #: counted in the total and are the difference between the two, which
+    #: is why the average and the per-call numbers do not reconcile.
+    #:
+    #: ``finish_reason`` joins the counts **only when the completion was cut
+    #: short by a token ceiling** — ``length`` from an OpenAI-compatible
+    #: server, ``max_tokens`` from the Anthropic Messages API — and carries
+    #: the provider's own word for it.  It is the one key inside ``usage``
+    #: that is not from the provider's ``usage`` object, and it is there
+    #: because *2,306 completion tokens* and *2,306 completion tokens and
+    #: then the ceiling* are different facts about the same call: a
+    #: consumer that reads only the count has been told a truncated answer
+    #: was a complete one.  **Absent on every call that ended on its own
+    #: terms**, which is nearly all of them, so a stream where nothing was
+    #: truncated is the stream it always was.  A consumer renders it as a
+    #: warning beside the answer; it is never a failure, and the run's
+    #: ``outcome`` is unchanged by it.
     #:
     #: **Absent, never zero, when the provider reported nothing.**  Local
     #: endpoints and stubs frequently report nothing, and three zeros would be
@@ -976,6 +1022,26 @@ CLI_FLAGS: tuple[str, ...] = (
 #: it off — which is the point of the flag and the reason it is off by
 #: default.
 #:
+#: ``JUDAIS_LOBI_MAX_OUTPUT_TOKENS`` is how many completion tokens the
+#: ``--provider local`` backend asks for when a caller names no number.
+#: It has **no flag**: it is configuration of the endpoint a deployment
+#: points at, like ``LOCAL_API_BASE`` and ``LOCAL_MODEL`` beside it, and
+#: it is read by the backend itself.  Unset, blank, unparseable or
+#: non-positive all mean the default (4,096) — zero is not a value,
+#: because a zero-token completion is every answer empty by typo.
+#:
+#: It is published because the *absence* of a bound was not a neutral
+#: state.  A request with no ``max_tokens`` is bounded by the served
+#: endpoint's ``max_model_len − prompt_tokens`` instead, and the thing
+#: that then ends a runaway completion is whoever times the turn out —
+#: a platform's turn budget, a proxy, an operator — none of which can say
+#: *the answer was cut short*, because none of them cut it.  With the
+#: harness sending its own number, a completion that hits the ceiling
+#: arrives as ``usage.finish_reason`` on the record that follows it.  A
+#: deployment whose model reasons at length raises this rather than
+#: living with a truncation: the bound is meant to be visible and
+#: undoable, never a ceiling nobody was consulted on.
+#:
 #: Where a variable has a flag beside it, it is that flag's argparse
 #: default, so the flag still wins: a consumer that exports one and passes
 #: the other gets the one it passed.
@@ -983,7 +1049,7 @@ ENV_VARS: tuple[str, ...] = (
     "MCP_TOKEN", "MCP_CLIENT_NAME", "MCP_URL", "MCP_STDIO",
     "MCP_TIMEOUT_S",
     "ELF_PERSONALITY", "TAI_PERSONALITY",
-    "LOCAL_API_BASE", "LOCAL_MODEL",
+    "LOCAL_API_BASE", "LOCAL_MODEL", "JUDAIS_LOBI_MAX_OUTPUT_TOKENS",
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
     "MISSION_APPROVAL",
     "MISSION_SECONDS",

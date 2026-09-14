@@ -388,7 +388,7 @@ class TestNobodyListeningCostsNothing:
         with model.watching(Observer(explode), index=0):
             state.report(state.ABSENT, provider="local", model="m")
 
-    def test_the_contract_and_the_backends_declare_the_same_seven_words(self):
+    def test_the_contract_and_the_backends_declare_the_same_eight_words(self):
         assert c.MODEL_STATES == state.STATES
 
 
@@ -450,6 +450,33 @@ class TestReportsCrossThreads:
         with state.first_byte_within(0.01, lambda: None) as watch:
             assert watch.armed is False
 
+    def test_the_long_call_alarm_is_the_same_one_under_another_name(self):
+        """Two call sites that read as what they are, one owner of the
+        construction — so there is one set of rules about when nothing is
+        armed rather than two that drift."""
+        with state.alarm_after(0.01, lambda: None) as watch:
+            assert watch.armed is False
+
+    def test_and_it_fires_in_the_caller_s_context_too(self):
+        run = Recorded()
+        with run.call(index=2):
+            with state.alarm_after(
+                    0.01, lambda: state.report(state.STREAMING,
+                                               provider="local", model="m")):
+                time.sleep(0.2)
+        assert run.states == [state.STREAMING]
+        assert run.seen[0]["index"] == 2
+
+    def test_an_alarm_nobody_disarms_is_still_taken_down_on_the_way_out(self):
+        """The long-call alarm is never disarmed by a frame — only by the
+        context manager — so a call that ends before it fires must not
+        leave a timer thread behind."""
+        run = Recorded()
+        with run.call():
+            with state.alarm_after(30.0, lambda: None) as watch:
+                assert watch.armed is True
+        assert watch.armed is False
+
 
 # ── the stub server that misbehaves on purpose ───────────────────────────────
 
@@ -474,6 +501,16 @@ class Endpoint:
         self.headers = {}
         #: Seconds to hold a POST before answering it.
         self.stall_s = 0.0
+        #: Seconds to hold BETWEEN the frames of a streamed answer — the
+        #: server that is answering, and answering, and answering.
+        #: Deliberately a different knob from ``stall_s``: the whole point
+        #: of the eighth word is that a server which has not started and
+        #: one which will not stop are different situations that looked
+        #: identical from outside.
+        self.trickle_s = 0.0
+        #: How many content frames a streamed answer is made of, or
+        #: ``None`` for the two that spell ``hello``.
+        self.frames = None
         #: How many completions have been asked for.
         self.posts = 0
 
@@ -517,18 +554,40 @@ def _handler(endpoint):
                     headers=tuple(endpoint.headers.items()))
                 return
             if body.get("stream"):
-                frames = "".join(
+                pieces = (["he", "llo"] if endpoint.frames is None
+                          else [f"p{i}" for i in range(endpoint.frames)])
+                frames = [
                     "data: " + json.dumps({
                         "id": "cmpl-1", "model": "gpt-oss-20b",
                         "choices": [{"index": 0,
                                      "delta": {"content": piece}}]}) + "\n\n"
-                    for piece in ("he", "llo"))
-                payload = (frames + "data: [DONE]\n\n").encode()
+                    for piece in pieces]
+                frames.append("data: [DONE]\n\n")
+                if endpoint.trickle_s:
+                    # Each frame padded past the client's 512-byte read
+                    # window with an SSE COMMENT, which the parser skips
+                    # (`: ` is not `data:`) and which therefore changes
+                    # nothing about the reply. Without it `iter_lines`
+                    # blocks for a full buffer and a stream written over
+                    # half a second arrives all at once — a test of the
+                    # client's buffering rather than of a slow server.
+                    frames = [f + ": " + "x" * 600 + "\n\n" for f in frames]
+                payload = "".join(frames).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
-                self.wfile.write(payload)
+                if not endpoint.trickle_s:
+                    self.wfile.write(payload)
+                    return
+                # Written frame by frame with a pause between, because the
+                # situation under test is a stream that keeps arriving and
+                # a `Content-Length` written up front says nothing about
+                # when the bytes come.
+                for frame in frames:
+                    self.wfile.write(frame.encode())
+                    self.wfile.flush()
+                    time.sleep(endpoint.trickle_s)
                 return
             self._send(200, json.dumps({
                 "id": "cmpl-1", "model": "gpt-oss-20b",
@@ -561,6 +620,9 @@ def endpoint():
 def backend_for(endpoint, **kwargs):
     kwargs.setdefault("model", "gpt-oss-20b")
     kwargs.setdefault("first_byte_queued_s", 0.05)
+    # Far enough away that the tests about the OTHER alarm never meet this
+    # one; the tests about this one pass their own.
+    kwargs.setdefault("streaming_long_s", 30.0)
     return LocalBackend(endpoint=endpoint.base, **kwargs)
 
 
@@ -676,6 +738,132 @@ class TestTheServerThatAcceptedAndSaidNothing:
         run = Recorded()
         assert ask(run, backend_for(endpoint), stream=True) == "hello"
         assert run.states == [state.QUEUED, state.LOADED]
+
+
+class TestTheServerThatWillNotStopAnswering:
+    """(c) the first token arrived and the model is *still* going.
+
+    The third situation, and the one no instrument here used to watch.
+    ``first_byte_within`` stands down the moment a frame lands, so before
+    the eighth word a call that trickled for two hundred seconds produced
+    the same stream as a call that had not started: a ``step_started`` and
+    then nothing. Five stalls of exactly that shape are what
+    ``evidence/diagnosis-v1.4.0-regression-2026-09-14.md`` is made of.
+
+    Driven against the stub's ``trickle_s`` — a real socket delivering
+    real frames slowly — because the claim is about frames going past and
+    a mock would only prove this file agrees with itself.
+    """
+
+    #: A stream of four frames 60ms apart — a quarter of a second of a
+    #: server that started answering straight away and is not finished.
+    TRICKLE_S = 0.06
+    FRAMES = 4
+
+    def _trickling(self, endpoint, frames=None):
+        endpoint.trickle_s = self.TRICKLE_S
+        endpoint.frames = self.FRAMES if frames is None else frames
+        return endpoint
+
+    def _long(self, endpoint, **kwargs):
+        # Above the first frame's arrival and well below the whole
+        # stream's, so the threshold is what decides and not a race.
+        kwargs.setdefault("first_byte_queued_s", 30.0)
+        kwargs.setdefault("streaming_long_s", 0.12)
+        return backend_for(endpoint, **kwargs)
+
+    def test_a_call_that_keeps_streaming_says_so(self, endpoint):
+        run = Recorded()
+        self._trickling(endpoint)
+        ask(run, self._long(endpoint), stream=True)
+        assert state.STREAMING in run.states
+
+    def test_it_does_not_fire_before_the_threshold(self, endpoint):
+        """The same trickle, with the threshold above it. A word that
+        appeared either way would be a word about nothing."""
+        run = Recorded()
+        self._trickling(endpoint)
+        ask(run, self._long(endpoint, streaming_long_s=30.0), stream=True)
+        assert run.seen == []
+
+    def test_a_short_call_under_the_same_threshold_says_nothing(self, endpoint):
+        run = Recorded()
+        ask(run, self._long(endpoint, streaming_long_s=5.0), stream=True)
+        assert run.seen == []
+
+    def test_it_is_said_once_and_not_once_a_minute(self, endpoint):
+        """A state channel, not a metronome: the word says *this call is
+        still going*, and saying it again says nothing the first one did
+        not."""
+        run = Recorded()
+        self._trickling(endpoint, frames=8)
+        ask(run, self._long(endpoint), stream=True)
+        assert run.states.count(state.STREAMING) == 1
+
+    def test_the_wait_it_opens_is_closed_when_the_frames_stop(self, endpoint):
+        run = Recorded()
+        self._trickling(endpoint)
+        ask(run, self._long(endpoint), stream=True)
+        assert run.states == [state.STREAMING, state.LOADED]
+
+    def test_the_detail_says_what_the_harness_watched_go_past(self, endpoint):
+        """Not a guess about a server — a count of frames this backend
+        saw. That is the difference between this word and `queued`."""
+        run = Recorded()
+        self._trickling(endpoint)
+        ask(run, self._long(endpoint), stream=True)
+        detail = run.seen[0]["detail"]
+        assert "still answering" in detail
+        assert "frames" in detail and "characters" in detail
+
+    def test_the_closing_record_says_how_much_arrived_in_the_end(self, endpoint):
+        run = Recorded()
+        self._trickling(endpoint)
+        ask(run, self._long(endpoint), stream=True)
+        assert "4 frames" in run.seen[1]["detail"]
+
+    def test_since_s_is_measured_from_the_request_going_out(self, endpoint):
+        run = Recorded()
+        self._trickling(endpoint)
+        ask(run, self._long(endpoint), stream=True)
+        assert run.seen[0]["since_s"] >= 0.05
+        assert run.seen[1]["since_s"] >= run.seen[0]["since_s"]
+
+    def test_every_record_conforms(self, endpoint):
+        run = Recorded()
+        self._trickling(endpoint)
+        ask(run, self._long(endpoint), stream=True)
+        assert faults(run.seen) == []
+
+    def test_a_silence_is_still_the_first_bytes_business(self, endpoint):
+        """Both alarms armed, nothing streaming: the word is `queued`,
+        because `/models` was asked. This backend must not hold two
+        opinions about one silence."""
+        endpoint.stall_s = 0.4
+        run = Recorded()
+        ask(run, self._long(endpoint, first_byte_queued_s=0.05), stream=True)
+        assert state.STREAMING not in run.states
+        assert run.states == [state.QUEUED, state.LOADED]
+
+    def test_a_reply_that_never_streamed_is_not_called_streaming(self, endpoint):
+        """A non-streamed call has no frames to count, so there is nothing
+        this word could honestly be said about — the wait before a whole
+        JSON body arrives is the first-byte instrument's."""
+        endpoint.stall_s = 0.3
+        run = Recorded()
+        ask(run, self._long(endpoint))
+        assert state.STREAMING not in run.states
+
+    def test_an_unwatched_call_is_told_nothing_and_still_answers(self, endpoint):
+        """A chat session, a probe, a library caller with no observer:
+        the alarm is not armed at all — see
+        :func:`core.runtime.backends.state.alarm_after` — and the reply is
+        the reply."""
+        self._trickling(endpoint)
+        got = self._long(endpoint).chat(
+            "gpt-oss-20b", [{"role": "user", "content": "hi"}], stream=True)
+        assert "".join(c.choices[0].delta.content or "" for c in got) == (
+            "p0p1p2p3")
 
 
 class TestTheEndpointThatIsNotThere:

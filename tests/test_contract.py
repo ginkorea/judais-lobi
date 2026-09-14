@@ -761,6 +761,42 @@ class TestTheLedgerIsAFieldAndNotAnEvent:
         assert totals["calls"] == 2
         assert totals["total_tokens"] == 110
 
+    def test_the_per_call_prompt_tokens_are_one_calls_and_not_an_average(self):
+        """The number a slow turn is diagnosed with, and it is already on
+        the wire: `evidence/diagnosis-v1.4.0-regression-2026-09-14.md`
+        recovered it by dividing the run total by `calls`, which is an
+        average over calls of two different sizes."""
+        _, seen = _run([json.dumps({"tool": "catalog_search_assets",
+                                    "arguments": {"q": "x"}}),
+                        json.dumps({"answer": "done"})],
+                       usage_fn=self._usage(50, 5))
+        per_call = [r["usage"] for r in seen
+                    if r["event"] in (ms.TOOL_CALL, ms.ANSWER)]
+        assert [u["prompt_tokens"] for u in per_call] == [50, 50]
+
+    def test_a_truncated_call_says_so_beside_its_own_counts(self):
+        """`2,306 completion tokens` and `2,306 and then the ceiling` are
+        different facts about the same call, and a consumer given only
+        the first has been told a truncated answer was a complete one."""
+        from core.runtime.backends.base import Usage
+
+        _, seen = _run([json.dumps({"answer": "done"})],
+                       usage_fn=lambda: Usage(prompt_tokens=9,
+                                              completion_tokens=4096,
+                                              total_tokens=4105,
+                                              finish_reason="length"))
+        assert _faults(seen) == []
+        answer = [r for r in seen if r["event"] == ms.ANSWER][0]
+        assert answer["usage"]["finish_reason"] == "length"
+
+    def test_and_an_ordinary_call_carries_no_such_key(self):
+        """Absent, never `"stop"`: a key on every record to state the
+        ordinary case is the field this stream keeps declining to add."""
+        _, seen = _run([json.dumps({"answer": "done"})],
+                       usage_fn=self._usage(50, 5))
+        answer = [r for r in seen if r["event"] == ms.ANSWER][0]
+        assert "finish_reason" not in answer["usage"]
+
 
 class TestTheTenthEventIsSafeToNotKnowAbout:
     """`answer_delta` is the one additive change a consumer *does* have to
@@ -970,13 +1006,26 @@ class TestTheEleventhEventIsSafeToNotKnowAbout:
             "index", "detail", "since_s", "retry_after_s",
             *c.COMMON_OPTIONAL}
 
-    def test_the_seven_words_are_data_like_the_outcomes(self):
+    def test_the_eight_words_are_data_like_the_outcomes(self):
         """A consumer vendoring `contract.py` gets the whole seam and must
         not have to import a backend package to learn what a field can
         say."""
         assert c.MODEL_STATES == (
-            "cold", "asking", "queued", "loading", "loaded", "failed",
-            "absent")
+            "cold", "asking", "queued", "loading", "loaded", "streaming",
+            "failed", "absent")
+
+    def test_a_word_added_here_is_additive_and_costs_no_schema_bump(self):
+        """`streaming` is the newest, and it arrives the way a new record
+        type does: a consumer that has not heard of it meets an unknown
+        `state` on a record type this contract already tells it to drop.
+        The version is what a consumer pins, so this is the assertion
+        that says the pin did not have to move."""
+        assert "streaming" in c.MODEL_STATES
+        assert c.SCHEMA_VERSION == 1
+        assert c.conforms({"event": c.MODEL_STATE, "state": "streaming",
+                           "provider": "local", "model": "gpt-oss-20b",
+                           "index": 0, "since_s": 60.0,
+                           "detail": "still answering"}) == []
 
     def test_and_they_are_the_words_the_backends_actually_report(self):
         """Two copies of a vocabulary is its own defect. This one is a
@@ -986,12 +1035,22 @@ class TestTheEleventhEventIsSafeToNotKnowAbout:
 
         assert c.MODEL_STATES == state.STATES
 
-    def test_the_five_a_consumer_renders_are_a_subset_of_the_seven(self):
+    def test_the_six_a_consumer_renders_are_a_subset_of_the_eight(self):
         from core.runtime.backends import state
 
         assert state.WAITING < set(c.MODEL_STATES)
         assert "asking" not in state.WAITING
         assert "loaded" not in state.WAITING
+
+    def test_streaming_is_one_of_them_so_its_loaded_reaches_the_wire(self):
+        """The one member of that set that is not a fault. It is in there
+        because the person in front of the pane is waiting either way —
+        and because being in there is what makes the `loaded` at the end
+        of the call an emission rather than the dropped second half of a
+        healthy one, so a wait this word opens can be closed."""
+        from core.runtime.backends import state
+
+        assert "streaming" in state.WAITING
 
     def test_a_record_the_emitter_writes_conforms(self):
         assert c.conforms({"event": c.MODEL_STATE, "state": "queued",

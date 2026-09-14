@@ -409,6 +409,26 @@ cached-token breakdown, say). On `answer` after a grounding repair it is the
 repair turn's call, not the draft's: the per-call field is always the cost of
 the call that produced the record it rides on.
 
+**`prompt_tokens` there is one call's, and it is the number to read when a turn
+is slow or a base prompt is suspected of having moved.** Dividing the
+`mission_finished` total by `calls` to recover a per-call figure is reading the
+wrong record: the per-call number is already on the three records above and is
+exact where the division is an average. The two do not reconcile, either — the
+calls that produce none of those records (a supervisor's review, a staged
+turn's router and synthesizer) are counted in the total and appear nowhere
+else, and that difference is what the average silently absorbs.
+
+`finish_reason` joins the three counts **only when the completion was cut short
+by a token ceiling**, carrying the provider's own word for it (`length` from an
+OpenAI-compatible server, `max_tokens` from the Anthropic Messages API). It is
+the one key inside `usage` that does not come from the provider's `usage`
+object, and it is there because *2,306 completion tokens* and *2,306 completion
+tokens and then the ceiling* are different facts about the same call: a
+consumer that reads only the count has been told a truncated answer was a
+complete one. **Absent on every call that ended on its own terms**, which is
+nearly all of them. Render it as a warning beside the answer — it is never a
+failure, and the run's `outcome` does not change because of it.
+
 On `mission_finished` it is the **run's ledger**:
 `{prompt_tokens, completion_tokens, total_tokens, calls}`, where `calls` counts
 the model calls that *reported* usage rather than the calls that were made. On
@@ -672,7 +692,7 @@ The steady pair — the request went out, the reply came back — is already on 
 stream as `step_started` and then `tool_call` or `answer`, so a run against a
 model that answers produces not one of these and every stream recorded before
 this event existed is byte-identical to the stream it would produce today. What
-you receive is the five words that mean *a person is waiting and does not know
+you receive is the six words that mean *a person is waiting and does not know
 why*, and then the `loaded` that ends the wait:
 
 | the harness observed | `state` |
@@ -683,6 +703,7 @@ why*, and then the `loaded` that ends the wait:
 | the server answered **429** | `queued` |
 | the request was accepted and nothing came back for 20s, and `GET /models` lists the model | `queued` |
 | the request was accepted and nothing came back for 20s, and `GET /models` does not list it, or does not answer | `cold` / `absent` — the row above it, asked again |
+| the first token arrived and the model is **still answering** 60s after the request went out | `streaming` — with the frames and characters watched so far in `detail` |
 | any other 4xx or 5xx, or a read timeout | `failed` |
 | a reply, or a first token, arrived — after any of the above | `loaded`, carrying the model id **the server** reported |
 
@@ -697,11 +718,31 @@ the backend: a local endpoint at 59 tok/s is healthy while it spends tens of
 seconds on one answer, so the threshold is a judgement about a person's
 patience rather than about a model's speed.
 
-The seventh word, `asking`, is reported inside the harness and **never reaches
+`streaming` is the one word in the table that is **not** a fault, and the
+newest. It says the model answered and is still answering: the frames went
+past, this harness counted them, and it is telling you rather than leaving you
+with a gap. It exists because the first-byte instrument stands down the instant
+a token arrives, so a call that trickles for two hundred seconds used to
+produce no record at all — a `step_started`, and then nothing, which is the
+shape every stall in
+`evidence/diagnosis-v1.4.0-regression-2026-09-14.md` has and the reason that
+investigation took six passes. The 60s is
+`core.runtime.backends.state.STREAMING_LONG_S`, a constructor argument like the
+20s beside it, and it is a shade over three times the p90 of the calls measured
+there: high enough that a long-but-healthy turn stays quiet, low enough that a
+176s call is announced with two minutes still to run. **Said once per call** —
+this is a state channel and not a metronome — and closed by the `loaded` that
+follows when the frames stop, whose `detail` says how much arrived in the end.
+
+The eighth word, `asking`, is reported inside the harness and **never reaches
 this stream**: it is the steady state, and the record exists to explain a wait.
-`contract.MODEL_STATES` declares all seven anyway, because a closed set a
+`contract.MODEL_STATES` declares all eight anyway, because a closed set a
 consumer asserts should be the set the harness has rather than the subset
-today's emitter uses.
+today's emitter uses. **Adding a word to it is additive** and does not bump
+`SCHEMA_VERSION`: a consumer meets an unknown `state` exactly where it already
+meets an unknown record type, and the answer there is to drop it. A consumer
+holding `MODEL_STATES` against its own list will see the list grow, which is
+that assertion working rather than a break.
 
 **It is a transition, de-duplicated.** The same word twice running is one
 record — three refused connects inside one retry budget say `absent` once —
@@ -802,6 +843,7 @@ passes the other gets the one it passed.
 - `TAI_PERSONALITY` — the same, on any entry point, and it wins over `ELF_PERSONALITY`.
 - `LOCAL_API_BASE` — where the local backend answers.
 - `LOCAL_MODEL` — which model it is serving.
+- `JUDAIS_LOBI_MAX_OUTPUT_TOKENS` — how many completion tokens that backend asks for when a caller names no number; default 4,096. **No flag**: like the two above it, this is configuration of the endpoint a deployment points at, and the backend reads it itself. Unset, blank, garbage or non-positive all mean the default — zero is not a value, because a zero-token completion is every answer empty by typo. It is published because the *absence* of a bound was not neutral: a request with no `max_tokens` is bounded by the served model's `max_model_len − prompt_tokens` instead, and whoever times the turn out first — a platform's turn budget, a proxy, an operator — becomes the effective ceiling without being able to say an answer was cut short. With the harness sending its own number, a completion that hits the ceiling arrives as `usage.finish_reason` on the record that follows it. Raise this rather than live with a truncation: the bound is meant to be visible and undoable.
 - `MISSION_SKILL` — the environment form of `--skill`.
 - `MISSION_SWARM` — the environment form of `--swarm`.
 - `MISSION_EVENTS` — the environment form of `--events`.

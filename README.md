@@ -542,7 +542,11 @@ path that may append a caveat. Zero deltas is normal (`--no-stream`, a
 non-streaming backend, a turn that called a tool instead of answering).
 `model_state` explains a **wait**, not a call: a healthy request emits
 nothing, and this appears only while the model is `cold`, `queued`,
-`loading` or `absent`, closing with `loaded` once the wait is over.
+`loading`, `absent` or `streaming`, closing with `loaded` once the wait is
+over. `streaming` is the one that is not a fault — the model answered and
+is *still* answering a minute later, with the frames counted so far in
+`detail` — and it exists because a call that trickles for three minutes
+was otherwise a hole in this stream rather than a fact on it.
 
 Every event's required and optional fields, the five outcome words, the
 exit contract and what counts as a breaking change are
@@ -601,6 +605,7 @@ surface and may move. Table in `CLI_FLAGS` order:
 | `MCP_CLIENT_NAME` | what this client calls itself in the MCP `initialize` handshake — set it to the agent's name, or a server that governs by principal records every call as anonymous |
 | `ELF_PERSONALITY`, `TAI_PERSONALITY` | persona files, on every entry point (`TAI_PERSONALITY` wins where both are set) |
 | `LOCAL_API_BASE`, `LOCAL_MODEL` | aim the `--provider local` backend |
+| `JUDAIS_LOBI_MAX_OUTPUT_TOKENS` | how many completion tokens that backend asks for when nobody names a number (default 4,096). No flag — it is a property of the endpoint, like the two above. Blank, garbage or non-positive means the default. A completion that hits the ceiling says so as `usage.finish_reason` on the record that follows it |
 | `MISSION_SKILL`, `MISSION_SWARM`, `MISSION_EVENTS`, `MISSION_HISTORY`, `MISSION_SECONDS` | environment forms of `--skill`, `--swarm`, `--events`, `--history`, `--mission-seconds` |
 | `MISSION_APPROVAL`, `MISSION_RESUME`, `MISSION_REPLAY` | environment forms of `--approval`, `--resume`, `--replay` |
 | `MISSION_PROTOCOL`, `MISSION_STREAM`, `MISSION_CONTROL`, `MISSION_GATE_WAIT` | environment forms of `--protocol`, `--no-stream` (reversed: `off`/`0`/`false`/`no`/`none` turns streaming off), `--control`, `--gate-wait` |
