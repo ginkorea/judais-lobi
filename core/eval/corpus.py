@@ -40,7 +40,7 @@ rate — `MODELS.md` §4's failure mode, stated before the tooling existed.
     turn (planning, tool call, answer).  A run that does not meet that bar
     leaves whole, with its reason counted.  **v1 is deliberately simple: no
     synthetic repair, no editing, no reconstruction of what the model should
-    have said.**  The honest bound is written into ``EVAL.md`` §17 rather
+    have said.**  The honest bound is written into ``EVAL.md`` §16 rather
     than hidden here.
 
 **Abstention-heavy, by discipline.**  §2.9.8 puts it above the rest: a

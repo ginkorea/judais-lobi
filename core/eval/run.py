@@ -1,9 +1,12 @@
 # core/eval/run.py — spawn the missions, capture the streams, score them
 
 """The harness's command line: ``run``, ``measure``, ``ablation``,
-``score``, ``check``, ``extraction``, ``corpus``.
+``score``, ``check``, ``extraction``, ``corpus``, ``registry``.
 
-One subcommand per job, and only three of them need a model:
+Eight subcommands because there are eight jobs, and only four of them need a
+model (``run``, ``measure``, ``ablation``, ``extraction``); ``score``,
+``check``, ``corpus`` and ``registry`` work entirely from what was already
+recorded:
 
 ``run``
     Spawns the mission command once per mission — the platform's own spawn
@@ -49,6 +52,14 @@ One subcommand per job, and only three of them need a model:
     passing extraction attempts and recorded missions that answered become
     fine-tune examples, completions verbatim and never synthesised.
     ROADMAP §2.9.8 / ``MODELS.md`` §4 step 1 — see :mod:`core.eval.corpus`.
+``registry``
+    The only subcommand that runs nothing at all: it ingests the report
+    *files* the three measuring subcommands write and keeps the per-model
+    profile of what has actually been measured — `MODELS.md` §5, and
+    :mod:`core.eval.registry` for the disciplines (no bare rates, no
+    interval under the sample floor, nothing averaged across interpreters,
+    nothing hand-entered).  It does not route, and no suite is resolved for
+    it: the run it reads already happened, possibly on another machine.
 
 **A run directory is a RunStore directory.**  That is the whole agreement
 between this harness, the recorder and a platform's archive: one directory per
@@ -380,6 +391,15 @@ def _parser() -> argparse.ArgumentParser:
     checker.add_argument("--suite", default="stub",
                          help="'stub', 'benchmark', or the path of a suite "
                               "file")
+
+    # Registered last, and appended to rather than inserted among: the
+    # self-registering subcommands are an open list, and a lane that adds
+    # one should not have to edit the line above it. Also without
+    # `common` — `registry` reads finished reports, so there is no suite,
+    # no half and nothing to spawn. See `core.eval.registry.add_parser`.
+    from core.eval.registry import add_parser as _add_registry
+    _add_registry(subs)
+
     return parser
 
 
@@ -401,6 +421,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "corpus":
         from core.eval.corpus import from_args as _corpus
         return _corpus(args)
+    # Before the suite for the same reason and one stronger: `registry`
+    # reads report files that were written by a run that already happened,
+    # possibly on somebody else's machine. There is no suite in this
+    # checkout for it to be held to.
+    if args.command == "registry":
+        from core.eval.registry import from_args as _registry
+        return _registry(args)
 
     try:
         suite = resolve_suite(args.suite)

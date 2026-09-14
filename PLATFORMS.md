@@ -1770,6 +1770,20 @@ python -m core.eval corpus   --out corpus.jsonl --from-runs DIR --note "<your da
   written, and a platform's own data stays a platform's: pass `--note` to say
   whose it is and what may be done with it. See `EVAL.md` §17 and `MODELS.md`
   §4.
+* **`registry`** runs nothing. It ingests the report *files* the three
+  measuring subcommands write and keeps a **per-model profile** of what has
+  actually been measured — `registry add <report.json>` is the only writer,
+  and it refuses a shape it did not produce or a report whose `meta` does not
+  name a provider and a model. `registry show` renders a table per model,
+  split by interpreter (subcommand, temperature, decoding, prompt digest,
+  scorer, endpoint class), with `n` beside every figure, no interval below
+  n = 20, and no averaging across interpreters. This is where a platform keeps
+  what it learned about the model it serves, so the next person does not
+  re-measure it — and the endpoint is reduced to
+  `scheme://loopback|private|public`, so handing a report over does not hand
+  over your infrastructure. **It does not route**: that is ROADMAP §2.9.7 and
+  it is gated on differences being statistically meaningful. See `EVAL.md`
+  §16 and `MODELS.md` §5.
 
 `live` — a platform's own suite driven against a running deployment rather than
 against an archive — is the one that has not landed.

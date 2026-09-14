@@ -25,11 +25,12 @@ The package is six modules and one rule:
 * :mod:`core.eval.score` — the verdict, computed **only** from the recorded
   stream.
 * :mod:`core.eval.run` — ``python -m core.eval
-  run|measure|ablation|score|check|extraction|corpus``.
+  run|measure|ablation|score|check|extraction|corpus|registry``.
 * :mod:`core.eval.corpus` — ROADMAP §2.9.8's first step: validated traces
   in, fine-tune examples out.  The only module here that writes training
   data, and the only rule it has is that a completion is copied and never
   invented.
+
 * :mod:`core.eval.extraction` — ROADMAP §2.9.3's gatekeeper: real recorded
   receipts in, typed propositions with abstention out, and a rate per
   failure class with an interval on it.  The one measurement in this
@@ -43,6 +44,12 @@ The package is six modules and one rule:
   interval on each arm's rate.  An arm whose flags the spawn line does not
   accept is skipped with the reason, so a piece that has not been built yet
   still has its column.
+* :mod:`core.eval.registry` — the **profile store**: what has actually been
+  measured about each model, ingested only from the reports the three
+  measuring subcommands write, every figure with its ``k``/``n``, nothing
+  averaged across interpreters and nothing under the sample floor given an
+  interval.  `MODELS.md` §5.  It does not route; it is the evidence a
+  router would have to read first.
 
 The rule is the third bullet.  An agent's summary is evidence about its
 reporting, never about its behaviour, so every machine check is answered from
@@ -73,6 +80,13 @@ from core.eval.ablation import (ARMS, Ablation, Arm, ArmResult, Unavailable,
                                 ablate, accepted_flags, band, paired)
 from core.eval.measure import (MEASUREMENTS, Configured, Matrix, Measurement,
                                Unmeasurable)
+# Same rule as `measure` above: the MODULE `core.eval.registry` is not
+# shadowed by a binding of that name here, so `from core.eval import
+# registry` keeps getting the module. `Registry` is the class.
+from core.eval.registry import (DEFAULT_REGISTRY, FLOOR_N, SCHEMA, Delta,
+                                Entry, Figure, Registry, Unregisterable,
+                                deltas, endpoint_kind, read_report, render,
+                                source_of, staleness)
 from core.eval.score import (Half, NoStream, Report, Totals, Verdict,
                              records_from, score_run, score_suite)
 from core.eval.corpus import (ABSTAINING, ABSTENTION_FLOOR,
@@ -103,4 +117,7 @@ __all__ = [
     "ABSTAINING", "ABSTENTION_FLOOR", "CORPUS_SCHEMA_VERSION", "EXCLUSIONS",
     "POSITIONS", "STANCES", "CorpusRefused", "Example", "balance",
     "from_extraction", "from_runs", "residue_in", "stance_of",
+    "DEFAULT_REGISTRY", "FLOOR_N", "SCHEMA", "Delta", "Entry", "Figure",
+    "Registry", "Unregisterable", "deltas", "endpoint_kind", "read_report",
+    "render", "source_of", "staleness",
 ]

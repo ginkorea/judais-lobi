@@ -1,0 +1,294 @@
+{
+  "probes": "probes.jsonl",
+  "meta": {
+    "commit": "9148adecc9fe629e9296ad84d17f72018a674270",
+    "date": "2026-09-13",
+    "provider": "local",
+    "model": "openai/gpt-oss-20b",
+    "temperature": 0.2,
+    "endpoint": "http://127.0.0.1:8011/v1",
+    "constrained": false,
+    "prompt": "2c78315dfca7",
+    "scorer": 2,
+    "probes_path": "tests/fixtures/extraction/probes.jsonl",
+    "probe_count": 49,
+    "repeats": 3,
+    "python": "3.14.7"
+  },
+  "headline": "probe_reliable",
+  "rates": {
+    "structural": {
+      "name": "structural",
+      "k": 147,
+      "n": 147,
+      "rate": 1.0,
+      "low": 0.9745,
+      "high": 1.0,
+      "what": "replies that parsed as propositions, first try or after the one repair"
+    },
+    "first_try": {
+      "name": "first_try",
+      "k": 147,
+      "n": 147,
+      "rate": 1.0,
+      "low": 0.9745,
+      "high": 1.0,
+      "what": "replies that parsed with no repair at all"
+    },
+    "repair": {
+      "name": "repair",
+      "k": 0,
+      "n": 147,
+      "rate": 0.0,
+      "low": 0.0,
+      "high": 0.0255,
+      "what": "attempts that needed the repair turn (LOWER is better)"
+    },
+    "grounded": {
+      "name": "grounded",
+      "k": 126,
+      "n": 126,
+      "rate": 1.0,
+      "low": 0.9704,
+      "high": 1.0,
+      "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+    },
+    "gold_precision": {
+      "name": "gold_precision",
+      "k": 121,
+      "n": 122,
+      "rate": 0.9918,
+      "low": 0.955,
+      "high": 0.9986,
+      "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+    },
+    "gold_recall": {
+      "name": "gold_recall",
+      "k": 121,
+      "n": 126,
+      "rate": 0.9603,
+      "low": 0.9105,
+      "high": 0.9829,
+      "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+    },
+    "abstention": {
+      "name": "abstention",
+      "k": 26,
+      "n": 27,
+      "rate": 0.963,
+      "low": 0.8172,
+      "high": 0.9934,
+      "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+    },
+    "conflict_surfaced": {
+      "name": "conflict_surfaced",
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "low": 0.6097,
+      "high": 1.0,
+      "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+    },
+    "trap": {
+      "name": "trap",
+      "k": 36,
+      "n": 36,
+      "rate": 1.0,
+      "low": 0.9036,
+      "high": 1.0,
+      "what": "trap probes that did not ASSERT from the trap field"
+    },
+    "hedged": {
+      "name": "hedged",
+      "k": 0,
+      "n": 63,
+      "rate": 0.0,
+      "low": 0.0,
+      "high": 0.0575,
+      "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+    },
+    "probe": {
+      "name": "probe",
+      "k": 141,
+      "n": 147,
+      "rate": 0.9592,
+      "low": 0.9138,
+      "high": 0.9812,
+      "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+    },
+    "probe_reliable": {
+      "name": "probe_reliable",
+      "k": 45,
+      "n": 49,
+      "rate": 0.9184,
+      "low": 0.8081,
+      "high": 0.9678,
+      "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+    },
+    "constrained_invalid": {
+      "name": "constrained_invalid",
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "low": 0.0,
+      "high": 0.0,
+      "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+    }
+  },
+  "by_family": {
+    "present": {
+      "structural": {
+        "name": "structural",
+        "k": 72,
+        "n": 72,
+        "rate": 1.0,
+        "low": 0.9493,
+        "high": 1.0,
+        "what": "replies that parsed as propositions, first try or after the one repair"
+      },
+      "first_try": {
+        "name": "first_try",
+        "k": 72,
+        "n": 72,
+        "rate": 1.0,
+        "low": 0.9493,
+        "high": 1.0,
+        "what": "replies that parsed with no repair at all"
+      },
+      "repair": {
+        "name": "repair",
+        "k": 0,
+        "n": 72,
+        "rate": 0.0,
+        "low": 0.0,
+        "high": 0.0507,
+        "what": "attempts that needed the repair turn (LOWER is better)"
+      },
+      "grounded": {
+        "name": "grounded",
+        "k": 89,
+        "n": 89,
+        "rate": 1.0,
+        "low": 0.9586,
+        "high": 1.0,
+        "what": "ASSERTs the receipt supports \u2014 the value under the field they name, quoted from a span really in it. The denominator is every ASSERT of every kind of probe, so a corpus with more assert probes in it moves this n"
+      },
+      "gold_precision": {
+        "name": "gold_precision",
+        "k": 89,
+        "n": 89,
+        "rate": 1.0,
+        "low": 0.9586,
+        "high": 1.0,
+        "what": "ASSERTs that are a fact the probe asked for (assert and trap probes; an abstain probe asks for no fact, so its assertions are counted elsewhere)"
+      },
+      "gold_recall": {
+        "name": "gold_recall",
+        "k": 89,
+        "n": 90,
+        "rate": 0.9889,
+        "low": 0.9397,
+        "high": 0.998,
+        "what": "facts the probe asked for that were asserted AND grounded \u2014 a right value off an invented span is not a hit"
+      },
+      "abstention": {
+        "name": "abstention",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "probes where SILENCE is the only right answer, answered with no assertion at all. Probes that declare a better alternative \u2014 a conflict to surface, a mask to transcribe \u2014 are not counted here"
+      },
+      "conflict_surfaced": {
+        "name": "conflict_surfaced",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "conflicts handled \u2014 no assertion at all, OR both sides surfaced with their own sources. The failure is asserting ONE side as if uncontested"
+      },
+      "trap": {
+        "name": "trap",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "trap probes that did not ASSERT from the trap field"
+      },
+      "hedged": {
+        "name": "hedged",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "attempts that touched what their probe was watching \u2014 a trap field, a key declared absent, one side of a conflict \u2014 at HYPOTHESIZE or AMBIGUOUS. Hedged wrongness, reported beside `trap` and NOT folded into any verdict"
+      },
+      "probe": {
+        "name": "probe",
+        "k": 71,
+        "n": 72,
+        "rate": 0.9861,
+        "low": 0.9254,
+        "high": 0.9975,
+        "what": "ATTEMPTS answered correctly and completely \u2014 every gold fact asserted AND grounded, nothing else asserted, the trap not taken, a conflict not swallowed, a mask not replaced. A correct answer with fabricated provenance is a failure"
+      },
+      "probe_reliable": {
+        "name": "probe_reliable",
+        "k": 23,
+        "n": 24,
+        "rate": 0.9583,
+        "low": 0.7976,
+        "high": 0.9926,
+        "what": "PROBES whose every attempt was right. The headline under --repeats: a gatekeeper is a question about reliability, and no majority voting"
+      },
+      "constrained_invalid": {
+        "name": "constrained_invalid",
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "low": 0.0,
+        "high": 0.0,
+        "what": "attempts that were UNREADABLE although a grammar was sent (LOWER is better; the denominator is the constrained attempts, so an unconstrained run counts nothing here). Read each row's note before reading this number: only a shape the grammar forbids is evidence about the ENDPOINT, and the rest is the model's content"
+      }
+    }
+  },
+  "attempts": [
+    {
+      "probe": "totals_records",
+      "family": "present",
+      "kind": "assert",
+      "repeat": 1,
+      "structural": "first",
+      "defects": [],
+      "propositions": [
+        {
+          "status": "ASSERT",
+          "field": "records",
+          "value": 12481,
+          "quote": "\"records\": 12481"
+        }
+      ],
+      "replies": [
+        "[{\"status\":\"ASSERT\",\"field\":\"records\",\"value\":12481,\"quote\":\"\\\"records\\\": 12481\"}]"
+      ],
+      "asserts": 1,
+      "grounded": 1,
+      "gold_hits": 1,
+      "gold_total": 1,
+      "off_gold": 0,
+      "abstained": null,
+      "trap_clean": null,
+      "both_sides": null,
+      "mask_faithful": null,
+      "sprung": [],
+      "hedged": [],
+      "watched": false,
+      "constrained": false,
+      "verdict": true
+    }
+  ]
+}
