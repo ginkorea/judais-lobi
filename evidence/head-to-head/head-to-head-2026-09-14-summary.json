@@ -1,0 +1,827 @@
+{
+  "generated_at": "2026-09-13T19:10:49-10:00",
+  "criteria": [
+    "wall clock",
+    "completion",
+    "accuracy"
+  ],
+  "comparable_scenario_sets": true,
+  "winner": "**v1.2.0**, on 2 of the three criteria to v1.1.3's 0.",
+  "per_criterion": [
+    "**accuracy \u2014 v1.2.0.** v1.1.3 80.0% (24/30) vs v1.2.0 96.7% (29/30); 16.7 pt to v1.2.0.",
+    "**completion \u2014 v1.2.0.** v1.1.3 96.7% vs v1.2.0 100.0% of missions ran every turn to `finished`; 3.3 pt to v1.2.0.",
+    "**wall clock \u2014 tie.** v1.1.3 55.41 s vs v1.2.0 48.47 s per mission: a 6.94 s gap inside the 38.43 s spread the arms showed across their own runs, which is not a difference this measurement can see."
+  ],
+  "aggregate": {
+    "v1.1.3": {
+      "runs": 3,
+      "labels": [
+        "v1.1.3-run1",
+        "v1.1.3-run2",
+        "v1.1.3-run3"
+      ],
+      "accuracy_pct": 80.0,
+      "accuracy_runs": [
+        60.0,
+        100.0,
+        80.0
+      ],
+      "passed_of_total": "24/30",
+      "completion_pct": 96.7,
+      "completion_runs": [
+        90.0,
+        100.0,
+        100.0
+      ],
+      "mean_wall_s": 55.41,
+      "mean_wall_runs": [
+        75.69,
+        53.27,
+        37.26
+      ],
+      "wall_spread_s": 38.43,
+      "total_wall_s": 554.1
+    },
+    "v1.2.0": {
+      "runs": 3,
+      "labels": [
+        "v1.2.0-run1",
+        "v1.2.0-run2",
+        "v1.2.0-run3"
+      ],
+      "accuracy_pct": 96.7,
+      "accuracy_runs": [
+        100.0,
+        90.0,
+        100.0
+      ],
+      "passed_of_total": "29/30",
+      "completion_pct": 100.0,
+      "completion_runs": [
+        100.0,
+        100.0,
+        100.0
+      ],
+      "mean_wall_s": 48.47,
+      "mean_wall_runs": [
+        60.49,
+        46.47,
+        38.46
+      ],
+      "wall_spread_s": 22.03,
+      "total_wall_s": 484.7
+    }
+  },
+  "runs": [
+    {
+      "label": "v1.1.3-run1",
+      "version": "v1.1.3",
+      "arm": "v1.1.3",
+      "tier": "baseline",
+      "base": "http://127.0.0.1:8770",
+      "passed": 6,
+      "total": 10,
+      "accuracy": 60.0,
+      "completed": 9,
+      "completion": 90.0,
+      "mean_wall_s": 75.69,
+      "median_wall_s": 52.07,
+      "total_wall_s": 756.86,
+      "elapsed_wallclock_s": 757.0,
+      "started_at": "2026-09-14T04:16:48+00:00",
+      "finished_at": "2026-09-14T04:29:25+00:00",
+      "scenarios": {
+        "coref": {
+          "outcome": "FAIL",
+          "passed": false,
+          "elapsed_s": 44.08,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "pivot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 92.13,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "deepresearch": {
+          "outcome": "FAIL",
+          "passed": false,
+          "elapsed_s": 20.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 60.06,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "install": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 28.06,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "web": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 28.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "governed": {
+          "outcome": "FAIL",
+          "passed": false,
+          "elapsed_s": 132.14,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "empty": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 96.08,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "correction": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 32.07,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "followup_plot": {
+          "outcome": "FAIL",
+          "passed": false,
+          "elapsed_s": 224.16,
+          "complete": false,
+          "turns": 2,
+          "ended": [
+            "timeout",
+            "finished"
+          ]
+        }
+      },
+      "source": "/home/gompert/data/tmp-pytest-conductor/head-to-head/results/2026-09-14T04-16-28Z/v1.1.3-run1/summary.json"
+    },
+    {
+      "label": "v1.1.3-run2",
+      "version": "v1.1.3",
+      "arm": "v1.1.3",
+      "tier": "baseline",
+      "base": "http://127.0.0.1:8770",
+      "passed": 10,
+      "total": 10,
+      "accuracy": 100.0,
+      "completed": 10,
+      "completion": 100.0,
+      "mean_wall_s": 53.27,
+      "median_wall_s": 40.06,
+      "total_wall_s": 532.75,
+      "elapsed_wallclock_s": 533.0,
+      "started_at": "2026-09-14T04:40:12+00:00",
+      "finished_at": "2026-09-14T04:49:05+00:00",
+      "scenarios": {
+        "coref": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 68.09,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "pivot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 40.08,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "deepresearch": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 16.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 52.07,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "install": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 40.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "web": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 36.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "governed": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 60.07,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "empty": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 12.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "correction": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 28.08,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "followup_plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 180.18,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        }
+      },
+      "source": "/home/gompert/data/tmp-pytest-conductor/head-to-head/results/2026-09-14T04-16-28Z/v1.1.3-run2/summary.json"
+    },
+    {
+      "label": "v1.1.3-run3",
+      "version": "v1.1.3",
+      "arm": "v1.1.3",
+      "tier": "baseline",
+      "base": "http://127.0.0.1:8770",
+      "passed": 8,
+      "total": 10,
+      "accuracy": 80.0,
+      "completed": 10,
+      "completion": 100.0,
+      "mean_wall_s": 37.26,
+      "median_wall_s": 42.05,
+      "total_wall_s": 372.59,
+      "elapsed_wallclock_s": 373.0,
+      "started_at": "2026-09-14T04:57:09+00:00",
+      "finished_at": "2026-09-14T05:03:22+00:00",
+      "scenarios": {
+        "coref": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 64.09,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "pivot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 56.09,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "deepresearch": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 16.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 56.06,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "install": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 52.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "web": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 28.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "governed": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 36.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "empty": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 48.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "correction": {
+          "outcome": "FAIL",
+          "passed": false,
+          "elapsed_s": 8.06,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "followup_plot": {
+          "outcome": "FAIL",
+          "passed": false,
+          "elapsed_s": 8.06,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        }
+      },
+      "source": "/home/gompert/data/tmp-pytest-conductor/head-to-head/results/2026-09-14T04-16-28Z/v1.1.3-run3/summary.json"
+    },
+    {
+      "label": "v1.2.0-run1",
+      "version": "v1.2.0",
+      "arm": "v1.2.0",
+      "tier": "baseline",
+      "base": "http://127.0.0.1:8771",
+      "passed": 10,
+      "total": 10,
+      "accuracy": 100.0,
+      "completed": 10,
+      "completion": 100.0,
+      "mean_wall_s": 60.49,
+      "median_wall_s": 54.07,
+      "total_wall_s": 604.87,
+      "elapsed_wallclock_s": 605.0,
+      "started_at": "2026-09-14T04:29:49+00:00",
+      "finished_at": "2026-09-14T04:39:54+00:00",
+      "scenarios": {
+        "coref": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 72.09,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "pivot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 128.26,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "deepresearch": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 20.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 72.07,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "install": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 32.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "web": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 32.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "governed": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 112.11,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "empty": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 20.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "correction": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 36.07,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "followup_plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 80.1,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        }
+      },
+      "source": "/home/gompert/data/tmp-pytest-conductor/head-to-head/results/2026-09-14T04-16-28Z/v1.2.0-run1/summary.json"
+    },
+    {
+      "label": "v1.2.0-run2",
+      "version": "v1.2.0",
+      "arm": "v1.2.0",
+      "tier": "baseline",
+      "base": "http://127.0.0.1:8771",
+      "passed": 9,
+      "total": 10,
+      "accuracy": 90.0,
+      "completed": 10,
+      "completion": 100.0,
+      "mean_wall_s": 46.47,
+      "median_wall_s": 50.05,
+      "total_wall_s": 464.71,
+      "elapsed_wallclock_s": 464.0,
+      "started_at": "2026-09-14T04:49:16+00:00",
+      "finished_at": "2026-09-14T04:57:00+00:00",
+      "scenarios": {
+        "coref": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 56.1,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "pivot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 84.13,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "deepresearch": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 52.06,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 76.06,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "install": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 48.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "web": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 20.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "governed": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 36.06,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "empty": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 12.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "correction": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 24.08,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "followup_plot": {
+          "outcome": "FAIL",
+          "passed": false,
+          "elapsed_s": 56.08,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        }
+      },
+      "source": "/home/gompert/data/tmp-pytest-conductor/head-to-head/results/2026-09-14T04-16-28Z/v1.2.0-run2/summary.json"
+    },
+    {
+      "label": "v1.2.0-run3",
+      "version": "v1.2.0",
+      "arm": "v1.2.0",
+      "tier": "baseline",
+      "base": "http://127.0.0.1:8771",
+      "passed": 10,
+      "total": 10,
+      "accuracy": 100.0,
+      "completed": 10,
+      "completion": 100.0,
+      "mean_wall_s": 38.46,
+      "median_wall_s": 38.06,
+      "total_wall_s": 384.63,
+      "elapsed_wallclock_s": 384.0,
+      "started_at": "2026-09-14T05:03:36+00:00",
+      "finished_at": "2026-09-14T05:10:00+00:00",
+      "scenarios": {
+        "coref": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 52.1,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "pivot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 36.07,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "deepresearch": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 8.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 44.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "install": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 40.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "web": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 32.05,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "governed": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 52.07,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "empty": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 20.04,
+          "complete": true,
+          "turns": 1,
+          "ended": [
+            "finished"
+          ]
+        },
+        "correction": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 28.07,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        },
+        "followup_plot": {
+          "outcome": "PASS",
+          "passed": true,
+          "elapsed_s": 72.09,
+          "complete": true,
+          "turns": 2,
+          "ended": [
+            "finished",
+            "finished"
+          ]
+        }
+      },
+      "source": "/home/gompert/data/tmp-pytest-conductor/head-to-head/results/2026-09-14T04-16-28Z/v1.2.0-run3/summary.json"
+    }
+  ]
+}
