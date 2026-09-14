@@ -720,8 +720,8 @@ class LocalBackend(Backend):
                     f"lists the model, so it is loaded and this is a queue"))
 
     def _long_stream(self, body: Dict[str, Any],
-                     progress: "_StreamProgress") -> None:
-        """The call is still answering — say so, once.
+                     progress: "_StreamProgress") -> bool:
+        """The call is still answering — say so, once.  Or ask again.
 
         Runs on a timer thread :attr:`streaming_long_s` seconds after the
         request went out.  The gap it closes is the one the v1.4.0
@@ -739,13 +739,29 @@ class LocalBackend(Backend):
         backend actually watched go past — which is why it is a
         measurement and not a guess, and why the counts are in it.
 
-        One report and no repeat: see :data:`STREAMING_LONG_S
+        **But it asks again instead of standing down**, which is the
+        difference between an instrument and a coincidence.  A one-shot
+        that returned here would mean a call whose first token arrives
+        AFTER the threshold — the server that is slow to start *and* slow
+        to finish, which is the worse version of the same afternoon — is
+        never reported at all: ``queued`` at twenty seconds, ``loaded``
+        when the token lands, and then two hundred seconds of the same
+        silence this word exists to end, now with a wait that was opened
+        and closed to make it look accounted for.  Returning ``True``
+        re-arms the same alarm for another :attr:`streaming_long_s` — see
+        :func:`~core.runtime.backends.state.alarm_after` — so the windows
+        stay aligned to the request clock, which is the clock ``since_s``
+        is measured on.
+
+        One report and no repeat once it HAS spoken: see
+        :data:`STREAMING_LONG_S
         <core.runtime.backends.state.STREAMING_LONG_S>`.  The wait it
         opens is closed by :meth:`_stream`, which reports ``loaded`` when
-        the frames stop.
+        the frames stop and ``failed`` when they stop because the stream
+        died.
         """
         if not progress.arrived:
-            return
+            return True
         progress.reported = True
         self._report(
             state.STREAMING,
@@ -755,6 +771,59 @@ class LocalBackend(Backend):
                     f"and the model is still answering — {progress.frames} "
                     f"frames and {progress.chars} characters of content so "
                     f"far"))
+        return False
+
+    def _stream_died(self, body: Dict[str, Any],
+                     progress: "_StreamProgress", exc: BaseException) -> None:
+        """Close a streaming wait that ended in an exception, not an answer.
+
+        **Something must close a wait this backend opened**, and until
+        this existed nothing did: a ``ConnectionError`` out of
+        ``iter_lines`` after the long-call word had gone out reaches
+        neither :meth:`_post`'s retry (the connect already succeeded) nor
+        :meth:`_raise_for_status` (the status was already 200), so the
+        run's de-duplicator kept the wait open — and then emitted the
+        NEXT, healthy call's ``loaded`` against it, which is a ``loaded``
+        on a call where nothing went wrong and which ``CONTRACT.md``
+        forbids in as many words.  Worse when the failure ends the run:
+        the last thing on the stream is a model still answering, after
+        ``mission_finished``.
+
+        ``failed`` and not a ``loaded`` that explains itself, because the
+        two words are read differently by something that is not reading
+        the sentence: a consumer clears a wait on ``loaded`` and shows
+        the call as having recovered.  This call did not recover.  The
+        word is read off :data:`~core.runtime.backends.policy.ERROR_POLICY`
+        rather than written here — the ``timeout`` row, whose reasoning
+        is exactly this case: *the request IS in flight — the server may
+        be decoding it right now*.  A stream that dies mid-body is that
+        row's situation, not the ``connect`` row's, which says the
+        request never left this host.
+
+        **Every way out that is not the end of the stream**, which is why
+        the caller catches ``BaseException``: a consumer that walked away
+        and a run that was cancelled leave exactly the same open wait as
+        a broken socket, and the cancelled case is the one where a
+        dangling *still answering* is most visible — it would be the last
+        word on the stream, after ``mission_finished``.  ``failed`` is
+        honest across all three, because what it says of the call is what
+        is true of all of them: it did not deliver.  The detail names
+        which, by exception type.
+
+        Said only when the long-call word went out.  A stream that dies
+        without one opened no wait, and the exception on its way to the
+        caller is the whole of what happened.
+        """
+        if not progress.reported:
+            return
+        progress.reported = False
+        self._report(
+            policy.ERROR_POLICY["timeout"].state,
+            model=progress.model or str(body.get("model")
+                                        or self._named_model()),
+            detail=(f"the stream stopped after {progress.frames} frames and "
+                    f"{progress.chars} characters: "
+                    f"{type(exc).__name__}: {exc}"))
 
     def _complete(self, body: Dict[str, Any]) -> str:
         with state.first_byte_within(self.first_byte_queued_s,
@@ -991,16 +1060,24 @@ class LocalBackend(Backend):
                     # announced once and CLOSED once — the rule
                     # `core.runtime.run._ModelStates` owns — so the end of
                     # the stream says so, and a pane that put up "still
-                    # answering" takes it down. Only here, on a stream
-                    # that finished: one that died mid-frame did not
-                    # recover, and `loaded` would be this backend claiming
-                    # it did.
+                    # answering" takes it down. `loaded` HERE, because
+                    # this stream finished; the stream that died has its
+                    # own word, in `_stream_died`.
+                    progress.reported = False
                     self._report(
                         state.LOADED,
                         model=progress.model or str(body.get("model") or ""),
                         detail=(f"the stream finished — {progress.frames} "
                                 f"frames and {progress.chars} characters "
                                 f"of content"))
+        except BaseException as exc:
+            # EVERY way out that is not the end of the stream, including
+            # a `GeneratorExit` from a consumer that walked away and a
+            # cancellation: a wait this backend opened must not outlive
+            # the call, because the run's de-duplicator would spend the
+            # NEXT call's `loaded` closing it. See `_stream_died`.
+            self._stream_died(body, progress, exc)
+            raise
         finally:
             # In a `finally` so that a consumer that walks away mid-stream
             # still leaves behind whatever had been reported by then —

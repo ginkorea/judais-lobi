@@ -381,15 +381,31 @@ loading is a run that has not failed.
 `streaming` is newer than the rest of that list and is the only word in it that
 is **not** a fault: the model answered and is still answering 60s after the
 request went out, with the frames and characters watched so far in `detail`. It
-is said once per call and closed by the `loaded` that follows. It exists
+is said once per call and **always closed** — by `loaded` when the frames stop,
+by `failed` when the stream dies, is abandoned or is cancelled — so a pane that
+put up *still answering* never has to guess when to take it down. It exists
 because the instrument that catches a silent server stands down the moment a
 token arrives, so a turn whose model writes for three minutes used to be a
 `step_started` followed by nothing at all — which is how a pane's "thinking…"
 and a genuinely hung run come to look identical, and what made
-`evidence/diagnosis-v1.4.0-regression-2026-09-14.md` take six passes. **A word
-added to `MODEL_STATES` is additive and does not bump `SCHEMA_VERSION`**; a
-lockstep test holding that tuple against your own list will see it grow, and
-the response is a branch or a shrug, not a pin.
+`evidence/diagnosis-v1.4.0-regression-2026-09-14.md` take six passes.
+
+Two details a pane has to get right. **It is keyed by `index`, not by run.**
+The other six words are facts about the endpoint, which a `--swarm` turn's
+children share and which are de-duplicated across them; `streaming` is a fact
+about one call, so two slow children produce two records with different `index`
+and two closes. Key your model-state widget by `index` (or per `branch`) and
+both render; key it by run and you see whichever spoke last. **And a slow first
+token does not lose the word:** the threshold is re-asked every 60s until a
+frame arrives, so a call that is silent for 90s and then trickles for 200s
+reports `queued`, then `loaded`, then `streaming` — rather than going quiet for
+the whole answer.
+
+**A word added to `MODEL_STATES` is additive and does not bump
+`SCHEMA_VERSION`** — `CONTRACT.md` §Compatibility now states the
+vocabulary-growth rule for enums as such, so it can be classified from there
+alone. A lockstep test holding that tuple against your own list will see it
+grow, and the response is a branch or a shrug, not a pin.
 
 **Reading a slow turn.** Three fields answer it and all three are already on
 the wire. `model_state.state` says whether the model is silent (`queued`,

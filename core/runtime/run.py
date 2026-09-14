@@ -1252,17 +1252,38 @@ class _ModelStates:
     worker thread a model call runs on and from the timer thread that
     notices a late first byte, and two children of one run may have two
     calls in flight.
+
+    **Two channels, because two kinds of fact arrive here.**  Six of the
+    words are facts about the ENDPOINT — it is cold, it is queued, it
+    answered 503, nothing is listening — and one shared slot is right for
+    them: a run shares this object with its children by identity, the
+    endpoint is the same endpoint for all of them, and three children
+    each saying ``absent`` about one dead socket is one fact told three
+    times.  ``streaming`` is the first word that is a fact about ONE
+    CALL, and the shared slot is wrong for it in both directions: two
+    slow children collapse into a single record because the second one
+    says the same word, and then the first child's ``loaded`` clears the
+    flag while the second is still streaming, so the second's close is
+    dropped as well.  So it gets a channel of its own, keyed by the step
+    the call belongs to, and the endpoint channel is left exactly as it
+    was.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         #: The last state EMITTED, and the ``retry_after_s`` it carried.
+        #: The ENDPOINT channel — see the class docstring.
         self._last = ""
         self._retry: Optional[float] = None
         #: Whether a wait is outstanding — that is, whether a ``loaded``
         #: would be the end of something rather than the unremarkable
         #: second half of a call that worked.
         self._waiting = False
+        #: The steps with a ``streaming`` wait outstanding.  The per-CALL
+        #: channel: a set and not a flag, because two children of one run
+        #: can be streaming at the same moment and each one's wait has to
+        #: be closed by its own call's ending.
+        self._streaming: set = set()
 
     def take(self, report: Any, observer: "Observer", *,
              index: Optional[int], started: List[float]) -> None:
@@ -1284,7 +1305,24 @@ class _ModelStates:
             started[0] = now
             return
         with self._lock:
-            if report.state == model_state.LOADED:
+            if report.state == model_state.STREAMING:
+                # The per-CALL channel. Two children streaming at once is
+                # two facts, not one word said twice, so the de-duplication
+                # is per step and never against `_last`.
+                if index in self._streaming:
+                    return
+                self._streaming.add(index)
+            elif index in self._streaming:
+                # Whatever this word is, it ENDS the streaming wait this
+                # call opened, and it is always news: the endpoint
+                # channel's de-duplication below is about a shared
+                # socket, and this is about one call finishing. A
+                # `loaded` here also closes any endpoint wait the same
+                # call was carrying — a consumer holds one current state
+                # per model, and this call is done either way.
+                self._streaming.discard(index)
+                self._waiting = report.state != model_state.LOADED
+            elif report.state == model_state.LOADED:
                 if not self._waiting:
                     # Nothing was ever wrong. This is the boring half of
                     # a healthy call, and dropping it is what keeps every

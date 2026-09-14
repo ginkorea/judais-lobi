@@ -427,7 +427,10 @@ tokens and then the ceiling* are different facts about the same call: a
 consumer that reads only the count has been told a truncated answer was a
 complete one. **Absent on every call that ended on its own terms**, which is
 nearly all of them. Render it as a warning beside the answer — it is never a
-failure, and the run's `outcome` does not change because of it.
+failure, and the run's `outcome` does not change because of it. (A provider
+that puts a `finish_reason` inside its own `usage` object has it carried
+verbatim like every other extra it sent; where both exist, the harness's word —
+read off the choice this call produced — is the one you get.)
 
 On `mission_finished` it is the **run's ledger**:
 `{prompt_tokens, completion_tokens, total_tokens, calls}`, where `calls` counts
@@ -731,8 +734,17 @@ investigation took six passes. The 60s is
 20s beside it, and it is a shade over three times the p90 of the calls measured
 there: high enough that a long-but-healthy turn stays quiet, low enough that a
 176s call is announced with two minutes still to run. **Said once per call** —
-this is a state channel and not a metronome — and closed by the `loaded` that
-follows when the frames stop, whose `detail` says how much arrived in the end.
+this is a state channel and not a metronome — and **always closed**: by the
+`loaded` that follows when the frames stop, whose `detail` says how much
+arrived in the end, or by a `failed` when the stream dies mid-answer, is
+abandoned, or is cancelled. A wait the harness opens is a wait it closes; you
+will not be left holding one.
+
+A first token that is itself slow does not lose the word. The threshold is
+re-asked every 60s until a frame has arrived, so a call that spends 90s silent
+and then 200s trickling says `queued` at 20s, `loaded` when the token lands,
+and `streaming` at the next window — rather than going quiet for the whole
+answer because the one instrument fired before there was anything to report.
 
 The eighth word, `asking`, is reported inside the harness and **never reaches
 this stream**: it is the steady state, and the record exists to explain a wait.
@@ -748,8 +760,19 @@ that assertion working rather than a break.
 record — three refused connects inside one retry budget say `absent` once —
 unless `retry_after_s` changed, which is new information about the same state.
 Hold the last one you saw as the current state of the model; clear it on the
-`loaded` that follows. `loaded` is emitted **only** after one of the other five:
+`loaded` that follows. `loaded` is emitted **only** after one of the other six:
 on a run where nothing went wrong there is nothing to say it about.
+
+`streaming` is the exception to that de-duplication, and the exception matters
+on a `--swarm` turn. The other six words are facts about the **endpoint**,
+which a run and its children share, so one dead socket reported by three
+children is one record. `streaming` is a fact about **one call**: it is
+de-duplicated per `index` instead, and the word that ends it — `loaded` when
+the stream finishes, `failed` when it dies mid-answer — closes that step's wait
+and no other. Two children streaming at once therefore produce two `streaming`
+records with different `index`, and two closes. Key your "what is the model
+doing" state by `index` and both render; key it by run and you see the later of
+the two.
 
 `since_s` is how long the run had been waiting on the model when the state was
 reported, from the start of that model call — so on `loaded` it is how long the
@@ -936,9 +959,19 @@ it knows who the person is. Core enforces only that somebody is named.
 - Adding an event, or adding an optional field to an existing event, is a
   **minor** change and does not bump it. That is safe because consumers drop
   record types they do not know.
-- Renaming a field, removing one, moving one out of the required set, or
-  changing what an existing required field means is a **breaking** change and
-  **bumps** it.
+- **Adding a value to a published vocabulary** — a word in `MODEL_STATES`, a
+  word in `OUTCOMES`, a key inside an optional field such as `usage` — is a
+  **minor** change and does not bump it either. A consumer meets an unfamiliar
+  value exactly where it already meets an unfamiliar record type, and the
+  answer is the same: branch if you have a branch, otherwise ignore it and
+  render what you had. A test of yours that holds one of these tuples equal to
+  your own list will go red on the growth; that is the test telling you a word
+  arrived, not the contract breaking. (`OUTCOMES` is a special case with a
+  stronger promise — see *the freeze* below, where it is fixed for the whole of
+  1.x.)
+- Renaming a field, removing one, moving one out of the required set, removing
+  or renaming a value in one of those vocabularies, or changing what an
+  existing required field means is a **breaking** change and **bumps** it.
 
 ## 1.0 — the freeze
 
@@ -975,6 +1008,11 @@ For every release `>=1.0.0, <2.0.0`:
   a required field changing meaning for every driver that has an `else` arm,
   which is why cancellation became `reason` beside `incomplete` rather than a
   sixth outcome.
+- **`MODEL_STATES` only grows.** No word is removed or renamed, and none
+  changes what it means; a word you have never heard of may arrive on a
+  `model_state` record's `state` at any minor release. Branch if you have a
+  branch for it; otherwise show `detail` and hold it as the model's current
+  state until the next `loaded`, which is what the field already asks of you.
 - **`CLI_FLAGS` only grows.** No published flag is removed or renamed, and none
   changes what it takes. A spawn line that works on 1.0 works on 1.9.
 - **`ENV_VARS` only grows**, on the same terms.

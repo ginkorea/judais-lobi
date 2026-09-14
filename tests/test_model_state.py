@@ -477,6 +477,24 @@ class TestReportsCrossThreads:
                 assert watch.armed is True
         assert watch.armed is False
 
+    def test_and_taking_it_down_is_terminal_so_a_re_arm_cannot_undo_it(self):
+        """What makes asking again safe.
+
+        The re-arm runs on the timer thread and the context manager's
+        ``finally`` runs on the call's, so the two race at the end of
+        every long call. If the re-arm could win, a timer would outlive
+        the call it was watching and report a model *still answering*
+        after the run that made the call had finished — which is the
+        failure mode the closing word exists to prevent, reintroduced by
+        the machinery meant to help.
+        """
+        run = Recorded()
+        with run.call():
+            with state.alarm_after(30.0, lambda: True) as watch:
+                pass
+        watch.again()
+        assert watch.armed is False
+
 
 # ── the stub server that misbehaves on purpose ───────────────────────────────
 
@@ -511,6 +529,11 @@ class Endpoint:
         #: How many content frames a streamed answer is made of, or
         #: ``None`` for the two that spell ``hello``.
         self.frames = None
+        #: Stop writing after this many frames and drop the connection,
+        #: with a ``Content-Length`` already promising more — the server
+        #: that was answering and then was not.  ``None`` serves the whole
+        #: stream.
+        self.die_after = None
         #: How many completions have been asked for.
         self.posts = 0
 
@@ -584,7 +607,17 @@ def _handler(endpoint):
                 # situation under test is a stream that keeps arriving and
                 # a `Content-Length` written up front says nothing about
                 # when the bytes come.
-                for frame in frames:
+                for i, frame in enumerate(frames):
+                    if (endpoint.die_after is not None
+                            and i >= endpoint.die_after):
+                        # The header promised more than this. Returning
+                        # closes the socket, and the client raises on the
+                        # short read — a stream that stopped mid-answer,
+                        # which is not a status code and not a refused
+                        # connect and so reaches neither of the two
+                        # places this backend handles failures.
+                        self.close_connection = True
+                        return
                     self.wfile.write(frame.encode())
                     self.wfile.flush()
                     time.sleep(endpoint.trickle_s)
@@ -755,21 +788,26 @@ class TestTheServerThatWillNotStopAnswering:
     a mock would only prove this file agrees with itself.
     """
 
-    #: A stream of four frames 60ms apart — a quarter of a second of a
-    #: server that started answering straight away and is not finished.
-    TRICKLE_S = 0.06
-    FRAMES = 4
+    #: Six frames 100ms apart — six tenths of a second of a server that
+    #: started answering straight away and is not finished.  The numbers
+    #: are deliberately loose: the threshold below sits at 0.2s, so the
+    #: first frame has ~0.18s of slack to land in and the stream has
+    #: ~0.4s left to run when the word goes out.  Sub-second constants
+    #: are fragile enough without being tight as well.
+    TRICKLE_S = 0.1
+    FRAMES = 6
 
-    def _trickling(self, endpoint, frames=None):
+    def _trickling(self, endpoint, frames=None, die_after=None):
         endpoint.trickle_s = self.TRICKLE_S
         endpoint.frames = self.FRAMES if frames is None else frames
+        endpoint.die_after = die_after
         return endpoint
 
     def _long(self, endpoint, **kwargs):
         # Above the first frame's arrival and well below the whole
         # stream's, so the threshold is what decides and not a race.
         kwargs.setdefault("first_byte_queued_s", 30.0)
-        kwargs.setdefault("streaming_long_s", 0.12)
+        kwargs.setdefault("streaming_long_s", 0.2)
         return backend_for(endpoint, **kwargs)
 
     def test_a_call_that_keeps_streaming_says_so(self, endpoint):
@@ -794,9 +832,9 @@ class TestTheServerThatWillNotStopAnswering:
     def test_it_is_said_once_and_not_once_a_minute(self, endpoint):
         """A state channel, not a metronome: the word says *this call is
         still going*, and saying it again says nothing the first one did
-        not."""
+        not.  Ten frames is five thresholds' worth of stream."""
         run = Recorded()
-        self._trickling(endpoint, frames=8)
+        self._trickling(endpoint, frames=10)
         ask(run, self._long(endpoint), stream=True)
         assert run.states.count(state.STREAMING) == 1
 
@@ -820,13 +858,13 @@ class TestTheServerThatWillNotStopAnswering:
         run = Recorded()
         self._trickling(endpoint)
         ask(run, self._long(endpoint), stream=True)
-        assert "4 frames" in run.seen[1]["detail"]
+        assert f"{self.FRAMES} frames" in run.seen[1]["detail"]
 
     def test_since_s_is_measured_from_the_request_going_out(self, endpoint):
         run = Recorded()
         self._trickling(endpoint)
         ask(run, self._long(endpoint), stream=True)
-        assert run.seen[0]["since_s"] >= 0.05
+        assert run.seen[0]["since_s"] >= 0.1
         assert run.seen[1]["since_s"] >= run.seen[0]["since_s"]
 
     def test_every_record_conforms(self, endpoint):
@@ -838,12 +876,42 @@ class TestTheServerThatWillNotStopAnswering:
     def test_a_silence_is_still_the_first_bytes_business(self, endpoint):
         """Both alarms armed, nothing streaming: the word is `queued`,
         because `/models` was asked. This backend must not hold two
-        opinions about one silence."""
-        endpoint.stall_s = 0.4
+        opinions about one silence — and the long-call alarm passing
+        through three of its windows in that silence must not add one."""
+        endpoint.stall_s = 0.5
         run = Recorded()
-        ask(run, self._long(endpoint, first_byte_queued_s=0.05), stream=True)
+        ask(run, self._long(endpoint, first_byte_queued_s=0.05,
+                            streaming_long_s=0.1), stream=True)
         assert state.STREAMING not in run.states
         assert run.states == [state.QUEUED, state.LOADED]
+
+    def test_a_first_frame_after_the_threshold_still_gets_the_word(
+            self, endpoint):
+        """THE regression this class exists for a second time.
+
+        A one-shot that stood down on *no frame yet* would mean the
+        server that is slow to start AND slow to finish — the worse
+        version of the same afternoon — is never reported at all:
+        `loaded` when the token finally lands, and then the whole long
+        answer in silence, with a wait opened and closed to make the hole
+        look accounted for. The alarm asks again instead, so the word
+        arrives in the window after the frames do.
+        """
+        endpoint.stall_s = 0.3          # three thresholds of nothing
+        self._trickling(endpoint)       # then six tenths of answering
+        run = Recorded()
+        ask(run, self._long(endpoint, streaming_long_s=0.1), stream=True)
+        assert state.STREAMING in run.states
+        assert run.states[-1] == state.LOADED
+
+    def test_and_a_call_that_never_starts_is_never_called_streaming(
+            self, endpoint):
+        """Asking again is not inventing: many windows may pass, and
+        every one of them says nothing until a frame has been seen."""
+        endpoint.stall_s = 0.5
+        run = Recorded()
+        ask(run, self._long(endpoint, streaming_long_s=0.05), stream=True)
+        assert state.STREAMING not in run.states
 
     def test_a_reply_that_never_streamed_is_not_called_streaming(self, endpoint):
         """A non-streamed call has no frames to count, so there is nothing
@@ -863,7 +931,241 @@ class TestTheServerThatWillNotStopAnswering:
         got = self._long(endpoint).chat(
             "gpt-oss-20b", [{"role": "user", "content": "hi"}], stream=True)
         assert "".join(c.choices[0].delta.content or "" for c in got) == (
-            "p0p1p2p3")
+            "".join(f"p{i}" for i in range(self.FRAMES)))
+
+
+class TestAStreamThatDiesStillClosesItsWait:
+    """A wait this backend opens is a wait this backend closes.
+
+    The hole: a socket that drops mid-answer reaches neither `_post`'s
+    retry (the connect succeeded) nor `_raise_for_status` (the status was
+    200), so before this nothing said anything and the run's
+    de-duplicator kept the wait open — and then spent the NEXT, healthy
+    call's `loaded` closing it, which is a `loaded` on a call where
+    nothing went wrong and which `CONTRACT.md` forbids in as many words.
+    Worse when the failure ends the run: the last word on the stream is a
+    model still answering, after `mission_finished`.
+    """
+
+    TRICKLE_S = 0.1
+    FRAMES = 10
+
+    def _dying(self, endpoint, die_after):
+        endpoint.trickle_s = self.TRICKLE_S
+        endpoint.frames = self.FRAMES
+        endpoint.die_after = die_after
+        return endpoint
+
+    def _long(self, endpoint, **kwargs):
+        kwargs.setdefault("first_byte_queued_s", 30.0)
+        kwargs.setdefault("streaming_long_s", 0.2)
+        return backend_for(endpoint, **kwargs)
+
+    def test_the_wait_is_closed_when_the_stream_dies(self, endpoint):
+        self._dying(endpoint, die_after=6)
+        run = Recorded()
+        with pytest.raises(Exception):
+            ask(run, self._long(endpoint), stream=True)
+        assert run.states == [state.STREAMING, state.FAILED]
+
+    def test_the_word_is_the_one_the_error_policy_names(self, endpoint):
+        """Not written here. The `timeout` row's reasoning IS this case:
+        *the request IS in flight — the server may be decoding it right
+        now*."""
+        self._dying(endpoint, die_after=6)
+        run = Recorded()
+        with pytest.raises(Exception):
+            ask(run, self._long(endpoint), stream=True)
+        assert run.states[-1] == policy.ERROR_POLICY["timeout"].state
+
+    def test_the_detail_says_how_far_it_got_and_what_stopped_it(self, endpoint):
+        self._dying(endpoint, die_after=6)
+        run = Recorded()
+        with pytest.raises(Exception):
+            ask(run, self._long(endpoint), stream=True)
+        assert "the stream stopped after" in run.seen[-1]["detail"]
+
+    def test_the_next_healthy_call_pays_for_nothing_of_this_ones(self, endpoint):
+        """The defect stated as an assertion, and the assertion is not
+        quite *the next call emits nothing*.
+
+        What `CONTRACT.md` forbids is a `loaded` with nothing outstanding
+        for it to close — the boring half of a healthy call, on the wire.
+        Unfixed, that is exactly what the next call produced: the
+        streaming wait was still open, so an ordinary call nobody waited
+        on emitted a recovery.
+
+        Fixed, the dead stream leaves a `failed` ON THE WIRE, and the
+        next `loaded` is that word's documented close — the same
+        sequence a 500 has produced since this event existed, and the
+        thing a pane needs in order to stop showing red. So the claim is
+        that the next call emits **at most its close, and only because a
+        failure was reported**: one record, `loaded`, against a `failed`
+        a consumer was actually shown.
+        """
+        self._dying(endpoint, die_after=6)
+        run = Recorded()
+        backend = self._long(endpoint)
+        with pytest.raises(Exception):
+            ask(run, backend, stream=True)
+        assert run.states == [state.STREAMING, state.FAILED]
+        before = len(run.seen)
+        endpoint.trickle_s = 0.0
+        endpoint.frames = None
+        endpoint.die_after = None
+        assert ask(run, backend, stream=True, index=1) == "hello"
+        after = run.seen[before:]
+        assert [r["state"] for r in after] == [state.LOADED]
+
+    def test_and_a_healthy_call_after_a_healthy_one_still_emits_nothing(
+            self, endpoint):
+        """The control. Nothing outstanding, nothing said — which is what
+        makes the record above a close and not a leak."""
+        endpoint.trickle_s = 0.0
+        endpoint.frames = None
+        run = Recorded()
+        backend = self._long(endpoint)
+        assert ask(run, backend, stream=True) == "hello"
+        assert ask(run, backend, stream=True, index=1) == "hello"
+        assert run.seen == []
+
+    def test_a_stream_that_dies_before_the_word_opens_no_wait(self, endpoint):
+        """Nothing was said, so there is nothing to close — and the
+        exception on its way to the caller is the whole of what
+        happened."""
+        self._dying(endpoint, die_after=1)
+        run = Recorded()
+        with pytest.raises(Exception):
+            ask(run, self._long(endpoint, streaming_long_s=30.0), stream=True)
+        assert run.seen == []
+
+    def test_a_consumer_that_walks_away_does_not_leave_one_open(self, endpoint):
+        """The abandoned generator — a cancelled run, a driver that
+        stopped reading. `GeneratorExit` is not an error, but the wait is
+        just as open and the pane would show a model still answering
+        after `mission_finished`."""
+        self._dying(endpoint, die_after=None)
+        run = Recorded()
+        with run.call(index=0):
+            frames = self._long(endpoint).chat(
+                "gpt-oss-20b", [{"role": "user", "content": "hi"}],
+                stream=True)
+            for _ in frames:
+                if state.STREAMING in run.states:
+                    break
+            frames.close()
+        assert run.states == [state.STREAMING, state.FAILED]
+
+    def test_every_record_conforms(self, endpoint):
+        self._dying(endpoint, die_after=6)
+        run = Recorded()
+        with pytest.raises(Exception):
+            ask(run, self._long(endpoint), stream=True)
+        assert faults(run.seen) == []
+
+
+class TestTwoSlowChildrenAreTwoFacts:
+    """`streaming` is the first word that is about ONE CALL.
+
+    The other six are about the ENDPOINT, which a run shares with its
+    children by identity, and one shared slot is right for them: three
+    children saying `absent` about one dead socket is one fact told three
+    times. Applying that slot to `streaming` loses a `--swarm` turn's
+    second child twice over — its word dropped as a repeat, and then its
+    close dropped because the first child's `loaded` had already cleared
+    the flag.
+    """
+
+    def _report(self, run, word, index, **kwargs):
+        with run.call(index=index):
+            state.report(word, provider="local", model="m", **kwargs)
+
+    def test_two_children_streaming_at_once_are_two_records(self):
+        run = Recorded()
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.STREAMING, 1)
+        assert run.states == [state.STREAMING, state.STREAMING]
+        assert [r["index"] for r in run.seen] == [0, 1]
+
+    def test_and_each_ones_close_is_its_own(self):
+        run = Recorded()
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.STREAMING, 1)
+        self._report(run, state.LOADED, 0)
+        self._report(run, state.LOADED, 1)
+        assert run.states == [state.STREAMING, state.STREAMING,
+                              state.LOADED, state.LOADED]
+        assert [r["index"] for r in run.seen] == [0, 1, 0, 1]
+
+    def test_one_childs_close_does_not_close_the_other(self):
+        """The half a single flag gets wrong even when the word survives:
+        child 1 finishing must not take child 2's wait down with it."""
+        run = Recorded()
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.STREAMING, 1)
+        self._report(run, state.LOADED, 0)
+        assert run.states[-1] == state.LOADED
+        assert run.seen[-1]["index"] == 0
+        self._report(run, state.LOADED, 1)
+        assert run.seen[-1]["index"] == 1
+
+    def test_a_failed_close_is_keyed_the_same_way(self):
+        run = Recorded()
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.STREAMING, 1)
+        self._report(run, state.FAILED, 1)
+        assert [(r["state"], r["index"]) for r in run.seen] == [
+            (state.STREAMING, 0), (state.STREAMING, 1), (state.FAILED, 1)]
+
+    def test_the_same_call_saying_it_twice_is_still_one_record(self):
+        run = Recorded()
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.STREAMING, 0)
+        assert run.states == [state.STREAMING]
+
+    def test_and_a_later_call_at_the_same_step_may_say_it_again(self):
+        """A repair turn keeps its step number. Once the first call's
+        wait is closed the step is free to open another."""
+        run = Recorded()
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.LOADED, 0)
+        self._report(run, state.STREAMING, 0)
+        assert run.states == [state.STREAMING, state.LOADED, state.STREAMING]
+
+    def test_the_endpoint_words_are_still_de_duplicated_across_children(self):
+        """The other channel, untouched: one dead socket reported by two
+        children is one record."""
+        run = Recorded()
+        self._report(run, state.ABSENT, 0)
+        self._report(run, state.ABSENT, 1)
+        assert run.states == [state.ABSENT]
+
+    def test_and_a_healthy_call_beside_a_streaming_one_still_says_nothing(self):
+        run = Recorded()
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.LOADED, 1)
+        assert run.states == [state.STREAMING]
+
+    def test_a_loaded_closing_both_of_one_calls_waits_leaves_none_behind(self):
+        """One call may carry both — `queued` at twenty seconds, then
+        `streaming` at sixty. Its `loaded` closes the pair; otherwise the
+        endpoint half stays open and the next healthy call pays for it
+        with a recovery nobody was waiting for."""
+        run = Recorded()
+        self._report(run, state.QUEUED, 0)
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.LOADED, 0)
+        before = len(run.seen)
+        self._report(run, state.LOADED, 1)
+        assert run.seen[before:] == []
+
+    def test_every_record_conforms(self):
+        run = Recorded()
+        self._report(run, state.STREAMING, 0)
+        self._report(run, state.STREAMING, 1)
+        self._report(run, state.LOADED, 0)
+        self._report(run, state.FAILED, 1)
+        assert faults(run.seen) == []
 
 
 class TestTheEndpointThatIsNotThere:

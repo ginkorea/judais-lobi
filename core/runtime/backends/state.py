@@ -278,18 +278,63 @@ class FirstByte:
     by the context manager's ``finally``, so an abandoned generator or a
     raised call cannot leave a timer thread behind.
 
+    **One shot that may ask for another.**  *on_late* returning ``True``
+    re-arms the same alarm for another window — see :meth:`again`, and
+    :func:`alarm_after` for why a callback that decides *it was too early*
+    needs that and cannot get it by holding this object instead.
+
     The name is the first case it had and is kept because tests and
     callers read it; what it is, is one alarm.
     """
 
-    def __init__(self, timer: Optional[threading.Timer] = None):
+    def __init__(self, timer: Optional[threading.Timer] = None, *,
+                 context: Any = None, after_s: float = 0.0,
+                 on_late: Optional[Callable[[], Any]] = None):
+        self._lock = threading.Lock()
         self._timer = timer
+        self._context = context
+        self._after_s = after_s
+        self._on_late = on_late
+        self._closed = False
 
     def arrived(self) -> None:
-        """The wait is over — disarm.  Safe to call twice, or never."""
-        timer, self._timer = self._timer, None
+        """The wait is over — disarm, for good.  Safe to call twice, or never.
+
+        **Terminal**, which is what makes :meth:`again` safe: the context
+        manager's ``finally`` calls this, so a re-arm racing the end of a
+        call loses and no timer outlives the call it was watching.
+        """
+        with self._lock:
+            self._closed = True
+            timer, self._timer = self._timer, None
         if timer is not None:
             timer.cancel()
+
+    def again(self) -> None:
+        """Arm the same alarm for another window.  A no-op once closed."""
+        with self._lock:
+            if self._closed or self._context is None or self._on_late is None:
+                return
+            if not self._after_s or self._after_s <= 0:
+                return
+            timer = threading.Timer(self._after_s, self._fire)
+            timer.daemon = True
+            self._timer = timer
+        timer.start()
+
+    def _fire(self) -> None:
+        """Run the callback in the caller's context; re-arm if it asks.
+
+        Timer threads inherit no context of their own, which is the whole
+        reason this class holds one: a :func:`report` inside *on_late*
+        must reach the sink the caller installed.
+        """
+        try:
+            again = self._context.run(self._on_late)
+        except Exception:                       # pragma: no cover - defensive
+            return
+        if again:
+            self.again()
 
     @property
     def armed(self) -> bool:
@@ -334,6 +379,21 @@ def alarm_after(after_s: float,
     call at all — and by this context manager's ``finally`` either way,
     so no call can leave a timer thread behind.
 
+    **A callback may return ``True`` to be asked again** after another
+    *after_s*, which turns a one-shot into a series it controls.  That is
+    how the long-call case answers *the first frame has not arrived yet*
+    without going silent for the rest of the call: a plain one-shot that
+    returned early would mean a call whose first token lands AFTER the
+    threshold is never reported at all — the hole this word exists to
+    close, moved one window further out.
+
+    The signal is a return value and not the alarm object because the
+    object does not exist yet when the callback is built: a caller
+    writing ``with alarm_after(s, lambda: f(watch)) as watch`` arms the
+    timer before ``watch`` is bound, and a short threshold fires into a
+    ``NameError`` that this function would then swallow.  One value out
+    of the callback has no such window.
+
     Nothing is armed when no sink is installed, or when *after_s* is not
     positive: a chat session, a probe and a library caller with no
     observer must not each spawn a thread to notice something nobody
@@ -342,18 +402,9 @@ def alarm_after(after_s: float,
     if _SINK.get() is None or not after_s or after_s <= 0:
         yield FirstByte()
         return
-    context = contextvars.copy_context()
-
-    def fire() -> None:
-        try:
-            context.run(on_late)
-        except Exception:                   # pragma: no cover - defensive
-            pass
-
-    timer = threading.Timer(after_s, fire)
-    timer.daemon = True
-    timer.start()
-    watch = FirstByte(timer)
+    watch = FirstByte(context=contextvars.copy_context(),
+                      after_s=after_s, on_late=on_late)
+    watch.again()
     try:
         yield watch
     finally:

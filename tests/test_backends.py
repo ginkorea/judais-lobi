@@ -935,8 +935,27 @@ class TestHowTheCallEndedTravelsBesideWhatItCost:
     to add — the rule `model_state` follows, for the same reason.
     """
 
-    @pytest.mark.parametrize("word", ["length", "max_tokens", "model_length"])
+    @pytest.mark.parametrize("word", ["length", "max_tokens", "model_length",
+                                      "model_context_window_exceeded"])
     def test_the_ceilings_every_provider_spells_differently(self, word):
+        assert truncation_of(word) == word
+
+    def test_the_window_word_is_declared_though_nothing_produces_it_yet(self):
+        """`model_context_window_exceeded` is the Anthropic Messages API's
+        word for the same thing from the other side. Unreachable today —
+        that backend does not yet hand its stop reason to
+        `Usage.from_payload` — and in the set anyway, because the set is
+        what this repo MEANS by *cut short* and a word left out of it is
+        the one that arrives unrecognised."""
+        from core.runtime.backends import base
+
+        assert "model_context_window_exceeded" in base.TRUNCATED_REASONS
+
+    @pytest.mark.parametrize("word", ["LENGTH", "Length", "MAX_TOKENS"])
+    def test_a_server_that_shouts_has_said_the_same_thing(self, word):
+        """Matched case-insensitively — a vocabulary this repo compares
+        against is a poor reason to miss a truncation — and what travels
+        is still the spelling the provider sent."""
         assert truncation_of(word) == word
 
     @pytest.mark.parametrize(
@@ -968,13 +987,30 @@ class TestHowTheCallEndedTravelsBesideWhatItCost:
         assert Usage.from_payload(None, "length") is None
         assert Usage.from_payload({}, "length") is None
 
-    def test_a_provider_extra_cannot_overwrite_the_harnesss_account(self):
-        """The one reserved key inside `usage`. A provider that puts the
-        same name in its own object gets it dropped rather than believed."""
+    def test_the_harnesss_word_wins_where_a_provider_sent_one_too(self):
+        """Written last on purpose: this one was read off the choice the
+        call actually produced, where the provider's is whatever it
+        volunteered beside its counts."""
         record = Usage.from_payload(
             {"prompt_tokens": 9, "completion_tokens": 4096,
              "finish_reason": "stop"}, "length").as_record()
         assert record["finish_reason"] == "length"
+
+    def test_but_a_providers_own_is_carried_when_the_harness_has_none(self):
+        """The key is NOT reserved against the provider. Filtering it out
+        would be this repo deleting the very field it is here to surface
+        — in exactly the case it is here for — so it travels verbatim
+        like every other extra the provider sent."""
+        record = Usage.from_payload(
+            {"prompt_tokens": 9, "completion_tokens": 4096,
+             "finish_reason": "length"}).as_record()
+        assert record["finish_reason"] == "length"
+
+    def test_and_that_passthrough_is_the_extras_rule_and_not_a_second_one(self):
+        usage = Usage.from_payload(
+            {"prompt_tokens": 9, "finish_reason": "stop"})
+        assert usage.extra["finish_reason"] == "stop"
+        assert usage.finish_reason == ""
 
 
 class TestNativeCallsTravelAsPlainDicts:
