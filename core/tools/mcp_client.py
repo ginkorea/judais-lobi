@@ -39,7 +39,7 @@ import os
 import re
 import threading
 from abc import ABC, abstractmethod
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -83,6 +83,127 @@ DEFAULT_TIMEOUT_S = 30.0
 #: ``contract.ENV_VARS``, which publish both.
 TIMEOUT_FLAG = "--mcp-timeout"
 TIMEOUT_ENV = "MCP_TIMEOUT_S"
+
+#: How much of an HTTP error body is read before the refusal is composed, in
+#: bytes.  The bound is in the **read** and not only in the rendering: the body
+#: of a 503 is the far end's own words about why it refused, and something has
+#: to stop a server that answers an admission refusal with a megabyte of HTML —
+#: a proxy's error page, a stack trace, a debug dump — from being pulled into
+#: this process and into a message nobody can read.  4 KiB is several times the
+#: size of the shape this exists to carry (a code, a detail, a limit, a remedy)
+#: and small enough that reading it costs nothing.
+HTTP_REFUSAL_BODY_CAP = 4096
+
+#: The keys read out of a JSON refusal body, in the order they are rendered.
+#: That is the whole of the convention, and it is **not a schema**: nothing
+#: here validates, requires or rejects a body.  A platform that writes these
+#: keys sees them quoted back in the agent's error; one that writes something
+#: else still gets its status and its text, which is more than it had.
+REFUSAL_KEYS: Tuple[str, ...] = ("code", "detail", "limit", "remedy")
+
+#: What ``bytes.decode(errors="replace")`` leaves behind where a byte was not
+#: text.  Spelled by codepoint rather than pasted, because a source file that
+#: carries the character itself is one copy-paste away from being unreadable.
+_REPLACEMENT = chr(0xFFFD)
+
+
+def _render_value(value: Any) -> str:
+    """One JSON value as a fragment of a sentence, or ``""``.
+
+    Tolerant on purpose.  ``limit`` is a number on one platform and a string
+    on the next, ``detail`` is occasionally an object, and none of those is a
+    reason to throw the refusal away — the whole point is to say what the
+    server said.  Control characters go, because this text ends up in a log
+    line and a pane that a person reads.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, bool):
+        # Before the number check, because `bool` is an `int` — and quoted
+        # back as the server wrote it: a refusal that answers `"retryable":
+        # True` is quoting Python at somebody who wrote JSON.
+        text = "true" if value else "false"
+    elif isinstance(value, (int, float)):
+        text = str(value)
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:  # pragma: no cover - default=str makes this rare
+            text = str(value)
+    text = "".join(ch if ch.isprintable() or ch == " " else " " for ch in text)
+    return " ".join(text.split())
+
+
+@dataclass(frozen=True)
+class HttpRefusal:
+    """An HTTP error response from a server, as the words it carried.
+
+    The *body* of an admission refusal is the part worth having.  A platform
+    that is at capacity answers 503 with a code (``server_busy`` and
+    ``session_capacity`` are not the same problem and do not have the same
+    remedy), usually a limit, and often what to do next — and every one of
+    those is discarded by the ordinary path, which raises on the status line
+    of a streamed response and never reads what came after it.  The agent
+    then reports that a server "could not be reached", which is both wrong
+    and unactionable: it was reached, it answered, and it said why.
+    """
+
+    status: int
+    #: Whichever of :data:`REFUSAL_KEYS` the body actually carried.
+    fields: Dict[str, str] = field(default_factory=dict)
+    #: The body as text, when it carried none of those keys.
+    body: str = ""
+    truncated: bool = False
+
+    def sentence(self) -> str:
+        """One line: the status, then whatever the body was good for."""
+        parts = [f"HTTP {self.status}"]
+        for key in REFUSAL_KEYS:
+            value = self.fields.get(key)
+            if value:
+                parts.append(f"code `{value}`" if key == "code"
+                             else f"{key}: {value}")
+        if len(parts) == 1:
+            parts.append(f"body: {self.body}" if self.body
+                         else "the body was empty")
+        if self.truncated:
+            parts.append(f"truncated at {HTTP_REFUSAL_BODY_CAP} bytes")
+        return "; ".join(parts)
+
+
+def parse_http_refusal(status: int, raw: bytes,
+                       truncated: bool = False) -> HttpRefusal:
+    """Read a refusal body for what it is willing to say.
+
+    Tolerantly, and in this order: JSON with any of :data:`REFUSAL_KEYS` is
+    read as those; anything else — prose, HTML, half a JSON document that the
+    cap cut in two, an empty body — degrades to the text, and bytes that are
+    not text degrade to their size.  **No shape is required and no shape is a
+    crash**, because this runs while something has already gone wrong and a
+    parser that raised here would replace a refusal that teaches with a
+    traceback that does not.
+    """
+    text = (raw or b"").decode("utf-8", "replace").strip()
+    try:
+        payload = json.loads(text)
+    except Exception:
+        payload = None
+    fields: Dict[str, str] = {}
+    if isinstance(payload, dict):
+        for key in REFUSAL_KEYS:
+            rendered = _render_value(payload.get(key))
+            if rendered:
+                fields[key] = rendered
+    body = ""
+    if not fields:
+        # A decode that needed replacing is not text, and 4 KiB of replacement
+        # characters in an error message is noise wearing evidence's clothes.
+        body = (f"{len(raw or b'')} bytes that are not text"
+                if _REPLACEMENT in text else " ".join(text.split()))
+    return HttpRefusal(status=int(status), fields=fields, body=body,
+                       truncated=bool(truncated))
 
 
 def relist_timeout() -> float:
@@ -297,6 +418,16 @@ class McpTransport(ABC):
         """Instance-level configuration problems, all of them."""
         return []
 
+    def refusal(self) -> str:
+        """What the far end said when it refused, or ``""``.
+
+        The base has nothing to say and says nothing: a stdio server has no
+        status line and no body, and a transport that invented one would put
+        a sentence about HTTP into the refusal of a subprocess that simply
+        exited.  Only :class:`StreamableHttpTransport` overrides it.
+        """
+        return ""
+
     def __repr__(self) -> str:  # pragma: no cover - diagnostic
         return f"<{type(self).__name__} {self.describe()}>"
 
@@ -345,6 +476,37 @@ class StdioTransport(McpTransport):
         return " ".join([self.command, *self.args]).strip()
 
 
+def _sdk_http_client(headers: Any, timeout: Any, auth: Any) -> Any:
+    """The HTTP client the SDK would have built for itself.
+
+    Kept as one named function so the hook in
+    :meth:`StreamableHttpTransport._http_client_factory` is the *only*
+    difference from the default path, and so the fallback — for an SDK whose
+    helper has moved — is a branch a test can reach rather than a guess.
+    """
+    import httpx
+
+    try:
+        from mcp.shared._httpx_utils import create_mcp_http_client
+
+        # The CALL is inside the `try` as well as the import, and `TypeError`
+        # counts: a helper that has been renamed and one whose keywords have
+        # changed are the same event to a caller, and the fallback exists so
+        # that either one degrades the refusal's manners instead of breaking
+        # every connection this package makes.
+        return create_mcp_http_client(
+            headers=headers, timeout=timeout, auth=auth)
+    except Exception:
+        # `timeout=None` means *no* timeout to httpx, which is not what an
+        # absent timeout means to the SDK; this package's own bound is the
+        # nearest thing with an owner.
+        return httpx.AsyncClient(
+            follow_redirects=True, headers=headers or None,
+            timeout=timeout if timeout is not None
+            else httpx.Timeout(DEFAULT_TIMEOUT_S),
+            auth=auth)
+
+
 class StreamableHttpTransport(McpTransport):
     """Reach a server over streamable-HTTP with a bearer token.
 
@@ -368,9 +530,13 @@ class StreamableHttpTransport(McpTransport):
         self._token = token
         self.headers = dict(headers or {})
         self.timeout = timeout
+        self._refusal: Optional[HttpRefusal] = None
 
     def credential(self) -> Optional[str]:
         return self._token
+
+    def refusal(self) -> str:
+        return self._refusal.sentence() if self._refusal is not None else ""
 
     def check(self) -> List[str]:
         problems: List[str] = []
@@ -399,10 +565,146 @@ class StreamableHttpTransport(McpTransport):
         headers = dict(self.headers)
         if credential:
             headers["Authorization"] = f"Bearer {credential}"
+        # One connection attempt, one refusal: a body read on a previous
+        # attempt must never be quoted into this attempt's error.
+        self._refusal = None
         async with streamablehttp_client(
             self.url, headers=headers or None, timeout=self.timeout,
+            httpx_client_factory=self._http_client_factory(),
         ) as streams:
             yield streams
+
+    # ── reading what a refusal actually said ────────────────────────────
+
+    def _http_client_factory(self) -> Callable[..., Any]:
+        """The SDK's own HTTP client, with one response hook added.
+
+        **This is the narrowest place the body is still there.**  The SDK
+        posts every JSON-RPC message with ``client.stream(...)`` and calls
+        ``response.raise_for_status()`` on the streamed response, so the
+        error it raises is built from the status line alone and the body is
+        discarded unread when the stream context closes.  By the time that
+        exception reaches :meth:`McpClient.start` — wrapped in the task
+        group's ``ExceptionGroup``, whose own text is *"unhandled errors in a
+        TaskGroup (1 sub-exception)"* — there is nothing left to read: the
+        message does not even carry the status.
+
+        ``httpx_client_factory`` is the SDK's own published parameter for
+        supplying the client, so nothing here vendors, subclasses or patches
+        the library: we hand it a client it built, with one ``response``
+        event hook appended.  httpx runs that hook before the body is read,
+        which is exactly the moment this needs and the only one.
+
+        If the SDK's helper ever moves, the fallback builds the equivalent
+        client directly — a refusal that reads better must not be able to
+        stop a connection that used to work.
+        """
+        transport = self
+
+        def factory(headers=None, timeout=None, auth=None):
+            client = _sdk_http_client(headers, timeout, auth)
+            if getattr(auth, "requires_response_body", False):
+                # An auth flow that reads the body OWNS it: httpx hands it
+                # the whole response before deciding whether to re-send, and
+                # a hook that had already consumed part of the stream would
+                # turn its 401 retry into a `StreamConsumed`. A better error
+                # message is not worth a broken token refresh. Nothing this
+                # package passes sets that flag — the SDK's own OAuth
+                # provider does, for a caller that supplies one.
+                return client
+            hooks = dict(getattr(client, "event_hooks", None) or {})
+            client.event_hooks = {
+                "request": list(hooks.get("request") or []),
+                "response": list(hooks.get("response") or [])
+                + [transport._capture_refusal],
+            }
+            return client
+
+        return factory
+
+    async def _capture_refusal(self, response: Any) -> None:
+        """Keep the body of an HTTP error response, bounded, for the refusal.
+
+        Bounded by :data:`HTTP_REFUSAL_BODY_CAP` **as it is read**, and never
+        able to fail: this runs inside every response the session makes, and
+        an exception raised here would turn a server's 503 into a client-side
+        crash — strictly worse than the message it is trying to improve.
+
+        Only error responses are touched, so a 200 (the JSON answer, the SSE
+        stream that the whole protocol rides on) is read by the SDK exactly
+        as it always was.
+
+        **The invariant: a response the SDK reads for itself is not consumed
+        here.**  Everything the protocol rides on is streamed, and a streamed
+        error response is dropped unread — that is the whole opening.  The
+        exception is session termination, which the SDK sends with a plain
+        ``client.delete(...)``: httpx reads the body of a non-streamed
+        request itself, right after this hook, and a stream already consumed
+        would meet it as ``StreamConsumed``.  The method check below is the
+        current implementation of that invariant and not the invariant
+        itself; the body is also put back on the response (see there), so an
+        SDK that stops streaming some other request degrades to a truncated
+        body rather than to an exception.
+
+        **One slot is enough** because the handshake is single-in-flight:
+        the SDK opens its GET/SSE channel only when it sees the
+        ``notifications/initialized`` message go out
+        (``_is_initialized_notification`` → ``start_get_stream`` in the
+        SDK's ``client/streamable_http.py``, lines 549-550 as of mcp
+        1.29.0/1.29.1), so nothing else is in flight while the POST that
+        carries ``initialize`` is being refused.  Named with its source
+        because an SDK upgrade that changed it would make this a
+        last-writer-wins race, quietly.
+        """
+        try:
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status < 400:
+                return
+            if getattr(getattr(response, "request", None), "method", "") == "DELETE":
+                return
+        except Exception:  # pragma: no cover - a response with no status
+            return
+        try:
+            chunks: List[bytes] = []
+            size = 0
+            # ``aclosing`` and then the response itself, because this loop
+            # LEAVES EARLY: an iterator abandoned mid-body is finalised
+            # whenever the event loop gets round to it, and the rest of a
+            # refusal nobody is reading would still be arriving.  An error
+            # response is ours to close — the SDK raises on its status line
+            # and never reads it.
+            #
+            # httpx's own iterator holds one more generator underneath that
+            # it does not close on an early exit, so a body past the cap can
+            # leave a `coroutine method 'aclose' … was never awaited`
+            # RuntimeWarning behind.  That is the price of the bound and it
+            # is the right way round: the alternative is reading a megabyte
+            # of somebody's error page to keep a warning quiet.
+            async with aclosing(response.aiter_bytes()) as body:
+                async for chunk in body:
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > HTTP_REFUSAL_BODY_CAP:
+                        break
+            raw = b"".join(chunks)
+            # Put the bytes back where httpx keeps a read body, so that a
+            # caller reading this response after us — `aread()`, `.text`,
+            # an auth flow, an SDK that stops streaming one of these
+            # requests — finds the body instead of `StreamConsumed`. It is
+            # what `aread()` itself sets and has been since httpx 0.23; it
+            # is also a PRIVATE attribute, so it is set defensively and the
+            # capture survives a version that renames it.
+            try:
+                response._content = raw
+            except Exception:  # pragma: no cover - a response that forbids it
+                pass
+            await response.aclose()
+            self._refusal = parse_http_refusal(
+                status, raw[:HTTP_REFUSAL_BODY_CAP],
+                truncated=len(raw) > HTTP_REFUSAL_BODY_CAP)
+        except Exception:
+            # The status alone still beats what the caller had.
+            self._refusal = parse_http_refusal(status, b"")
 
     def describe(self) -> str:
         return self.url
@@ -598,10 +900,26 @@ class McpClient:
             )
         if self._error is not None:
             err = self._error
+            # Read BEFORE stop(): what the far end said is the transport's,
+            # and this is the one place a caller ever sees it.
+            #
+            # "could not reach" is what the SDK's exception supports on its
+            # own — a streamed response raises on its status line and the
+            # body goes unread, so the error that arrives here is the task
+            # group's ``ExceptionGroup: unhandled errors in a TaskGroup (1
+            # sub-exception)`` and does not carry even the status. When the
+            # server DID answer — a 503 with an admission code, a limit and
+            # a remedy — that body is the whole of the actionable content,
+            # and an agent told only that a server was unreachable will
+            # retry a server that asked it to wait, or wait for one that
+            # asked it to authenticate.
+            refusal = self._transport.refusal()
             self.stop()
             raise McpConnectionError(
                 f"could not reach {self._transport.name} "
                 f"({self._transport.describe()}): {type(err).__name__}: {err}"
+                + (f". The server answered and refused: {refusal}"
+                   if refusal else "")
             ) from err
         return self
 
