@@ -877,6 +877,18 @@ and it names those entries and lists what is here.
   correctly. An agent that cannot be told apart in the audit cannot be graded,
   credited, or held to anything.
 
+**An admission refusal is read for what it says.** When a server answers an
+HTTP error — a 503 because it is at capacity, a 401 because the seat is not
+leased — the client reads the first 4 KiB of the response body and quotes it in
+the error the agent sees, and a JSON body's `code`, `detail`, `limit` and
+`remedy` are quoted by name. Those four keys are the whole of the convention:
+nothing validates a body, nothing requires one, and a body that is prose, HTML
+or empty degrades to its text and its status rather than to the bare "could not
+be reached" that used to be all there was. It is worth writing the code
+(`server_busy` and `session_capacity` are not the same problem and do not have
+the same remedy), because an agent told only that a server was unreachable will
+retry one that asked it to wait.
+
 Each discovered tool is registered as a `ToolDescriptor` whose executor
 dispatches `tools/call`, namespaced **`mcp.<name>`** so a server discovered at
 runtime cannot shadow `fs`, `git` or `run_shell_command` by choosing their
