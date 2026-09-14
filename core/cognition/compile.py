@@ -376,6 +376,14 @@ DERIVED = "derived"
 #: The word ``derived`` is therefore **not** added to a folded line.  It
 #: exists to say *there is no receipt behind this*; there is one, and it is
 #: on the line.
+#:
+#: **And only where there really is one.**  A projection's premise can
+#: itself be a conclusion — a pack rule firing at the receipt level — and
+#: naming the receipt for a figure it never returned would be this module
+#: writing, in its own voice, the fabricated attribution the grounding
+#: checks exist to catch in the model's.  :func:`_via` names a handle only
+#: for an un-derived premise, and a claim with none falls back to
+#: :data:`DERIVED`, which is then simply true.
 VIA = "via "
 
 #: How many receipt handles a folded line names before it stops naming them
@@ -455,6 +463,22 @@ def _value(value: Any) -> str:
         return repr(value)
 
 
+@dataclass(frozen=True)
+class _Projection:
+    """What one subject claim was projected from — see :func:`_via`."""
+
+    #: The receipt handles the line may name: the entities of premises the
+    #: store **read** rather than concluded.
+    handles: Tuple[str, ...] = ()
+    #: The claims whose own line the subject's line replaces.  A subset of
+    #: :attr:`premises`: a derived premise is never folded away, because
+    #: the subject's line is not saying what that premise says.
+    facts: Tuple[str, ...] = ()
+    #: Every projection premise, derived ones included — the population the
+    #: header counts receipts through.
+    premises: Tuple[str, ...] = ()
+
+
 def _entity(name: Any) -> str:
     """An entity name as a line may print it — **visibly**, or escaped.
 
@@ -522,35 +546,61 @@ def _named(names: Sequence[str], cap: int) -> str:
     return ", ".join(shown)
 
 
-def _via(state: CognitiveState,
-         prop: Proposition) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
-    """``(receipt handles, the receipt facts they are)`` for a projection.
+def _via(state: CognitiveState, prop: Proposition) -> "_Projection":
+    """What a subject claim was projected from: handles, folds, premises.
 
-    ``((), ())`` for everything else, and the two questions are one walk
-    because they are one fact: a subject claim the store derived through
-    :data:`~core.cognition.state.PROJECTION_RULE_ID` rests on exactly one
-    receipt fact per proof, and *which receipts* and *which facts are
-    therefore already shown at the subject* are the same list read twice.
-    One owner, so a folded line and the receipt line it replaces can never
-    disagree about what was folded.
+    Three readings of one walk because they are one fact about the claim:
+    a subject claim the store derived through
+    :data:`~core.cognition.state.PROJECTION_RULE_ID` rests on one claim per
+    proof, and *which receipts may be named*, *which lines the subject's
+    line therefore replaces*, and *which claims the header counts through*
+    are that same list read three ways.  One owner, so a folded line and
+    the receipt line it replaces can never disagree about what was folded.
 
-    Insertion order — the store's own order of proofs, and inside one proof
-    the premises as the rule bound them — so the same state renders the
-    same line.
+    **A handle is named only where the premise is itself un-derived**, and
+    this is the line between a citation and a fabrication.  A pack's rule
+    can conclude a *receipt-level* claim — ``job_status#r5 · fast = true``
+    out of ``elapsed < 10`` — and that conclusion projects like any other
+    live triple.  Naming the receipt on the subject's line would say the
+    call returned a ``fast`` field it never returned: the framework
+    generating, in its own voice, exactly the attribution the grounding
+    checks exist to catch in the model's.  So a projection whose premise
+    is ``DERIVED`` names nothing, the line falls back to :data:`DERIVED`
+    (there is no receipt behind it, which is true), and the premise keeps
+    its own line saying the same thing one level down.
+
+    ``premises`` keeps **every** projection premise, derived ones included,
+    because the header's question is different: how many receipts does this
+    line rest on.  A derived premise's own leaves are the receipts under
+    *its* proof, which is the honest count, and counting the projection's
+    own leaves instead would count the link's declaration as a call.
+
+    Handles are **sorted**.  The walk order is the store's history — which
+    proof was recorded first — and a line whose word order depends on which
+    of two identical receipts arrived first is a line that renders two ways
+    for one belief.  Sorting costs nothing and makes the line a function of
+    the claim.
     """
     if prop.entity is None or subject_parts(prop.entity) is None:
-        return (), ()
+        return _Projection()
     handles: List[str] = []
     facts: List[str] = []
+    premises: List[str] = []
     for derivation in state.derivations_for(prop.id):
         if derivation.rule != PROJECTION_RULE_ID:
             continue
         for pid in derivation.premises:
+            if pid not in premises:
+                premises.append(pid)
             source = state.proposition(pid)
+            if source.status is PropositionStatus.DERIVED:
+                # A conclusion, not a reading. The receipt never said it.
+                continue
             if source.entity and source.entity not in handles:
                 handles.append(source.entity)
                 facts.append(pid)
-    return tuple(handles), tuple(facts)
+    return _Projection(handles=tuple(sorted(handles)), facts=tuple(facts),
+                       premises=tuple(premises))
 
 
 def _via_mark(handles: Sequence[str]) -> str:
@@ -1016,14 +1066,18 @@ def _folding(state: CognitiveState, live: Sequence[Proposition],
     folded: set = set()
     shown = {prop.id for prop in live}
     for prop in live:
-        names, facts = _via(state, prop)
+        projection = _via(state, prop)
+        if projection.premises:
+            # The header counts through every premise — a derived one
+            # included, whose own leaves are the receipts under its proof.
+            premises[prop.id] = projection.premises
+        names = projection.handles
         if not names:
             continue
         handles[prop.id] = names
-        premises[prop.id] = facts
         if len(names) > VIA_CAP:
             continue
-        for pid in facts:
+        for pid in projection.facts:
             grade = support.get(pid)
             if pid not in shown or grade is None:
                 continue
@@ -1204,9 +1258,13 @@ def _conflict_line(state: CognitiveState, clash: Any) -> str:
 
 
 def _sided(state: CognitiveState, pid: str) -> str:
-    """One side of a conflict: the claim, and the call behind it if any."""
+    """One side of a conflict: the claim, and the call behind it if any.
+
+    Through :func:`_via`, so the un-derived rule holds here too: a side
+    the store *concluded* names no call, because no call said it.
+    """
     prop = state.proposition(pid)
-    handles, _facts = _via(state, prop)
+    handles = _via(state, prop).handles
     text = _claim(prop)
     return f"{text}  [{_via_mark(handles)}]" if handles else text
 

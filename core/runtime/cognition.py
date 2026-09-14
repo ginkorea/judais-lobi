@@ -935,7 +935,23 @@ def identities_of(text: Any, identifiers: Mapping[str, str]
       nothing and is *counted*, the same one-figure discipline the harvest
       already keeps for a key holding two numbers.  The count is the second
       element, because a caller that could not see it would read a receipt
-      that declared nothing and a receipt that was ambiguous as one thing;
+      that declared nothing and a receipt that was ambiguous as one thing.
+
+      **A ``[]`` path is plural by its own grammar, and in v1 it binds only
+      at length one** — ``source_assets[]`` with three assets in it links
+      nothing and is counted here, exactly as a scalar key holding three
+      values would be.  The two cases are *not* the same fact and the
+      difference is written down rather than left to be discovered: two
+      values under a scalar key are two answers to one question, while
+      three elements of a declared list are three **distinct subjects**,
+      each of which the receipt is legitimately about.  Lifting it means
+      one link per element, which needs :meth:`ShadowCognition._identify`'s
+      cross-kind guard to cover a receipt linked to many subjects of one
+      kind — v1.1 work, deliberately not smuggled into a fix round.  Until
+      then a platform that wants list elements linked declares the element
+      it means (``source_assets[0].id`` is not this grammar either; a
+      per-row entity is the same v1.1 lift) or accepts that the list
+      contributes provenance and no join;
     * **non-empty strings only** (the v1 bound).  A number under a declared
       key is not an identifier here: the harvest already asserts it as a
       figure, and spelling a subject from it would make ``job:5`` and the
@@ -1296,10 +1312,22 @@ class ShadowCognition:
         #: thing in the store that is there on a platform's word that a key
         #: is an identity, and a deployment measuring what its declarations
         #: bought reads this against :attr:`links`.
+        #:
+        #: **Not one per link**: a receipt naming two kinds of subject
+        #: writes no identifier fact at all and still links, which is
+        #: :meth:`_identify`'s cross-kind guard.
         self.identifiers = 0
         #: Links made out of them.  Fewer than :attr:`identifiers` where a
         #: subject could not be spelled from a value the receipt carried.
         self.links = 0
+        #: Identities this receipt named that could not be linked, because
+        #: the receipt holds no fact for a link to be a claim about: a
+        #: payload of nothing but handles of **several** kinds.  Its own
+        #: counter and not :attr:`refused`, because nothing was refused —
+        #: the runtime declined to manufacture a cross-kind fact, which is
+        #: :meth:`_identify`'s stated bound rather than a value the store
+        #: would not take.
+        self.unlinked = 0
         #: Declared identifier keys that held **two** values in one receipt
         #: and therefore identified nothing.  The one-figure discipline,
         #: applied to identities: see :func:`identities_of`.
@@ -1589,6 +1617,7 @@ class ShadowCognition:
         ref = EvidenceRef(kind=RECEIPT_KIND,
                           locator=f"{self.run_id}/{seq}/{tool}")
         self.receipts += 1
+        held = 0
         for field, value in observations_of(text):
             try:
                 self.state.assert_observation(
@@ -1600,10 +1629,14 @@ class ShadowCognition:
                 self.refused += 1
                 continue
             self.observations += 1
-        self._identify(tool, entity, ref, text)
+            held += 1
+        # `held` and not a second look at the store: whether this receipt
+        # entity holds anything is what decides whether a link can be made
+        # at all, and this loop is the only thing that put anything there.
+        self._identify(tool, entity, ref, text, held)
 
     def _identify(self, tool: str, entity: str, ref: EvidenceRef,
-                  text: Any) -> None:
+                  text: Any, held: int = 0) -> None:
         """What this receipt is *about*, where the plane declared it.
 
         Two writes per identifier and they are in this order for a reason
@@ -1613,7 +1646,41 @@ class ShadowCognition:
         **link**, which :meth:`~core.cognition.state.CognitiveState.link`
         refuses for an entity it knows nothing about.  A store that linked
         first would refuse every two-phase handle in the design's own
-        motivating example.
+        motivating example.  *held* is how many facts this receipt's own
+        harvest already put there, so the order question is answered
+        without asking the store twice.
+
+        **An identifier fact is written to the receipt only where the
+        receipt names ONE kind of subject**, and this is the guard that
+        keeps the design's own red line.  The kernel projects every live
+        triple of a linked entity onto **every** subject that entity is
+        linked to — correctly, for figures: a call that read 12,481 records
+        while naming a job and an asset read them about both.  An
+        *identifier* is the one fact that is not about both.  A tool
+        declaring ``job_id`` and ``asset_id`` would otherwise put
+        ``job_id`` onto the asset and ``asset_id`` onto the job, and two
+        such receipts sharing one asset would put two different ``job_id``
+        values on it — a contradiction manufactured out of two calls that
+        never disagreed, which is exactly what "no link on value
+        coincidence" exists to prevent, arriving through the back door.
+
+        The guard is here and **not** in the kernel on purpose: kinds are a
+        *declaration*, the kernel knows nothing about tools or planes, and
+        teaching its projection rule about them would put the plane's
+        vocabulary inside the store's engine.  The runtime holds the
+        declaration; the runtime decides what it writes.
+
+        What that costs, stated rather than discovered: **a receipt that
+        returns nothing but handles of several kinds is not linked at
+        all** — it holds no fact for a link to be a claim about, and the
+        alternative is the manufactured contest above.  It is counted in
+        :attr:`unlinked`.  Its subjects are not lost: the call that
+        *establishes* something about one of them (a status call naming one
+        kind) links and projects normally, which is the two-phase flow the
+        design is built on.  Lifting the bound means giving each kind its
+        own receipt-scoped entity so that one link cannot carry another
+        kind's identity — v1.1 work, with a spelling that keeps a handle
+        quotable at the result store.
 
         The link's evidence is both premises, named: the receipt this value
         was read from, and the declaration that said the key was an
@@ -1647,15 +1714,31 @@ class ShadowCognition:
             return
         found, ambiguous = identities_of(text, identifiers)
         self.ambiguous += ambiguous
+        if not found:
+            return
+        # THE CROSS-KIND GUARD. See the method docstring: an identifier
+        # fact is asserted on the receipt only where this receipt names ONE
+        # kind of subject, because the kernel projects every live triple of
+        # a linked entity onto EVERY subject that entity is linked to.
+        one_kind = len({identity.kind for identity in found}) == 1
         for identity in found:
-            try:
-                self.state.assert_observation(
-                    (entity, identity.field, identity.value), evidence=(ref,),
-                    authority=EvidenceAuthority.DETERMINISTIC)
-            except CognitionError:
-                self.refused += 1
+            if one_kind:
+                try:
+                    self.state.assert_observation(
+                        (entity, identity.field, identity.value),
+                        evidence=(ref,),
+                        authority=EvidenceAuthority.DETERMINISTIC)
+                except CognitionError:
+                    self.refused += 1
+                    continue
+                self.identifiers += 1
+                held += 1
+            if not held:
+                # Nothing to be a claim about: a receipt that returned
+                # nothing but handles of SEVERAL kinds. Counted, never
+                # forced — see the docstring's bound.
+                self.unlinked += 1
                 continue
-            self.identifiers += 1
             try:
                 self.state.link(
                     entity, identity.subject(),

@@ -771,6 +771,17 @@ class CognitiveState:
           an identity — and then links.  So the receipt holds something
           true, this refusal has nothing to refuse, and the link's first
           piece of evidence is that very fact.
+
+          With one bound that belongs to the layer above and is named here
+          because this is where it is *felt*: that attachment writes the
+          identifier fact only where a receipt names **one kind** of
+          subject.  Everything on a linked entity projects onto every
+          subject it is linked to — right for a figure, wrong for an
+          identity — so a receipt returning nothing but handles of two
+          kinds still meets this refusal, deliberately, rather than have
+          one kind's identifier land on the other kind's subject and
+          manufacture a contradiction out of two calls that never
+          disagreed.
         * A subject-spelled ``entity``.  This is the namespace wall, and it
           does two jobs at once: it keeps a receipt from being linked under a
           second spelling, and it makes "a projection never re-projects"

@@ -1399,7 +1399,11 @@ about what changes:
   is not one. The path is walked from the root of the payload, so
   `data.job_id` never reads a `job_id` somewhere else in your envelope. A
   key holding *two* different values in one receipt identifies nothing and
-  is counted;
+  is counted — **and a `[]` path is such a key in v1**: `source_assets[]`
+  binds only where the list holds exactly one element, because three
+  elements are three *distinct subjects* and one link per element is a
+  v1.1 lift rather than something to guess at. A longer list contributes
+  provenance and no join, and nothing is silently half-read;
 * the receipt is **linked** to the subject it names (`job:jl-731`), and the
   link is a claim with two premises — the receipt, and your declaration —
   recorded at `source` authority, which is the weaker of the two;
@@ -1414,6 +1418,26 @@ about what changes:
   a subject renders both calls on the CONFLICTS line. `establishes` and
   `produces` add one clause to an OWED line naming what your plane says
   would answer it.
+
+**Declare `cardinality: one` on a field your tools *establish*, not on an
+identifier field.** `one` turns on collision detection, and it is worth
+having exactly where two calls can give one subject two different answers —
+`state`, `verdict`, `pct`. An identifier is not that field: every receipt
+that names `job:jl-731` says its id is `jl-731`, so `one` on `job_id` can
+never catch a real disagreement, and on a plane whose tools name several
+kinds of subject it is the declaration most likely to produce a *false*
+one. The runtime guards the worst of it — a receipt that names **two kinds**
+of subject writes no identifier fact at all, so one kind's id can never land
+on another kind's subject — and the honest reading is that `one` belongs on
+what a call settles, not on what it points at.
+
+The guard has a stated price. A receipt that returns **nothing but handles
+of several kinds** — no figures at all — is not linked: it holds no fact for
+a link to be a claim about, and the alternative was manufacturing a
+cross-kind one. Its subjects are not lost, because the call that later
+establishes something about one of them links and projects normally; that is
+the two-phase flow this design is built on. A run's counters say how often
+it happened.
 
 There is no `unlink`. A wrong `identifiers` declaration is wrong for every
 receipt of that tool — links are made deterministically, from declarations

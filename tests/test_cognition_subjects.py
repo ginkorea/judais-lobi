@@ -43,7 +43,7 @@ import json
 import pytest
 
 from core.cognition import (CognitiveState, EvidenceAuthority, EvidenceRef,
-                            compile_view)
+                            RuleAuthority, compile_view)
 from core.cognition.compile import (CONFLICTS_HEADING, DERIVED, DISPUTED,
                                     FACTS_HEADING, MORE, OWED_HEADING,
                                     RESOLVABLE, VIA, VIA_CAP, owed_line)
@@ -239,6 +239,87 @@ class TestTheReceiptIsLinkedToWhatItIsAbout:
         assert {link.subject for link in shadow.state.links()} == {"job:jl-731"}
         assert shadow.state.claim(("job:jl-731", "records", 12481)) is not None
 
+    def two_kinds(self, tmp_path, pack=None):
+        """A shadow over a plane whose tool names a job AND an asset.
+
+        The shape the cross-kind guard is about, and the one a real plane
+        has: `narrative_discovery` in the design's own example returns a
+        job handle and a corpus asset id in one payload.
+        """
+        store = RunStore(tmp_path / "kinds")
+        run = store.create()
+        made = open_shadow(store, run.run_id, cognition_block=pack)
+        made.declare_plane(PlaneDeclarations.build(manifest={"entries": [
+            {"name": "t", "identifiers": {"job_id": {"kind": "job"},
+                                          "asset_id": {"kind": "asset"}}},
+            {"name": "u", "identifiers": {"job_id": {"kind": "job"},
+                                          "asset_id": {"kind": "asset"}}},
+            {"name": "job_status",
+             "identifiers": {"data.job_id": {"kind": "job"}}}]},
+            offered=["t", "u", "job_status"]))
+        return made
+
+    def test_a_receipt_naming_two_kinds_writes_no_identifier_fact(self,
+                                                                  tmp_path):
+        """THE CROSS-KIND GUARD. The kernel projects every live triple of a
+        linked entity onto every subject it is linked to — right for a
+        figure, wrong for an identity. So a receipt naming a job *and* an
+        asset writes neither id as a fact and still links both: the figure
+        reaches both subjects, and neither subject is told the other's
+        identity."""
+        made = self.two_kinds(tmp_path)
+        made.receipt("t", "r1", json.dumps(
+            {"job_id": "j1", "asset_id": "a1", "records": 5}))
+        made.close_step()
+        assert made.identifiers == 0
+        assert {link.subject for link in made.state.links()} \
+            == {"job:j1", "asset:a1"}
+        assert made.state.claim(("job:j1", "records", 5)) is not None
+        assert made.state.claim(("asset:a1", "records", 5)) is not None
+        assert made.state.claim(("asset:a1", "job_id", "j1")) is None
+        assert made.state.claim(("job:j1", "asset_id", "a1")) is None
+
+    def test_two_jobs_sharing_an_asset_do_not_contest(self, tmp_path):
+        """The reviewer's shape, and the design's own red line: `t` and `u`
+        never disagreed about anything. Without the guard the shared asset
+        held two `job_id` values, and a pack declaring that field `one`
+        turned two true receipts into a contradiction."""
+        made = self.two_kinds(tmp_path,
+                              pack={"cardinality": {"job_id": "one"}})
+        made.receipt("t", "r1", json.dumps(
+            {"job_id": "j1", "asset_id": "a1", "records": 5}))
+        made.receipt("u", "r2", json.dumps(
+            {"job_id": "j2", "asset_id": "a1", "records": 5}))
+        made.close_step()
+        assert [clash for clash in made.state.contradictions()
+                if not clash.settled] == []
+        assert made.state.query(("asset:a1", "job_id", "?v")) == ()
+
+    def test_a_handle_only_receipt_of_two_kinds_links_nothing_and_counts(
+            self, tmp_path):
+        """The guard's stated price. Nothing on the receipt for a link to
+        be a claim about, and the alternative was the contest above — so it
+        is counted, never forced, and the mission is not told."""
+        made = self.two_kinds(tmp_path)
+        made.receipt("t", "r1", json.dumps({"job_id": "j1",
+                                            "asset_id": "a1"}))
+        made.close_step()
+        assert (made.links, made.identifiers, made.unlinked) == (0, 0, 2)
+        assert made.on is True
+
+    def test_and_the_subject_arrives_through_the_call_that_settles_it(
+            self, tmp_path):
+        """Why that price is payable: the two-phase flow never depended on
+        the handle-only call linking. The call that establishes something
+        names one kind, links, and projects."""
+        made = self.two_kinds(tmp_path)
+        made.receipt("t", "r1", json.dumps({"job_id": "j1",
+                                            "asset_id": "a1"}))
+        made.receipt("job_status", "r2", json.dumps(
+            {"data": {"job_id": "j1", "records": 12481}}))
+        made.close_step()
+        assert made.state.claim(("job:j1", "records", 12481)) is not None
+
     def test_a_tool_nobody_declared_links_nothing(self, shadow):
         shadow.receipt("mcp.other", "r9", STATUS)
         shadow.close_step()
@@ -335,8 +416,93 @@ def linked(count: int = 1, *, field: str = "records",
     return state
 
 
+def concluded(head: str = "fast") -> CognitiveState:
+    """A pack rule firing at the RECEIPT level, and its conclusion linked.
+
+    `job_status#r5` returned `elapsed`; a rule concludes `fast` **about the
+    receipt**; the link projects that conclusion onto the subject like any
+    other live triple.  The payload never held a `fast` key — which is the
+    whole point of the shape.
+    """
+    state = CognitiveState()
+    entity = "mcp.job_status#r5"
+    observe(state, entity, "elapsed", 4)
+    rid = state.add_rule("fast", ("?e", head, True), (("?e", "elapsed", 4),))
+    state.promote_rule(rid, RuleAuthority.SKILL)
+    state.link(entity, "job:jl-731", evidence=(receipt("r5"), DECLARED),
+               authority=EvidenceAuthority.SOURCE)
+    return state
+
+
+class TestAConclusionNeverBorrowsAReceiptHandle:
+    """The line between a citation and a fabrication.
+
+    A projection's premise can itself be a *conclusion* — a pack rule
+    firing at the receipt level — and naming the receipt on the subject's
+    line would say a call returned a field it never returned.  That is the
+    framework writing, in its own voice, exactly the attribution the
+    grounding checks exist to catch in the model's.
+    """
+
+    def test_the_subject_line_says_derived_and_names_no_call(self):
+        lines = section(compile_view(concluded()), FACTS_HEADING)
+        subject, = [line for line in lines
+                    if line.startswith("job:jl-731 · fast")]
+        assert subject == 'job:jl-731 · fast = true  [sourced · derived]'
+        assert VIA not in subject
+
+    def test_the_conclusion_keeps_its_own_line_one_level_down(self):
+        """It is not folded away: the subject's line is not saying what
+        that premise says, so suppressing it would leave nothing at all to
+        say the figure was concluded."""
+        lines = section(compile_view(concluded()), FACTS_HEADING)
+        assert any(line.startswith("mcp.job_status#r5 · fast") and DERIVED
+                   in line for line in lines)
+
+    def test_a_read_figure_on_the_same_receipt_still_folds(self):
+        """The guard is about the premise, not about the receipt: what the
+        call did return is still named at the subject."""
+        lines = section(compile_view(concluded()), FACTS_HEADING)
+        assert any(line.startswith("job:jl-731 · elapsed")
+                   and f"{VIA}mcp.job_status#r5" in line for line in lines)
+
+    def test_the_header_still_counts_the_receipt_under_the_conclusion(self):
+        """Counting through the premise — whose own leaves are the
+        receipts under its proof — and not through the projection's leaves,
+        which carry the link's declaration."""
+        assert compile_view(concluded()).receipts == 1
+
+    def test_a_concluded_side_of_a_conflict_names_no_call_either(self):
+        state = concluded()
+        state.declare_field("fast", "one")
+        other = "mcp.audit#r9"
+        observe(state, other, "fast", False)
+        state.link(other, "job:jl-731", evidence=(receipt("r9"), DECLARED),
+                   authority=EvidenceAuthority.SOURCE)
+        line, = section(compile_view(state), CONFLICTS_HEADING)
+        assert f"{VIA}mcp.audit#r9" in line
+        assert f"{VIA}mcp.job_status#r5" not in line
+
+
 class TestTheViewFoldsTheSubject:
     """One figure, one line — at the subject, with the receipt on it."""
+
+    def test_the_handles_are_sorted_and_not_in_proof_order(self):
+        """A line whose word order depends on which of two receipts was
+        recorded first renders two ways for one belief. Sorting costs
+        nothing and makes the line a function of the claim."""
+        def built(first: str, second: str) -> str:
+            state = CognitiveState()
+            for handle in (first, second):
+                entity = f"mcp.{handle}#r1"
+                observe(state, entity, "state", "done")
+                state.link(entity, "job:jl-731",
+                           evidence=(receipt(handle), DECLARED),
+                           authority=EvidenceAuthority.SOURCE)
+            line, = section(compile_view(state), FACTS_HEADING)
+            return line
+
+        assert built("alpha", "beta") == built("beta", "alpha")
 
     def test_the_figure_renders_once_at_the_subject(self):
         view = compile_view(linked())
