@@ -1709,7 +1709,7 @@ missions:
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
 
-`python -m core.eval` has six subcommands. The three a platform starts with
+`python -m core.eval` has seven subcommands. The three a platform starts with
 are these:
 
 ```
@@ -1718,6 +1718,7 @@ python -m core.eval run      --suite path/to/suite.yml --out DIR -- <your spawn 
 python -m core.eval score    --suite path/to/suite.yml --runs DIR
 python -m core.eval measure  --suite path/to/suite.yml --out DIR -- <your spawn line>
 python -m core.eval ablation --suite path/to/suite.yml --out DIR -- <your spawn line>
+python -m core.eval corpus   --out corpus.jsonl --from-runs DIR --note "<your data>"
 ```
 
 * **`check`** refuses a suite that cannot be graded, before anybody spends a GPU
@@ -1758,6 +1759,17 @@ python -m core.eval ablation --suite path/to/suite.yml --out DIR -- <your spawn 
   rather than downgraded on one that does not; run it against an
   unconstrained run of the same model to measure what constrained decoding
   is worth there. See `EVAL.md` §13 and ROADMAP §2.9.3/§2.9.5.
+
+* **`corpus`** is the other one that scores nothing and the only one that
+  writes training data: passing `extraction` attempts and recorded runs that
+  **answered** become `{messages, completion, meta}` lines a LoRA-class trainer
+  reads, with a header carrying the counts and a sha256 of the file printed at
+  the end. It needs no model — it reads evidence a platform already has. The
+  completions are copied and never synthesised, credentials are scrubbed and
+  anything still carrying a credential shape afterwards is refused rather than
+  written, and a platform's own data stays a platform's: pass `--note` to say
+  whose it is and what may be done with it. See `EVAL.md` §17 and `MODELS.md`
+  §4.
 
 `live` — a platform's own suite driven against a running deployment rather than
 against an archive — is the one that has not landed.

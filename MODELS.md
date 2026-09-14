@@ -73,6 +73,9 @@ pairs its arms; a lucky single is not a result.
   warns when a constrained report is paired against an unconstrained one.
   A model whose backend cannot enforce a grammar is refused rather than
   measured as if it had one.
+- `core.eval corpus` is not an instrument and measures nothing — it is
+  step 4.1's builder, listed here only because the same reports feed both:
+  a report you measured with is a report you can train from.
 - Conduct adherence is a measured property of the model, not an assumption:
   the reference 20B binds instructions placed *last* (why the conduct
   renders after the catalogue), followed the conduct roughly half the time,
@@ -106,7 +109,7 @@ Everything here is a deployment knob, never a core edit:
   harness is better. Turn checks on where the measurements say the model
   needs them, not everywhere.
 
-## 4. Fine-tune — per model, when the residual is capability *(process ships; tooling planned — Phase 21)*
+## 4. Fine-tune — per model, when the residual is capability *(process ships; step 1 ships, steps 2–4 planned — Phase 21)*
 
 First separate conduct from capability: if a failure closes when the
 prompt, ordering, timeout or schema changes, it was conduct — no weights
@@ -117,10 +120,34 @@ fine-tuning is for.
 
 The loop, repeatable per model:
 
-1. **Corpus from validated traces** — recorded runs (`EVAL.md` §10) where
-   the behaviour was right, and the extraction instrument's probe corpus;
-   heavy on abstention (a useful model must know when *not* to create a
-   fact). Scrub credentials; principals become roles.
+1. **Corpus from validated traces** *(ships today — `core.eval corpus`)* —
+   recorded runs (`EVAL.md` §10) where the behaviour was right, and the
+   extraction instrument's passing attempts; heavy on abstention (a useful
+   model must know when *not* to create a fact). Scrub credentials;
+   principals become roles.
+
+   ```
+   python -m core.eval corpus --out corpus.jsonl \
+       --from-extraction evidence/extraction/<report>.json \
+       --probes tests/fixtures/extraction/probes.jsonl \
+       --from-runs ~/runs --note "<whose data this is>"
+   ```
+
+   What it writes is `{messages, completion, meta}` per line under a header
+   carrying the counts, the abstention share and the scrub statement, and it
+   prints a sha256 of the file — **the corpus is an experiment input, so it
+   carries an identity** and a tuned checkpoint can name which bytes it was
+   tuned on. The one rule: a completion is the model's own reply, copied,
+   **never** a synthesised ideal answer. Training on imagined behaviour is
+   how a tune moves prose quality and moves no rate.
+
+   The bar and the honest v1 bounds are in `EVAL.md` §17: only attempts that
+   *passed* their probe and runs that *answered* with the grounding
+   satisfied; no synthetic repair and no editing; a `--protocol native` turn
+   has no text completion to copy and is counted rather than rendered into
+   one. `--balance` downsamples the assert half to the abstention floor
+   (0.40 by default, warned and never enforced) deterministically, so two
+   people building from the same report get the same file.
 2. **Train an adapter** (LoRA-class) per model — never fold one model's
    adapter into the framework's assumptions.
 3. **Evaluate as reliability, not fluency** — the same instruments as step
