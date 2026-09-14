@@ -135,6 +135,15 @@ setup(
         # tests/test_server.py reads this dict back to pin that the extra
         # the refusal names is the extra that carries the stack.
         "server": ["starlette>=0.37", "uvicorn>=0.30"],
+        # The constraint solver, and ONLY for the escalation: a skill's
+        # `cognition: constraints:` block checks its `require:` expressions
+        # with exact decimal arithmetic and no dependency at all, which is
+        # the floor and is what every deployment gets. `require_z3:` is the
+        # opt-in that buys rationals, division and products of two fields,
+        # and a manifest that writes one on a box without this extra is
+        # refused AT THE DOOR naming it (core/cognition/constraints.py:
+        # SOLVER_EXTRA) rather than loading and checking nothing.
+        "solver": ["z3-solver>=4.12"],
         "critic": [
             "anthropic>=0.40",
             "google-generativeai>=0.7.0",

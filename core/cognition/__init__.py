@@ -113,14 +113,17 @@ this store's id) and the content-addressed obligation id.
   reconstruct exactly — including one whose sequence numbers say it has been
   reordered, truncated or added to.
 
-The five modules: :mod:`~core.cognition.types` (the records and the closed
+The six modules: :mod:`~core.cognition.types` (the records and the closed
 sets), :mod:`~core.cognition.matching` (unification, and nothing else),
 :mod:`~core.cognition.events` (the log and its version),
-:mod:`~core.cognition.state` (the store), and
+:mod:`~core.cognition.state` (the store),
 :mod:`~core.cognition.compile` (Phase 18's *context compiler*: the store as
 one bounded block of model input — a pure read, under the same
 constitution, and the one thing in this package whose output a model ever
-sees).
+sees), and :mod:`~core.cognition.constraints` (Phase 20's *constraint
+checker*: arithmetic a pack declares over the store's facts, checked and
+**recorded** — a violation is a line in the view and a record in the log,
+and there is no branch in it that holds, refuses or ends anything).
 
 **The sibling.**  :mod:`core.cognition.graph` holds entity↔entity
 *relationships* under the same constitution — pure, deterministic, replayable,
@@ -135,7 +138,12 @@ in this package does.
 """
 
 from core.cognition.compile import (BANDS, BUDGET_CHARS, CompiledView, band,
-                                    compile_view, owed_line)
+                                    compile_view, owed_line, violation_line)
+from core.cognition.constraints import (CONSTRAINT_KEYS, OVER_KEYS,
+                                        SOLVER_EXTRA, VIOLATION_KIND,
+                                        Constraint, ConstraintMalformed,
+                                        Violation, check_constraints, have_z3,
+                                        parse_constraint)
 from core.cognition.events import (COUNT_KEY, EVENT_OPS,
                                    EVENT_SCHEMA_VERSION, EVENTS_KEY,
                                    KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY,
@@ -167,8 +175,11 @@ __all__ = [
     "CognitiveState",
     "CompiledView",
     "CARDINALITIES",
+    "CONSTRAINT_KEYS",
     "COUNT_KEY",
     "CONTRADICTION_KINDS",
+    "Constraint",
+    "ConstraintMalformed",
     "Contradiction",
     "DEFAULT_CARDINALITY",
     "DIGEST_KEYS",
@@ -187,6 +198,7 @@ __all__ = [
     "LIVE_STATUSES",
     "MatchStats",
     "OBSERVATION_AUTHORITIES",
+    "OVER_KEYS",
     "Obligation",
     "ObligationState",
     "Proof",
@@ -198,10 +210,13 @@ __all__ = [
     "RuleAuthority",
     "RuleMalformed",
     "SCHEMA_KEY",
+    "SOLVER_EXTRA",
     "STATUS_RANK",
     "Support",
     "TRUSTED_RULE_AUTHORITIES",
     "UnknownId",
+    "VIOLATION_KIND",
+    "Violation",
     "band",
     # The kernel's own answer to *is this three terms a rule could run*,
     # exported because the rule-pack reader in `core.runtime.cognition` has
@@ -209,14 +224,18 @@ __all__ = [
     # the first failure; a loader that owes an author every problem in one
     # message cannot use that, and a second idea of what a pattern is would
     # be the one that drifted.
+    "check_constraints",
     "check_pattern",
     "compile_view",
     "deep_copy",
     "freeze",
+    "have_z3",
     "is_variable",
     "owed_line",
+    "parse_constraint",
     "resolve",
     "unify",
     "unify_patterns",
     "value_tag",
+    "violation_line",
 ]

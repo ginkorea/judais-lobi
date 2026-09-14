@@ -47,6 +47,18 @@ the writes rather than of who looked.
    picked a side would be the laundering the kernel's walls exist to stop.
    Settled rows are history and are not here — see
    :meth:`~core.cognition.state.CognitiveState.settle`.
+
+   **Constraint violations render here too**, after the contradictions, and
+   the caller passes them in (:func:`compile_view`'s ``violations``) because
+   they are not in the store: see
+   :func:`core.cognition.constraints.check_constraints` for why v1 keeps
+   them outside the kernel.  A violation belongs in this section on the
+   reader's terms rather than on the implementation's — it is a
+   disagreement the block is showing, one line, naming what disagrees with
+   what — and the header's ``N conflicts`` counts the lines this section
+   holds, which is the population the heading is about.  They are **last**
+   in it, so the budget takes a violation before it takes a contradiction
+   the store itself recorded.
 3. **OWED** — the proof frontier: every unresolved obligation the run's
    goals imply, one line, naming the goal it serves and whether anything
    is blocking it.  ``ROADMAP.md`` §2.9.6 (Phase 19) is the argument —
@@ -149,6 +161,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from core.cognition.constraints import VIOLATION_KIND, Violation
 from core.cognition.state import CognitiveState
 from core.cognition.types import (EvidenceAuthority, LIVE_STATUSES,
                                   Obligation, ObligationState, Proposition,
@@ -160,7 +173,7 @@ __all__ = [
     "FACTS_HEADING", "FRONTIER_CAPPED", "HYPOTHESES_HEADING", "OMITTED",
     "OWED_OMITTED",
     "OWED_HEADING", "SECTIONS", "TITLE", "UNGRADED",
-    "CompiledView", "band", "compile_view", "owed_line",
+    "CompiledView", "band", "compile_view", "owed_line", "violation_line",
 ]
 
 
@@ -437,6 +450,32 @@ def owed_line(obligation: Obligation) -> str:
             f"{where}")
 
 
+def violation_line(violation: Violation) -> str:
+    """One constraint violation as one CONFLICTS line.
+
+    ``constraint: share_bounded — mcp.ledger#r3  ⇄  share 121.2 > 100``: the
+    same shape as :func:`_conflict_line` — a kind, then the two sides across
+    :data:`SIDE_SEP` — because a reader of this section should not have to
+    learn a second grammar to read one of its lines.  The kind is
+    :data:`~core.cognition.constraints.VIOLATION_KIND`, which is the one
+    owner of that word.
+
+    The two sides are *what was constrained* and *what the store says*.  The
+    **required expression is not on the line**, and that is the budget
+    argument the whole block runs on: the constraint's name is its address in
+    the manifest, the detail already states what is true, and the expression
+    is on the record in ``reasoning.jsonl`` for a reader who wants to read the
+    two side by side.  A line that carried all three would be a third longer
+    and would say nothing the first two do not.
+
+    **Public, and the one owner of this spelling**, for
+    :func:`owed_line`'s reason: the day something else renders a violation —
+    a console line, a report — it renders the line the model reads.
+    """
+    return (f"{VIOLATION_KIND}: {violation.constraint} — "
+            f"{violation.entity}{SIDE_SEP}{violation.detail}")
+
+
 def _entity_order(props: Sequence[Proposition]) -> List[str]:
     """The entities of *props*, most recently written first.
 
@@ -474,7 +513,9 @@ class CompiledView:
     #: counts LINES and not obligations, so :data:`FRONTIER_CAPPED` is one
     #: of them: it is a line about what is owed, it costs the budget like
     #: one, and a counter that skipped it would disagree with the omission
-    #: sentence about how many lines the section lost.
+    #: sentence about how many lines the section lost.  ``conflicts`` counts
+    #: the section's lines for the same reason, so a constraint violation
+    #: rendered into it is one of them.
     facts: int = 0
     conflicts: int = 0
     owed: int = 0
@@ -700,11 +741,20 @@ def _choose(budget: int, totals: Sequence[int],
 
 
 def compile_view(state: CognitiveState, *,
-                 budget_chars: int = BUDGET_CHARS) -> CompiledView:
+                 budget_chars: int = BUDGET_CHARS,
+                 violations: Sequence[Violation] = ()) -> CompiledView:
     """*state* as one block of at most *budget_chars* characters.
 
     Deterministic: the same state compiles to the same bytes, every time,
-    in any process.  The only inputs are the store and the budget.
+    in any process.  The only inputs are the store, the budget and the
+    violations the caller checked.
+
+    *violations* is a **parameter and not a read**, which is the honest
+    shape while the store has no door to record one through: they are
+    computed by :func:`core.cognition.constraints.check_constraints` against
+    this same state, and the caller that ran the check is the caller that
+    holds them.  Defaulting to nothing is what keeps every existing caller —
+    and the recorded corpus — byte for byte what it was.
 
     **One render, whatever the store holds.**  The cut is chosen
     arithmetically — :func:`_choose` walks the same candidates a renderer
@@ -769,7 +819,11 @@ def compile_view(state: CognitiveState, *,
         # does not have. No lines, no section — the same rule the other
         # three keep.
         owed_lines.insert(0, FRONTIER_CAPPED)
-    if not (live or guesses or open_clashes or owed_lines):
+    # The violations the caller checked, after the store's own conflicts:
+    # the budget drops a section from the end, so a pack's arithmetic goes
+    # before a disagreement the kernel itself recorded.
+    clash_rows = [violation_line(item) for item in (violations or ())]
+    if not (live or guesses or open_clashes or owed_lines or clash_rows):
         return CompiledView()
 
     support = _supports(state, live)
@@ -783,7 +837,8 @@ def compile_view(state: CognitiveState, *,
     # header can count the receipts of the facts it is ABOUT. Counting all
     # of them there would state two numbers over two different populations
     # in one sentence, and the reader has no way to see which.
-    clash_lines = [_conflict_line(state, clash) for clash in open_clashes]
+    clash_lines = [_conflict_line(state, clash)
+                   for clash in open_clashes] + clash_rows
     guess_lines = [f"{_claim(prop)}  [{band(prop.authority)}]"
                    for prop in guesses]
 

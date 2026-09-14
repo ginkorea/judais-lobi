@@ -1789,14 +1789,16 @@ def _mission(elf, args, name, style):
                     # harness reporting work it did not do.
                     fields, rules, goals = shadow.loaded
                     console.print(
-                        f"🧾 rule pack: {rules} rule(s), {goals} goal(s) and "
+                        f"🧾 rule pack: {rules} rule(s), {goals} goal(s), "
+                        f"{len(shadow.constraints)} constraint(s) and "
                         f"{fields} field declaration(s) from skill "
                         f"{manifest.describe()}, loaded before the first "
                         f"receipt. Receipts now DERIVE through the skill's "
                         f"clauses and the goals compute what is still owed; "
                         f"every clause is in the log, promoted to SKILL "
                         f"authority in an event of its own, and none of it "
-                        f"gates anything",
+                        f"gates anything — a constraint that does not hold "
+                        f"is recorded and shown, never enforced",
                         style=style)
                 elif (manifest is not None and manifest.cognition
                       and not shadow.on):

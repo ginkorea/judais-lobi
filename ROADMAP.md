@@ -1253,7 +1253,23 @@ this is the thought experiment's remaining machinery, admitted piecewise:
   their owners) apply unchanged.
 - **Constraint solver** (Z3-class) for the classes that deserve it —
   scheduling, dependency ordering, feasibility; the runtime recognizes the
-  problem class, the model does not have to remember to ask.
+  problem class, the model does not have to remember to ask. **The CHECKER
+  ships** (`core/cognition/constraints.py`, a `constraints:` block inside a
+  skill's `cognition:` pack): arithmetic declared over the store's facts,
+  checked at each step boundary after the derive, and a violation is
+  **recorded and advisory** — a line in the compiled view's CONFLICTS
+  section and one record in `reasoning.jsonl` per `(constraint, entity)`
+  pair, never a gate and, in v1, not even a supervisor signal. The floor is
+  a linear comparison decided in exact decimals with **no new dependency**;
+  `require_z3:` is an opt-in spelled in the manifest (extra `[solver]`,
+  refused at the door when it is absent) that buys rationals, division and
+  non-linear products. **The SOLVING stays behind this bullet's own gate**:
+  every value is bound before the solver is asked, so v1 decides ground
+  expressions, and the three named classes are questions about *unbound*
+  variables — they need a way to declare those variables and a way to render
+  an UNSAT core as advice, and they come with their own review. Binding is
+  the rule that makes it safe: a field the store does not hold, holds twice,
+  or holds as text is **not bound**, and absence is never read as zero.
 - **Capability registry**: empirical routing across local models, coarse
   first; route only when differences are statistically meaningful — no false
   precision from tiny samples. **The STORE ships (`core.eval registry`,

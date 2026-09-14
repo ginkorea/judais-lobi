@@ -125,6 +125,20 @@ only when asked), a pack that fails to load at runtime turns cognition off
 for the run and writes :data:`UNLOADED_NOTE`, and a mission under a pack
 runs the mission it would have run.  Rules derive; they do not gate.
 
+**A pack may also declare constraints** (``ROADMAP.md`` §2.9.7, Phase 20c):
+arithmetic that must hold over what the run has established.  They are
+checked at the step boundary, after the derive, by
+:func:`core.cognition.constraints.check_constraints`, and what a violation
+produces is a **record** — a row in the compiled view's CONFLICTS section
+and one line in this log the first time each ``(constraint, entity)`` pair
+appears.  Nothing reads one back.  There is no supervisor signal, no effect
+on an answer, and no branch anywhere that a violation can make a mission
+take: pairing a violation with a review is a change with its own review, and
+a checker that could raise one is one step from a checker that can end a
+run.  Like everything else here it is total — a checker that raises stops
+*checking*, writes :data:`UNCHECKED_NOTE`, and leaves the harvest, the
+derivation, the frontier and the mission untouched.
+
 :meth:`~core.runtime.run.Run._loop` closes the step.  That is the kernel
 review's M2 ruling written into the harness: :meth:`ShadowCognition.receipt`
 stages, and :meth:`ShadowCognition.close_step` is the **one defined flush
@@ -261,11 +275,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from core.cognition import EVENTS_KEY as KERNEL_EVENTS_KEY
 from core.cognition import SCHEMA_KEY as KERNEL_SCHEMA_KEY
 from core.cognition import COUNT_KEY as KERNEL_COUNT_KEY
-from core.cognition import (BUDGET_CHARS, CARDINALITIES, EVENT_SCHEMA_VERSION,
+from core.cognition import (BUDGET_CHARS, CARDINALITIES, CONSTRAINT_KEYS,
+                            EVENT_SCHEMA_VERSION,
                             KERNEL_KEY, KERNEL_VERSION, CognitionError,
-                            CognitiveState, EvidenceAuthority, EvidenceRef,
-                            ReplayRefused, RuleAuthority, check_pattern,
-                            compile_view, deep_copy, owed_line)
+                            CognitiveState, Constraint, EvidenceAuthority,
+                            EvidenceRef, ReplayRefused, RuleAuthority,
+                            Violation, check_constraints, check_pattern,
+                            compile_view, deep_copy, owed_line,
+                            parse_constraint)
 
 from core.durable import fsync_append
 from core.runtime.grounding import harvest_fields, json_blocks
@@ -279,7 +296,7 @@ __all__ = [
     "GOAL_KEYS", "PACK_AUTHORITY", "PROBLEM_SEP", "RULE_KEYS", "PackGoal",
     "PackRule", "RulePack", "ShadowCognition", "header_record",
     "observations_of", "open_shadow", "read_reasoning", "replay_reasoning",
-    "UNWATCHED_NOTE", "Progress"
+    "UNWATCHED_NOTE", "Progress", "UNCHECKED_NOTE", "VIOLATION_NOTE"
 
 ]
 
@@ -332,6 +349,25 @@ UNLOADED_NOTE = ("the skill's rule pack did not load; cognition is off for "
 UNWATCHED_NOTE = ("the epistemic-progress signal stopped; the harvest "
                   "continued and the supervisor was not told")
 
+#: The sixth note: the constraint checker raised, so a pack's arithmetic
+#: stops being checked for the rest of the run.  Its own sentence for
+#: :data:`UNCOMPILED_NOTE`'s reason — four things can stop independently and
+#: a reader that could not tell them apart would go looking in the wrong
+#: place — and it says the mission was untouched because a checker that could
+#: cost a mission anything would be the gate this layer is forbidden to be.
+UNCHECKED_NOTE = ("the constraint checker stopped; the harvest continued and "
+                  "the mission was not told")
+
+#: **Not a failure**: one line per constraint violation, the first time each
+#: ``(constraint, entity)`` pair is seen.  A note and not a kernel event,
+#: because v1 records violations outside the store — see
+#: :func:`core.cognition.constraints.check_constraints` for the carrier
+#: argument and what it is waiting for.  A reader replaying the log skips it
+#: like every other note, which is correct: the store rebuilt from the events
+#: is the store this run held, and a violation is a statement *about* that
+#: store rather than part of it.
+VIOLATION_NOTE = "a constraint the skill's pack declared does not hold"
+
 
 #: The other note, and it is not an error: this log begins at a resume, so
 #: the receipts the run took before it were never offered to this store.
@@ -346,13 +382,21 @@ RESUMED_NOTE = ("this log begins at a resume; the receipts this run took "
 #: What a ``cognition:`` block may say.  Closed, and refused by name like
 #: :data:`core.runtime.grounding.GROUNDING_KEYS`: a key this reader has never
 #: heard of is a key an author believed was doing something.
-COGNITION_KEYS: Tuple[str, ...] = ("cardinality", "rules", "goals")
+COGNITION_KEYS: Tuple[str, ...] = ("cardinality", "rules", "goals",
+                                   "constraints")
 
 #: What one entry of ``rules:`` may say.
 RULE_KEYS: Tuple[str, ...] = ("name", "head", "body")
 
 #: What one entry of ``goals:`` may say.
 GOAL_KEYS: Tuple[str, ...] = ("name", "pattern")
+
+# What one entry of `constraints:` may say is NOT spelled here: it is
+# `core.cognition.constraints.CONSTRAINT_KEYS`, imported above and used by
+# `_read_constraints` below. The module that reads the expression is the
+# module that knows which keys carry one, and a second tuple here would be
+# the second owner the whole door discipline exists to prevent.
+
 
 #: How :meth:`RulePack.from_mapping` lays out the problems in one refusal,
 #: and it is **not** ``"; "``.
@@ -450,6 +494,15 @@ class RulePack:
     cardinality: Tuple[Tuple[str, str], ...] = ()
     rules: Tuple[PackRule, ...] = ()
     goals: Tuple[PackGoal, ...] = ()
+    #: The arithmetic this pack says must hold (Phase 20c).  Parsed at the
+    #: door by :func:`~core.cognition.constraints.parse_constraint` and
+    #: **not written into the store**: the kernel has no door that records a
+    #: violation, so :meth:`load_into` does not carry these and
+    #: :attr:`ShadowCognition.constraints` holds them instead.  That is the
+    #: one part of a pack which is not an event in ``reasoning.jsonl``, and
+    #: it is the reason :meth:`ShadowCognition.load_constraints` exists for
+    #: the resume path.
+    constraints: Tuple[Constraint, ...] = ()
 
     def __bool__(self) -> bool:
         """A pack that declares nothing is falsy, and is still a pack.
@@ -459,7 +512,8 @@ class RulePack:
         key-presence invariant).  Loading it writes nothing, which is the
         correct amount.
         """
-        return bool(self.cardinality or self.rules or self.goals)
+        return bool(self.cardinality or self.rules or self.goals
+                    or self.constraints)
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "RulePack":
@@ -500,7 +554,9 @@ class RulePack:
         cardinality = _read_cardinality(raw.get("cardinality"), problems)
         rules = _read_rules(raw.get("rules"), problems)
         goals = _read_goals(raw.get("goals"), problems)
-        pack = cls(cardinality=cardinality, rules=rules, goals=goals)
+        constraints = _read_constraints(raw.get("constraints"), problems)
+        pack = cls(cardinality=cardinality, rules=rules, goals=goals,
+                   constraints=constraints)
 
         if not problems:
             # THE DRY RUN, and it is the real load against a store nobody
@@ -541,6 +597,15 @@ class RulePack:
         the pack by replaying the log rather than by reading the manifest
         again.  That is the whole of resume for a pack, and it is why
         :func:`open_shadow` loads on the fresh path only.
+
+        **:attr:`constraints` is not written and the count does not include
+        them**, because there is no kernel door to write one through: a
+        constraint is a statement *about* what the store holds rather than
+        something it holds, and v1 keeps the whole of it outside (see
+        :func:`core.cognition.constraints.check_constraints`).  The one
+        visible consequence is that a resumed run cannot pick its
+        constraints out of the log the way it picks up its clauses, which is
+        what :meth:`ShadowCognition.load_constraints` is for.
         """
         for field, cardinality in self.cardinality:
             state.declare_field(field, cardinality)
@@ -683,6 +748,35 @@ def _read_goals(raw: Any, problems: List[str]) -> Tuple[PackGoal, ...]:
         pattern = _pattern(entry.get("pattern"), f"goal {name!r}", problems)
         if pattern is not None:
             out.append(PackGoal(name=name, pattern=pattern))
+    return tuple(out)
+
+
+def _read_constraints(raw: Any, problems: List[str]) -> Tuple[Constraint, ...]:
+    """``constraints:`` as parsed :class:`~core.cognition.constraints
+    .Constraint` records — the shape here, the language there.
+
+    :func:`_entries` does what it does for rules and goals (a list of
+    mappings, known keys, a name, unique within the key), and then the
+    expression goes to the checker's **own parser**, which is the same
+    discipline :meth:`RulePack.from_mapping`'s dry run keeps for clauses: a
+    door that decided for itself whether an expression was usable would be a
+    second opinion about the language, and the day the two disagreed the
+    manifest would load and the checker would refuse it inside a running
+    mission.
+
+    It is also where a ``require_z3:`` constraint on a box with no solver is
+    refused, for the same reason and with the same timing: at the door,
+    naming the extra, rather than at the first step of a run somebody is
+    watching.
+    """
+    out: List[Constraint] = []
+    for name, entry in _entries(raw, "constraints", CONSTRAINT_KEYS, problems):
+        try:
+            out.append(parse_constraint(name, entry.get("over"),
+                                        entry.get("require"),
+                                        entry.get("require_z3")))
+        except CognitionError as exc:
+            problems.append(str(exc))
     return tuple(out)
 
 
@@ -1031,7 +1125,8 @@ class ShadowCognition:
     def __init__(self, path: Any, run_id: str = "", *,
                  state: Optional[CognitiveState] = None,
                  written: int = 0, compiling: bool = False,
-                 budget_chars: int = BUDGET_CHARS) -> None:
+                 budget_chars: int = BUDGET_CHARS,
+                 noted: Sequence[Tuple[str, str]] = ()) -> None:
         #: Where the log is.
         self.path = Path(path)
         #: The run whose receipts these are — the first term of every
@@ -1082,6 +1177,31 @@ class ShadowCognition:
         self.watched = 0
         #: How many times :meth:`progress` raised.  Never more than one.
         self.watch_failures = 0
+        #: The constraints this run is checking — a pack's, and empty for
+        #: every run without one.  Set by :meth:`load_pack` on the fresh
+        #: path and by :meth:`load_constraints` on a resume.
+        self.constraints: Tuple[Constraint, ...] = ()
+        #: Whether the checker is still running.  Its own switch, for
+        #: :attr:`watching`'s reason.
+        self.checking = True
+        #: The violations of the **last** check — what is true now, which is
+        #: what the compiled view shows.  Not a history: a violation that
+        #: goes away because a receipt corrected a figure should leave the
+        #: model's view, and the log is where the fact that it happened
+        #: lives.
+        self.violations: Tuple[Violation, ...] = ()
+        #: How many checks ran.
+        self.checked = 0
+        #: How many times the checker raised.  Never more than one.
+        self.check_failures = 0
+        #: The ``(constraint, entity)`` pairs already noted in the log, so
+        #: that a violation that persists for thirty steps is one line.
+        #: Seeded on a resume from the log's own violation notes, because the
+        #: file is the history of the **run** and not of the process: a
+        #: resumed run that re-noted everything it was still violating would
+        #: make the number of lines a function of how many times somebody
+        #: resumed.
+        self._noted: set = {(str(one), str(other)) for one, other in noted}
 
     # ── what the door calls, once ───────────────────────────────────────
 
@@ -1122,7 +1242,41 @@ class ShadowCognition:
                 return
             self.pack = pack
             self.loaded = counts
+            self.constraints = pack.constraints
 
+    def load_constraints(self, block: Any) -> None:
+        """A resumed run's constraints, without loading the pack.  Never raises.
+
+        **The resume path's half of** :meth:`load_pack`, and it exists
+        because a constraint is the one part of a pack that is not in the
+        log: the clauses and the goals come back by replay
+        (:func:`open_shadow` deliberately does not load them again — a second
+        copy would derive everything twice), and a constraint has nothing to
+        come back *from*.  Reading them off the manifest here is therefore
+        not the double-load that would be, it is the only load there is.
+
+        Nothing is written to the store and nothing is written to the log:
+        this sets one attribute.  :attr:`pack` is deliberately **not** set —
+        on this path the pack was loaded by the process before, and claiming
+        otherwise would make the console line report work this run did not
+        do.
+
+        Total, like everything a mission can reach, and narrow in what it
+        costs: a block that will not parse here stops the *checking* with
+        :data:`UNCHECKED_NOTE` and leaves the replayed rules, the frontier
+        and the view exactly as they were.  That is the honest isolation —
+        the clauses in the log are real whatever the manifest now says.
+        """
+        if block is None or not self.on or not self.checking:
+            return
+        with self._lock:
+            try:
+                pack = (block if isinstance(block, RulePack)
+                        else RulePack.from_mapping(block))
+            except Exception as exc:                # noqa: BLE001 - the point
+                self._unchecked(exc)
+                return
+            self.constraints = pack.constraints
 
     # ── what the loop calls ─────────────────────────────────────────────
 
@@ -1159,6 +1313,15 @@ class ShadowCognition:
         further iteration.  A flush with nothing staged appends no kernel
         event — the kernel's own rule — so a second call writes nothing and
         the log stays a function of the writes and not of who closed it.
+
+        **Then the constraints, after the derive and after the flush.**
+        After the derive because a pack's arithmetic is about what the run
+        *believes*, conclusions included, and checking before it would judge
+        a store one inference out of date; after the flush so the step's
+        kernel events are on the disk before the notes that talk about them,
+        which is the order a reader of the file reconstructs the step in.
+        The check is its own ``try`` and its own switch: a checker that
+        raised must cost the checking and not the harvest.
         """
         if not self.on:
             return
@@ -1168,16 +1331,19 @@ class ShadowCognition:
                 self._flush()
             except Exception as exc:                # noqa: BLE001 - the point
                 self._stopped(exc)
+                return
+            self._check()
 
     def compiled_block(self) -> str:
         """This step's compiled view, or ``""``.  Never raises.
 
         The **whole** of what ``--compiled-context`` adds to a mission, and
         it is one string: :func:`core.cognition.compile.compile_view` over
-        the state this object already holds, rendered under
-        :attr:`budget_chars`.  The loop appends it and nothing else
-        happens — no record, no file, no gate, and no second copy of the
-        state anywhere.
+        the state this object already holds — plus the violations of the
+        last check, which are the one thing in the block that is not in the
+        store — rendered under :attr:`budget_chars`.  The loop appends it and
+        nothing else happens — no record, no file, no gate, and no second
+        copy of the state anywhere.
 
         ``""`` for every reason there is not to show one, and the caller
         cannot tell them apart because none of them is its business: the
@@ -1197,7 +1363,8 @@ class ShadowCognition:
         with self._lock:
             try:
                 view = compile_view(self.state,
-                                    budget_chars=self.budget_chars)
+                                    budget_chars=self.budget_chars,
+                                    violations=self.violations)
             except Exception as exc:                # noqa: BLE001 - the point
                 self._uncompiled(exc)
                 return ""
@@ -1265,6 +1432,54 @@ class ShadowCognition:
                 self.refused += 1
                 continue
             self.observations += 1
+
+    def _check(self) -> None:
+        """This step's constraint check: the view's rows, and one note each.
+
+        Called inside :meth:`close_step`'s lock, after the flush.  Total, and
+        narrow: the first exception stops the checking for the rest of the
+        run, writes :data:`UNCHECKED_NOTE`, and leaves the store, the log,
+        the view and the mission exactly as they were.
+
+        :attr:`violations` is **replaced**, because it is what is true now
+        and the view shows now.  The log is **appended to once per new
+        ``(constraint, entity)`` pair**, because the file is a history and a
+        violation that persists for thirty steps is one fact stated thirty
+        times.  The two together are the honest pair: the model reads the
+        current state of the world and a reader of the log finds out when
+        each disagreement first appeared.
+        """
+        if not self.checking or not self.constraints:
+            return
+        try:
+            found = check_constraints(self.state, self.constraints)
+        except Exception as exc:                    # noqa: BLE001 - the point
+            self._unchecked(exc)
+            return
+        self.checked += 1
+        self.violations = found
+        for violation in found:
+            if violation.key in self._noted:
+                continue
+            self._noted.add(violation.key)
+            try:
+                fsync_append(self.path, canonical({
+                    NOTE_KEY: VIOLATION_NOTE,
+                    "constraint": violation.constraint,
+                    "entity": violation.entity,
+                    "detail": violation.detail,
+                    "require": violation.require,
+                    "engine": violation.engine,
+                    "sources": list(violation.sources),
+                    "written": self._written,
+                }))
+            except Exception as exc:                # noqa: BLE001 - the point
+                # A note that could not be written must not cost a mission —
+                # the rule every other write in this module keeps — and it
+                # stops the checking rather than retrying every step against
+                # a disk that is refusing.
+                self._unchecked(exc)
+                return
 
     def _flush(self) -> None:
         """Everything the kernel has logged since the last flush, appended.
@@ -1386,6 +1601,27 @@ class ShadowCognition:
         except Exception:                           # pragma: no cover
             pass
 
+    def _unchecked(self, exc: BaseException) -> None:
+        """The constraint checking is over for this run; everything else runs.
+
+        :meth:`_unwatched`'s sibling and just as narrow.  What stops is one
+        advisory reading of the store: the harvest goes on, the clauses go on
+        deriving, the frontier goes on being computed, the view goes on being
+        compiled — with the violations it had at the last successful check
+        left where they are, because they were true and nothing has said
+        otherwise.
+        """
+        self.check_failures += 1
+        self.checking = False
+        try:
+            fsync_append(self.path, canonical({
+                NOTE_KEY: UNCHECKED_NOTE,
+                "error": f"{type(exc).__name__}: {exc}",
+                "written": self._written,
+            }))
+        except Exception:                           # pragma: no cover
+            pass
+
     def _stopped(self, exc: BaseException) -> None:
         """Cognition is over for this run, and the log says so.
 
@@ -1452,6 +1688,13 @@ def open_shadow(store: Any, run_id: str, *,
     because every write went through the kernel's ordinary doors, which is
     the whole reason those doors are the only ones used.
 
+    **Its ``constraints:`` are the exception, on both paths**, because they
+    are the one part of a pack the kernel has no door for and therefore the
+    one part that is not in the log.  On the fresh path :meth:`~Shadow
+    Cognition.load_pack` carries them; on the resume path
+    :meth:`~ShadowCognition.load_constraints` reads them off the manifest,
+    which is not a second load of anything — there was nothing to replay.
+
     **The one call in this module that raises**, and deliberately: a log
     this reader or the kernel cannot trust is a
     :class:`~core.cognition.types.ReplayRefused` — no header, a version from
@@ -1465,7 +1708,7 @@ def open_shadow(store: Any, run_id: str, *,
     path = directory / REASONING_LOG
     view = {"compiling": compiling, "budget_chars": budget_chars}
     if path.exists():
-        header, events, _notes = read_reasoning(path)
+        header, events, notes = read_reasoning(path)
         # Through `_state_of`, which exists so that "what version was this
         # log written under" is answered in one place; re-spelling the
         # envelope here would be the second owner the function was written
@@ -1477,9 +1720,20 @@ def open_shadow(store: Any, run_id: str, *,
         # believed. NOTHING extra is persisted for it — a view is a
         # rendering of the store, and a rendering written down is a second
         # copy of a fact that already has an owner.
-        return ShadowCognition(path, run_id, state=_state_of(header, events),
-                               written=(int(events[-1]["n"]) if events
-                                        else 0), **view)
+        shadow = ShadowCognition(path, run_id, state=_state_of(header, events),
+                                 written=(int(events[-1]["n"]) if events
+                                          else 0),
+                                 noted=[(note.get("constraint", ""),
+                                         note.get("entity", ""))
+                                        for note in notes
+                                        if note.get(NOTE_KEY)
+                                        == VIOLATION_NOTE], **view)
+        # The one thing a resume reads off the manifest, and the one thing
+        # that is not in the log: a constraint is not a kernel event, so
+        # there is nothing here to replay and nothing to load twice. See
+        # `ShadowCognition.load_constraints`.
+        shadow.load_constraints(cognition_block)
+        return shadow
     fsync_append(path, canonical(header_record()))
     if resumed:
         # THE GAP, said out loud. A resumed run re-records its recorded
