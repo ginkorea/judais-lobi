@@ -344,10 +344,14 @@ def pack_line(loaded, constraints: int, skill: str) -> str:
     if constraints:
         does.append("a constraint that does not hold is recorded and shown, "
                     "never enforced")
+    sentence = "; ".join(does)
     return (f"{rules} rule(s), {goals} goal(s), {constraints} constraint(s) "
             f"and {fields} field declaration(s) from skill {skill}, loaded "
             f"before the first receipt"
-            + (f". {'; '.join(does)}" if does else "")
+            # Capitalised, because it follows a full stop: the clauses are
+            # assembled rather than written out, and an assembled sentence
+            # that reads like a typo is the cost of assembling it.
+            + (f". {sentence[:1].upper()}{sentence[1:]}" if does else "")
             + (". Every clause is in the log, promoted to SKILL authority in "
                "an event of its own" if rules else "")
             + ". None of it gates anything")

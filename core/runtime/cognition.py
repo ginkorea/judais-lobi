@@ -1143,7 +1143,8 @@ class ShadowCognition:
                  state: Optional[CognitiveState] = None,
                  written: int = 0, compiling: bool = False,
                  budget_chars: int = BUDGET_CHARS,
-                 noted: Sequence[Tuple[str, str]] = ()) -> None:
+                 noted: Sequence[Tuple[str, str]] = (),
+                 unsolved: bool = False) -> None:
         #: Where the log is.
         self.path = Path(path)
         #: The run whose receipts these are — the first term of every
@@ -1212,9 +1213,12 @@ class ShadowCognition:
         #: How many times the checker raised.  Never more than one.
         self.check_failures = 0
         #: Whether :data:`UNSOLVED_NOTE` has been written for this run.  Once
-        #: per run: a pack that needs a solver this box does not have is one
-        #: fact about the run, not one per step.
-        self._said_unsolved = False
+        #: per **run**, which is why it is seeded from the log on a resume
+        #: exactly as :attr:`_noted` is: a process attribute that started
+        #: ``False`` every time would say "once per run" and write one note
+        #: per *process*, so a run resumed four times would state the same
+        #: fact about the same box four times over.
+        self._said_unsolved = bool(unsolved)
         #: The ``(constraint, entity)`` pairs already noted in the log, so
         #: that a violation that persists for thirty steps is one line.
         #: Seeded on a resume from the log's own violation notes, because the
@@ -1778,7 +1782,10 @@ def open_shadow(store: Any, run_id: str, *,
                                          note.get("entity", ""))
                                         for note in notes
                                         if note.get(NOTE_KEY)
-                                        == VIOLATION_NOTE], **view)
+                                        == VIOLATION_NOTE],
+                                 unsolved=any(note.get(NOTE_KEY)
+                                              == UNSOLVED_NOTE
+                                              for note in notes), **view)
         # The one thing a resume reads off the manifest, and the one thing
         # that is not in the log: a constraint is not a kernel event, so
         # there is nothing here to replay and nothing to load twice. See

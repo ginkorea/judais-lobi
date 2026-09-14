@@ -870,6 +870,15 @@ def _z3_term(z3: Any, node: Any, values: Dict[str, Any]) -> Any:
     and denominator, with no decimal spelling in between — so the solver is
     given the same number the linear evaluator would have used.  That
     exactness is the reason a pack escalates here at all.
+
+    **One bound worth writing down**: ``RatVal`` stringifies its arguments on
+    the way into z3, so an integer past CPython's decimal-conversion limit
+    (~4,300 digits) raises there and :func:`_holds_z3` catches it — the
+    constraint is **undecidable** for that binding and reports nothing.  The
+    built-in ``require:`` language has no such bound, because it never leaves
+    :class:`~fractions.Fraction`.  Degrading into "no answer" is the right
+    direction for a checker that must never fabricate; a deployment whose
+    figures are that large should keep them in ``require:``.
     """
     if isinstance(node, ast.Constant):
         return _z3_number(z3, _number(node.value))
@@ -981,7 +990,11 @@ def _expression(node: Any, values: Dict[str, Any], precedence: int) -> str:
         return f"{node.id} {_show(values.get(node.id))}"
     if isinstance(node, ast.UnaryOp):
         sign = "-" if isinstance(node.op, ast.USub) else "+"
-        return f"{sign}{_expression(node.operand, values, 3)}"
+        inner = _expression(node.operand, values, 3)
+        # `-(-5)` and not `--5`: two signs run together read as an operator
+        # nobody has, and the parentheses are what the file wrote anyway.
+        return (f"{sign}({inner})" if isinstance(node.operand, ast.UnaryOp)
+                else f"{sign}{inner}")
     symbol, level = _OPERATORS[type(node.op)]
     text = (f"{_expression(node.left, values, level)} {symbol} "
             f"{_expression(node.right, values, level + 1)}")
@@ -1011,7 +1024,12 @@ def _show(value: Any) -> str:
             return repr(value)
         return str(value)
     except ValueError:
-        return f"a {value.bit_length()}-digit-class integer"
+        # DIGITS, and not bits called digits. `bit_length()` printed under
+        # the word "digit" is off by a factor of 3.32 in a line of model
+        # input — a number the block invented about a number it could not
+        # print. `643/2136` is log10(2) to ten places in integer arithmetic,
+        # which this module has and floats do not.
+        return f"a {value.bit_length() * 643 // 2136 + 1}-digit integer"
 
 
 def _show_number(value: Fraction) -> str:

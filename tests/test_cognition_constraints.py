@@ -416,6 +416,14 @@ class TestTheViolationStatesWhatIsTrue:
         assert check_constraints(
             state, [constraint("share <= -5")])[0].detail == "share 5 > -5"
 
+    def test_two_signs_do_not_run_together(self):
+        """n6: `--5` reads as an operator nobody has. The parentheses the
+        file wrote are the parentheses the line keeps."""
+        state = store_with(share=5)
+        assert check_constraints(
+            state, [constraint("share <= -(-4)")])[0].detail == \
+            "share 5 > -(-4)"
+
     def test_the_sentence_and_the_verdict_are_one_arithmetic(self):
         """MAJOR 3: the numbers in the sentence are the numbers that decided
         it, because there is only one evaluation to disagree with."""
@@ -529,7 +537,13 @@ class TestTheArithmeticHasNoBoundAndNoAmbientState:
         state = store_with(total=huge, part=1)
         found = check_constraints(state, [constraint("part >= total")])
         assert len(found) == 1
-        assert "integer" in found[0].detail
+        # The COUNT is pinned, because the escape is a claim about the number
+        # in a line the model reads: `bit_length()` under the word "digit"
+        # would say 19,932 here and be wrong by a factor of 3.32.
+        # `10 ** 6000` has 6,001 digits by construction — and `len(str())`
+        # is not how to check it, because spelling it is the very thing
+        # CPython refuses.
+        assert "a 6001-digit integer" in found[0].detail
 
     def test_a_fraction_that_is_not_a_decimal_still_renders(self):
         """Only the solver's division can make one, and a rendering nobody
@@ -790,6 +804,9 @@ class TestTheShadowChecksAtTheStepBoundary:
         assert "DERIVE" not in only and "still owed" not in only
         assert "recorded and shown, never enforced" in only
         assert only.endswith("None of it gates anything")
+        # n5: the clauses are assembled, and a sentence assembled after a
+        # full stop starts like one.
+        assert ". A constraint that does not hold" in only
 
         whole = pack_line((1, 2, 1), 1, "packed")
         assert "DERIVE" in whole and "still owed" in whole
@@ -880,10 +897,43 @@ class TestAMissingSolverCostsTheCheckingAndSaysSo:
         assert [v.constraint for v in shadow.violations] == ["bounded"]
 
     def test_the_note_is_written_once_and_names_the_extra(self, shadow):
+        with patch("core.runtime.cognition.have_z3", return_value=False):
+            for _ in range(2):
+                shadow.close_step()
         written = notes(shadow.path, UNSOLVED_NOTE)
         assert len(written) == 1
         assert written[0]["extra"] == SOLVER_EXTRA
         assert written[0]["constraints"] == ["ratio"]
+
+    def test_a_resume_does_not_say_it_again(self, runs, shadow):
+        """ONCE PER RUN, and a run outlives a process. `_said_unsolved` is
+        seeded from the log exactly as the violation dedup is: an attribute
+        that started fresh every time would state the same fact about the
+        same box once per resume, and a reader counting notes would read four
+        resumes as four findings."""
+        again = open_shadow(runs, shadow.run_id,
+                            cognition_block=self.PACK)
+        with patch("core.runtime.cognition.have_z3", return_value=False):
+            again.receipt("mcp.view", "r2", RECEIPT)
+            again.close_step()
+        assert len(notes(again.path, UNSOLVED_NOTE)) == 1
+
+    def test_a_resume_that_finds_no_note_writes_the_first_one(self, runs):
+        """The other half, or the seeding would be a switch that can only
+        ever silence: a run whose first process had the solver, resumed on a
+        box that does not, has never said this and says it now."""
+        run = runs.create()
+        first = open_shadow(runs, run.run_id, cognition_block=self.PACK)
+        with patch("core.runtime.cognition.have_z3", return_value=True):
+            first.receipt("mcp.view", "r1", RECEIPT)
+            first.close_step()
+        assert notes(first.path, UNSOLVED_NOTE) == []
+
+        again = open_shadow(runs, run.run_id, cognition_block=self.PACK)
+        with patch("core.runtime.cognition.have_z3", return_value=False):
+            again.close_step()
+            again.close_step()
+        assert len(notes(again.path, UNSOLVED_NOTE)) == 1
 
     def test_a_pack_with_no_solver_constraints_says_nothing(self, runs):
         run = runs.create()

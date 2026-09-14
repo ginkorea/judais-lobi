@@ -273,6 +273,15 @@ OWED_OMITTED = ("{what} not shown at this budget — nothing to ask for: the "
 #: room — so this says that, in its own clause rather than inside
 #: :data:`OWED_OMITTED`, because a reader counting owed lines should not find
 #: violations in the number.
+#:
+#: **What a third clause costs, measured**: the floor below which no block
+#: can be rendered at all — because dropping the first line adds a sentence
+#: longer than the line it saved — rises from about 330 characters to about
+#: 520 when all three clauses are in play.  At the shipped
+#: :data:`BUDGET_CHARS` of 4,000 that is unreachable, and below it the
+#: failure is the one this module already chooses: an empty view rather than
+#: a block over its cap.  Worth knowing for a deployment that sets a very
+#: small budget deliberately.
 VIOLATIONS_OMITTED = ("{what} not shown at this budget — nothing to ask for: "
                       "a constraint is checked against the store again at "
                       "every step, and what is not shown renders as soon as "
