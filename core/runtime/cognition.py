@@ -15,12 +15,23 @@ this file and nothing else in the harness learns about it.
 13 September 2026).  With ``--cognition`` off, every byte of every stream and
 every store is what it was before this file existed — the run corpus is the
 proof, and ``tests/test_cognition_shadow.py`` runs it with the flag on as
-well.  With the flag on, the only difference a run makes is
+well.  With the flag on and **no goals in the store** — which is every run
+until something loads a rule pack — the only difference a run makes is
 :data:`REASONING_LOG` and the console line announcing it: no prompt changes,
 no call is made or withheld, no gate is added, and nothing on the wire moves.
 **Nothing in this module may fail a mission.**  Every public method is total:
 an exception inside one is counted, stops cognition for the rest of the run,
 writes one note into the log and returns.  A mission does not find out.
+
+**The one thing a goal changes** (Phase 19, §2.9.6):
+:meth:`ShadowCognition.progress` is read at each step boundary and handed to
+:class:`core.runtime.supervisor.Supervisor`, which may raise its ordinary
+advisory review when the frontier stops moving.  That is one review turn a
+run might not otherwise have spent, on a field the stream already has, with
+no new verdict and no ending that a repeated call could not already reach —
+and it is still not a gate: nothing is held, checked or refused, and a
+progress read that raises turns the signal off and leaves everything else
+running.
 
 **``--compiled-context`` is the one thing that changes a prompt**, and it is
 a *second* switch on this same object (:attr:`ShadowCognition.compiling`)
@@ -118,10 +129,12 @@ runs the mission it would have run.  Rules derive; they do not gate.
 review's M2 ruling written into the harness: :meth:`ShadowCognition.receipt`
 stages, and :meth:`ShadowCognition.close_step` is the **one defined flush
 point per turn** — one :meth:`~core.cognition.state.CognitiveState.derive`,
-then the events it produced are appended.  Nothing here calls ``frontier`` or
-``contradictions``: in v1 nothing consumes them, and a read that flushed the
-staging area at an undefined moment would put the log's shape at the mercy of
-who happened to look.
+then the events it produced are appended.  The two readers that do walk the
+frontier — :meth:`ShadowCognition.compiled_block` and
+:meth:`ShadowCognition.progress` — are called **after** that boundary, which
+is what keeps them free: every kernel read flushes, so a read after the one
+defined flush appends nothing, and the log's shape stays a function of the
+writes rather than of who happened to look.
 
 ## The v1 mapping, honest and dumb
 
@@ -236,6 +249,7 @@ store with every observation twice.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import threading
@@ -251,7 +265,8 @@ from core.cognition import (BUDGET_CHARS, CARDINALITIES, EVENT_SCHEMA_VERSION,
                             KERNEL_KEY, KERNEL_VERSION, CognitionError,
                             CognitiveState, EvidenceAuthority, EvidenceRef,
                             ReplayRefused, RuleAuthority, check_pattern,
-                            compile_view, deep_copy)
+                            compile_view, deep_copy, owed_line)
+
 from core.durable import fsync_append
 from core.runtime.grounding import harvest_fields, json_blocks
 from core.runtime.replay import canonical
@@ -260,12 +275,12 @@ __all__ = [
     "REASONING_LOG", "REASONING_SCHEMA_VERSION", "SCHEMA_KEY",
     "KERNEL_SCHEMA_KEY", "KERNEL_KEY", "KERNEL_EVENTS_KEY",
     "KERNEL_COUNT_KEY", "NOTE_KEY", "RECEIPT_KIND", "RESUMED_NOTE",
-    "STOPPED_NOTE", "UNCOMPILED_NOTE", "UNLOADED_NOTE",
-    "COGNITION_KEYS", "GOAL_KEYS", "PACK_AUTHORITY", "PROBLEM_SEP",
-    "RULE_KEYS",
-    "PackGoal", "PackRule", "RulePack",
-    "ShadowCognition", "header_record", "observations_of", "open_shadow",
-    "read_reasoning", "replay_reasoning",
+    "STOPPED_NOTE", "UNCOMPILED_NOTE", "UNLOADED_NOTE", "COGNITION_KEYS",
+    "GOAL_KEYS", "PACK_AUTHORITY", "PROBLEM_SEP", "RULE_KEYS", "PackGoal",
+    "PackRule", "RulePack", "ShadowCognition", "header_record",
+    "observations_of", "open_shadow", "read_reasoning", "replay_reasoning",
+    "UNWATCHED_NOTE", "Progress"
+
 ]
 
 #: The shadow's file, in the run directory beside ``events.jsonl``.
@@ -309,6 +324,14 @@ UNCOMPILED_NOTE = ("the compiled context stopped; the harvest continued and "
 #: cognition and nothing else.
 UNLOADED_NOTE = ("the skill's rule pack did not load; cognition is off for "
                  "this run and the mission was not told")
+#: The fifth note: the epistemic-progress read raised, so the supervisor
+#: stops being told whether this run's belief is moving.  Its own sentence
+#: for :data:`UNCOMPILED_NOTE`'s reason — a store that goes on believing
+#: while one reader of it stopped is not a dead shadow, and a reader that
+#: could not tell the four apart would report the wrong one.
+UNWATCHED_NOTE = ("the epistemic-progress signal stopped; the harvest "
+                  "continued and the supervisor was not told")
+
 
 #: The other note, and it is not an error: this log begins at a resume, so
 #: the receipts the run took before it were never offered to this store.
@@ -927,6 +950,63 @@ def _state_of(header: Optional[dict], events: List[dict]) -> CognitiveState:
                                   KERNEL_EVENTS_KEY: events})
 
 
+# ── what the supervisor is told ──────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Progress:
+    """One step's worth of "has the run's belief moved", in four numbers.
+
+    ``ROADMAP.md`` §2.9.6 (Phase 19) asks the supervisor to evolve from
+    procedural repetition to **epistemic progress**: *frontier unchanged, no
+    predicate resolved, no contradiction reduced* is the stall.  This is the
+    reading, and it is deliberately tiny — four scalars and a line of prose,
+    compared step to step by :class:`core.runtime.supervisor.Supervisor`,
+    which never sees the store itself.
+
+    A digest and not the frontier, for the reason
+    :class:`core.runtime.supervisor._Act` holds one: a frontier of a hundred
+    obligations is compared against the last one on every step boundary, and
+    a comparison that walks two lists of records is a comparison somebody
+    will be tempted to make cheaper by making it partial.
+
+    ``owed`` is the **top** of the ranked frontier as the model reads it —
+    through :func:`core.cognition.compile.owed_line`, which is the one owner
+    of that spelling — so that a review quoting what has not moved quotes
+    the same words the compiled block showed.
+    """
+
+    #: A stable fingerprint of the ranked frontier: every obligation's id
+    #: and state, in order, plus whether the walk was cut short.
+    frontier: str
+    #: How many obligations are unresolved.
+    obligations: int
+    #: How many contradictions are open.
+    contradictions: int
+    #: How many propositions the store holds, live or not.
+    propositions: int
+    #: The first line of :data:`frontier`, rendered.  ``""`` when nothing
+    #: is owed.
+    owed: str = ""
+
+
+def _frontier_digest(frontier: Any) -> str:
+    """The ranked frontier as one short string.
+
+    Over ``(id, state)`` per obligation **in order**, because all three move
+    when the run learns something: an obligation resolved leaves the list,
+    one whose premise was bound changes id (the id is content-addressed on
+    the pattern as resolved so far), and one that stops being blocked
+    changes state and position.  The truncation flag is in it too — a walk
+    that starts hitting the store's cap is a different frontier from one
+    that did not, and the honest thing is for the digest to say so.
+    """
+    body = "\n".join(f"{item.id}\t{item.state.value}" for item in frontier)
+    flag = "+" if getattr(frontier, "truncated", False) else "-"
+    return hashlib.blake2s(f"{flag}\n{body}".encode("utf-8", "replace"),
+                           digest_size=8).hexdigest()
+
+
 # ── the attachment ───────────────────────────────────────────────────────────
 
 
@@ -994,6 +1074,14 @@ class ShadowCognition:
         self.pack: Optional[RulePack] = None
         #: ``(fields, rules, goals)`` the pack wrote.  Zeroes until one does.
         self.loaded: Tuple[int, int, int] = (0, 0, 0)
+        #: Whether :meth:`progress` is still answering.  Its own switch and
+        #: not :attr:`on`: a frontier read that raises must cost the signal
+        #: that reads it and nothing else.
+        self.watching = True
+        #: How many progress digests were handed out.
+        self.watched = 0
+        #: How many times :meth:`progress` raised.  Never more than one.
+        self.watch_failures = 0
 
     # ── what the door calls, once ───────────────────────────────────────
 
@@ -1034,6 +1122,7 @@ class ShadowCognition:
                 return
             self.pack = pack
             self.loaded = counts
+
 
     # ── what the loop calls ─────────────────────────────────────────────
 
@@ -1116,6 +1205,47 @@ class ShadowCognition:
                 return ""
             self.compiled += 1
             return view.text
+
+    def progress(self) -> Optional["Progress"]:
+        """This step's epistemic-progress digest, or ``None``.  Never raises.
+
+        What the supervisor compares step to step (§2.9.6): the frontier's
+        fingerprint, how much is owed, how much is contested and how much is
+        believed.  It **decides nothing** — the whole of the deciding is
+        :meth:`core.runtime.supervisor.Supervisor.look`, and the whole of
+        what that can do is raise the advisory review it already raises for
+        a repeated call.
+
+        ``None`` for every reason there is not to have one, and the caller
+        cannot tell them apart because none of them is its business:
+        cognition is off, cognition stopped, or this read raised.  A
+        supervisor handed ``None`` for a step simply has no window to
+        compare, which is the failure isolation written as a return value —
+        the signal stops, the supervisor's other four do not, and the
+        mission never learns.
+
+        **Called after** :meth:`close_step`, for
+        :meth:`compiled_block`'s reason: every kernel read flushes, and the
+        step's own boundary has already done that, so this one appends no
+        event.
+        """
+        if not self.on or not self.watching:
+            return None
+        with self._lock:
+            try:
+                frontier = self.state.ranked_frontier()
+                clashes = sum(1 for clash in self.state.contradictions()
+                              if not clash.settled)
+                digest = _frontier_digest(frontier)
+                top = owed_line(frontier[0]) if frontier else ""
+                held = len(self.state.propositions())
+            except Exception as exc:            # noqa: BLE001 - the point
+                self._unwatched(exc)
+                return None
+            self.watched += 1
+            return Progress(frontier=digest, obligations=len(frontier),
+                            contradictions=clashes, propositions=held,
+                            owed=top)
 
     # ── the inside ──────────────────────────────────────────────────────
 
@@ -1229,6 +1359,27 @@ class ShadowCognition:
         try:
             fsync_append(self.path, canonical({
                 NOTE_KEY: UNLOADED_NOTE,
+                "error": f"{type(exc).__name__}: {exc}",
+                "written": self._written,
+            }))
+        except Exception:                           # pragma: no cover
+            pass
+
+    def _unwatched(self, exc: BaseException) -> None:
+        """The progress signal is over for this run; everything else runs.
+
+        The narrowest of the three, and narrow for :meth:`_uncompiled`'s
+        reason one step further: a frontier this run cannot read is not a
+        view it cannot render and is certainly not a store it cannot hold.
+        What stops is one input to one advisory signal; the supervisor keeps
+        its four mechanical ones, the model keeps its block, and the mission
+        is the mission it would have been.
+        """
+        self.watch_failures += 1
+        self.watching = False
+        try:
+            fsync_append(self.path, canonical({
+                NOTE_KEY: UNWATCHED_NOTE,
                 "error": f"{type(exc).__name__}: {exc}",
                 "written": self._written,
             }))

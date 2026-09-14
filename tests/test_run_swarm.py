@@ -69,9 +69,15 @@ class _Watching:
     the **same object** — five supervisors for one turn would be five
     review budgets, and a plan that loops across its steps is precisely
     the pattern no single sub-mission can see.
+
+    ``**_kwargs`` on ``look`` rather than the two keywords it is handed
+    today: this double asserts *identity*, not signature, and a stand-in
+    that has to be edited every time the loop tells a watcher one more
+    thing is a stand-in that tests the loop's parameter list instead of
+    the claim it was written for.
     """
 
-    def look(self, objective, ledger=None):
+    def look(self, objective, **_kwargs):
         return None
 
     def saw_call(self, *args, **kwargs):

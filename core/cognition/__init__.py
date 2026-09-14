@@ -135,7 +135,7 @@ in this package does.
 """
 
 from core.cognition.compile import (BANDS, BUDGET_CHARS, CompiledView, band,
-                                    compile_view)
+                                    compile_view, owed_line)
 from core.cognition.events import (COUNT_KEY, EVENT_OPS,
                                    EVENT_SCHEMA_VERSION, EVENTS_KEY,
                                    KERNEL_KEY, KERNEL_VERSION, SCHEMA_KEY,
@@ -214,6 +214,7 @@ __all__ = [
     "deep_copy",
     "freeze",
     "is_variable",
+    "owed_line",
     "resolve",
     "unify",
     "unify_patterns",
