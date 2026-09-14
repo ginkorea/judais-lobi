@@ -760,6 +760,20 @@ class McpToolSpec:
     name: str
     description: str = ""
     input_schema: Dict[str, Any] = field(default_factory=dict)
+    #: ``outputSchema``, as the server published it — the plane's own word
+    #: about what this tool *returns*, which nothing here had until now.
+    #:
+    #: Carried and not rendered.  It is read by
+    #: :mod:`core.runtime.declarations`, which resolves it against a skill
+    #: manifest's ``tools:`` block into the identifiers, the establishes and
+    #: the two-phase produces a runtime steers by; it is deliberately kept
+    #: out of the catalogue the model is shown, because catalogue size is a
+    #: measured hazard and a schema nobody calls with is prompt nobody reads.
+    #:
+    #: ``{}`` for a server that publishes none, and ``{"type": "object"}``
+    #: from a generator that could not narrow a return type is the same
+    #: thing to every reader: it contributes nothing and refuses nothing.
+    output_schema: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def argument_names(self) -> List[str]:
@@ -973,11 +987,18 @@ class McpClient:
         specs = []
         for tool in result.tools:
             schema = getattr(tool, "inputSchema", None) or {}
+            # `outputSchema` exactly as `inputSchema`: read off the SDK's
+            # own model, defaulted to `{}`, and copied rather than aliased.
+            # An SDK too old to carry the attribute at all is the same
+            # absent schema as a server that publishes none, which is why
+            # this is a `getattr` and not an access.
+            answers = getattr(tool, "outputSchema", None) or {}
             specs.append(
                 McpToolSpec(
                     name=tool.name,
                     description=docstring_dedent(tool.description or ""),
                     input_schema=dict(schema),
+                    output_schema=dict(answers),
                 )
             )
         return specs
@@ -1179,6 +1200,23 @@ class McpToolBridge:
 
         self._registered = names
         return list(names)
+
+    def output_schemas(self) -> Dict[str, Dict[str, Any]]:
+        """``{bus name: outputSchema}`` for everything this bridge registered.
+
+        The bus name and not the server's, because that is the name a
+        receipt carries and therefore the only name a declaration can be
+        looked up by later.  One owner for that mapping — the bridge is
+        where the two names meet (:meth:`local_name`), and a caller that
+        rebuilt it from ``tools/list`` would be prefixing namespaces for
+        itself and getting it wrong the first time two servers are bridged.
+
+        Read out of the client's cache, so it is the set this bridge last
+        synced: a caller asking after ``sync`` is asking about the plane the
+        mission is about to run against.
+        """
+        return {self.local_name(spec.name): dict(spec.output_schema or {})
+                for spec in self._client.list_tools()}
 
     def follow_changes(self) -> None:
         """Keep the bus current, by both halves of current.
@@ -1620,6 +1658,22 @@ class McpFleet:
         for bridge in self._bridges:
             names.extend(bridge.registered)
         return names
+
+    def output_schemas(self) -> Dict[str, Dict[str, Any]]:
+        """Every bridged tool's ``outputSchema``, by the name the bus knows.
+
+        Server order then ``tools/list`` order, like :attr:`discovered`, and
+        one entry per bridged tool whether or not its server published a
+        schema — an absent one is ``{}``, which is exactly what
+        :func:`core.runtime.declarations.PlaneDeclarations.build` reads as
+        *this tool contributes no shape*.  A tool missing from this mapping
+        would instead mean *no plane spoke about it*, and those are
+        different facts.
+        """
+        schemas: Dict[str, Dict[str, Any]] = {}
+        for bridge in self._bridges:
+            schemas.update(bridge.output_schemas())
+        return schemas
 
     def describe(self) -> str:
         """What this fleet reaches, for the line an operator reads.

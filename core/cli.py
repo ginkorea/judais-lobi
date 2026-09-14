@@ -848,6 +848,16 @@ RUN_META_FLAGS = (
 #: :meth:`core.runtime.resume.Recorded.total_steps`).
 DEFAULT_MISSION_STEPS = 0
 
+#: How many plane-declaration disagreements are printed before the block
+#: says how many more there are.  One renamed tool or one stale envelope
+#: key can produce a note per tool of a large plane, and a screen of yellow
+#: at the top of a run is a block an operator learns to skip — which costs
+#: exactly the finding it exists to deliver.  The count on the first line is
+#: always exact, and with ``--cognition`` on every one of them is in
+#: ``reasoning.jsonl``: this bounds the RENDERING and never the record, the
+#: same trade the compiled view's budget makes.
+DECLARATION_NOTE_CAP = 20
+
 
 def _run_meta_flags(args) -> dict:
     """How this mission was spawned, as the run's own index over itself.
@@ -1121,6 +1131,7 @@ def _mission(elf, args, name, style):
     )
     from core.runtime.context_window import MissionWindow
     from core.runtime.control import ControlChannel
+    from core.runtime.declarations import PlaneDeclarations
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import (
         ANSWER_FUNCTION, AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL,
@@ -2061,6 +2072,76 @@ def _mission(elf, args, name, style):
             if recorder is not None:
                 recorder.catalogue(bus, tool_names)
             _redeclare(tool_names)
+            # What the plane says its tools RETURN, resolved once and here:
+            # this is the only moment both halves are in hand — every
+            # server has answered `tools/list` and the manifests have
+            # composed — and a second place that resolved precedence would
+            # be the second answer to which door won.
+            #
+            # `wire=None` and not `{}` for a run with no server: a built-in
+            # plane and an offline replay have nothing to disagree with a
+            # manifest's memory, and `{}` would mean a plane that answered
+            # with no tools, which is a different fact.
+            #
+            # Total, like the shadow beside it: declarations steer and
+            # never gate, so a resolution that failed costs this run its
+            # hints and says so, and the mission is the mission it was.
+            #
+            # `offered` is the RESOLVED set and not the fleet's: a mission
+            # runs bridged tools beside this package's own, and a
+            # declaration about a built-in is true. Blaming it on a
+            # `tools/list` that was never asked about `fs` would be a false
+            # note, on a console, at the top of every run.
+            declarations = None
+            try:
+                declarations = PlaneDeclarations.build(
+                    wire=(fleet.output_schemas() if fleet is not None
+                          else None),
+                    manifest=(manifest.tools if manifest else None),
+                    offered=tool_names)
+            except Exception as exc:            # noqa: BLE001 - see above
+                console.print(
+                    f"🏷  declarations: NOT resolved — {scrub(str(exc))}. "
+                    f"The mission runs exactly as it would have, with no "
+                    f"declarations at all rather than half of them",
+                    style="yellow")
+            if declarations is not None and (declarations
+                                             or declarations.discrepancies):
+                console.print(
+                    f"🏷  declarations: {declarations.describe()} — what "
+                    f"this plane says its tools return, from the servers' "
+                    f"`outputSchema` and the skill's `tools:` block. It "
+                    f"steers the runtime and reaches no prompt",
+                    style=style)
+                if declarations.discrepancies:
+                    # Never silent, and one line per disagreement: the wire
+                    # is the plane speaking now and the manifest is a
+                    # memory of it, so a difference means the plane moved
+                    # and somebody's file is stale. The wire wins either
+                    # way; what this line buys is that a person finds out.
+                    #
+                    # BOUNDED, for the reason every other rendering in this
+                    # package is: one stale envelope key or one renamed
+                    # tool can produce a note per tool of a large plane,
+                    # and a hundred yellow lines at the top of a run is a
+                    # block an operator learns to scroll past — which costs
+                    # exactly the finding it was written to deliver. The
+                    # count is always exact and the log holds all of them.
+                    shown = declarations.discrepancies[:DECLARATION_NOTE_CAP]
+                    rest = len(declarations.discrepancies) - len(shown)
+                    console.print(
+                        f"⚖️  declarations: "
+                        f"{len(declarations.discrepancies)} disagreement(s) "
+                        f"— the wire wins, and the manifest is a memory of "
+                        f"a plane that has changed:\n  - "
+                        + "\n  - ".join(note.sentence() for note in shown)
+                        + ((f"\n  - … and {rest} more, all of them in "
+                            f"{REASONING_LOG}" if shadow is not None
+                            else f"\n  - … and {rest} more, which only "
+                                 f"--cognition writes down") if rest else ""),
+                        style="yellow")
+                if shadow is not None:
+                    shadow.declare_plane(declarations)
             # The identifier check must not flag the name of a tool this
             # mission offered — the harness wrote that name into the prompt
             # itself. Derived from the resolved set rather than typed into a

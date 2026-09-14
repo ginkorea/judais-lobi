@@ -647,6 +647,138 @@ class TestTheRulePack:
         assert "has no `name`" in message
 
 
+class TestThePlaneDeclarations:
+    """`tools:` — what this platform says its plane RETURNS.
+
+    Carried exactly as `grounding:` and `cognition:` are: raw here, read
+    by `core.runtime.declarations.ToolsBlock`, and refused at the door.
+    The refusal is the whole of the block's safety and it is a sharper
+    case than the rule pack's. A pack the kernel will not take costs a run
+    its cognition and says so in the log; a malformed identifier costs
+    nothing anybody can see — it simply binds nothing, for as long as the
+    file exists — so the moment an author is looking at the file is the
+    only moment the fault can be found.
+
+    It never reaches the model. A declaration is about results, the
+    catalogue is about calls, and catalogue size is a measured hazard.
+    """
+
+    BLOCK = """\
+        ---
+        name: declared
+        allowed_tools: [alpha]
+        when_to_use: Something.
+        tools:
+          defaults:
+            identifiers:
+              result_ref: {kind: result}
+          entries:
+            - name: narrative_discovery
+              identifiers:
+                job_id: {kind: job}
+              establishes: [job_id]
+              produces:
+                - kind: asset
+                  field: label_set_asset_id
+                  via: job_status
+                  on: job_id
+        ---
+        Body.
+        """
+
+    def test_it_is_carried_but_not_interpreted(self, tmp_path):
+        block = load_skill(write(tmp_path, self.BLOCK)).tools
+        assert block["defaults"]["identifiers"]["result_ref"] == {
+            "kind": "result"}
+        assert block["entries"][0]["name"] == "narrative_discovery"
+        assert block["entries"][0]["produces"][0]["via"] == "job_status"
+
+    def test_absence_is_none_and_not_an_empty_block(self, tmp_path):
+        assert load_skill(write(tmp_path, """\
+            ---
+            name: undeclared
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            ---
+            Body.
+            """)).tools is None
+
+    def test_a_declared_empty_block_is_kept_as_one(self, tmp_path):
+        assert load_skill(write(tmp_path, """\
+            ---
+            name: empty
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            tools: {}
+            ---
+            Body.
+            """)).tools == {}
+
+    def test_it_is_not_rendered_into_the_prompt(self, tmp_path):
+        """Structural, like the rule pack beside it: the model is told what
+        it may CALL, and a schema of what comes back is prompt nobody
+        reads."""
+        prompt = load_skill(write(tmp_path, self.BLOCK)).prompt
+        assert "narrative_discovery" not in prompt
+        assert "result_ref" not in prompt
+
+    def test_a_block_that_is_not_a_mapping_is_refused(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: listed
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            tools: [narrative_discovery]
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        assert "`tools:` holds a list" in str(exc.value)
+
+    def test_a_fault_inside_the_block_refuses_the_manifest(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: malformed
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            tools:
+              entries:
+                - name: t
+                  identifiers:
+                    job id: {kind: job}
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        assert "key path" in str(exc.value)
+
+    def test_every_fault_in_the_block_arrives_in_one_message(self, tmp_path):
+        path = write(tmp_path, """\
+            ---
+            name: many-faults
+            allowed_tools: [alpha]
+            when_to_use: Something.
+            tools:
+              entries:
+                - name: t
+                  identifiers:
+                    job_id: {kind: 'job:1'}
+                  establishes: verdict
+                - name: t
+                  establishes: [state]
+            ---
+            Body.
+            """)
+        with pytest.raises(SkillManifestError) as exc:
+            load_skill(path)
+        message = str(exc.value)
+        assert "`:` or `#`" in message
+        assert "`establishes` holds a str" in message
+        assert "declares one tool twice" in message
+
+
 class TestSdkImport:
     """What the platform is called to `import`, said by the platform.
 

@@ -3487,3 +3487,206 @@ class TestADeploymentThatDoesNotCheckItsAnswers:
         MockClass, _agent = elf
         run_cli(MockClass, "--skill", str(skill_file), "--no-grounding")
         assert "no grounding grammar" in capsys.readouterr().out
+
+
+#: The recon skill, plus what its platform knows about what those tools
+#: RETURN: the envelope's own chaining handle for every tool of the plane,
+#: and one tool's identifier and what it establishes.
+#:
+#: ``result.asset_id`` and not ``asset_id``, because that is where the key
+#: actually is: FastMCP wraps a tool's return in ``{"result": …}`` and the
+#: published ``outputSchema`` says so. A path into somebody's envelope is
+#: the ordinary case this grammar exists for — and writing the unwrapped
+#: name instead draws exactly the discrepancy note it should.
+DECLARING_SKILL = textwrap.dedent("""\
+    ---
+    name: recon
+    skill:
+      skill_id: recon
+      when_to_use: Arriving at a mission cold.
+      allowed_tools:
+        - governed_read
+      policy:
+        - Never invent an asset id.
+      output_format: A table.
+      grounding:
+        identifier_pattern: '\\basset\\.[0-9a-z]{4,}\\b'
+      tools:
+        defaults:
+          identifiers:
+            result_ref: {kind: result}
+        entries:
+          - name: governed_read
+            identifiers:
+              result.asset_id: {kind: asset}
+            establishes: [posture]
+    ---
+
+    # Recon
+
+    Start broad, then narrow by facet.
+    """)
+
+
+class TestThePlaneDeclarationsFromTheCommandLine:
+    """The wiring, where an operator touches it: a server answers
+    `tools/list`, a skill declares what those tools return, and the two are
+    resolved once — at the one moment both halves are in hand.
+
+    The stub publishes a real `outputSchema` for every tool (FastMCP
+    generates one), so this exercises the ordinary shape of the feature
+    rather than a hand-built mapping: the wire owns the shape, the manifest
+    brings the semantics no schema can carry, and what the run writes down
+    is what it will steer under.
+
+    Nothing here may change the mission. The declarations reach no prompt
+    and no call, and with `--cognition` off there is no log to write them
+    into at all.
+    """
+
+    @pytest.fixture
+    def declaring_skill(self, tmp_path):
+        path = tmp_path / "declaring" / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(DECLARING_SKILL, encoding="utf-8")
+        return path
+
+    def _reasoning(self, tmp_path):
+        from core.runtime.cognition import REASONING_LOG
+
+        found = sorted((tmp_path / "runs").glob(f"*/{REASONING_LOG}"))
+        assert len(found) == 1, found
+        return found[0]
+
+    def test_the_console_says_what_the_plane_declares(self, elf,
+                                                      declaring_skill,
+                                                      capsys):
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill))
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "declarations:" in out
+        assert "tool(s) declared" in out
+
+    def test_the_record_is_written_when_cognition_is_on(self, elf,
+                                                        declaring_skill,
+                                                        tmp_path):
+        from core.runtime.cognition import (DECLARATIONS_KEY, declarations_in,
+                                            read_reasoning)
+
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill), "--cognition")
+        records = declarations_in(
+            read_reasoning(self._reasoning(tmp_path))[2])
+        assert len(records) == 1
+        assert records[0][DECLARATIONS_KEY] == 1
+        declared = records[0]["tools"]["mcp.governed_read"]
+        assert declared["identifiers"] == {"result.asset_id": "asset",
+                                           "result_ref": "result"}
+        assert declared["establishes"] == ["posture"]
+        # The wire published a shape for this tool and the manifest did
+        # not: shape from the plane, semantics from the platform, which is
+        # the whole division of labour.
+        assert declared["shape"] == "wire"
+
+    def test_the_declarations_reach_no_prompt(self, elf, declaring_skill):
+        """A declaration is about what comes BACK. The catalogue is about
+        what may be called, and catalogue size is a measured hazard."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill), "--cognition")
+        system = agent.client.chat.call_args_list[0].kwargs["messages"][0][
+            "content"]
+        assert "result_ref" not in system
+        assert "posture" not in system
+
+    def test_a_skill_that_declares_nothing_writes_no_record(self, elf,
+                                                            skill_file,
+                                                            tmp_path):
+        """The stub publishes shapes and says nothing about identity, so a
+        run with no `tools:` block resolves to nothing — and an absent
+        record already means that."""
+        from core.runtime.cognition import declarations_in, read_reasoning
+
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--cognition")
+        assert declarations_in(
+            read_reasoning(self._reasoning(tmp_path))[2]) == []
+
+    def test_a_declaration_that_matches_the_published_schema_is_silent(
+            self, elf, declaring_skill, capsys):
+        """Agreement is not news. The key is declared where the server
+        publishes it, the plane default is a statement about the plane, and
+        the tool is one this run holds — so nothing is stale and nothing is
+        printed."""
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill))
+        assert "disagreement" not in capsys.readouterr().out
+
+    def test_the_resolver_is_told_what_this_run_actually_offers(
+            self, elf, declaring_skill, monkeypatch):
+        """The servers are not the whole plane. A mission runs bridged
+        tools beside this package's own, so *is this declared tool absent*
+        is a question about the RESOLVED set — and answering it from the
+        fleet alone would print a false note about every built-in a
+        platform declares. What the resolver is handed is the wiring; what
+        it does with it is `tests/test_declarations.py`."""
+        from core.runtime.declarations import PlaneDeclarations
+
+        seen = {}
+        build = PlaneDeclarations.build
+
+        def _spy(**kwargs):
+            seen.update(kwargs)
+            return build(**kwargs)
+
+        monkeypatch.setattr(
+            "core.runtime.declarations.PlaneDeclarations.build", _spy)
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill))
+        assert list(seen["offered"]) == ["mcp.governed_read"]
+        assert set(seen["wire"]) >= {"mcp.governed_read", "mcp.echo"}
+
+    def test_a_resolution_that_fails_costs_the_run_its_hints_and_says_so(
+            self, elf, declaring_skill, capsys, monkeypatch):
+        """Total, like the shadow beside it: declarations steer and never
+        gate, so the mission still answers and the console says which half
+        of the run is missing rather than leaving an operator to notice
+        that nothing was declared."""
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("the resolver fell over")
+
+        monkeypatch.setattr(
+            "core.runtime.declarations.PlaneDeclarations.build", _boom)
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill))
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "declarations: NOT resolved" in out
+        assert "asset.5f21" in out
+
+    def test_the_disagreement_block_is_capped_and_the_count_is_exact(
+            self, elf, tmp_path, capsys, monkeypatch):
+        """One renamed tool or one stale envelope key can produce a note
+        per tool of a large plane, and a screen of yellow at the top of a
+        run is a block an operator learns to skip — which costs exactly the
+        finding it was written to deliver. The cap bounds the RENDERING;
+        the count on the first line stays true and the log keeps them
+        all."""
+        from core.cli import DECLARATION_NOTE_CAP
+        from core.runtime.declarations import Discrepancy, PlaneDeclarations
+
+        many = tuple(Discrepancy(tool=f"t{index:02d}", key="identifiers",
+                                 detail="the plane moved")
+                     for index in range(DECLARATION_NOTE_CAP + 7))
+        build = PlaneDeclarations.build
+        monkeypatch.setattr(
+            "core.runtime.declarations.PlaneDeclarations.build",
+            classmethod(lambda cls, **kw: PlaneDeclarations(
+                tools=build.__func__(cls, **kw).tools, discrepancies=many)))
+        path = tmp_path / "declaring" / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(DECLARING_SKILL, encoding="utf-8")
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(path))
+        out = capsys.readouterr().out
+        assert f"{len(many)} disagreement(s)" in out
+        assert "and 7 more" in out.replace("\n", "")
+        assert "t00" in out and "t26" not in out

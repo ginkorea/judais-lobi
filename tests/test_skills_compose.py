@@ -943,6 +943,261 @@ class TestTheRulePackMerges:
             == (1, 1, 1)
 
 
+#: One tool, declared by a skill that knows about jobs.
+DISCOVERY = {"name": "narrative_discovery",
+             "identifiers": {"job_id": {"kind": "job"}},
+             "establishes": ["job_id"],
+             "produces": [{"kind": "asset", "field": "label_set_asset_id",
+                           "via": "job_status", "on": "job_id"}]}
+
+#: The same tool, as a sibling skill knows it: more that it establishes,
+#: and nothing that contradicts.
+DISCOVERY_MORE = {"name": "narrative_discovery",
+                  "identifiers": {"corpus_asset_id": {"kind": "asset"}},
+                  "establishes": ["corpus_asset_id"]}
+
+
+class TestThePlaneDeclarationsMerge:
+    """`tools:` composes like everything else a mission has several of.
+
+    A family of skills shares one plane, so they declare overlapping parts
+    of it: entries union by tool, `establishes` and `produces` union, and
+    every place two skills could mean different things by one word — an
+    identifier's kind, a product's chain, a fallback shape — agrees or is
+    a refusal naming both. Taking the first would make which subject a
+    value identifies a fact about the order two skills were typed in, and
+    a wrong identifier is the one declaration that manufactures evidence.
+    """
+
+    def test_entries_union_by_tool(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "first", tools={"entries": [DISCOVERY]}),
+            skill(tmp_path, "second", tools={"entries": [
+                {"name": "runs_get",
+                 "identifiers": {"run_id": {"kind": "run"}}}]}),
+        ])
+        assert [entry["name"] for entry in composed.tools["entries"]] \
+            == ["narrative_discovery", "runs_get"]
+
+    def test_one_tool_declared_by_two_skills_merges_per_verb(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "first", tools={"entries": [DISCOVERY]}),
+            skill(tmp_path, "second", tools={"entries": [DISCOVERY_MORE]}),
+        ])
+        entry = composed.tools["entries"][0]
+        assert entry["identifiers"] == {"corpus_asset_id": {"kind": "asset"},
+                                        "job_id": {"kind": "job"}}
+        assert entry["establishes"] == ["corpus_asset_id", "job_id"]
+        assert len(entry["produces"]) == 1
+
+    def test_two_kinds_for_one_key_is_a_refusal_naming_both(self, tmp_path):
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first", tools={"entries": [DISCOVERY]}),
+                skill(tmp_path, "second", tools={"entries": [
+                    {"name": "narrative_discovery",
+                     "identifiers": {"job_id": {"kind": "run"}}}]}),
+            ])
+        message = str(exc.value)
+        assert "'job_id'" in message
+        assert "'first'" in message and "'second'" in message
+
+    def test_two_kinds_for_one_plane_default_is_a_refusal(self, tmp_path):
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first", tools={"defaults": {"identifiers": {
+                    "result_ref": {"kind": "result"}}}}),
+                skill(tmp_path, "second", tools={"defaults": {"identifiers": {
+                    "result_ref": {"kind": "asset"}}}}),
+            ])
+        assert "'result_ref'" in str(exc.value)
+
+    def test_one_product_arriving_two_ways_is_a_refusal(self, tmp_path):
+        """A hint pointing at two calls is a hint nobody can follow."""
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first", tools={"entries": [DISCOVERY]}),
+                skill(tmp_path, "second", tools={"entries": [
+                    {"name": "narrative_discovery",
+                     "identifiers": {"job_id": {"kind": "job"}},
+                     "produces": [{"kind": "asset",
+                                   "field": "label_set_asset_id",
+                                   "via": "runs_get", "on": "job_id"}]}]}),
+            ])
+        assert "label_set_asset_id" in str(exc.value)
+
+    def test_an_identical_redeclaration_is_deduplicated(self, tmp_path):
+        """A family restating the part of the plane it shares."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", tools={"entries": [DISCOVERY]}),
+            skill(tmp_path, "second", tools={"entries": [dict(DISCOVERY)]}),
+        ])
+        assert len(composed.tools["entries"]) == 1
+        assert composed.tools["entries"][0]["establishes"] == ["job_id"]
+
+    def test_two_spellings_of_one_tool_are_one_entry(self, tmp_path):
+        """`tool_key`, as everywhere else: an author writes the spelling
+        their server advertises and every surface derives the rest."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", tools={"entries": [DISCOVERY]}),
+            skill(tmp_path, "second", tools={"entries": [
+                {"name": "mcp.narrative_discovery",
+                 "establishes": ["state"]}]}),
+        ])
+        assert len(composed.tools["entries"]) == 1
+        assert composed.tools["entries"][0]["establishes"] == ["job_id",
+                                                               "state"]
+
+    def test_the_kept_spelling_is_chosen_by_sorting_not_by_arrival(self,
+                                                                   tmp_path):
+        """`allowed_tools` keeps the first spelling it sees, and that is
+        fine for a set nobody writes down. This block IS written down — into
+        `reasoning.jsonl`, read back by a resumed run — so the name comes
+        from sorting the declared spellings rather than from which skill
+        was typed first."""
+        bare = skill(tmp_path / "a", "first", tools={"entries": [DISCOVERY]})
+        namespaced = skill(tmp_path / "b", "second", tools={"entries": [
+            {"name": "mcp.narrative_discovery", "establishes": ["state"]}]})
+        forwards = compose_manifests([bare, namespaced])
+        backwards = compose_manifests([namespaced, bare])
+        assert forwards.tools["entries"][0]["name"] \
+            == backwards.tools["entries"][0]["name"] \
+            == "mcp.narrative_discovery"
+        assert forwards.tools == backwards.tools
+
+    def test_two_fallback_shapes_for_one_tool_are_a_refusal(self, tmp_path):
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first", tools={"entries": [
+                    {"name": "t", "output_schema": {"type": "object",
+                                                    "properties": {"a": {}}}}]}),
+                skill(tmp_path, "second", tools={"entries": [
+                    {"name": "t", "output_schema": {"type": "object",
+                                                    "properties": {"b": {}}}}]}),
+            ])
+        assert "'first'" in str(exc.value) and "'second'" in str(exc.value)
+
+    def test_a_block_that_does_not_stand_up_alone_is_named(self, tmp_path):
+        """A library caller's half: `load_skill` refuses this at the door,
+        so only a hand-built manifest reaches the merge with one."""
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                SkillManifest(name="first", allowed_tools=("alpha",),
+                              prompt="a", tools={"entries": [
+                                  {"name": "t",
+                                   "identifiers": {"a b": {"kind": "x"}}}]}),
+                SkillManifest(name="second", allowed_tools=("alpha",),
+                              prompt="b"),
+            ])
+        assert "'first'" in str(exc.value)
+
+    def test_nobody_declaring_one_composes_to_none(self, tmp_path):
+        assert compose_manifests([
+            skill(tmp_path, "first"), skill(tmp_path, "second"),
+        ]).tools is None
+
+    def test_a_declared_empty_block_survives_composition(self, tmp_path):
+        """The key-presence invariant, on this block: `{}` is a skill that
+        declared a plane and said nothing about it, `None` is a skill that
+        declared none, and a merge that swapped one for the other would
+        answer a consumer's `is not None` differently for two skills than
+        for one."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", tools={}),
+            skill(tmp_path, "second", tools={}),
+        ])
+        assert composed.tools == {}
+
+    @pytest.mark.parametrize("key, value", [
+        ("defaults", {"identifiers": {}}),
+        ("entries", []),
+    ])
+    def test_a_key_declared_empty_keeps_its_presence(self, tmp_path, key,
+                                                     value):
+        composed = compose_manifests([
+            skill(tmp_path, "first", tools={key: value}),
+            skill(tmp_path, "second", tools={}),
+        ])
+        assert key in composed.tools
+
+    @pytest.mark.parametrize("key", ["defaults", "entries"])
+    def test_a_key_nobody_declared_is_not_invented(self, tmp_path, key):
+        other = "entries" if key == "defaults" else "defaults"
+        composed = compose_manifests([
+            skill(tmp_path, "first", tools={other: (
+                [] if other == "entries" else {})}),
+            skill(tmp_path, "second", tools={}),
+        ])
+        assert key not in composed.tools
+
+    def test_a_verb_nobody_wrote_is_not_invented_on_an_entry(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "first", tools={"entries": [
+                {"name": "t", "establishes": ["verdict"]}]}),
+            skill(tmp_path, "second", tools={}),
+        ])
+        assert set(composed.tools["entries"][0]) == {"name", "establishes"}
+
+    def test_the_merged_block_does_not_depend_on_argument_order(self,
+                                                                tmp_path):
+        """The property the record depends on. A composed block is written
+        into `reasoning.jsonl` and read back by a resumed run, so a block
+        that came out differently when two skills were listed the other way
+        round would make that record a fact about typing."""
+        first = skill(tmp_path / "a", "first", tools={
+            "defaults": {"identifiers": {"result_ref": {"kind": "result"}}},
+            "entries": [DISCOVERY, {"name": "runs_get",
+                                    "establishes": ["verdict"]}]})
+        # `asset_fetch` sorts BEFORE the tools the first skill declares, so
+        # a merge that kept first-seen order would produce two different
+        # lists here and this assertion would be the thing that says so.
+        second = skill(tmp_path / "b", "second", tools={
+            "defaults": {"identifiers": {"run_ref": {"kind": "run"}}},
+            "entries": [{"name": "asset_fetch",
+                         "identifiers": {"asset_id": {"kind": "asset"}}},
+                        DISCOVERY_MORE]})
+        assert compose_manifests([first, second]).tools \
+            == compose_manifests([second, first]).tools
+
+    def test_a_family_of_spellings_partitions_the_same_way_round(self,
+                                                                 tmp_path):
+        """`same_tool` is not an equivalence: `runs_get` matches both
+        `mcp.runs_get` and `mcp2.runs_get`, and those two do not match each
+        other. A grouping built in arrival order therefore puts this family
+        in one group or in two depending on which skill was typed first —
+        which is the order of a command line, inside a record a resumed run
+        reads back."""
+        first = skill(tmp_path / "a", "first", tools={"entries": [
+            {"name": "runs_get", "establishes": ["verdict"]}]})
+        second = skill(tmp_path / "b", "second", tools={"entries": [
+            {"name": "mcp.runs_get", "establishes": ["state"]}]})
+        third = skill(tmp_path / "c", "third", tools={"entries": [
+            {"name": "mcp2.runs_get", "establishes": ["owner"]}]})
+        assert compose_manifests([first, second, third]).tools \
+            == compose_manifests([third, second, first]).tools \
+            == compose_manifests([second, third, first]).tools
+
+    def test_a_merged_fallback_shape_is_data_and_not_a_frozen_view(self,
+                                                                    tmp_path):
+        """What comes out of a read block is read-only all the way down;
+        what comes out of a MERGE is a raw block a reader, a dump or a JSON
+        line may meet next. A read-only proxy in one of those is a string
+        nobody can read back."""
+        import json
+
+        shape = {"type": "object", "properties": {"a": {"type": "string"}},
+                 "required": ["a"]}
+        composed = compose_manifests([
+            skill(tmp_path / "a", "first", tools={"entries": [
+                {"name": "t", "output_schema": shape}]}),
+            skill(tmp_path / "b", "second", tools={"entries": [
+                {"name": "t", "establishes": ["verdict"]}]}),
+        ])
+        emitted = composed.tools["entries"][0]["output_schema"]
+        assert emitted == shape
+        assert json.loads(json.dumps(emitted)) == shape
+
+
 class TestTheSdkName:
     def test_one_declared_name_is_carried(self, tmp_path):
         composed = compose_manifests([
