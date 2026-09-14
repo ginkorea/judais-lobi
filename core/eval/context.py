@@ -58,7 +58,7 @@ view twice would conclude it cost twice what it did.
 lost.
 
 **That overlap is not reachable in a recording made today**, and the
-algebra is kept anyway.  :meth:`core.runtime.run.Run._compile` appends the
+algebra is kept anyway.  :meth:`core.runtime.run.Run._compile_context` appends the
 view LAST, after the whole transcript, so the common prefix always stops
 before it and ``block_unpinned_chars == block_chars`` in every run this
 release can produce.  The union is what makes the three regions provably
@@ -157,7 +157,7 @@ NO_CALLS = (
 #: half of recognising one.
 #:
 #: There is exactly one injection point —
-#: :meth:`core.runtime.run.Run._compile` appends ``{"role": "user",
+#: :meth:`core.runtime.run.Run._compile_context` appends ``{"role": "user",
 #: "content": block}`` after everything else — so a part under any other
 #: role that happens to begin with the title is something else wearing the
 #: view's first words: a tool result that echoed it back, an assistant turn
@@ -165,6 +165,12 @@ NO_CALLS = (
 #: the title alone would charge those to the view and inflate the two
 #: figures an arm is read by.  If a later lane injects the block under a
 #: different role, this constant moves with it and the tests say so.
+#:
+#: The residual the guard cannot close: the role that carries the block is
+#: also the role a person speaks in, so an operator who pastes a whole
+#: compiled view back into a mission IS charged to the view.  Accepted, on
+#: purpose — this instrument counts what rode the context under the view's
+#: name, and a pasted view did.
 BLOCK_ROLE = "user"
 
 #: The files that make a directory look like a run, for the walk below.  A
@@ -204,9 +210,9 @@ def is_block(text: str) -> bool:
     :func:`render_request`, which is where the two halves are put
     together.  A title is a string, and a string can appear at the front
     of anything: a tool result that echoes the block back, an assistant
-    turn that quotes it, an operator's own paragraph.  Charging any of
-    those to the view would inflate exactly the two figures a lane is
-    read by.
+    turn that quotes it.  Charging either to the view would inflate
+    exactly the two figures a lane is read by, and the role guard closes
+    both.
 
     Exact on the one string the compiler declares for the purpose:
     :data:`core.cognition.compile.TITLE` is the block's first words and

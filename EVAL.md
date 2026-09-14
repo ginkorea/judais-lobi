@@ -1786,7 +1786,7 @@ is printed beside it, so nothing is lost.
 
 **That overlap is not reachable in a recording made today, and the algebra is
 kept anyway.** The runtime appends the view LAST, after the whole transcript
-(`Run._compile`), so the common prefix always stops before it and the block is
+(`Run._compile_context`), so the common prefix always stops before it and the block is
 entirely new on every call this release can record. The union is what makes
 the three regions *provably* disjoint rather than disjoint by argument, and
 the day a lane pins the view into the head — a cached preamble, a view that
