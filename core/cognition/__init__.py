@@ -155,7 +155,8 @@ from core.cognition.types import (AUTHORITY_RANK, CARDINALITIES,
                                   ProofStep, Proposition,
                                   PropositionStatus, ReplayRefused, Rule,
                                   RuleAuthority, RuleMalformed, Support,
-                                  UnknownId, is_variable, value_tag)
+                                  UnknownId, check_pattern, is_variable,
+                                  value_tag)
 
 __all__ = [
     "AUTHORITY_RANK",
@@ -202,6 +203,13 @@ __all__ = [
     "TRUSTED_RULE_AUTHORITIES",
     "UnknownId",
     "band",
+    # The kernel's own answer to *is this three terms a rule could run*,
+    # exported because the rule-pack reader in `core.runtime.cognition` has
+    # to ask it one pattern at a time. `add_rule` asks it too and raises on
+    # the first failure; a loader that owes an author every problem in one
+    # message cannot use that, and a second idea of what a pattern is would
+    # be the one that drifted.
+    "check_pattern",
     "compile_view",
     "deep_copy",
     "freeze",

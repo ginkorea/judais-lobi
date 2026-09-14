@@ -696,6 +696,253 @@ class TestGroundingMerges:
         assert "figures_from` without a `number_pattern" in message
 
 
+#: One clause, and the same clause written in a second YAML style. Two
+#: authors of a skill family restate the rule they share, and a merge that
+#: compared what was TYPED would refuse a composition over a difference
+#: that is not one.
+CONTROLS = {"name": "controls",
+            "head": ["?a", "controls", "?c"],
+            "body": [["?a", "admin_access", "?c"],
+                     ["?a", "payment_link", "?c"]]}
+CONTROLS_RESTATED = {"name": "controls",
+                     "head": ("?a", "controls", "?c"),
+                     "body": (("?a", "admin_access", "?c"),
+                              ("?a", "payment_link", "?c"))}
+#: The same NAME over different content — the conflict.
+CONTROLS_OTHER = {"name": "controls",
+                  "head": ["?a", "controls", "?c"],
+                  "body": [["?a", "billing_access", "?c"]]}
+
+
+class TestTheRulePackMerges:
+    """`cognition:` composes like everything else a mission has several of.
+
+    `rules` and `goals` are named things and they UNION: two skills that
+    each bring clauses bring both, because a pack is not a setting to be
+    chosen between. `cardinality` is the scalar discipline one field at a
+    time — a field carries one value or many for the whole store, the
+    kernel will hold only one answer about it, and choosing between two
+    would switch collision detection off for whichever skill lost while
+    the store went on reporting no disagreement.
+
+    The refusal is the half that matters, as everywhere else in this file:
+    a name silently resolved by taking the first makes which clause a
+    mission derives under a fact about the order the skills were typed in.
+    """
+
+    def test_rules_union_by_name(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={"rules": [CONTROLS]}),
+            skill(tmp_path, "second", cognition={"rules": [
+                {"name": "paid", "head": ["?a", "paid", True],
+                 "body": [["?a", "amount", 0]]}]}),
+        ])
+        assert [rule["name"] for rule in composed.cognition["rules"]] \
+            == ["controls", "paid"]
+
+    def test_goals_union_by_name(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={"goals": [
+                {"name": "owner_known", "pattern": ["?a", "controls", "?c"]}]}),
+            skill(tmp_path, "second", cognition={"goals": [
+                {"name": "settled", "pattern": ["?a", "paid", True]}]}),
+        ])
+        assert [goal["name"] for goal in composed.cognition["goals"]] \
+            == ["owner_known", "settled"]
+
+    def test_an_identical_redeclaration_is_deduplicated(self, tmp_path):
+        """A family restating the clause it shares. Two skills that both
+        know a rule both still know it, and the mission derives under one
+        copy of it rather than two rule ids concluding the same thing."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={"rules": [CONTROLS]}),
+            skill(tmp_path, "second", cognition={"rules": [dict(CONTROLS)]}),
+        ])
+        assert len(composed.cognition["rules"]) == 1
+
+    def test_a_clause_restated_in_another_shape_is_the_same_clause(self):
+        """The library caller's half, and the one that needs `_canonical`:
+        a platform composing in-process builds its blocks in Python, where
+        a pattern may be a tuple, and a merge comparing container types
+        would refuse a composition over a difference that is not one."""
+        one = SkillManifest(name="first", allowed_tools=("alpha",),
+                            prompt="a", cognition={"rules": [CONTROLS]})
+        two = SkillManifest(name="second", allowed_tools=("alpha",),
+                            prompt="b",
+                            cognition={"rules": [CONTROLS_RESTATED]})
+        assert len(compose_manifests([one, two]).cognition["rules"]) == 1
+
+    def test_one_name_over_two_clauses_is_a_refusal_naming_both(self,
+                                                                tmp_path):
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first", cognition={"rules": [CONTROLS]}),
+                skill(tmp_path, "second",
+                      cognition={"rules": [CONTROLS_OTHER]}),
+            ])
+        message = str(exc.value)
+        assert "'controls'" in message
+        assert "'first'" in message and "'second'" in message
+
+    def test_one_goal_name_over_two_targets_is_a_refusal(self, tmp_path):
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first", cognition={"goals": [
+                    {"name": "done", "pattern": ["?a", "paid", True]}]}),
+                skill(tmp_path, "second", cognition={"goals": [
+                    {"name": "done", "pattern": ["?a", "shipped", True]}]}),
+            ])
+        assert "'done'" in str(exc.value)
+
+    def test_cardinality_agrees_and_is_carried(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={"cardinality": {"units": "one"}}),
+            skill(tmp_path, "second",
+                  cognition={"cardinality": {"units": "one", "score": "many"}}),
+        ])
+        assert composed.cognition["cardinality"] == {"units": "one",
+                                                     "score": "many"}
+
+    def test_cardinality_that_disagrees_is_a_refusal_naming_both(self,
+                                                                 tmp_path):
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                skill(tmp_path, "first",
+                      cognition={"cardinality": {"units": "one"}}),
+                skill(tmp_path, "second",
+                      cognition={"cardinality": {"units": "many"}}),
+            ])
+        message = str(exc.value)
+        assert "units" in message
+        assert "'first'" in message and "'second'" in message
+
+    def test_silence_yields_rather_than_disagreeing(self, tmp_path):
+        """A skill that never mentioned a field has no opinion about it,
+        and a merge that read absence as `many` would refuse a family
+        where one member declares what the others never thought about."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={"cardinality": {"units": "one"}}),
+            skill(tmp_path, "second", cognition={"rules": [CONTROLS]}),
+        ])
+        assert composed.cognition["cardinality"] == {"units": "one"}
+
+    def test_a_skill_with_no_block_contributes_nothing(self, tmp_path):
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={"rules": [CONTROLS]}),
+            skill(tmp_path, "second"),
+        ])
+        assert [rule["name"] for rule in composed.cognition["rules"]] \
+            == ["controls"]
+
+    def test_nobody_declaring_one_composes_to_none(self, tmp_path):
+        """`None` is *nobody asked for cognition*, and it is not the same
+        answer as an empty pack — the shadow loads one and not the other."""
+        assert compose_manifests([
+            skill(tmp_path, "first"), skill(tmp_path, "second"),
+        ]).cognition is None
+
+    @pytest.mark.parametrize("key,empty", [
+        ("cardinality", {}), ("rules", []), ("goals", []),
+    ])
+    def test_a_key_declared_empty_survives_as_declared_empty(
+            self, tmp_path, key, empty):
+        """The 1.1.1 invariant, on the second block that has one:
+        composition may change a value, never a declared key's presence.
+        A consumer switching on `"rules" in block` must not get a different
+        answer because a second skill joined the line."""
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={key: empty}),
+            skill(tmp_path, "second", cognition={key: empty}),
+        ])
+        assert key in composed.cognition
+
+    @pytest.mark.parametrize("key,empty", [
+        ("cardinality", {}), ("rules", []), ("goals", []),
+    ])
+    def test_a_key_nobody_declared_is_not_invented(self, tmp_path, key, empty):
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={"rules": [CONTROLS]}),
+            skill(tmp_path, "second", cognition={"rules": [CONTROLS]}),
+        ])
+        if key != "rules":
+            assert key not in composed.cognition
+
+    def test_a_block_that_does_not_stand_up_alone_names_its_own_skill(self):
+        """Hand-built, because a manifest off disk never gets this far —
+        `load_skill` refuses it at the file. A platform composing in
+        process has no such door, and the refusal has to say WHICH skill
+        to open: a fault reported under the primary's name sends an
+        operator to the wrong file, which is the argument `describe()`
+        was written for."""
+        good = SkillManifest(name="first", allowed_tools=("alpha",),
+                             prompt="a", cognition={"rules": [CONTROLS]})
+        bad = SkillManifest(name="second", allowed_tools=("alpha",),
+                            prompt="b", cognition={"rules": [
+                                {"name": "loose",
+                                 "head": ["?a", "owns", "?x"],
+                                 "body": [["?a", "paid", True]]}]})
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([good, bad])
+        message = str(exc.value)
+        assert "'second'" in message
+        assert "?x" in message
+
+    def test_the_merged_block_carries_only_what_stood_up(self):
+        """And the composition goes on being computed, so the refusal
+        names every problem rather than the first — the module's idiom,
+        and the reason a merge collects rather than raises."""
+        good = SkillManifest(name="first", allowed_tools=("alpha",),
+                             prompt="a", cognition={"rules": [CONTROLS]})
+        bad = SkillManifest(name="second", allowed_tools=("alpha",),
+                            prompt="b", cognition={"cardinality": "nope"})
+        worse = SkillManifest(name="third", allowed_tools=("alpha",),
+                              prompt="c", cognition={"goals": [{"name": "g"}]})
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([good, bad, worse])
+        message = str(exc.value)
+        assert "'second'" in message and "'third'" in message
+
+    def test_the_problems_in_one_pack_are_one_per_line(self):
+        """A separator the messages never use. Several of them carry a
+        semicolon of their own — the kernel's `'two' is not a cardinality;
+        'one' or 'many'` among them — so a list joined on `"; "` is three
+        faults arriving as six half-sentences."""
+        bad = SkillManifest(name="second", allowed_tools=("alpha",),
+                            prompt="b", cognition={
+                                "nonsense": 1, "cardinality": {"u": "two"}})
+        with pytest.raises(SkillManifestError) as exc:
+            compose_manifests([
+                SkillManifest(name="first", allowed_tools=("alpha",),
+                              prompt="a", cognition={"rules": [CONTROLS]}),
+                bad,
+            ])
+        lines = [line.strip() for line in str(exc.value).splitlines()
+                 if line.strip().startswith("- ")]
+        assert any(line.startswith("- unknown key(s): nonsense")
+                   for line in lines), lines
+        assert any(line.startswith("- `cardinality: u` is 'two'")
+                   for line in lines), lines
+
+    def test_the_composed_pack_loads_into_a_kernel(self, tmp_path):
+        """The end of the merge is a pack, and a pack's whole purpose is
+        to be written into a store. Asserted here rather than left to the
+        shadow tests, because a merge that produced a mapping the reader
+        takes and the kernel does not would pass every test above."""
+        from core.cognition import CognitiveState
+        from core.runtime.cognition import RulePack
+
+        composed = compose_manifests([
+            skill(tmp_path, "first", cognition={
+                "cardinality": {"amount": "one"}, "rules": [CONTROLS]}),
+            skill(tmp_path, "second", cognition={"goals": [
+                {"name": "owner_known",
+                 "pattern": ["?a", "controls", "?c"]}]}),
+        ])
+        state = CognitiveState()
+        assert RulePack.from_mapping(composed.cognition).load_into(state) \
+            == (1, 1, 1)
+
+
 class TestTheSdkName:
     def test_one_declared_name_is_carried(self, tmp_path):
         composed = compose_manifests([
