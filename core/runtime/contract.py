@@ -845,6 +845,14 @@ OUTCOMES: tuple[str, ...] = (
 #: The mission-mode flags a consumer may rely on.  Every one of these is
 #: accepted by the parser :func:`core.cli._main` builds and there is a test
 #: that says so; the rest of the CLI is a person's surface and may move.
+#:
+#: ``--version`` is the one that starts no mission: it prints the installed
+#: distribution's version and exits 0.  Published with the rest because
+#: identifying the harness is a deployment's business — a platform that
+#: pins a release has to be able to ask the binary on the host which one it
+#: got, and until it existed the only answer was to ask ``pip`` about a name
+#: and hope the thing on ``PATH`` came from it.  It carries no records and
+#: is not part of the stream's vocabulary.
 CLI_FLAGS: tuple[str, ...] = (
     "--mission", "--mcp-url", "--mcp-stdio", "--mcp-token",
     "--mcp-timeout",
@@ -857,6 +865,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--campaign", "--campaign-plan",
     "--no-grounding",
     "--cognition",
+    "--version",
 )
 
 #: The environment a consumer may set.  Same standing as :data:`CLI_FLAGS`:

@@ -415,9 +415,17 @@ def json_schema_request(json_schema: Any) -> Dict[str, Any]:
     it is missing, because a schema that reached the wire malformed comes
     back as somebody else's 400 an hour later.
 
-    Unknown keys are refused for the same reason a probe's ``expect``
-    block refuses them in :mod:`core.eval.extraction`: a misspelled key is
-    a constraint that silently does not apply.
+    Keys outside the three are refused rather than forwarded, and the
+    reason is **not** that no provider reads them — OpenAI's own
+    ``json_schema`` object takes a ``description`` as well.  It is that
+    this envelope is what EVERY backend declaring the capability has to
+    be able to send: a key passed through here is a promise about all of
+    them, so the set widens deliberately, in a commit that says which
+    backends honour the new key, and never by whatever a caller happened
+    to spell.  The narrowing also catches the misspelling — the reason a
+    probe's ``expect`` block refuses unknown keys in
+    :mod:`core.eval.extraction` — since a constraint that silently does
+    not apply is the failure mode both are guarding.
     """
     if not isinstance(json_schema, Mapping):
         raise ValueError(
@@ -427,8 +435,13 @@ def json_schema_request(json_schema: Any) -> Dict[str, Any]:
     unknown = sorted(set(json_schema) - set(JSON_SCHEMA_KEYS))
     if unknown:
         raise ValueError(
-            f"json_schema= carries {unknown}, which no provider reads; it "
-            f"takes {list(JSON_SCHEMA_KEYS)}")
+            f"json_schema= carries {unknown}, which this door does not "
+            f"pass on; it takes {list(JSON_SCHEMA_KEYS)}. The envelope is "
+            f"narrowed on purpose — a provider may accept more (OpenAI's "
+            f"`description`, for one) and every key added here has to be "
+            f"true of every backend that declares the capability, so it "
+            f"is widened deliberately rather than by whatever a caller "
+            f"happened to pass")
     name = json_schema.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError(

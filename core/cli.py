@@ -2571,6 +2571,46 @@ def _mission(elf, args, name, style):
         console.print(spent, style=style)
 
 
+#: The distribution this CLI is part of — the name ``pip show`` answers to
+#: and the name :mod:`importlib.metadata` is asked for.  One string,
+#: because a second spelling of it is a ``--version`` that reports nothing
+#: on a machine where the package is installed under the other one.
+DISTRIBUTION = "judais-lobi"
+
+#: What :func:`installed_version` says when the metadata is not there.
+#: An honest sentence and never a number: an uninstalled checkout has a
+#: ``setup.py`` sitting right next to it, and reading a version out of the
+#: source tree would answer "what does this source say" to an operator who
+#: asked "what is deployed here" — which are different questions on every
+#: machine where a checkout shadows an install.
+UNINSTALLED = f"{DISTRIBUTION} (uninstalled checkout)"
+
+
+def installed_version() -> str:
+    """The version of the installed distribution, as one line.
+
+    Asked of :mod:`importlib.metadata`, which reads the metadata that was
+    written when the package was installed — the same answer ``pip show``
+    gives, because it is the same source.  That is the whole point of the
+    flag: an operator looking at a deployed host has to be able to ask the
+    binary what it is, and until now the only way was to ask pip about a
+    name and hope the thing on ``PATH`` came from it.
+
+    :data:`UNINSTALLED` when there is no metadata to read, which is a
+    checkout being run in place.  Never a guess: a version is either what
+    the installer recorded or it is absent, and the same rule governs
+    :class:`core.runtime.backends.base.Usage` for the same reason — a
+    number nobody recorded, printed as though somebody had, is worse than
+    the absence it is standing in for.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return f"{DISTRIBUTION} {version(DISTRIBUTION)}"
+    except PackageNotFoundError:
+        return UNINSTALLED
+
+
 def _main(AgentClass):
     # The two words `--replay-tools` takes, off the module that owns them
     # rather than typed here: a second spelling of "recorded" is a flag
@@ -2591,6 +2631,15 @@ def _main(AgentClass):
     parser.add_argument("message", type=str, nargs="?", default=None,
                         help="Your message to the AI. Omit it only with "
                              "--mission --resume, --approve or --refuse")
+    # Answered before anything else is read — see below `parse_args`. Not
+    # argparse's own `action="version"`: that one builds its string at
+    # `add_argument` time, so every chat turn and every mission on this
+    # entry point would pay a metadata lookup to print a line nobody asked
+    # for.
+    parser.add_argument("--version", action="store_true",
+                        help="print the installed judais-lobi version and "
+                             "exit; says so plainly when this is an "
+                             "uninstalled checkout rather than guessing")
     parser.add_argument("--empty", action="store_true", help="Start new conversation")
     parser.add_argument("--purge", action="store_true", help="Purge long-term memory")
     parser.add_argument("--secret", action="store_true", help="Do not save this message")
@@ -2996,6 +3045,13 @@ def _main(AgentClass):
     parser.add_argument("--exclude", action="append", help="Exclude globs")
 
     args = parser.parse_args()
+    # FIRST, before any other check: "what is this?" is a question about
+    # the install and not about the run somebody was going to make, and
+    # an operator asking it on a host mid-incident must not be answered
+    # with a usage error about a positional they did not type.
+    if getattr(args, "version", False):
+        print(installed_version())
+        return
     if getattr(args, "resume", "") and not args.mission:
         parser.error(
             "--resume continues a recorded MISSION; pass --mission with it. "

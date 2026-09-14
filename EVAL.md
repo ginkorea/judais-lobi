@@ -883,18 +883,29 @@ otherwise lie:
   server honoured it.** An OpenAI-compatible server may accept
   `response_format` and ignore it, and nothing in `GET /models` says which
   kind is listening. So the report counts `constrained_invalid` — attempts
-  that were unreadable although a grammar was sent — and flags each such row
-  *constrained yet invalid — the endpoint likely ignored the schema*. On an
-  unconstrained run that row is an honest `0/0`. Read the defect beside the
-  flag: a reply with no array or an unknown status word is proof the grammar
-  did not bind, while an ASSERT that named no field or quoted nothing is
-  schema-valid and is the model's content.
+  that were unreadable although a grammar was sent — and each such row says
+  which kind it is. A shape the grammar forbids (no array, a missing key, an
+  unknown status word) earns *constrained yet invalid — the endpoint likely
+  ignored the schema*; a defect the schema permits (an empty array, an
+  `ASSERT` that named no field or quoted nothing) earns *constrained and
+  schema-valid — the grammar bound; this is the model's content*, because
+  accusing the endpoint there would bury the real finding under a false one.
+  On an unconstrained run the row is an honest `0/0`.
 - **One owner for the shape.** The schema is compiled from the same table
-  `parse_propositions` validates against, so a grammar that permits what the
-  parser refuses — which would count an obedient endpoint as a broken model
-  — cannot be written. The compiled root is an **object** holding the array
-  under `propositions`, because a bare array is refused by the hosted strict
-  surface; the parser reads that wrapper as well as a bare array.
+  `parse_propositions` validates against — the status enum, the required
+  keys and the value types are read off `PROPOSITION_FIELDS` and `STATUSES`
+  rather than written out a second time — so the grammar and the parser
+  cannot drift on what a *shape* is. A grammar-valid reply can still fail
+  the parser, and that is by design: the rules a grammar cannot state are
+  content rules, and three replies show it — an empty array, an `ASSERT`
+  whose `field` is the empty string, an `ASSERT` whose `quote` is. That is
+  why the repair turn stays under `--constrained`, and why the report tells
+  those rows apart from the ones that accuse the endpoint. The compiled
+  root is an **object** holding the array under `propositions`, because a
+  bare array is refused by the hosted strict surface; the parser reads that
+  wrapper as well as a bare array, and the `scorer` version in the header
+  is what says so — widening what parses moves a structural rate with the
+  prompt untouched, so it is versioned and paired like the prompt digest.
 
 ### The design rule: measure the spectrum, don't collapse it
 

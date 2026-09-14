@@ -452,6 +452,7 @@ releases.
 | `--gate-wait` | `MISSION_GATE_WAIT` | how long a gate waits for a decision on `--control` |
 | `--no-grounding` | `MISSION_NO_GROUNDING` | do not check the answers and do not ask a critic: no validator, no repair turn, no caveat, and no `grounding` record on the stream. The `grounding:` block is still parsed, so an unusable one still refuses at the door. For a conversational surface; not for one whose answers are governed findings |
 | `--cognition` | `JUDAIS_LOBI_COGNITION` | carry a **shadow** cognitive state through the mission: every tool receipt is harvested into propositions whose evidence is the receipt, and the kernel's event log is written as `reasoning.jsonl` beside the run's `events.jsonl`. Nothing reads it back — no prompt, call, gate or answer changes because it is on, and with it off the run is byte for byte what it always was. Needs a run directory (`JUDAIS_LOBI_RUNS` on) |
+| `--version` | — | print the installed version and exit 0, starting no mission. **How a deployment identifies the checkout it pinned**: it is read from the metadata the installer wrote — the same source `pip show` reads — so it answers for the binary actually on `PATH`. A checkout being run in place says so in words instead of reporting a number out of the source tree |
 | `--approval` | `MISSION_APPROVAL` | spend one approved gate record on this run (§5) |
 | `--resume` | `MISSION_RESUME` | continue an unfinished run against a live model (§6) |
 | `--replay` | `MISSION_REPLAY` | run a finished recording again, dialling nothing (§6) |

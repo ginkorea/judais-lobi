@@ -26,7 +26,7 @@ door what the backend does not declare, rather than failing mid-mission:
 |---|---|---|
 | `supports_streaming` | deltas arrive as they are produced | all four |
 | `supports_json_mode` | the reply will be *some* JSON | `local`, `openai`, `mistral` |
-| `supports_json_schema` | the request carries a **JSON schema the server enforces while decoding** (`response_format: {type: json_schema}`) — ROADMAP §2.9.5's grammar compiler | `local`, `openai` |
+| `supports_json_schema` | **the request carries a JSON schema** for the server to enforce while decoding (`response_format: {type: json_schema}`) — ROADMAP §2.9.5's grammar compiler. The promise stops at the request: whether the endpoint honours it is the endpoint's, and the consumer's validator is what catches a server that accepted the parameter and ignored it | `local`, `openai` |
 | `supports_tool_calls` | tools declared as functions | `local`, `openai`, `anthropic` |
 | `supports_parallel_tool_calls` | more than one call per reply | `local`, `openai`, `anthropic` |
 | `supports_tool_choice_required` | the decoder must emit a call, not prose | `local`, `openai`, `anthropic` |

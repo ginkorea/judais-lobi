@@ -735,9 +735,42 @@ PROPOSITION_FIELDS: Tuple[Tuple[str, Tuple[type, ...], Tuple[str, ...]], ...] = 
     ("quote", (str,), ("string",)),
 )
 
-#: The keys, in the order the prompt names them.
+#: The keys, in the order the prompt names them.  Every key lookup in
+#: :func:`parse_propositions` goes through this rather than through a
+#: string typed out beside it, so the table above is the only place the
+#: column names live.
 PROPOSITION_KEYS: Tuple[str, ...] = tuple(
     key for key, _python, _json in PROPOSITION_FIELDS)
+
+#: The four keys under the names the code reads them by, **unpacked from
+#: the table** rather than typed out again.  A row added, removed or
+#: reordered above fails this line at import — loudly, in every process
+#: that touches the module — where four scattered string literals would
+#: instead have gone on parsing a key the grammar no longer emits.
+STATUS_KEY, FIELD_KEY, VALUE_KEY, QUOTE_KEY = PROPOSITION_KEYS
+
+#: **What parses**, as a version — the other half of the interpreter, and
+#: it moves independently of the prompt.
+#:
+#: :func:`prompt_fingerprint` says what the model was ASKED; this says what
+#: the harness was willing to READ.  Widening the parser moves the
+#: structural and repair rates without touching a single byte of the
+#: prompt, so two reports under one fingerprint can still be two
+#: experiments — and a run scored by a wider parser paired against an
+#: older baseline would credit the harness's own tolerance to the model.
+#:
+#: **Bump it whenever the set of replies :func:`parse_propositions`
+#: accepts or refuses changes.**  Not for a reworded defect sentence, not
+#: for a refactor: for a reply that used to be ``invalid`` and is not, or
+#: the other way round.
+#:
+#: * **1** — the parser as it shipped: a bare JSON array, found anywhere in
+#:   the reply.
+#: * **2** — the array may also arrive inside the object the compiled
+#:   grammar roots in (``{"propositions": [...]}``), because the strict
+#:   surface will not enforce a bare-array root.  A reply that was a
+#:   structural failure under 1 can be a success under 2.
+SCORER_VERSION = 2
 
 _PYTHON_TYPES: Mapping[str, Tuple[type, ...]] = {
     key: python for key, python, _json in PROPOSITION_FIELDS}
@@ -765,6 +798,39 @@ def _spelled(json_types: Sequence[str]) -> str:
     return " or ".join(f"a {name}" for name in json_types)
 
 
+#: The defects a **schema-shaped reply can still earn** — the three rules a
+#: grammar cannot state, as the fragments their sentences are built from.
+#:
+#: Every other defect :func:`parse_propositions` reports is a *shape*: no
+#: document at all, no array, an element that is not an object, a missing
+#: key, a status outside the vocabulary, a value of a type nothing
+#: declared.  A decoder holding the reply to :func:`proposition_schema`
+#: cannot emit any of those — so under ``--constrained`` they are evidence
+#: about the ENDPOINT, while these three are evidence about the model's
+#: content and nothing else.  The report tells the two apart on the row;
+#: see :func:`schema_permits`.
+#:
+#: Fragments rather than whole sentences, and the sentences below are
+#: built FROM them, so a reworded defect cannot quietly leave this list.
+CONTENT_DEFECTS: Tuple[str, ...] = (
+    "the array was empty",
+    f"names no {FIELD_KEY}",
+    "quotes nothing",
+)
+
+
+def schema_permits(defect: str) -> bool:
+    """Whether :func:`proposition_schema` would have allowed this defect.
+
+    ``True`` for the three content rules a grammar cannot hold, ``False``
+    for every shape it forbids.  The whole point of the distinction is
+    that only the second kind accuses an endpoint of ignoring a schema it
+    was sent, and an instrument that accused on the first would be
+    inventing a finding.
+    """
+    return any(fragment in defect for fragment in CONTENT_DEFECTS)
+
+
 def proposition_schema(name: str = SCHEMA_NAME) -> Dict[str, Any]:
     """The reply language of this measurement, as a JSON schema.
 
@@ -781,7 +847,7 @@ def proposition_schema(name: str = SCHEMA_NAME) -> Dict[str, Any]:
     hand-written copy would drift, and the drift would be measured as a
     model's structural failure rate.
 
-    Three shape decisions, each of them about what the far end will
+    Four shape decisions, each of them about what the far end will
     actually accept:
 
     * **the root is an object**, holding the array under
@@ -793,12 +859,23 @@ def proposition_schema(name: str = SCHEMA_NAME) -> Dict[str, Any]:
     * **``additionalProperties`` is false and every key is required**,
       which is what makes the grammar bind rather than merely advise, and
       what the strict surface demands;
+    * **only the strict subset is used**, which is narrower than JSON
+      Schema and is the subset the hosted surface will compile: a type
+      union is an ``anyOf`` of single-type subschemas rather than
+      ``{"type": ["string", "number"]}`` (the array form is for a
+      ``null`` union), and ``minItems`` is not written at all, because
+      arrays there take no length keywords.  What the dropped keyword
+      cost is a decoder hint and nothing else — an empty array is still a
+      defect :func:`parse_propositions` names, and the repair turn still
+      steers it;
     * **nothing is expressed that a decoder cannot enforce.**  There is no
       conditional subschema saying *an ASSERT must name a non-empty
       field*, because that rule is about content and the rules a grammar
       can hold are about shape.  :func:`parse_propositions` still checks
       it, and a reply that satisfies the grammar can still fail it — which
-      is exactly why the repair loop stays.
+      is exactly why the repair loop stays.  Three shapes do it: an empty
+      array, an ASSERT whose ``field`` is the empty string, and an ASSERT
+      whose ``quote`` is.
 
     A server that cannot compile this grammar answers with an error, and
     an error is the right failure: loud, attributable, and not a quietly
@@ -807,10 +884,7 @@ def proposition_schema(name: str = SCHEMA_NAME) -> Dict[str, Any]:
     element = {
         "type": "object",
         "properties": {
-            key: ({"type": json_types[0], "enum": list(STATUSES)}
-                  if key == "status"
-                  else {"type": json_types[0] if len(json_types) == 1
-                        else list(json_types)})
+            key: _property(key, json_types)
             for key, _python, json_types in PROPOSITION_FIELDS},
         "required": list(PROPOSITION_KEYS),
         "additionalProperties": False,
@@ -820,12 +894,29 @@ def proposition_schema(name: str = SCHEMA_NAME) -> Dict[str, Any]:
         "schema": {
             "type": "object",
             "properties": {
-                SCHEMA_ROOT_KEY: {"type": "array", "minItems": 1,
-                                  "items": element}},
+                SCHEMA_ROOT_KEY: {"type": "array", "items": element}},
             "required": [SCHEMA_ROOT_KEY],
             "additionalProperties": False,
         },
     }
+
+
+def _property(key: str, json_types: Sequence[str]) -> Dict[str, Any]:
+    """One key's subschema, in the form the strict surface accepts.
+
+    A single type is written as ``{"type": "string"}``.  A **union** is
+    written as an ``anyOf`` of single-type subschemas and never as
+    ``{"type": ["string", "number"]}``: the array form of ``type`` is
+    accepted by the strict surface only for a union with ``null``, and a
+    schema it refuses is a 400 rather than a constrained run.  The
+    ``status`` key carries the closed vocabulary beside its type, which is
+    the whole reason this grammar is worth compiling.
+    """
+    if key == STATUS_KEY:
+        return {"type": json_types[0], "enum": list(STATUSES)}
+    if len(json_types) == 1:
+        return {"type": json_types[0]}
+    return {"anyOf": [{"type": name} for name in json_types]}
 
 
 def parse_propositions(reply: Any) -> Tuple[Tuple[Proposition, ...], str]:
@@ -881,28 +972,31 @@ def parse_propositions(reply: Any) -> Tuple[Tuple[Proposition, ...], str]:
         return (), ("no JSON array in the reply — the answer must be the "
                     "array itself, not prose about it")
     if not array:
-        return (), ("the array was empty — say INSUFFICIENT_EVIDENCE rather "
-                    "than nothing")
+        return (), (f"{CONTENT_DEFECTS[0]} — say INSUFFICIENT_EVIDENCE "
+                    f"rather than nothing")
 
     out: List[Proposition] = []
     for index, item in enumerate(array):
         where = f"element {index}"
         if not isinstance(item, Mapping):
             return (), f"{where} is not an object"
-        status = str(item.get("status") or "").strip().upper()
+        # Every key read here comes off PROPOSITION_KEYS, so the column
+        # names have one owner and the grammar compiled from that table
+        # cannot name a key this loop does not look for.
+        status = str(item.get(STATUS_KEY) or "").strip().upper()
         if not status:
-            return (), f"{where} has no status"
+            return (), f"{where} has no {STATUS_KEY}"
         if status not in STATUSES:
-            return (), (f"{where} has status {status!r}, which is not one "
-                        f"of {', '.join(STATUSES)}")
-        if "quote" not in item:
-            return (), f"{where} has no quote"
-        name = "" if item.get("field") is None else str(item.get("field"))
-        quote = "" if item.get("quote") is None else str(item.get("quote"))
-        value = item.get("value")
+            return (), (f"{where} has {STATUS_KEY} {status!r}, which is not "
+                        f"one of {', '.join(STATUSES)}")
+        if QUOTE_KEY not in item:
+            return (), f"{where} has no {QUOTE_KEY}"
+        name = "" if item.get(FIELD_KEY) is None else str(item.get(FIELD_KEY))
+        quote = "" if item.get(QUOTE_KEY) is None else str(item.get(QUOTE_KEY))
+        value = item.get(VALUE_KEY)
         if status == ASSERT:
             if not name.strip():
-                return (), (f"{where} ASSERTs and names no field; an "
+                return (), (f"{where} ASSERTs and {CONTENT_DEFECTS[1]}; an "
                             f"assertion without the key it came from "
                             f"cannot be checked")
             # The types off PROPOSITION_FIELDS, so the grammar compiled
@@ -910,11 +1004,11 @@ def parse_propositions(reply: Any) -> Tuple[Tuple[Proposition, ...], str]:
             # is excluded by hand because `True` is an `int` in Python
             # and no schema calls it a number.
             if isinstance(value, bool) or not isinstance(
-                    value, _PYTHON_TYPES["value"]):
+                    value, _PYTHON_TYPES[VALUE_KEY]):
                 return (), (f"{where} ASSERTs a value that is not "
-                            f"{_spelled(_JSON_TYPES['value'])}")
+                            f"{_spelled(_JSON_TYPES[VALUE_KEY])}")
             if not quote.strip():
-                return (), f"{where} ASSERTs and quotes nothing"
+                return (), f"{where} ASSERTs and {CONTENT_DEFECTS[2]}"
         out.append(Proposition(status=status, field=name.strip(), value=value,
                                quote=quote))
     return tuple(out), ""
@@ -1349,9 +1443,11 @@ CATEGORIES: Tuple[Tuple[str, str], ...] = (
     ("constrained_invalid", "attempts that were UNREADABLE although a "
                             "grammar was sent (LOWER is better; the "
                             "denominator is the constrained attempts, so an "
-                            "unconstrained run counts nothing here). A "
-                            "number above zero is evidence about the "
-                            "ENDPOINT, not only about the model"),
+                            "unconstrained run counts nothing here). Read "
+                            "each row's note before reading this number: "
+                            "only a shape the grammar forbids is evidence "
+                            "about the ENDPOINT, and the rest is the "
+                            "model's content"),
 )
 
 #: The sentence a structurally invalid attempt earns when a grammar was
@@ -1363,6 +1459,15 @@ CATEGORIES: Tuple[Tuple[str, str], ...] = (
 #: reports which kind is listening.
 CONSTRAINED_YET_INVALID = ("constrained yet invalid — the endpoint likely "
                            "ignored the schema")
+
+#: …and the sentence the SAME attempt earns when the defect is one the
+#: grammar could not have prevented.  A row that said "the endpoint likely
+#: ignored the schema" over an ASSERT whose ``field`` was the empty string
+#: would be accusing a server that did exactly what it was asked, and the
+#: accusation would be indistinguishable from the real one two rows down.
+#: :func:`schema_permits` owns which is which.
+CONSTRAINED_AND_SCHEMA_VALID = ("constrained and schema-valid — the grammar "
+                                "bound; this is the model's content")
 
 
 def rates_of(attempts: Sequence[Attempt]) -> Dict[str, Rate]:
@@ -1460,27 +1565,83 @@ HEADLINE_REPEATED = "probe_reliable"
 #: a delta about the tree rather than about the experiment.
 PAIRING: Tuple[str, ...] = (
     "provider", "model", "temperature", "endpoint", "prompt", "probes_path",
-    "probe_count", "repeats", "constrained",
+    "probe_count", "repeats", "constrained", "scorer",
 )
 
-#: Pairing fields whose ABSENCE from an older report is a value and not a
-#: difference.  ``constrained`` is the only one so far: every report
-#: written before the flag existed was an unconstrained run, and reading
-#: its missing key as a third state would warn about a pairing that is
-#: actually sound.  Coercion rather than a default in ``meta``, because
-#: the baseline is somebody else's file and this side does not get to
-#: rewrite it.
-_PAIRING_DEFAULTS: Mapping[str, Any] = {"constrained": False}
+
+def _as_pairing_bool(value: Any) -> bool:
+    """A pairing field's ``True``/``False``, or a refusal.
+
+    Written out rather than left to ``bool()``, which is the trap this
+    closes: ``bool("false")`` is ``True``, so a report whose
+    ``constrained`` arrived as the *string* ``"false"`` — a hand-edited
+    file, a platform's own exporter — would pair a constrained run
+    against an unconstrained one while printing agreement.  The rule is
+    the module's: an unreadable value is refused out loud, because
+    silently wrong about which experiment produced a number is the one
+    failure no downstream reading recovers from.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().casefold()
+    if text in ("true", "false"):
+        return text == "true"
+    raise ValueError(
+        f"a report's `constrained` reads {value!r}, which is neither true "
+        f"nor false; the two runs cannot be paired until it says which "
+        f"experiment it was")
+
+
+def _as_pairing_int(value: Any) -> int:
+    """A pairing field's whole number, or a refusal.  ``bool`` is not one:
+    ``True`` is an ``int`` in Python and no version is ``True``."""
+    if isinstance(value, bool):
+        raise ValueError(f"a report's `scorer` reads {value!r}, "
+                         f"which is not a version")
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    raise ValueError(
+        f"a report's `scorer` reads {value!r}, which is not a version; the "
+        f"two runs cannot be paired until it says which scorer read them")
+
+
+#: Pairing fields whose ABSENCE from an older report is a value rather than
+#: a difference — each with that value and with the reader that turns what
+#: a report carries into it.  One row per field, because a second table of
+#: readers keyed by the same names is a second owner of the same fact.
+#:
+#: ``constrained`` — every report written before the flag existed was an
+#: unconstrained run.  ``scorer`` — every report written before
+#: :data:`SCORER_VERSION` existed was read by scorer 1.  Reading either
+#: absence as a third state would warn about a pairing that is sound.
+#: Coercion rather than a default written into ``meta``, because the
+#: baseline is somebody else's file and this side does not get to rewrite
+#: it.
+_PAIRING_DEFAULTED: Mapping[str, Tuple[Any, Any]] = {
+    "constrained": (False, _as_pairing_bool),
+    "scorer": (1, _as_pairing_int),
+}
 
 
 def _pairing_value(meta: Mapping[str, Any], name: str) -> Any:
-    """One pairing field of *meta*, with an absent value read as its
-    default.  See :data:`_PAIRING_DEFAULTS`."""
-    if name in _PAIRING_DEFAULTS:
-        default = _PAIRING_DEFAULTS[name]
-        found = meta.get(name)
-        return type(default)(default if found is None else found)
-    return meta.get(name)
+    """One pairing field of *meta*, absent read as its default.
+
+    Raises :class:`ValueError` on a value it cannot read — see
+    :data:`_PAIRING_DEFAULTED`.  :func:`from_args` asks this of a
+    ``--baseline`` the moment it is loaded, so the refusal lands before a
+    single probe is spent rather than after a run has been paid for.
+    """
+    row = _PAIRING_DEFAULTED.get(name)
+    if row is None:
+        return meta.get(name)
+    default, read = row
+    found = meta.get(name)
+    return default if found is None else read(found)
 
 
 @dataclass(frozen=True)
@@ -1566,7 +1727,8 @@ def _identity(meta: Mapping[str, Any]) -> str:
             f"@ temperature {_temperature(meta)}, "
             f"endpoint `{meta.get('endpoint') or '—'}`, decoding "
             f"{_decoding(meta)}, prompt "
-            f"`{meta.get('prompt') or '—'}`, commit "
+            f"`{meta.get('prompt') or '—'}`, scorer "
+            f"{_pairing_value(meta, 'scorer')}, commit "
             f"`{str(meta.get('commit') or '')[:12]}`, "
             f"{meta.get('probe_count', 0)} probe(s) × "
             f"{meta.get('repeats', 1)} repeat(s)")
@@ -1584,6 +1746,10 @@ def _markdown(report: ExtractionReport,
         f"- **decoding** {_decoding(meta)}",
         f"- **prompt** `{meta.get('prompt') or '—'}` (both turns, digested; "
         f"the grammar is in the digest when one was sent)",
+        f"- **scorer** {_pairing_value(meta, 'scorer')} — what the harness "
+        f"was willing to READ, versioned apart from what the model was "
+        f"asked, because widening the parser moves a structural rate with "
+        f"the prompt untouched",
         f"- **commit** `{meta.get('commit', 'unknown')}`",
         f"- **date** {meta.get('date', '')}",
         f"- **probes** `{meta.get('probes_path') or '—'}` — "
@@ -1660,14 +1826,14 @@ def _markdown(report: ExtractionReport,
             + ("every reply the grammar was sent with was readable, which "
                "is the endpoint doing what it was asked."
                if invalid.k == 0 else
-               f"**{CONSTRAINED_YET_INVALID}**. An OpenAI-compatible "
-               f"server may accept `response_format` and ignore it, and "
-               f"nothing in `GET /models` says which kind is listening. "
-               f"Read those rows' defects before quoting any number here: "
-               f"an ASSERT that named no field or quoted nothing is the "
-               f"model's content and is schema-valid, and only a reply "
-               f"with no array or an unknown status word is proof the "
-               f"grammar did not bind."))
+               f"**each of those rows says which kind it is.** A row "
+               f"reading *{CONSTRAINED_YET_INVALID}* carries a shape the "
+               f"grammar forbids, so the schema did not bind — an "
+               f"OpenAI-compatible server may accept `response_format` "
+               f"and ignore it, and nothing in `GET /models` says which "
+               f"kind is listening. A row reading *"
+               f"{CONSTRAINED_AND_SCHEMA_VALID}* carries a defect the "
+               f"schema permits, and accuses nobody but the model."))
         lines.append("")
     lines.append(
         "`conflict_surfaced` is scored the same way round: an answer that "
@@ -1761,14 +1927,20 @@ def _note(attempt: Attempt) -> str:
     if not notes and attempt.defects:
         notes.append("; ".join(attempt.defects))
     if attempt.constrained and not attempt.parsed:
-        # Said FIRST, because it changes who the row is about: a grammar
-        # the server enforced cannot emit a reply with no array in it or a
-        # status outside the vocabulary. The defect stays beside it rather
-        # than being replaced by it — the two rules a grammar cannot state
-        # (an ASSERT naming no field, an ASSERT quoting nothing) fail here
-        # too, and those are the model's content and not the endpoint's
-        # doing, so the reader needs to see which one happened.
-        notes.insert(0, CONSTRAINED_YET_INVALID)
+        # Said FIRST, because it decides who the row is about — and WHICH
+        # sentence is said is decided per defect class rather than by the
+        # flag alone. A shape the grammar forbids (no array, a missing
+        # key, an unknown status word) cannot come out of a decoder that
+        # applied the schema, so it accuses the endpoint; a defect the
+        # schema permits (an empty `field`, an empty `quote`, an empty
+        # array) is the model's content and accusing the endpoint over it
+        # would bury the real finding under a false one. The defect stays
+        # beside either sentence, because the reader still has to see
+        # which shape happened.
+        notes.insert(0, CONSTRAINED_AND_SCHEMA_VALID
+                     if attempt.defects
+                     and all(schema_permits(d) for d in attempt.defects)
+                     else CONSTRAINED_YET_INVALID)
     return "; ".join(notes)
 
 
@@ -2045,9 +2217,9 @@ def header(probes: Sequence[Probe], path: Path, *, provider: str = "",
            env: Optional[Mapping[str, str]] = None
            ) -> Dict[str, Any]:
     """What produced these numbers.  ``measure``'s vocabulary, wider by the
-    four fields that move an extraction rate and that a matrix row does
+    five fields that move an extraction rate and that a matrix row does
     not vary: the temperature, the prompt digest, whether the decode was
-    constrained, and which corpus ran."""
+    constrained, which scorer read the replies, and which corpus ran."""
     from core.eval.measure import commit_of, scrubbed
 
     env = os.environ if env is None else env
@@ -2060,6 +2232,10 @@ def header(probes: Sequence[Probe], path: Path, *, provider: str = "",
         "endpoint": scrubbed(env.get("LOCAL_API_BASE", "")),
         "constrained": bool(constrained),
         "prompt": prompt_fingerprint(bool(constrained)),
+        # What was ASKED is the line above; this is what was READ. Two
+        # halves of one interpreter, moving independently — see
+        # SCORER_VERSION.
+        "scorer": SCORER_VERSION,
         "probes_path": str(path),
         "probe_count": len(probes),
         "repeats": int(repeats),
@@ -2237,6 +2413,16 @@ def from_args(args: argparse.Namespace) -> int:
             baseline = json.loads(Path(args.baseline).read_text(
                 encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
+            print(f"--baseline: {exc}", file=sys.stderr)
+            return 2
+        try:
+            # Read every pairing field NOW, before a probe is spent: the
+            # readers refuse a value they cannot interpret, and a refusal
+            # that arrives at render time would cost the whole run it was
+            # meant to protect.
+            for field in PAIRING:
+                _pairing_value((baseline or {}).get("meta") or {}, field)
+        except ValueError as exc:
             print(f"--baseline: {exc}", file=sys.stderr)
             return 2
 

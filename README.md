@@ -584,6 +584,7 @@ surface and may move. Table in `CLI_FLAGS` order:
 | `--grant` | — | pre-authorise capability scopes for this run — see [How it is governed](#how-it-is-governed) |
 | `--campaign` | — | run a campaign: a plan of missions — see [Campaigns](#campaigns--a-plan-of-missions) |
 | `--campaign-plan` | — | the same, from a `CampaignPlan` JSON or YAML file |
+| `--version` | — | print the installed version and exit 0 — read from the metadata the installer wrote, the same source as `pip show`. A checkout run in place says `judais-lobi (uninstalled checkout)` rather than reporting a number out of the source tree |
 
 ### The published environment
 

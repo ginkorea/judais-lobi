@@ -126,7 +126,7 @@ CONFORMANCE: Dict[str, Any] = {
               "--temperature", "--top-p", "--seed", "--protocol",
               "--no-stream", "--gate-wait", "--replay", "--grant",
               "--campaign", "--campaign-plan", "--no-grounding",
-              "--cognition"),
+              "--cognition", "--version"),
 
     # The environment this platform exports into the child.
     "env": ("MCP_TOKEN", "MCP_CLIENT_NAME", "MCP_URL", "MCP_STDIO",
