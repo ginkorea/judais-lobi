@@ -1,0 +1,693 @@
+[
+ {
+  "label": "A-v1.2.0-s1-run1",
+  "base": "http://127.0.0.1:8771",
+  "outcome": "PASS",
+  "elapsed_s": 132.1,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:16:36+00:00",
+  "finished_at": "2026-09-14T16:18:48+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T161638-e8460623.jsonl",
+  "run_dir": "run_20260914T161638-4819806f",
+  "orphaned": false,
+  "model_calls": 2,
+  "max_completion_tokens": 2655,
+  "sum_completion_tokens": 2779,
+  "max_prompt_tokens": 108873,
+  "longest_call_s": 99.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:18:17+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 2655,
+    "elapsed_s": 99.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:18:45+00:00",
+    "prompt_tokens": 108873,
+    "completion_tokens": 124,
+    "elapsed_s": 28.0
+   }
+  ],
+  "note": "the sampler did not cover this turn"
+ },
+ {
+  "label": "A-v1.2.0-s1-run2",
+  "base": "http://127.0.0.1:8771",
+  "outcome": "PASS",
+  "elapsed_s": 80.07,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:19:09+00:00",
+  "finished_at": "2026-09-14T16:20:29+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T161910-28d04be2.jsonl",
+  "run_dir": "run_20260914T161910-62466fb8",
+  "orphaned": false,
+  "model_calls": 2,
+  "max_completion_tokens": 1846,
+  "sum_completion_tokens": 1935,
+  "max_prompt_tokens": 108535,
+  "longest_call_s": 45.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:19:55+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 1846,
+    "elapsed_s": 45.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:20:26+00:00",
+    "prompt_tokens": 108535,
+    "completion_tokens": 89,
+    "elapsed_s": 31.0
+   }
+  ],
+  "served_gen_tokens": 1935,
+  "served_prompt_tokens": 195573,
+  "served_finished_stop": 0,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:19:05-16:20:30Z"
+ },
+ {
+  "label": "A-v1.2.0-s1-run3",
+  "base": "http://127.0.0.1:8771",
+  "outcome": "PASS",
+  "elapsed_s": 64.07,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:20:37+00:00",
+  "finished_at": "2026-09-14T16:21:41+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T162037-49cdd41a.jsonl",
+  "run_dir": "run_20260914T162038-63066bb5",
+  "orphaned": false,
+  "model_calls": 2,
+  "max_completion_tokens": 1381,
+  "sum_completion_tokens": 1456,
+  "max_prompt_tokens": 108800,
+  "longest_call_s": 33.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:21:11+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 1381,
+    "elapsed_s": 33.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:21:38+00:00",
+    "prompt_tokens": 108800,
+    "completion_tokens": 75,
+    "elapsed_s": 27.0
+   }
+  ],
+  "served_gen_tokens": 1456,
+  "served_prompt_tokens": 195838,
+  "served_finished_stop": 2,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:20:35-16:21:45Z"
+ },
+ {
+  "label": "A-v1.2.0-s1-run4",
+  "base": "http://127.0.0.1:8771",
+  "outcome": "PASS",
+  "elapsed_s": 116.09,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code",
+    "run_code_result",
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:21:48+00:00",
+  "finished_at": "2026-09-14T16:23:44+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T162149-e2a4e0d4.jsonl",
+  "run_dir": "run_20260914T162149-3c9f3d66",
+  "orphaned": false,
+  "model_calls": 4,
+  "max_completion_tokens": 2511,
+  "sum_completion_tokens": 3894,
+  "max_prompt_tokens": 95651,
+  "longest_call_s": 61.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:22:50+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 2511,
+    "elapsed_s": 61.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:23:05+00:00",
+    "prompt_tokens": 87626,
+    "completion_tokens": 233,
+    "elapsed_s": 15.0
+   },
+   {
+    "call": 3,
+    "kind": "mission",
+    "at": "2026-09-14T16:23:10+00:00",
+    "prompt_tokens": 88037,
+    "completion_tokens": 198,
+    "elapsed_s": 5.0
+   },
+   {
+    "call": 4,
+    "kind": "mission",
+    "at": "2026-09-14T16:23:43+00:00",
+    "prompt_tokens": 95651,
+    "completion_tokens": 952,
+    "elapsed_s": 33.0
+   }
+  ],
+  "served_gen_tokens": 3894,
+  "served_prompt_tokens": 358352,
+  "served_finished_stop": 4,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:21:45-16:23:46Z"
+ },
+ {
+  "label": "A-v1.2.0-s1-run5",
+  "base": "http://127.0.0.1:8771",
+  "outcome": "FAIL",
+  "elapsed_s": 220.13,
+  "ended": [
+   "timeout"
+  ],
+  "tools": [
+   []
+  ],
+  "started_at": "2026-09-14T16:24:05+00:00",
+  "finished_at": "2026-09-14T16:27:45+00:00",
+  "ceiling_hit": true,
+  "audit_ref": "20260914T162406-d73169ea.jsonl",
+  "run_dir": "run_20260914T162406-bd4e631f",
+  "orphaned": true,
+  "model_calls": 0,
+  "max_completion_tokens": null,
+  "sum_completion_tokens": null,
+  "max_prompt_tokens": null,
+  "longest_call_s": null,
+  "calls": [],
+  "served_gen_tokens": 9206,
+  "served_prompt_tokens": 87038,
+  "served_finished_stop": 0,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:24:01-16:27:47Z"
+ },
+ {
+  "label": "A-v1.2.0-s2-run1",
+  "base": "http://127.0.0.1:8771",
+  "outcome": "PASS",
+  "elapsed_s": 144.1,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:49:29+00:00",
+  "finished_at": "2026-09-14T16:51:53+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T164931-e84367ba.jsonl",
+  "run_dir": "run_20260914T164931-946d2f45",
+  "orphaned": false,
+  "model_calls": 2,
+  "max_completion_tokens": 3227,
+  "sum_completion_tokens": 3330,
+  "max_prompt_tokens": 108459,
+  "longest_call_s": 113.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:51:24+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 3227,
+    "elapsed_s": 113.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:51:51+00:00",
+    "prompt_tokens": 108459,
+    "completion_tokens": 103,
+    "elapsed_s": 27.0
+   }
+  ],
+  "served_gen_tokens": 3330,
+  "served_prompt_tokens": 195497,
+  "served_finished_stop": 2,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:49:28-16:51:53Z"
+ },
+ {
+  "label": "A-v1.2.0-s2-run2",
+  "base": "http://127.0.0.1:8771",
+  "outcome": "PASS",
+  "elapsed_s": 76.07,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:52:03+00:00",
+  "finished_at": "2026-09-14T16:53:19+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T165204-6bf23b72.jsonl",
+  "run_dir": "run_20260914T165204-85f53edb",
+  "orphaned": false,
+  "model_calls": 2,
+  "max_completion_tokens": 1813,
+  "sum_completion_tokens": 1928,
+  "max_prompt_tokens": 108814,
+  "longest_call_s": 44.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:52:48+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 1813,
+    "elapsed_s": 44.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:53:15+00:00",
+    "prompt_tokens": 108814,
+    "completion_tokens": 115,
+    "elapsed_s": 27.0
+   }
+  ],
+  "served_gen_tokens": 1928,
+  "served_prompt_tokens": 195852,
+  "served_finished_stop": 2,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:52:03-16:53:19Z"
+ },
+ {
+  "label": "A-v1.2.0-s2-run3",
+  "base": "http://127.0.0.1:8771",
+  "outcome": "PASS",
+  "elapsed_s": 80.07,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:53:32+00:00",
+  "finished_at": "2026-09-14T16:54:52+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T165333-cbb293ef.jsonl",
+  "run_dir": "run_20260914T165333-a1e2c33f",
+  "orphaned": false,
+  "model_calls": 2,
+  "max_completion_tokens": 1955,
+  "sum_completion_tokens": 2077,
+  "max_prompt_tokens": 108884,
+  "longest_call_s": 48.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:54:21+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 1955,
+    "elapsed_s": 48.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:54:48+00:00",
+    "prompt_tokens": 108884,
+    "completion_tokens": 122,
+    "elapsed_s": 27.0
+   }
+  ],
+  "served_gen_tokens": 2077,
+  "served_prompt_tokens": 195922,
+  "served_finished_stop": 2,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:53:29-16:54:54Z"
+ },
+ {
+  "label": "B-v1.4.0-s1-run1",
+  "base": "http://127.0.0.1:8772",
+  "outcome": "PASS",
+  "elapsed_s": 220.13,
+  "ended": [
+   "timeout"
+  ],
+  "tools": [
+   [
+    "run_code",
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:31:18+00:00",
+  "finished_at": "2026-09-14T16:34:58+00:00",
+  "ceiling_hit": true,
+  "audit_ref": "20260914T163120-3dd9e3a6.jsonl",
+  "run_dir": "run_20260914T163120-01e8b667",
+  "orphaned": false,
+  "model_calls": 7,
+  "max_completion_tokens": 6490,
+  "sum_completion_tokens": 11273,
+  "max_prompt_tokens": 89150,
+  "longest_call_s": 160.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:34:00+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 6490,
+    "elapsed_s": 160.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:34:32+00:00",
+    "prompt_tokens": 87708,
+    "completion_tokens": 937,
+    "elapsed_s": 32.0
+   },
+   {
+    "call": 3,
+    "kind": "mission",
+    "at": "2026-09-14T16:34:44+00:00",
+    "prompt_tokens": 87793,
+    "completion_tokens": 467,
+    "elapsed_s": 12.0
+   },
+   {
+    "call": 4,
+    "kind": "mission",
+    "at": "2026-09-14T16:35:10+00:00",
+    "prompt_tokens": 88455,
+    "completion_tokens": 789,
+    "elapsed_s": 26.0
+   },
+   {
+    "call": 5,
+    "kind": "mission",
+    "at": "2026-09-14T16:36:11+00:00",
+    "prompt_tokens": 88540,
+    "completion_tokens": 2327,
+    "elapsed_s": 61.0
+   },
+   {
+    "call": 6,
+    "kind": "mission",
+    "at": "2026-09-14T16:36:17+00:00",
+    "prompt_tokens": 88625,
+    "completion_tokens": 209,
+    "elapsed_s": 6.0
+   },
+   {
+    "call": 7,
+    "kind": "mission",
+    "at": "2026-09-14T16:36:25+00:00",
+    "prompt_tokens": 89150,
+    "completion_tokens": 54,
+    "elapsed_s": 8.0
+   }
+  ],
+  "served_gen_tokens": 17197,
+  "served_prompt_tokens": 350994,
+  "served_finished_stop": 3,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:31:18-16:34:59Z"
+ },
+ {
+  "label": "B-v1.4.0-s1-run2",
+  "base": "http://127.0.0.1:8772",
+  "outcome": "PASS",
+  "elapsed_s": 80.07,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:35:12+00:00",
+  "finished_at": "2026-09-14T16:36:32+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T163513-3501a148.jsonl",
+  "run_dir": "run_20260914T163513-69daa803",
+  "orphaned": false,
+  "model_calls": 2,
+  "max_completion_tokens": 2018,
+  "sum_completion_tokens": 2635,
+  "max_prompt_tokens": 87569,
+  "longest_call_s": 61.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:35:30+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 617,
+    "elapsed_s": 17.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:36:31+00:00",
+    "prompt_tokens": 87569,
+    "completion_tokens": 2018,
+    "elapsed_s": 61.0
+   }
+  ],
+  "served_gen_tokens": 8548,
+  "served_prompt_tokens": 440922,
+  "served_finished_stop": 6,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:35:09-16:36:35Z"
+ },
+ {
+  "label": "B-v1.4.0-s1-run3",
+  "base": "http://127.0.0.1:8772",
+  "outcome": "PASS",
+  "elapsed_s": 68.07,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   [
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:36:41+00:00",
+  "finished_at": "2026-09-14T16:37:49+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T163642-e3b21d0b.jsonl",
+  "run_dir": "run_20260914T163642-15d4a7be",
+  "orphaned": false,
+  "model_calls": 3,
+  "max_completion_tokens": 1529,
+  "sum_completion_tokens": 1960,
+  "max_prompt_tokens": 96173,
+  "longest_call_s": 39.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:37:21+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 1529,
+    "elapsed_s": 39.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:37:30+00:00",
+    "prompt_tokens": 87619,
+    "completion_tokens": 335,
+    "elapsed_s": 9.0
+   },
+   {
+    "call": 3,
+    "kind": "mission",
+    "at": "2026-09-14T16:37:47+00:00",
+    "prompt_tokens": 96173,
+    "completion_tokens": 96,
+    "elapsed_s": 17.0
+   }
+  ],
+  "served_gen_tokens": 4548,
+  "served_prompt_tokens": 270830,
+  "served_finished_stop": 3,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:36:40-16:37:50Z"
+ },
+ {
+  "label": "B-v1.4.0-s1-run4",
+  "base": "http://127.0.0.1:8772",
+  "outcome": "FAIL",
+  "elapsed_s": 132.09,
+  "ended": [
+   "finished"
+  ],
+  "tools": [
+   []
+  ],
+  "started_at": "2026-09-14T16:38:10+00:00",
+  "finished_at": "2026-09-14T16:40:22+00:00",
+  "ceiling_hit": false,
+  "audit_ref": "20260914T163810-6b33b4c3.jsonl",
+  "run_dir": "run_20260914T163811-1bdd0100",
+  "orphaned": false,
+  "model_calls": 1,
+  "max_completion_tokens": 5169,
+  "sum_completion_tokens": 5169,
+  "max_prompt_tokens": 87038,
+  "longest_call_s": 128.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:40:19+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 5169,
+    "elapsed_s": 128.0
+   }
+  ],
+  "served_gen_tokens": 7346,
+  "served_prompt_tokens": 87038,
+  "served_finished_stop": 1,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:38:10-16:40:26Z"
+ },
+ {
+  "label": "B-v1.4.0-s1-run5",
+  "base": "http://127.0.0.1:8772",
+  "outcome": "PASS",
+  "elapsed_s": 220.15,
+  "ended": [
+   "timeout"
+  ],
+  "tools": [
+   [
+    "run_code",
+    "run_code"
+   ]
+  ],
+  "started_at": "2026-09-14T16:40:43+00:00",
+  "finished_at": "2026-09-14T16:44:23+00:00",
+  "ceiling_hit": true,
+  "audit_ref": "20260914T164044-e6a95e1b.jsonl",
+  "run_dir": "run_20260914T164044-ca6bb282",
+  "orphaned": false,
+  "model_calls": 3,
+  "max_completion_tokens": 5860,
+  "sum_completion_tokens": 6242,
+  "max_prompt_tokens": 90229,
+  "longest_call_s": 221.0,
+  "calls": [
+   {
+    "call": 1,
+    "kind": "mission",
+    "at": "2026-09-14T16:43:07+00:00",
+    "prompt_tokens": 87038,
+    "completion_tokens": 5860,
+    "elapsed_s": 143.0
+   },
+   {
+    "call": 2,
+    "kind": "mission",
+    "at": "2026-09-14T16:43:27+00:00",
+    "prompt_tokens": 90229,
+    "completion_tokens": 382,
+    "elapsed_s": 20.0
+   },
+   {
+    "call": 3,
+    "kind": "mission",
+    "at": "2026-09-14T16:47:08+00:00",
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "elapsed_s": 221.0
+   }
+  ],
+  "served_gen_tokens": 8183,
+  "served_prompt_tokens": 277055,
+  "served_finished_stop": 2,
+  "served_finished_length": 0,
+  "served_finished_abort": 0,
+  "served_finished_error": 0,
+  "served_window": "16:40:41-16:44:27Z"
+ }
+]
