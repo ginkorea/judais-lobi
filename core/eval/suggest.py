@@ -112,8 +112,8 @@ __all__ = [
     "SKILL_DEPTH", "SOURCES", "TOOL_LOG", "UUID_FORMAT",
     "Draft", "Evidence", "Receipt", "Suggestion", "SuggestRefused",
     "add_parser", "from_args", "from_observations", "from_schemas",
-    "kind_of", "read_receipts", "read_schemas", "skill_directory_above",
-    "suggest",
+    "kind_of", "page_check_stood_down", "read_receipts", "read_schemas",
+    "skill_directory_above", "suggest",
 ]
 
 #: The two sources, and the words a line is marked with.  Closed, because
@@ -153,6 +153,23 @@ MIN_RECEIPTS = 2
 #: half the receipts of two different tools and is not a join key; an asset
 #: id is very nearly one value per receipt.  Distinct values over
 #: observations, and the floor is stated rather than tuned.
+#:
+#: **Both of its errors, named.**  It is a proxy for identity and it is
+#: wrong in both directions, so neither is left for a reader to discover:
+#:
+#: * it MISSES the design's own worked example.  ``job_id`` holding
+#:   ``"jl-1"`` in two receipts of two tools is a real join and one
+#:   distinct value, so ``len(seen) >= 2`` suppresses it and **nothing is
+#:   drafted**.  A corpus of one job is a corpus that cannot tell an
+#:   identity from a constant, and inventing the line anyway would be this
+#:   module guessing where it promised to count;
+#: * it ADMITS a varied status.  Ten distinct dispatch states shared across
+#:   two tools pass this floor and draft as an identifier candidate. High
+#:   cardinality is the *converse* of the status argument, not a proof of
+#:   identity — nothing in a corpus can supply that proof, which is the
+#:   whole reason the page is reviewed. The comment prints the distinct
+#:   count and the observation count beside every such line, so the reader
+#:   pruning it is looking at the same two numbers this floor looked at.
 DISTINCT_SHARE = 0.5
 
 #: How far up from an ``--out`` path a ``SKILL.md`` is looked for.  Bounded
@@ -183,6 +200,35 @@ HEADER: Tuple[str, ...] = (
 
 class SuggestRefused(RuntimeError):
     """A source cannot be read, or an output path must not be written."""
+
+
+# ── keeping a comment on its own line ────────────────────────────────────────
+
+def _comment_safe(text: Any) -> str:
+    """One fragment of a provenance comment, guaranteed to stay on its line.
+
+    **This is a correctness owner, not a cosmetic one.**  Every fragment of
+    a comment comes out of recorded data — a tool name off ``tools.jsonl``,
+    a key path off a payload, a value a server returned — and a JSON key is
+    allowed to contain a newline.  One unescaped newline splits the comment
+    and everything after it is parsed as YAML, which is how this generator
+    could print a page that does not load while every candidate in it had
+    passed :func:`~core.runtime.declarations.read_identifiers`: a key
+    :func:`_only_declarable` had already dropped still reached the page
+    through *another* line's comment.
+
+    ``json.dumps`` without its quotes: ordinary names come back byte-for-
+    byte (``mcp.runs_get`` is ``mcp.runs_get``) and every line break, tab
+    and control character comes back as an escape.  One behaviour and no
+    branch, because a function that escaped *sometimes* would be a function
+    nobody could reason about at the one call site that mattered.
+
+    It is the belt.  :meth:`Draft.problems` is the braces: it re-reads the
+    rendered page and compares it to the blocks it was built from, so a
+    fragment this function ever fails to protect is an error rather than a
+    page.
+    """
+    return json.dumps(str(text))[1:-1]
 
 
 # ── where a draft may not go ─────────────────────────────────────────────────
@@ -238,6 +284,14 @@ def kind_of(path: str) -> str:
     reproduces the design's own worked examples — ``job_id`` → ``job``,
     ``corpus_asset_id`` → ``asset``, ``result_ref`` → ``result``,
     ``source_assets[]`` → ``asset`` — which is the whole argument for it.
+
+    The last of those is a **guess this generator never gets to make on its
+    own**: a bare ``source_assets[]`` carries no ``_id``/``_ref`` suffix and
+    no ``format: uuid``, so :func:`_handle_shaped` never nominates it and it
+    reaches no page.  It is here because the rule has to be right for the
+    key a plane really publishes — ``source_assets[].asset_id`` — and
+    because a reader comparing this list to the design should not go looking
+    for a line that cannot appear.
 
     It is *not* validated here.  A kind this spelling cannot carry is
     dropped by :func:`~core.runtime.declarations.read_identifiers`, which is
@@ -533,7 +587,8 @@ def from_schemas(schemas: Mapping[str, Any]) -> List[Suggestion]:
             enums.setdefault(_field_of(path), []).append((tool, len(values)))
     for name in sorted(enums):
         seen = sorted(enums[name])
-        where = ", ".join(f"{tool} ({size})" for tool, size in seen)
+        where = ", ".join(f"{_comment_safe(tool)} ({size})"
+                          for tool, size in seen)
         out.append(Suggestion(
             block=CARDINALITY, tool="", key=name, value="one",
             evidence=(Evidence(SCHEMA, len(seen),
@@ -569,7 +624,9 @@ def from_schemas(schemas: Mapping[str, Any]) -> List[Suggestion]:
             out.append(Suggestion(
                 block=IDENTIFIER, tool=tool, key=path, value=kind_of(path),
                 evidence=(Evidence(
-                    SCHEMA, 1, f"{why}, in the outputSchema of {tool}"),)))
+                    SCHEMA, 1,
+                    f"{why}, in the outputSchema of "
+                    f"{_comment_safe(tool)}"),)))
     return out
 
 
@@ -674,8 +731,10 @@ def from_observations(receipts: Sequence[Receipt], *,
             block=IDENTIFIER, tool=tool, key=path, value=kind_of(path),
             evidence=(Evidence(
                 OBSERVED, sum(seen.values()),
-                f"{text!r} seen under {tool}.{path} and "
-                f"{other_tool}.{other_path}; {len(seen)} distinct value(s) "
+                f"'{_comment_safe(text)}' seen under "
+                f"{_comment_safe(tool)}.{_comment_safe(path)} and "
+                f"{_comment_safe(other_tool)}.{_comment_safe(other_path)}; "
+                f"{len(seen)} distinct value(s) "
                 f"in {sum(seen.values())} observation(s) (induced)"),)))
     # `observation(s)` and not `receipt(s)`: one receipt carrying a list
     # holds this path once per element, and a count that called those three
@@ -764,6 +823,22 @@ class Draft:
         validator written here: a generator that checked its own work with
         its own rules would pass every draft it could produce, including
         the ones a manifest will refuse.
+
+        **And then asked of the PAGE.**  The blocks are what this object
+        holds; the page is what a person pastes, and the two are not the
+        same artefact.  A comment fragment that broke its own line used to
+        make the second un-loadable while the first passed every door —
+        every candidate in it had gone through ``read_identifiers``, and a
+        key :func:`_only_declarable` had dropped still reached the page
+        inside *another* line's comment.  So the rendered bytes are read
+        back and compared to the mapping they were built from, which is the
+        only check that can see that class of fault at all.
+
+        Stands down, and says so through :func:`page_check_stood_down`,
+        where pyyaml is not installed: it is an optional extra here, and a
+        generator that refused to draft because it could not re-read its
+        own page would be worse than one that drafts and says what it could
+        not verify.
         """
         # Imported here and not at the top: `core.runtime.cognition` pulls
         # the kernel in, and a harness subcommand that reads two files
@@ -780,6 +855,25 @@ class Draft:
             ToolsBlock.from_mapping(blocks["tools"])
         except DeclarationError as exc:
             found.append(f"the `tools:` block: {exc}")
+
+        yaml = _yaml()
+        if yaml is None:
+            return tuple(found)
+        page = self.to_yaml()
+        try:
+            reread = yaml.safe_load(page)
+        except Exception as exc:                  # noqa: BLE001 - any parse
+            # `Exception` and not `yaml.YAMLError`: the point of this check
+            # is the fault nobody predicted, and a narrow `except` here
+            # would be this guard deciding in advance which of those it is
+            # willing to notice.
+            found.append(f"the rendered page is not YAML: {exc}")
+            return tuple(found)
+        if _as_blocks(reread) != blocks:
+            found.append(
+                f"the rendered page parses back to something other than the "
+                f"blocks it was built from: {_as_blocks(reread)!r} where "
+                f"{blocks!r} was drafted")
         return tuple(found)
 
     # ── rendering ───────────────────────────────────────────────────────
@@ -858,6 +952,42 @@ def _scalar(value: Any) -> str:
     return json.dumps(str(value))
 
 
+def _yaml():
+    """pyyaml, or ``None``.  The optional extra, asked for the same way
+    :func:`core.runtime.skills._require_yaml` asks — except that nothing
+    here *needs* it, so ``None`` is an answer and not a refusal."""
+    try:
+        import yaml
+    except ImportError:                           # pragma: no cover - extra
+        return None
+    return yaml
+
+
+def page_check_stood_down() -> bool:
+    """Whether :meth:`Draft.problems` could not re-read the page it drew.
+
+    A separate question from *are there problems*, and asked separately so
+    that "no problems" and "no problems I was able to look for" are never
+    the same answer on a console.
+    """
+    return _yaml() is None
+
+
+def _as_blocks(loaded: Any) -> Dict[str, Any]:
+    """A parsed page as the mapping :meth:`Draft.as_mapping` would have
+    built, so the two can be compared at all.
+
+    One normalisation, and it earns its place: a block whose body is a
+    comment (``cognition:`` with nothing suggested under it) parses as
+    ``None`` and is built here as ``{}``.  Both loaders take both — that is
+    checked — so the difference is a fact about pyyaml and not about the
+    draft, and a comparison that called it a fault would fire on every
+    empty page.
+    """
+    body = loaded if isinstance(loaded, Mapping) else {}
+    return {name: dict(body.get(name) or {}) for name in ("cognition", "tools")}
+
+
 # ── putting the two halves together ──────────────────────────────────────────
 
 def suggest(*, schemas: Optional[Mapping[str, Any]] = None,
@@ -888,7 +1018,8 @@ def suggest(*, schemas: Optional[Mapping[str, Any]] = None,
         if item.value != held.value:
             extra = tuple(
                 Evidence(one.source, one.count,
-                         f"would have said {item.value!r} instead — {one.detail}")
+                         f"would have said '{_comment_safe(item.value)}' "
+                         f"instead — {one.detail}")
                 for one in item.evidence)
         merged[item.slot] = Suggestion(
             block=held.block, tool=held.tool, key=held.key, value=held.value,
@@ -995,6 +1126,13 @@ def from_args(args: argparse.Namespace) -> int:
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
+    if page_check_stood_down():
+        # Said out loud, because "no problems" and "no problems I could
+        # look for" must never read the same on a console.
+        print("suggest-pack: pyyaml is not installed, so the rendered page "
+              "could not be read back and checked against the blocks it was "
+              "drawn from; the two loaders passed it. "
+              "pip install 'judais-lobi[mission]'", file=sys.stderr)
 
     text = draft.to_json() if args.json else draft.to_yaml()
     print(text)

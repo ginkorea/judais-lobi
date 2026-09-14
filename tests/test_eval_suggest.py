@@ -142,6 +142,19 @@ def blocks_of(text: str) -> dict:
     return loaded
 
 
+def _lines_starting(prefix: str, page: str) -> list:
+    """Every line of *page* that begins with *prefix* once indented.
+
+    The escaped form of a hostile fragment still CONTAINS its text — a
+    newline becomes a literal ``\\n`` inside one comment — so "the string
+    is absent" is the wrong assertion and would fail on a page that is
+    perfectly safe.  What must never happen is that the fragment starts a
+    line, because a line is what YAML parses.
+    """
+    return [line for line in page.splitlines()
+            if line.strip().startswith(prefix)]
+
+
 # ── the draft loads, which is the whole promise ──────────────────────────────
 
 class TestTheDraftLoads:
@@ -185,6 +198,98 @@ class TestTheDraftLoads:
             Receipt("b", (("data.2024", "led.b02"),))])
         assert not drafted.of(IDENTIFIER)
         assert not drafted.problems()
+
+    def test_a_newline_in_a_payload_KEY_cannot_split_the_page(self):
+        """The fault this guard was written for, and it came out of ordinary
+        recorded data rather than anybody hand-editing anything.
+
+        A JSON key may contain a newline. The key itself is dropped by
+        `_only_declarable` — no declaration can name it — but it still
+        reached the page inside the OTHER line's provenance comment, and an
+        unescaped newline there ends the comment and leaves the rest of it
+        parsing as YAML. Every door passed; the page did not load.
+        """
+        drafted = suggest(receipts=[
+            Receipt("alpha", tuple(mod._leaves(
+                {"data": {"x\n  evil: yes": "shared-1",
+                          "job_id": "shared-1"}}))),
+            Receipt("beta", tuple(mod._leaves(
+                {"data": {"job_id": "shared-1"}}))),
+            Receipt("alpha", tuple(mod._leaves(
+                {"data": {"x\n  evil: yes": "shared-2",
+                          "job_id": "shared-2"}}))),
+            Receipt("beta", tuple(mod._leaves(
+                {"data": {"job_id": "shared-2"}}))),
+        ])
+        assert drafted.of(IDENTIFIER), "nothing drafted, so nothing proved"
+        assert drafted.problems() == ()
+        assert blocks_of(drafted.to_yaml()) == drafted.as_mapping()
+        assert not _lines_starting("evil:", drafted.to_yaml()), (
+            "the key broke out of its comment and became a YAML line")
+
+    def test_a_newline_in_a_TOOL_name_cannot_split_the_page_either(self):
+        """A tool name is recorded data too — `tools.jsonl` carries whatever
+        the bus dispatched — and it is rendered into a `- name:` line and
+        into every comment beneath it."""
+        evil = "alpha\n  evil: yes"
+        drafted = suggest(receipts=[
+            Receipt(evil, (("data.job_id", "j-1"),)),
+            Receipt("beta", (("data.job_id", "j-1"),)),
+            Receipt(evil, (("data.job_id", "j-2"),)),
+            Receipt("beta", (("data.job_id", "j-2"),)),
+        ])
+        assert drafted.of(IDENTIFIER), "nothing drafted, so nothing proved"
+        assert drafted.problems() == ()
+        assert blocks_of(drafted.to_yaml()) == drafted.as_mapping()
+        assert not _lines_starting("evil:", drafted.to_yaml())
+
+    def test_the_page_check_catches_a_comment_that_broke_its_own_line(self):
+        """The braces behind `_comment_safe`'s belt.
+
+        Built through `Evidence` directly, because that is the one way a
+        raw newline can still reach a comment: every fragment the two
+        halves assemble goes through the escaping owner, and this asserts
+        what happens if one ever does not. The page parses — into a key
+        nobody drafted — so ONLY a comparison against the blocks can see
+        it, which is why the check is a comparison and not a parse.
+        """
+        drafted = Draft(suggestions=(Suggestion(
+            block=CARDINALITY, tool="", key="state", value="one",
+            evidence=(Evidence(SCHEMA, 1, "x\n  evil: yes"),)),))
+        problems = drafted.problems()
+        assert problems, "a page carrying a key nobody drafted passed"
+        assert "parses back to something other than" in problems[0]
+        assert "evil" in problems[0]
+
+    def test_the_page_check_catches_a_page_that_does_not_parse_at_all(self):
+        """The other half of the same guard, and a different branch: a
+        fragment that leaves the page unparseable rather than differently
+        parsed. A tab cannot start a YAML token."""
+        drafted = Draft(suggestions=(Suggestion(
+            block=CARDINALITY, tool="", key="state", value="one",
+            evidence=(Evidence(SCHEMA, 1, "x\n\tevil: yes"),)),))
+        problems = drafted.problems()
+        assert problems, "an unparseable page passed"
+        assert "is not YAML" in problems[0]
+
+    def test_the_page_is_checked_and_not_only_the_blocks(self):
+        """The blocks are what the object holds; the page is what a person
+        pastes, and only re-reading the page can see a comment that broke
+        its own line."""
+        drafted = Draft(suggestions=(Suggestion(
+            block=CARDINALITY, tool="", key="state", value="one",
+            evidence=(Evidence(SCHEMA, 1, "enum of 2"),)),))
+        assert drafted.problems() == ()
+        assert mod._as_blocks(
+            yaml.safe_load(drafted.to_yaml())) == drafted.as_mapping()
+
+    def test_an_empty_page_parses_back_to_the_empty_blocks(self):
+        """A block whose body is only a comment parses as `None` and is
+        built as `{}`. Both loaders take both, so the normalisation in
+        `_as_blocks` is a fact about pyyaml and not a fault in the draft —
+        and without it the check would fire on every empty page."""
+        assert Draft().problems() == ()
+        assert mod._as_blocks(None) == Draft().as_mapping()
 
     def test_a_key_spelled_on_stays_a_string(self):
         """pyyaml is a YAML 1.1 parser and `on:` is a boolean in it. Every
@@ -640,6 +745,40 @@ class TestTheSubcommand:
         assert report["header"][0] == DRAFT_SENTENCE
         assert all(entry["count"] >= 1 for entry in report["suggestions"])
         ToolsBlock.from_mapping(report["blocks"]["tools"])
+
+    def test_a_draft_that_fails_the_checks_is_a_refusal_and_not_a_page(
+            self, tmp_path, capsys, monkeypatch):
+        """The branch that exists so nobody is handed lines their manifest
+        will reject.
+
+        Reached through a stubbed generator, and that is the honest way to
+        reach it: with the escaping owner and the page check both in place,
+        no INPUT can produce a failing draft any more — which is the point,
+        and which is also why the branch needs a test that does not depend
+        on one existing.
+        """
+        bad = Draft(suggestions=(Suggestion(
+            block=IDENTIFIER, tool="t", key="data.x", value="jo:b",
+            evidence=(Evidence(SCHEMA, 1, "made up"),)),), tools_read=1)
+        monkeypatch.setattr(mod, "suggest", lambda **kwargs: bad)
+        code = eval_main(["suggest-pack", "--schemas", str(saved(tmp_path))])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "does not load" in captured.err and "jo:b" in captured.err
+        assert DRAFT_SENTENCE not in captured.out, (
+            "a draft the checks refused was printed anyway")
+
+    def test_the_page_check_says_when_it_stood_down(self, tmp_path, capsys,
+                                                    monkeypatch):
+        """pyyaml is an optional extra. Without it the page cannot be read
+        back, and "no problems" and "no problems I could look for" must not
+        read the same on a console."""
+        monkeypatch.setattr(mod, "_yaml", lambda: None)
+        code = eval_main(["suggest-pack", "--schemas", str(saved(tmp_path))])
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "pyyaml" in captured.err and "could not be read back" in captured.err
+        assert DRAFT_SENTENCE in captured.out
 
     def test_sources_that_hold_nothing_are_said_so_and_exit_two(self,
                                                                 tmp_path,

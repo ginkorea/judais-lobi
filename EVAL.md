@@ -1961,16 +1961,43 @@ the same bounded walk `context` uses, and the payload read is the dispatch's
 `--min-receipts` (default 2) is the floor under the induced half. One receipt
 holding one value says nothing about a second receipt.
 
+### What the identifier heuristic gets wrong, in both directions
+
+The variety floor is a **proxy** for identity, and a proxy is wrong both ways.
+Neither direction is left for a reader to find out on their own:
+
+* **it misses a real join key that a small corpus only saw once.** The design's
+  own worked example — `job_id` holding `jl-1` in two receipts of two tools —
+  is a genuine join and *one distinct value*, so the floor suppresses it and
+  **nothing is drafted for it**. A corpus about one job cannot tell an identity
+  from a constant, and drafting the line anyway would be the generator guessing
+  where it promised to count. Record a second job and it appears;
+* **it admits a status that happens to be varied.** Ten distinct dispatch
+  states shared across two tools clear the floor and draft as an identifier
+  candidate. High cardinality is the *converse* of the status argument, not a
+  proof of identity — and no corpus can supply that proof, which is precisely
+  why the page is reviewed rather than loaded. Every such line prints its
+  distinct count and its observation count, so the reader pruning it is looking
+  at the same two numbers the floor looked at.
+
 ### Two promises it keeps
 
-**The draft loads.** The rendered YAML is fed — in the tests, every time — to
-the two real readers, `RulePack.from_mapping` and `ToolsBlock.from_mapping`,
-and not to a validator written beside the generator, which would only ever
-agree with it. Candidates are filtered through `read_identifiers`, the same
-reader the wire and the manifest go through, so a payload key a declaration
-cannot name (`2024`, `a b`) is dropped rather than printed. If a draft ever
-fails those doors the subcommand prints the refusal to stderr and exits 1
-rather than handing somebody lines to paste.
+**The draft loads.** Two checks, because the draft has two artefacts. The
+*blocks* go to the two real readers, `RulePack.from_mapping` and
+`ToolsBlock.from_mapping` — not to a validator written beside the generator,
+which would only ever agree with it — and candidates are filtered through
+`read_identifiers`, the same reader the wire and the manifest go through, so a
+payload key a declaration cannot name (`2024`, `a b`) is dropped rather than
+printed. Then the *page* is read back and compared to the blocks it was drawn
+from, because the page is what a person pastes and the two are not the same
+artefact: a provenance comment carries tool names, key paths and values
+straight out of recorded data, a JSON key is allowed to contain a newline, and
+one unescaped newline would split a comment and leave the rest of it parsing as
+YAML. Every comment fragment goes through one escaping owner and the page check
+is the proof that it did. If either check ever fails the subcommand prints the
+refusal to stderr and exits 1 rather than handing somebody lines to paste.
+(pyyaml is an optional extra here; without it the page check stands down and
+says so on stderr, rather than the run reading as verified.)
 
 **It never writes into a skill.** An `--out` path with a `SKILL.md` above it
 is refused by name, before anything is read. A draft written beside a manifest

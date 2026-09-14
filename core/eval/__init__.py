@@ -10,7 +10,9 @@ is ``--protocol native`` a better default, should ``reading.py`` become a
 grounding tier — had no way to be answered except by somebody's memory of a
 demo.
 
-The package is six modules and one rule:
+The package is twelve modules and one rule (it was six when this paragraph
+was written, and the count is kept honest rather than left as the number
+somebody remembers):
 
 * :mod:`core.eval.suite` — what a mission is, what a flag is, how a suite is
   refused for being ungradeable, and the dated ``RUBRIC_CHANGES`` ledger.
