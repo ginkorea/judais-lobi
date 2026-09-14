@@ -1487,6 +1487,31 @@ def _tool_groups(names: Sequence[str]) -> Dict[str, str]:
     spelling that stands for a group is the first of its members in that
     same order.  The result is a function of which names were declared and
     of nothing else.
+
+    **A group POOLS, and two of its members need not match each other.**
+    The scan joins a name to the group of the first *seen* name it matches,
+    so a family joined through a common member ends up in one group:
+    ``alpha.runs_get``, ``runs_get`` and ``zeta.runs_get`` are one group
+    named ``alpha.runs_get``, although the two namespaced spellings are
+    different tools to :func:`~core.tools.descriptors.same_tool` and to
+    every lookup built on it.  That is the transitive closure of a relation
+    that is not transitive, and it is the honest reading of a *manifest*:
+    somebody who declared the bare name meant it to cover what they also
+    declared under a namespace, and a merge is the one moment all three
+    spellings are in hand.
+
+    What it costs is worth writing down, because it is not visible from the
+    call site: **the kept spelling may be unreachable by some of its own
+    members.**  A run offering ``zeta.runs_get`` and nothing else looks the
+    merged block up by that name, and
+    :meth:`core.runtime.declarations.ToolsBlock.entry_for` matches on
+    ``same_tool`` against the kept ``alpha.runs_get``, which does not match
+    — so declarations that were pooled into that entry bind nothing for it.
+    The alternative (a group per matching pair) is not a partition at all,
+    and the one after that (keep every spelling separately) puts argument
+    order back into the record.  A platform that hits it has declared one
+    tool under two namespaces plus its bare name, and the answer is to name
+    the tool as the run offers it — which is what PLATFORMS.md says.
     """
     ordered = sorted({str(name) for name in names},
                      key=lambda name: (tool_key(name), name))

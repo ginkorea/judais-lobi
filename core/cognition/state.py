@@ -756,17 +756,21 @@ class CognitiveState:
           and the log would name an entity its own events cannot explain.
 
           A consequence worth meeting here rather than in a debugger: a
-          **handle-only receipt cannot be linked**.  The shadow's harvest
-          drops string leaves, so a receipt whose payload is nothing but
-          identifiers (``narrative_discovery`` returning ``job_id=jl-731`` —
-          the design's own motivating first half of "the handle is the join
-          key") harvests no triple, and this door refuses it for exactly the
-          reason above.  The answer is not a synthetic smuggled triple and
-          not a loosened door; it is the attachment layer's declared-scalar
-          sink — harvest the *declared identifier fields themselves* as
-          facts, which gives the receipt something true to hold and this
-          refusal nothing to refuse.  Until that lands, OWED cannot say
-          "handle held", and that is a known bound, not a bug.
+          **handle-only receipt has to hold a fact before it can be
+          linked**.  The shadow's harvest drops string leaves, so a receipt
+          whose payload is nothing but identifiers
+          (``narrative_discovery`` returning ``job_id=jl-731`` — the
+          design's own motivating first half of "the handle is the join
+          key") would harvest no triple at all and this door would refuse
+          it for exactly the reason above.  The answer was never a
+          synthetic smuggled triple or a loosened door, and it has landed
+          where it belonged: :meth:`core.runtime.cognition
+          .ShadowCognition.receipt` asserts a **declared identifier field
+          as a fact on the receipt** — the narrow exception to the string
+          bound, licensed by the platform's declaration that this string is
+          an identity — and then links.  So the receipt holds something
+          true, this refusal has nothing to refuse, and the link's first
+          piece of evidence is that very fact.
         * A subject-spelled ``entity``.  This is the namespace wall, and it
           does two jobs at once: it keeps a receipt from being linked under a
           second spelling, and it makes "a projection never re-projects"
@@ -1743,6 +1747,38 @@ class CognitiveState:
         if held is None:
             raise UnknownId(f"no link {lid!r}")
         return held
+
+    def link_history(self, lid: str) -> Tuple[Link, ...]:
+        """Every revision of one link, oldest first, the live one last.
+
+        :meth:`history`'s sibling, and it exists for the reason that one
+        does: a link is revised — its evidence unions and its authority
+        rises when the same pair is stated again — and
+        :meth:`digest` renders those revisions under ``history``.  A reader
+        of the digest could see that a link had been upgraded and had no
+        call to ask *what it was before*, which is a fact the store holds
+        and would not hand over.
+
+        **There is no ``unlink``, and that is a v1 ruling rather than an
+        omission.**  A link licenses one built-in rule over everything the
+        entity ever says, so a wrong one projects every future fact onto a
+        subject nothing is about, forever, and no revision of it can take
+        that back.  What makes the absence liveable is where links come
+        from: v1 makes them **deterministically, from declarations only** —
+        equal value under a key a platform declared to be an identity — so
+        a wrong link is a wrong *declaration*, it is wrong for every
+        receipt rather than at random, and it is fixed in the file that
+        declared it.  The day a model may propose a link (the design
+        reserves the rung; nothing in this release passes a ``MODEL_*``
+        authority to :meth:`link`) is the day retraction has to be
+        answered, and it is answered there with evidence rather than here
+        on a guess.
+        """
+        self.derive()
+        held = self._link_history.get(lid)
+        if held is None:
+            raise UnknownId(f"no link {lid!r}")
+        return tuple(held)
 
     def links_for(self, entity: str) -> Tuple[Link, ...]:
         """Every subject this entity has been claimed to be about.

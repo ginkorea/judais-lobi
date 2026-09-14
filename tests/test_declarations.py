@@ -35,7 +35,7 @@ from core.runtime.declarations import (DECLARATIONS_KEY,
                                        DECLARATIONS_SCHEMA_VERSION, MANIFEST,
                                        WIRE, DeclarationError,
                                        PlaneDeclarations, Produced,
-                                       ToolsBlock)
+                                       ToolsBlock, values_at)
 
 #: The reference shape of a manifest block: a plane-wide handle, one tool
 #: with two identifiers and a two-phase product, one tool with none.
@@ -180,13 +180,52 @@ class TestTheBlockIsReadAllTheWayDownAtTheDoor:
         assert dict(block.entry_for("runs_get").identifiers) == {
             "run_id": "run"}
 
-    def test_a_block_that_passed_the_door_binds_every_entry_it_holds(self):
+    def test_every_entry_is_findable_by_the_name_it_was_written_under(self):
         """The invariant the refusal above exists for, stated as the thing
-        a caller can rely on: every entry of a block this door accepted is
-        findable, so no tool silently loses what was declared about it."""
+        a caller can rely on — and named for what it proves, which is
+        narrower than "binds": an entry is findable **by its own
+        spelling**.  A run offering a *third* spelling that two entries
+        both match is the ambiguity below, and it binds neither."""
         block = ToolsBlock.from_mapping(BLOCK)
         for entry in block.entries:
             assert block.entry_for(entry.name) is entry
+
+    def test_a_name_two_entries_match_binds_neither_and_says_so(self):
+        """The one outcome where declarations vanish although every line
+        of the file was accepted at the door: two entries whose
+        `tool_key`s differ both match a third spelling, and an ambiguous
+        match binds none of them.  Refusing is right; being quiet about it
+        is not."""
+        notes = []
+        block = ToolsBlock.from_mapping({"entries": [
+            {"name": "alpha.runs_get",
+             "identifiers": {"run_id": {"kind": "run"}}},
+            {"name": "zeta.runs_get",
+             "identifiers": {"run_id": {"kind": "job"}}}]})
+        assert block.entry_for("runs_get", notes) is None
+        assert len(notes) == 1
+        assert notes[0].tool == "runs_get"
+        assert "'alpha.runs_get'" in notes[0].detail
+        assert "'zeta.runs_get'" in notes[0].detail
+
+    def test_and_the_note_reaches_the_resolution(self):
+        """`build` passes its own list, so the silence becomes a console
+        line and a record rather than a tool that declares nothing."""
+        plane = PlaneDeclarations.build(
+            wire={"runs_get": BARE},
+            manifest={"entries": [
+                {"name": "alpha.runs_get",
+                 "identifiers": {"run_id": {"kind": "run"}}},
+                {"name": "zeta.runs_get",
+                 "identifiers": {"run_id": {"kind": "job"}}}]})
+        assert [note.tool for note in plane.discrepancies
+                if note.key == "name"] == ["runs_get"]
+
+    def test_an_unambiguous_lookup_notes_nothing(self):
+        notes = []
+        block = ToolsBlock.from_mapping(BLOCK)
+        assert block.entry_for("mcp.runs_get", notes) is not None
+        assert notes == []
 
     def test_a_product_keyed_on_an_identifier_nobody_declared_is_refused(self):
         """A handle nothing names is a hint that can never fire, and the
@@ -458,6 +497,28 @@ class TestTheWireOwnsSemanticsPerVerb:
         assert declaration.produces == ()
         assert declaration.sources["identifiers"] == WIRE
 
+    def test_one_bad_key_makes_the_whole_verb_unusable(self):
+        """And **not** a smaller verb.  The verb readers are partial by
+        construction — they return every entry they understood beside a
+        fault — so half of a server's `x-identifiers` is available to be
+        taken.  Taking it is the worst of the three answers: a plane that
+        mistyped one key would silently NARROW what the manifest
+        correctly declared, under a note that describes a key rather than
+        the loss."""
+        plane = PlaneDeclarations.build(
+            wire={"narrative_discovery": {
+                "type": "object",
+                "properties": {"job_id": {}, "corpus_asset_id": {}},
+                "x-identifiers": {"job_id": {"kind": "job"},
+                                  "corpus_asset_id": 7}}},
+            manifest=BLOCK)
+        declaration = plane.for_tool("narrative_discovery")
+        assert dict(declaration.identifiers) == {
+            "result_ref": "result", "corpus_asset_id": "asset",
+            "job_id": "job"}
+        assert declaration.sources["identifiers"] == MANIFEST
+        assert "outputSchema" in {note.key for note in plane.discrepancies}
+
 
 class TestABareObjectContributesNothingAndRefusesNothing:
     """Eight of one real deployment's adapters declare real shapes and the
@@ -663,3 +724,63 @@ class TestNothingHereCanBeEditedAfterItIsBuilt:
         line = plane.discrepancies[0].sentence()
         assert line.startswith("narrative_discovery · identifiers:")
         assert "\n" not in line
+
+
+class TestWhatAKeyPathPointsAt:
+    """`values_at` is the walker for the grammar this module admits.
+
+    It lives here rather than beside the harvest because the grammar does:
+    a second walker would be free to read a path the door would not have
+    accepted, and the whole value of a declared identifier is that it is
+    exact.  The tests are mostly about what a path does NOT reach — a
+    wrong link is the one mistake in this design that manufactures
+    contradictions out of tools that never disagreed.
+    """
+
+    ENVELOPE = {"data": {"job_id": "jl-731",
+                         "items": [{"id": "a"}, {"id": "b"}]},
+                "meta": {"job_id": "jl-999"},
+                "source_assets": ["led.a41", "led.b02"]}
+
+    def test_a_dotted_path_walks_into_the_object(self):
+        assert values_at(self.ENVELOPE, "data.job_id") == ("jl-731",)
+
+    def test_and_does_not_reach_the_same_name_elsewhere(self):
+        """The whole reason this is not the flat harvester: `data.job_id`
+        is a declaration about one key, and a governed envelope carries
+        the same word in several places."""
+        assert values_at(self.ENVELOPE, "meta.job_id") == ("jl-999",)
+
+    def test_a_bracket_segment_is_every_element_of_the_list(self):
+        assert values_at(self.ENVELOPE, "source_assets[]") \
+            == ("led.a41", "led.b02")
+
+    def test_and_walks_on_from_each_of_them(self):
+        assert values_at(self.ENVELOPE, "data.items[].id") == ("a", "b")
+
+    def test_a_plain_segment_over_a_list_matches_nothing(self):
+        """`source_assets.id` says the payload has an object there, and
+        reading it as "the first element's" would be this walker inventing
+        a declaration nobody wrote."""
+        assert values_at(self.ENVELOPE, "source_assets.id") == ()
+
+    def test_a_bracket_segment_over_a_scalar_matches_nothing(self):
+        assert values_at(self.ENVELOPE, "data[].job_id") == ()
+
+    def test_a_key_the_payload_does_not_carry_matches_nothing(self):
+        assert values_at(self.ENVELOPE, "data.absent") == ()
+
+    def test_a_path_the_grammar_would_refuse_matches_nothing(self):
+        """It can only arrive here from a door that already refused it, so
+        the answer is silence rather than a second refusal message."""
+        assert values_at(self.ENVELOPE, "data..job_id") == ()
+        assert values_at(self.ENVELOPE, "") == ()
+
+    def test_a_payload_that_is_not_a_mapping_matches_nothing(self):
+        assert values_at([{"job_id": "x"}], "job_id") == ()
+
+    def test_the_order_is_the_payload_s_own(self):
+        """Which is what makes a walk over one receipt a function of that
+        receipt's bytes."""
+        assert values_at({"rows": [{"id": "z"}, {"id": "a"}]},
+                         "rows[].id") == ("z", "a")

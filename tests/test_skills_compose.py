@@ -1065,6 +1065,44 @@ class TestThePlaneDeclarationsMerge:
             == "mcp.narrative_discovery"
         assert forwards.tools == backwards.tools
 
+    def test_and_the_sort_is_by_identity_first_and_not_by_the_word(
+            self, tmp_path):
+        """Which half of the sort key decides, made to matter.
+        `Z.runs_get` is lexically first; `runs_get` is first by
+        `(tool_key, name)`, because the identity is compared before the
+        word and `tool_key` lowercases.  The kept spelling is the one a
+        run offering the bare name can still find — which is why
+        PLATFORMS.md names this order rather than "lexically first"."""
+        upper = skill(tmp_path / "a", "first", tools={"entries": [
+            {"name": "Z.runs_get", "establishes": ["verdict"]}]})
+        bare = skill(tmp_path / "b", "second", tools={"entries": [
+            {"name": "runs_get", "establishes": ["state"]}]})
+        composed = compose_manifests([upper, bare])
+        assert composed.tools["entries"][0]["name"] == "runs_get"
+        assert sorted(composed.tools["entries"][0]["establishes"]) \
+            == ["state", "verdict"]
+
+    def test_a_family_joined_through_a_common_member_pools(self, tmp_path):
+        """The transitive closure of a relation that is not transitive:
+        `alpha.runs_get` and `zeta.runs_get` are different tools to every
+        lookup, and the bare `runs_get` matches both, so all three are one
+        entry.  It is the honest reading of a manifest — one author meant
+        one tool — and the cost is that a run offering only `zeta.runs_get`
+        will not find the kept spelling.  Pinned so the next reader meets
+        it here rather than in a deployment."""
+        composed = compose_manifests([
+            skill(tmp_path / "a", "first", tools={"entries": [
+                {"name": "alpha.runs_get", "establishes": ["verdict"]}]}),
+            skill(tmp_path / "b", "second", tools={"entries": [
+                {"name": "runs_get", "establishes": ["state"]}]}),
+            skill(tmp_path / "c", "third", tools={"entries": [
+                {"name": "zeta.runs_get", "establishes": ["withheld"]}]}),
+        ])
+        assert [entry["name"] for entry in composed.tools["entries"]] \
+            == ["alpha.runs_get"]
+        assert sorted(composed.tools["entries"][0]["establishes"]) \
+            == ["state", "verdict", "withheld"]
+
     def test_two_fallback_shapes_for_one_tool_are_a_refusal(self, tmp_path):
         with pytest.raises(SkillManifestError) as exc:
             compose_manifests([

@@ -64,7 +64,7 @@ __all__ = [
     "ESTABLISHES", "IDENTIFIERS", "PRODUCES", "SHAPE", "VERBS", "WIRE_VERBS",
     "MANIFEST", "WIRE", "PROBLEM_SEP",
     "DeclarationError", "Discrepancy", "PlaneDeclarations", "Produced",
-    "ToolDeclaration", "ToolEntry", "ToolsBlock", "thawed",
+    "ToolDeclaration", "ToolEntry", "ToolsBlock", "thawed", "values_at",
 ]
 
 #: The key the ``reasoning.jsonl`` declarations record states its own
@@ -247,6 +247,72 @@ def _closed(raw: Mapping, allowed: Sequence[str], where: str,
             f"{where} says {_spelled(key)}, which this reader has never "
             f"heard of; a `tools:` block may say "
             f"{', '.join(repr(k) for k in allowed)}")
+
+
+# ── what a key path points at ────────────────────────────────────────────────
+
+
+def values_at(payload: Any, path: str) -> Tuple[Any, ...]:
+    """Every value *path* points at inside *payload*, in encounter order.
+
+    The **walker for the grammar this module already owns** (:data:`_PATH`),
+    and it lives here for that reason: a declaration's key is a path, the
+    only module that says what a path may be spelled like is this one, and a
+    second walker elsewhere would be free to disagree with the grammar that
+    admitted the string.  :mod:`core.runtime.cognition` reads identifiers
+    through it; nothing else in the package walks a declared key.
+
+    **Not a harvester, and the difference is the whole reason it is
+    allowed.**  :func:`core.runtime.grounding.harvest_fields` is this
+    framework's one answer to *what fields and figures does this payload
+    hold*, and it flattens: it reports a key by its **name**, wherever in a
+    nested structure it was found.  That is right for a grounding check
+    asking whether a figure is anywhere in the evidence, and it is wrong for
+    a declaration, which says that ``data.job_id`` — and not ``meta.job_id``
+    — is a job's identity.  So this function never asks what a payload
+    holds; it is handed one path, anchored at the root, and answers what is
+    *there*.  A plane whose envelope moved a key is then a declaration that
+    binds nothing (and a discrepancy, at the door) rather than a link made
+    off a same-named key somewhere else, which is the one mistake in this
+    design that manufactures contradictions.
+
+    The grammar, applied:
+
+    * a plain segment walks into a mapping's key.  Over a list it matches
+      nothing: ``data.job_id`` says the payload has a ``data`` **object**,
+      and reading it as "the first element's" would be this walker
+      inventing a declaration;
+    * a ``[]`` segment says *every element of this list*, and over a
+      non-list it matches nothing, for the same reason in the other
+      direction;
+    * a path this grammar would not admit matches nothing at all.  It can
+      only arrive here from a door that already refused it, so the answer
+      is silence rather than a second refusal message.
+
+    Order is the payload's own: mapping insertion order and list order,
+    which is what makes the result of a walk over one receipt a function of
+    that receipt's bytes.
+    """
+    text = str(path or "")
+    if not _PATH.match(text):
+        return ()
+    nodes: List[Any] = [payload]
+    for segment in text.split("."):
+        every = segment.endswith("[]")
+        key = segment[:-2] if every else segment
+        found: List[Any] = []
+        for node in nodes:
+            if not _is_mapping(node) or key not in node:
+                continue
+            value = node[key]
+            if not every:
+                found.append(value)
+            elif isinstance(value, (list, tuple)):
+                found.extend(value)
+        nodes = found
+        if not nodes:
+            return ()
+    return tuple(nodes)
 
 
 # ── the three verbs.  ONE reader each, for both doors ────────────────────────
@@ -591,7 +657,9 @@ class ToolsBlock:
             shape=shape,
         )
 
-    def entry_for(self, name: str) -> Optional[ToolEntry]:
+    def entry_for(self, name: str,
+                  notes: Optional[List["Discrepancy"]] = None
+                  ) -> Optional[ToolEntry]:
         """The entry declaring *name*, matched this framework's one way.
 
         :func:`~core.tools.descriptors.same_tool`, so a manifest written as
@@ -601,12 +669,33 @@ class ToolsBlock:
         reason: an author writes one spelling and every surface derives it.
         An exact name always wins, so a plane offering both spellings binds
         the one that was named.
+
+        **A name that matches two entries matches neither, and *that* is
+        said out loud.**  The refusal is right — a coin flip about which
+        subject kind a value identifies is the one mistake this layer must
+        not make — but it is also the one outcome where an author's
+        declarations vanish while every line of their file was accepted at
+        the door: two entries pass :meth:`ToolsBlock.from_mapping` when
+        their ``tool_key``s differ (``alpha.runs_get`` and
+        ``zeta.runs_get``), and a plane offering the bare ``runs_get``
+        matches both.  Pass *notes* — :meth:`PlaneDeclarations.build` does —
+        and the lookup leaves a :class:`Discrepancy` naming the tool and the
+        two spellings, so the silence becomes a console line and a record
+        rather than a tool that quietly declares nothing.
         """
         for entry in self.entries:
             if entry.name == name:
                 return entry
         matches = [entry for entry in self.entries
                    if same_tool(entry.name, name)]
+        if len(matches) > 1 and notes is not None:
+            notes.append(Discrepancy(
+                tool=str(name), key="name",
+                detail=f"this manifest declares "
+                       f"{', '.join(repr(entry.name) for entry in matches)}, "
+                       f"and all of them match this tool; an ambiguous match "
+                       f"binds none of them, so nothing is declared about it "
+                       f"— name the tool as this run offers it"))
         return matches[0] if len(matches) == 1 else None
 
 
@@ -655,6 +744,21 @@ def read_wire(schema: Any, tool: str,
       that verb and the manifest's answer stands.  Anything else would let
       one malformed extension key delete a platform's declarations for a
       tool while the note beside it said the key contributed nothing.
+
+    **One bad key makes the whole verb unusable, not a smaller verb**, and
+    that is the sentence worth being explicit about because the readers
+    above are *partial* by construction: :func:`read_identifiers` returns
+    every entry it understood and appends a problem for each one it did
+    not, so ``x-identifiers: {"job_id": {"kind": "job"}, "asset": 7}``
+    comes back out of it as a usable ``{job_id: job}`` beside a fault.
+    Taking that half would be the worst of the three available answers — a
+    server's declaration silently *replacing* a manifest's with less than
+    the server said, so a plane that mistyped one key would quietly narrow
+    what another door correctly declared, and the note beside it would
+    describe a key rather than the loss.  So the verb is dropped whole, the
+    manifest's answer for that tool stands untouched, and the discrepancy
+    names what the server published.  A platform fixes one key and gets
+    everything back; nothing is half-adopted in the meantime.
     """
     found: Dict[str, Any] = {}
     if not _is_mapping(schema):
@@ -847,7 +951,10 @@ class PlaneDeclarations:
         bound: List[ToolEntry] = []
 
         for tool in sorted(schemas):
-            entry = block.entry_for(tool)
+            # `notes` passed, so a tool whose declarations two entries claim
+            # at once is a counted disagreement rather than a tool that
+            # silently declares nothing — see `ToolsBlock.entry_for`.
+            entry = block.entry_for(tool, notes)
             if entry is not None:
                 bound.append(entry)
             resolved[tool] = cls._resolve(tool, schemas[tool], block, notes,

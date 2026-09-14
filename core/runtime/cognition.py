@@ -151,7 +151,18 @@ and the evidence is one
 ``"{run_id}/{seq}/{tool}"`` — nothing a model said reaches the observation
 door, which is the wall the kernel's two doors exist to keep.
 
-Five bounds, each stated because each is a thing the store does **not** know:
+**And what the receipt is about**, where a platform said so: a declared
+identifier makes the receipt entity a claim about a **subject**
+(``job:jl-731``), the kernel projects the receipt's facts onto it, and two
+receipts naming one job finally join — the thing an entity-per-receipt store
+could never do.  The link is a claim like any other, with its two premises
+named (the receipt and the declaration) and graded at the weaker of them;
+the projection is the kernel's, not this module's.  See
+:meth:`ShadowCognition._identify`, :meth:`core.cognition.state
+.CognitiveState.link`, and the ``via`` mark in
+:mod:`core.cognition.compile`, which is where a reader meets the result.
+
+Six bounds, each stated because each is a thing the store does **not** know:
 
 * **Non-JSON receipts contribute nothing.**  A receipt is parsed with
   :func:`core.runtime.grounding.json_blocks` — the harness's one reader of
@@ -159,6 +170,17 @@ Five bounds, each stated because each is a thing the store does **not** know:
   propositions.  Turning a sentence into a claim is *extraction*, it is a
   model's job, and its reliability is Phase 16's number, not this file's
   assumption.
+* **A declared identifier is the one string that is read** (and the bound
+  below is otherwise unchanged).  Where the plane declared that a key holds
+  an *identity* — :class:`core.runtime.declarations.PlaneDeclarations`,
+  built at fleet-connect from the servers' ``outputSchema`` and the skill's
+  ``tools:`` block — that key's string value is asserted as a fact on the
+  receipt entity and the receipt is **linked** to the subject it names
+  (``job:jl-731``).  See :meth:`ShadowCognition._identify`.  Nothing else
+  about strings changes: a key nobody declared is still dropped, because a
+  string that looks like an identifier is not one, and value coincidence
+  alone would manufacture contradictions out of two tools that never
+  disagreed.
 * **A numeric string is not a number.**  ``{"count": "8"}`` is a receipt
   whose field holds a string, and a store that quietly made it ``8`` would
   have lost the fidelity it exists for.  It cannot be asserted *as* a
@@ -272,10 +294,11 @@ from core.cognition import (BUDGET_CHARS, CARDINALITIES, EVENT_SCHEMA_VERSION,
                             KERNEL_KEY, KERNEL_VERSION, CognitionError,
                             CognitiveState, EvidenceAuthority, EvidenceRef,
                             ReplayRefused, RuleAuthority, check_pattern,
-                            compile_view, deep_copy, owed_line)
+                            compile_view, deep_copy, owed_line, subject_entity)
 
 from core.durable import fsync_append
 from core.runtime.declarations import DECLARATIONS_KEY as _DECLARATIONS_KEY
+from core.runtime.declarations import IDENTIFIERS, values_at
 from core.runtime.grounding import harvest_fields, json_blocks
 from core.runtime.replay import canonical
 
@@ -283,6 +306,7 @@ __all__ = [
     "REASONING_LOG", "REASONING_SCHEMA_VERSION", "SCHEMA_KEY",
     "KERNEL_SCHEMA_KEY", "KERNEL_KEY", "KERNEL_EVENTS_KEY",
     "KERNEL_COUNT_KEY", "DECLARATIONS_KEY", "declarations_in",
+    "DECLARATION_KIND", "Identity", "identities_of", "resolvers_of",
     "NOTE_KEY", "RECEIPT_KIND", "RESUMED_NOTE",
     "STOPPED_NOTE", "UNCOMPILED_NOTE", "UNLOADED_NOTE",
     "COGNITION_KEYS", "GOAL_KEYS", "PACK_AUTHORITY", "PROBLEM_SEP",
@@ -327,6 +351,21 @@ DECLARATIONS_KEY = _DECLARATIONS_KEY
 #: What an :class:`~core.cognition.types.EvidenceRef` out of this module
 #: calls itself.  The kernel never dereferences it; a reader of the log does.
 RECEIPT_KIND = "receipt"
+
+#: The **second** kind of evidence this module makes, and the only claim in
+#: the harness that rests on something other than a receipt: a link's
+#: premise that a key *is* an identity.
+#:
+#: It is its own kind because it is its own sort of thing.  A receipt ref
+#: locates what a call returned; this one locates a sentence in a platform's
+#: file (or in its server's schema) saying what a returned string means, and
+#: a reader of ``reasoning.jsonl`` asking "why does the store think these two
+#: receipts are about one job" must be able to tell the two apart without
+#: parsing a locator.  It is also why a deterministic link is stamped
+#: ``SOURCE`` and not ``DETERMINISTIC``: the weakest premise under it is this
+#: ref, and a link graded above its weakest premise would launder a
+#: platform's word into a measurement.
+DECLARATION_KIND = "declaration"
 
 #: The one sentence a note line says.  One spelling, so a reader can find
 #: every run whose shadow stopped without matching on an exception message.
@@ -819,6 +858,165 @@ def observations_of(text: Any) -> Tuple[Tuple[str, Any], ...]:
     return tuple(out)
 
 
+# ── a receipt, as identities ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Identity:
+    """One declared identifier, found once in one receipt.
+
+    Four strings and no cleverness: where it was declared (*path*), what the
+    store will call it (*field*), what kind of subject it names (*kind*) and
+    what the receipt said (*value*).  A dataclass rather than a tuple
+    because three of the four are strings that would read the same in a
+    positional call, and the one mistake this layer must not make is
+    swapping a kind for a value.
+    """
+
+    path: str
+    field: str
+    kind: str
+    value: str
+
+    def subject(self) -> str:
+        """``kind:value`` — spelled by the kernel's own owner of it.
+
+        :func:`~core.cognition.types.subject_entity` checks the round trip,
+        so a kind or a value that would spell a *different* subject when
+        read back raises here rather than linking something nobody
+        declared.  This module does not know what a subject is spelled
+        like and must not learn.
+        """
+        return subject_entity(self.kind, self.value)
+
+
+def _field_of(path: str) -> str:
+    """The field name a declared key path lands under.
+
+    The last segment, with ``[]`` off: ``data.job_id`` is the field
+    ``job_id``, exactly as :func:`core.runtime.grounding.harvest_fields`
+    would have named it had the value been a figure.  **One naming rule for
+    the store**, and it matters in both directions: a pack declaring
+    ``cardinality: {job_id: one}`` binds the identifier fact, and a rule
+    joining on ``job_id`` joins the harvest's figures and the declared
+    identifiers alike.  A field named by its whole path would be a second
+    vocabulary inside one store, visible only to whoever wrote the
+    declaration.
+    """
+    return path.rsplit(".", 1)[-1].removesuffix("[]")
+
+
+def identities_of(text: Any, identifiers: Mapping[str, str]
+                  ) -> Tuple[Tuple[Identity, ...], int]:
+    """``((identity, …), ambiguous)`` for one receipt under *identifiers*.
+
+    **The declared exception to the string bound**, and the whole of it.
+    :func:`_without_strings` drops every string leaf before the harvester
+    sees a payload, because a string is not a figure and a store that
+    guessed would have lost the fidelity it exists for.  A *declared*
+    identifier is the one string this layer may read: a platform has said,
+    in a file or in its server's schema, that the value under this key is an
+    identity — and identity is the one thing a receipt cannot say about
+    itself.  Nothing widens: every other string is dropped exactly as
+    before, and a key nobody declared is not an identifier because it looks
+    like one.
+
+    The rules, each of them a case this returns nothing for:
+
+    * **the path, not the name.**  :func:`core.runtime.declarations
+      .values_at` walks the declared path from the root of the payload, so
+      ``data.job_id`` never reads ``meta.job_id``.  A flat name match would
+      link on a same-named key somewhere else in a governed envelope, which
+      is a wrong link, which is the one mistake here that manufactures
+      contradictions;
+    * **one value per key, or none.**  A declared key holding two different
+      strings in one receipt identifies nothing — which of them is the
+      subject is a question the receipt does not answer — so it links
+      nothing and is *counted*, the same one-figure discipline the harvest
+      already keeps for a key holding two numbers.  The count is the second
+      element, because a caller that could not see it would read a receipt
+      that declared nothing and a receipt that was ambiguous as one thing;
+    * **non-empty strings only** (the v1 bound).  A number under a declared
+      key is not an identifier here: the harvest already asserts it as a
+      figure, and spelling a subject from it would make ``job:5`` and the
+      figure ``5`` two facts nobody can tell apart later.  A non-string
+      value is not ambiguity either — it is simply not an identity this
+      version reads — so it is skipped without a count.
+
+    Deterministic: paths in sorted order, values in the payload's own, and
+    the first value of a key is the one that stands.  Same receipt, same
+    identities, same links, same log.
+    """
+    if not identifiers:
+        return (), 0
+    blocks = list(json_blocks(text))
+    if not blocks:
+        return (), 0
+    found: List[Identity] = []
+    ambiguous = 0
+    for path in sorted(identifiers):
+        seen: List[str] = []
+        for block in blocks:
+            for value in values_at(block, path):
+                if (isinstance(value, str) and value.strip()
+                        and value not in seen):
+                    seen.append(value)
+        if not seen:
+            continue
+        if len(seen) > 1:
+            ambiguous += 1
+            continue
+        found.append(Identity(path=path, field=_field_of(path),
+                              kind=str(identifiers[path]), value=seen[0]))
+    return tuple(found), ambiguous
+
+
+def resolvers_of(declarations: Any) -> Dict[str, Tuple[str, ...]]:
+    """``{field: the tools that say they could establish it}``.
+
+    What a plane's ``establishes`` and ``produces`` verbs are *for* on this
+    tree: the OWED section's ``resolvable via:`` clause
+    (:data:`core.cognition.compile.RESOLVABLE`), and nothing else.  They
+    touch no store — no fact enters because a schema said it would — and
+    they are read here, at compile time, rather than at the door.
+
+    Both verbs answer the same question from two sides and both land in the
+    same mapping: ``establishes`` says *this call can establish that field*,
+    and ``produces`` says *the product arrives later, through ``via``* — so
+    the tool named for a two-phase product is the one that carries it, not
+    the one that returned the handle.  A reader of the line does not need to
+    know which verb it came from; a reader of the declarations record can
+    see both.
+
+    Fields are named by :func:`_field_of`, so a plane writing
+    ``establishes: [data.state]`` resolves the obligations the harvest
+    spelled ``state``.  One naming rule, one store.
+
+    Deterministic and bounded: tools in sorted order, first declaration
+    first, no duplicates.  ``{}`` for no declarations at all, which is what
+    every run before this feature had and what a line without the clause
+    means.
+    """
+    out: Dict[str, List[str]] = {}
+
+    def name(field: Any, tool: Any) -> None:
+        key = _field_of(str(field or ""))
+        if not key:
+            return
+        bucket = out.setdefault(key, [])
+        if str(tool) not in bucket:
+            bucket.append(str(tool))
+
+    tools = getattr(declarations, "tools", None) or {}
+    for tool in sorted(tools):
+        declaration = tools[tool]
+        for field in getattr(declaration, "establishes", ()):
+            name(field, tool)
+        for produced in getattr(declaration, "produces", ()):
+            name(produced.field, produced.via)
+    return {field: tuple(names) for field, names in out.items()}
+
+
 # ── the file ─────────────────────────────────────────────────────────────────
 
 
@@ -1093,6 +1291,19 @@ class ShadowCognition:
         self.receipts = 0
         #: Propositions asserted out of them.
         self.observations = 0
+        #: Declared identifiers asserted as facts — the string exception.
+        #: Counted apart from :attr:`observations` because they are the one
+        #: thing in the store that is there on a platform's word that a key
+        #: is an identity, and a deployment measuring what its declarations
+        #: bought reads this against :attr:`links`.
+        self.identifiers = 0
+        #: Links made out of them.  Fewer than :attr:`identifiers` where a
+        #: subject could not be spelled from a value the receipt carried.
+        self.links = 0
+        #: Declared identifier keys that held **two** values in one receipt
+        #: and therefore identified nothing.  The one-figure discipline,
+        #: applied to identities: see :func:`identities_of`.
+        self.ambiguous = 0
         #: Values the kernel would not take, or the harvest could not
         #: render.  A count and not a refusal — see the module docstring.
         self.refused = 0
@@ -1130,10 +1341,17 @@ class ShadowCognition:
         #: What the plane this run connected to declares about what its
         #: tools return — a
         #: :class:`core.runtime.declarations.PlaneDeclarations`, or ``None``
-        #: until :meth:`declare_plane` is called with one.  Held rather than
-        #: consumed here: this lane writes it down, and what reads it is the
-        #: linking that comes next.
+        #: until :meth:`declare_plane` is called with one.  Two things read
+        #: it: :meth:`_identify`, at every receipt, for the identifier keys
+        #: of the dispatching tool; and :meth:`resolvers`, at every compiled
+        #: block, for what the plane says would answer an owed line.
         self.declarations: Any = None
+        #: :func:`resolvers_of` of them, worked out once.  ``None`` is *not
+        #: yet asked*; an empty mapping is *asked, and this plane declares
+        #: nothing that resolves anything*.  Both are quiet, and the
+        #: difference is one walk of the declarations per run instead of one
+        #: per step.
+        self._resolvers: Optional[Dict[str, Tuple[str, ...]]] = None
 
     # ── what the door calls, once ───────────────────────────────────────
 
@@ -1215,6 +1433,29 @@ class ShadowCognition:
                 self._stopped(exc)
                 return
             self.declarations = declarations
+            # A second resolution — a resumed run's plane — replaces the
+            # first, hints included. The record keeps both; what a run
+            # STEERS under is what it last resolved, which is the same rule
+            # `declarations_in`'s docstring states for its readers.
+            self._resolvers = None
+
+    def resolvers(self) -> Dict[str, Tuple[str, ...]]:
+        """What this plane says would establish each field.  Never raises.
+
+        :func:`resolvers_of` of :attr:`declarations`, worked out on the
+        first ask and quoted afterwards — the declarations are immutable
+        once built, so a second walk could only produce the same answer at
+        the cost of one per step.
+
+        Handed to :func:`~core.cognition.compile.compile_view` **and** to
+        :func:`~core.cognition.compile.owed_line` in :meth:`progress`, which
+        is the point of it being a method rather than a thing the compiler
+        reaches for: the line the model reads and the line the supervisor's
+        stall sentence quotes are then the same line, hint and all.
+        """
+        if self._resolvers is None:
+            self._resolvers = resolvers_of(self.declarations)
+        return self._resolvers
 
     # ── what the loop calls ─────────────────────────────────────────────
 
@@ -1289,7 +1530,8 @@ class ShadowCognition:
         with self._lock:
             try:
                 view = compile_view(self.state,
-                                    budget_chars=self.budget_chars)
+                                    budget_chars=self.budget_chars,
+                                    resolvers=self.resolvers())
             except Exception as exc:                # noqa: BLE001 - the point
                 self._uncompiled(exc)
                 return ""
@@ -1329,7 +1571,8 @@ class ShadowCognition:
                 clashes = sum(1 for clash in self.state.contradictions()
                               if not clash.settled)
                 digest = _frontier_digest(frontier)
-                top = owed_line(frontier[0]) if frontier else ""
+                top = (owed_line(frontier[0], self.resolvers())
+                       if frontier else "")
                 held = len(self.state.propositions())
             except Exception as exc:            # noqa: BLE001 - the point
                 self._unwatched(exc)
@@ -1357,6 +1600,90 @@ class ShadowCognition:
                 self.refused += 1
                 continue
             self.observations += 1
+        self._identify(tool, entity, ref, text)
+
+    def _identify(self, tool: str, entity: str, ref: EvidenceRef,
+                  text: Any) -> None:
+        """What this receipt is *about*, where the plane declared it.
+
+        Two writes per identifier and they are in this order for a reason
+        the kernel enforces: the **fact** first — the declared string as a
+        claim on the receipt entity, which is what makes a handle-only
+        receipt a receipt this store holds something about — and then the
+        **link**, which :meth:`~core.cognition.state.CognitiveState.link`
+        refuses for an entity it knows nothing about.  A store that linked
+        first would refuse every two-phase handle in the design's own
+        motivating example.
+
+        The link's evidence is both premises, named: the receipt this value
+        was read from, and the declaration that said the key was an
+        identity (:data:`DECLARATION_KIND`).  Its authority is ``SOURCE``,
+        which is the weaker of the two and therefore the honest one — the
+        receipt is deterministic, the declaration is a platform's word, and
+        a link is worth its weakest premise.  Every fact this link projects
+        onto the subject is capped by it, in the kernel, which is where
+        that cap belongs.
+
+        **Deterministic links only, in v1.**  Nothing here guesses: no value
+        coincidence, no key-name similarity, no model proposal.  A wrong
+        link is therefore a wrong *declaration* — wrong for every receipt
+        of that tool rather than at random — and it is fixed in the file
+        that declared it.  See
+        :meth:`~core.cognition.state.CognitiveState.link_history` for why
+        that ruling is what makes the absence of an ``unlink`` liveable.
+
+        Failure-isolated per identifier, in this module's one idiom: a
+        value the kernel will not take — a subject that cannot be spelled
+        from it, a string spelled like a rule variable — is counted in
+        :attr:`refused` and the receipt's other identifiers still land.
+        Anything else reaches :meth:`receipt`'s ``except``, where it costs
+        the run its cognition and a note, and the mission is not told.
+        """
+        declarations = self.declarations
+        if declarations is None:
+            return
+        identifiers = declarations.identifiers_for(tool)
+        if not identifiers:
+            return
+        found, ambiguous = identities_of(text, identifiers)
+        self.ambiguous += ambiguous
+        for identity in found:
+            try:
+                self.state.assert_observation(
+                    (entity, identity.field, identity.value), evidence=(ref,),
+                    authority=EvidenceAuthority.DETERMINISTIC)
+            except CognitionError:
+                self.refused += 1
+                continue
+            self.identifiers += 1
+            try:
+                self.state.link(
+                    entity, identity.subject(),
+                    evidence=(ref, self._declared(tool, identity)),
+                    authority=EvidenceAuthority.SOURCE)
+            except CognitionError:
+                self.refused += 1
+                continue
+            self.links += 1
+
+    def _declared(self, tool: str, identity: "Identity") -> EvidenceRef:
+        """The link's other premise: the declaration, located and named.
+
+        The locator says which door won the verb for this tool (``wire`` or
+        ``manifest`` — :attr:`core.runtime.declarations.ToolDeclaration
+        .sources`), the tool, and the key path as declared.  That is the
+        sentence a reader of ``reasoning.jsonl`` needs to find the thing
+        that has to change if a link turns out to be wrong; the kernel
+        never dereferences it and has no opinion about its shape.
+        """
+        declaration = self.declarations.for_tool(tool)
+        door = str((getattr(declaration, "sources", None) or {}).get(
+            IDENTIFIERS) or "")
+        locator = "/".join(part for part in (door, str(tool), identity.path)
+                           if part)
+        return EvidenceRef(kind=DECLARATION_KIND, locator=locator,
+                           note=f"declared identifier of kind "
+                                f"{identity.kind!r}")
 
     def _flush(self) -> None:
         """Everything the kernel has logged since the last flush, appended.
