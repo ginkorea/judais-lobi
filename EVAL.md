@@ -837,10 +837,64 @@ joined, closed over and cited by code that cannot. If this number is bad and
 Phase 19 — or the arc stops. That is the decision the report is for; it is not
 a release gate and no build depends on it.
 
-The prompt here is deliberately plain: **no few-shot examples and no
-constrained decoding**, because both are the lift §2.9.3 names as the thing to
-try next, and a baseline that already had them would have nothing to be
-measured against.
+The prompt here is deliberately plain: **no few-shot examples, and no
+constrained decoding unless you ask for it**, because both are the lift
+§2.9.3 names as the thing to try next, and a baseline that already had them
+would have nothing to be measured against. `--constrained` is the second of
+those two, landed; see below.
+
+### `--constrained` — ROADMAP §2.9.5's grammar compiler
+
+```
+python -m core.eval extraction --probes … --provider local --model <name> \
+  --temperature 0.2 --repeats 3 --constrained --report out/extraction-grammar
+```
+
+The flag compiles this module's own reply language — the `STATUSES`
+vocabulary, the four keys of a proposition, the value types the parser
+accepts — into a JSON schema and sends it with every call, so the endpoint
+holds the decode to it. It is the cheapest local-model amplifier on the
+board and it attacks one failure class only: the **structural** one. Read
+`structural`, `first_try` and `repair` against an unconstrained run of the
+same model at the same temperature — that difference is the §2.9.5 lift,
+**measured rather than assumed**. Everything below `structural` in the table
+is about content, and a grammar cannot move it except by removing the
+unreadable replies from the denominators; a schema-shaped reply can still
+assert a value the receipt does not hold, so the repair turn stays.
+
+Four rules the flag is built on, each of them a way the measurement could
+otherwise lie:
+
+- **It is a declared backend capability, not a parameter somebody hopes
+  lands.** `BackendCapabilities.supports_json_schema`
+  (`core/runtime/backends/base.py`) — `local` and `openai` declare it,
+  `mistral` and `anthropic` declare its absence with a reason. A backend
+  that does not declare it **refuses the run up front**, naming the
+  capability, exit 2. There is no silent fallback: a run that asked for a
+  grammar, did not get one and printed `constrained` in its header would be
+  the instrument lying about its own experiment.
+- **A constrained run and an unconstrained one are two experiments.** The
+  report's identity line carries the decoding, the prompt fingerprint moves
+  with the flag (the grammar is in the digest when one was sent), and
+  `--baseline` treats a constrained/unconstrained mismatch as a differing
+  interpreter and says so. An older report with no `constrained` key in its
+  header is read as the unconstrained run it was, not as a third state.
+- **A declaration promises the request carries the schema, not that the
+  server honoured it.** An OpenAI-compatible server may accept
+  `response_format` and ignore it, and nothing in `GET /models` says which
+  kind is listening. So the report counts `constrained_invalid` — attempts
+  that were unreadable although a grammar was sent — and flags each such row
+  *constrained yet invalid — the endpoint likely ignored the schema*. On an
+  unconstrained run that row is an honest `0/0`. Read the defect beside the
+  flag: a reply with no array or an unknown status word is proof the grammar
+  did not bind, while an ASSERT that named no field or quoted nothing is
+  schema-valid and is the model's content.
+- **One owner for the shape.** The schema is compiled from the same table
+  `parse_propositions` validates against, so a grammar that permits what the
+  parser refuses — which would count an obedient endpoint as a broken model
+  — cannot be written. The compiled root is an **object** holding the array
+  under `propositions`, because a bare array is refused by the hosted strict
+  surface; the parser reads that wrapper as well as a bare array.
 
 ### The design rule: measure the spectrum, don't collapse it
 
@@ -944,8 +998,9 @@ establishes no cause, and a search that reports its own coverage as partial.
 ### How to read the report
 
 Every rate is `k/n` with a **95% Wilson interval**, and the header names the
-provider, the model, the temperature, the endpoint, the commit and a digest of
-the prompt. The interval is Wilson and not the normal approximation because
+provider, the model, the temperature, the endpoint, the decoding (constrained
+or not) and the commit, plus a digest of the prompt that carries the grammar
+when one was sent. The interval is Wilson and not the normal approximation because
 every interesting rate sits near an end, and the normal interval at `20/20` has
 zero width — which is what made the final gate's chase for a clean 20/20
 meaningless. **A number without its interpreter beside it is not evidence**:
@@ -966,6 +1021,7 @@ two reports are comparable only when those header fields match, and `--baseline
 | `hedged` | an attempt that touched what its probe was watching — a trap field, a key declared absent, one side of a conflict — at `HYPOTHESIZE`/`AMBIGUOUS`. **Not a failure rate, and not folded into any verdict** — read it against `trap`: low `trap` with high `hedged` is a model that is wrong *carefully*; both low is one that is wrong *flatly*, and they are not the same risk to a deployment |
 | `probe` | the **attempt** answered correctly and completely — every gold fact asserted *and grounded*, nothing else asserted, the trap not asserted, a conflict not swallowed, a mask not replaced. **A correct answer with fabricated provenance is a failure** |
 | `probe_reliable` | the **probe** whose *every* attempt was right. **The headline under `--repeats`** |
+| `constrained_invalid` | an attempt that was **unreadable although a grammar was sent** — `--constrained` only; **lower is better**, and an unconstrained run shows an honest `0/0` rather than a zero that reads like a result. Above zero it is evidence about the *endpoint*: a server that accepted `response_format` and ignored it |
 
 `grounded`'s denominator is every ASSERT of every kind of probe, so a corpus
 with a different mix in it moves that `n`; `gold_precision` and `gold_recall`

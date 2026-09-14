@@ -49,9 +49,11 @@ There is no ``response_format``.  Anthropic constrains output through
 ``output_config.format`` (structured outputs) and through ``strict`` tool
 schemas, neither of which is the OpenAI parameter the runtime sends, so
 :attr:`AnthropicBackend.capabilities` reports ``supports_json_mode=False``
-rather than translating a request whose semantics differ. A caller that
-sends ``response_format`` anyway gets the provider's 400, unedited — a
-loud refusal beats a silently dropped constraint.
+and ``supports_json_schema=False`` rather than translating a request whose
+semantics differ. A caller that sends ``response_format`` anyway gets the
+provider's 400, unedited — a loud refusal beats a silently dropped
+constraint — and a caller that asks through the typed ``json_schema=``
+door is refused here, by capability name, before anything is sent.
 """
 
 from __future__ import annotations
@@ -569,6 +571,8 @@ class AnthropicBackend(Backend):
         model: str,
         messages: List[Dict],
         stream: bool = False,
+        *,
+        json_schema: Any = None,
         **extra: Any,
     ):
         """Create a message, returning content or a stream of deltas.
@@ -588,9 +592,19 @@ class AnthropicBackend(Backend):
         comes back as the provider's own 400 rather than as a constraint
         that quietly did not apply.
 
+        ``json_schema`` is named here so that it is REFUSED here: the
+        Messages API has no ``response_format``, :attr:`capabilities`
+        declares no ``supports_json_schema``, and the door
+        (:meth:`~core.runtime.backends.base.Backend.constrained_response_format`)
+        raises rather than letting an OpenAI-shaped envelope travel to a
+        provider that would answer it with a 400 — or, worse, ignore it.
+
         Native tool calls come back on :attr:`last_tool_calls` and the
         counts on :attr:`last_usage`, never in the return value.
         """
+        # The door first: a schema this backend does not declare is a
+        # refusal about the request, not a call that happened.
+        self.constrained_response_format(json_schema)
         # Cleared FIRST: a call that raises must not leave the previous
         # call's numbers — or its decisions — standing, or a ledger counts
         # them twice and a runner dispatches a tool nobody asked for.
@@ -798,6 +812,19 @@ class AnthropicBackend(Backend):
         output today asks for it with ``tools`` and
         ``tool_choice="required"``, which this backend does support.
 
+        ``supports_json_schema`` is **False** for the same reason and one
+        more. The same reason: there is no ``response_format`` to put a
+        schema in, so the envelope
+        :meth:`~core.runtime.backends.base.Backend.constrained_response_format`
+        builds has nowhere to go. The one more: Anthropic's own
+        constrained forms — ``output_config.format``, a ``strict`` tool
+        schema — are different requests with different semantics and a
+        different failure mode, so answering "yes" here would be
+        declaring a capability this backend has not implemented, which is
+        worse than declaring the absence. Implementing it means
+        overriding that method with the shape this API actually takes,
+        and declaring the flag in the same commit.
+
         The tool-call flags are all **True** and all documented
         parameters: ``tools`` with ``input_schema``, ``tool_choice``
         ``{"type": "any"}`` for the constrained decode this repo spells
@@ -813,6 +840,7 @@ class AnthropicBackend(Backend):
         return BackendCapabilities(
             supports_streaming=True,
             supports_json_mode=False,
+            supports_json_schema=False,
             supports_tool_calls=True,
             supports_parallel_tool_calls=True,
             supports_tool_choice_required=True,

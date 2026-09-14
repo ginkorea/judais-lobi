@@ -45,7 +45,7 @@ class OpenAIBackend(Backend):
         self._client = value
 
     def chat(self, model: str, messages: List[Dict], stream: bool = False,
-             **extra: Any):
+             *, json_schema: Any = None, **extra: Any):
         """Create a chat completion, returning content or a stream of chunks.
 
         ``**extra`` reaches ``chat.completions.create`` verbatim — it is
@@ -53,6 +53,15 @@ class OpenAIBackend(Backend):
         ``response_format`` travel, all of them ordinary parameters of
         that call.  Nothing is added when the caller passes nothing: the
         request this backend has always sent is still the request it sends.
+
+        ``json_schema`` is the one of those that goes through a door
+        rather than through ``**extra``:
+        :meth:`~core.runtime.backends.base.Backend.constrained_response_format`
+        checks the capability and builds the envelope, and what comes back
+        is passed as the SDK's own ``response_format`` keyword.  Absent, it
+        adds nothing — and a caller that would rather write the parameter
+        out itself still can, because ``response_format`` in ``**extra``
+        was never taken away.
 
         Native tool calls come back on :attr:`last_tool_calls` rather than
         in the return value, which stays a ``str`` (or an iterator) for
@@ -69,6 +78,12 @@ class OpenAIBackend(Backend):
         weights while you wait, and the wait this repo could not explain
         was never theirs.
         """
+        # Asked BEFORE anything is cleared or sent: a schema this backend
+        # may not be asked for is a refusal about the request and not a
+        # call that happened.
+        constrained = self.constrained_response_format(json_schema)
+        if constrained is not None:
+            extra["response_format"] = constrained
         # Cleared FIRST: a call that raises must not leave the previous
         # call's numbers — or its decisions — standing, or a ledger counts
         # them twice and a runner dispatches a tool nobody asked for.
@@ -153,10 +168,22 @@ class OpenAIBackend(Backend):
         documented parameters of ``chat.completions.create`` and both are
         honoured by the models this backend is pointed at, so they are
         declared here rather than probed — there is no endpoint to ask.
+
+        ``supports_json_schema`` is declared on the same grounds:
+        ``response_format={"type": "json_schema", …}`` is a documented
+        parameter of that same call, and the API enforces the schema
+        during decoding rather than asking the model to please comply.
+        The one thing a caller must know is the shape that surface
+        accepts — the root of a strict schema is an **object**, never a
+        bare array — and that is the compiling caller's business, not
+        this backend's; see
+        :func:`core.eval.extraction.proposition_schema`, which compiles to
+        the shape both this provider and a local server take.
         """
         return BackendCapabilities(
             supports_streaming=True,
             supports_json_mode=True,
+            supports_json_schema=True,
             supports_tool_calls=True,
             supports_parallel_tool_calls=True,
             supports_tool_choice_required=True,

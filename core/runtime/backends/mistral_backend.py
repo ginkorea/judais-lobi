@@ -102,6 +102,8 @@ class MistralBackend(Backend):
         model: str,
         messages: List[Dict],
         stream: bool = False,
+        *,
+        json_schema: Any = None,
         **extra: Any,
     ):
         """POST a chat completion.
@@ -110,7 +112,19 @@ class MistralBackend(Backend):
         deltas when it is true — the two return types every backend here
         has, because ``core.cli`` walks ``chunk.choices[0].delta.content``
         without knowing which backend filled it.
+
+        ``json_schema`` is taken and REFUSED, which is the point of naming
+        it: :attr:`capabilities` declares no ``supports_json_schema``, and
+        the door
+        (:meth:`~core.runtime.backends.base.Backend.constrained_response_format`)
+        raises rather than letting a schema ride ``**extra`` to a provider
+        this repository has not watched honour it. A caller that wants the
+        unchecked version can still write ``response_format`` into
+        ``**extra`` itself and own what comes back.
         """
+        # The door first: a schema this backend does not declare is a
+        # refusal about the request, not a call that happened.
+        self.constrained_response_format(json_schema)
         # Cleared before anything is sent: a call that raises must not
         # leave the previous call's numbers — or its tool calls — standing
         # for a ledger to count, or a runner to dispatch, a second time.
@@ -350,6 +364,17 @@ class MistralBackend(Backend):
         vocabulary is not the OpenAI one this repo's ``"required"`` rule is
         written against.
 
+        ``supports_json_schema`` is ``False`` on exactly the same grounds,
+        and it is the newest of them. Mistral's API does document a
+        ``response_format`` carrying a JSON schema, and ``**extra`` would
+        forward one — but nothing here has sent it to the live endpoint
+        and read back what came, their vocabulary is not the OpenAI one
+        the envelope in
+        :func:`~core.runtime.backends.base.json_schema_request` is written
+        against, and the failure this flag exists to prevent is precisely
+        a run that *believed* it was constrained. Silently unconstrained
+        is the one outcome worse than refused.
+
         A capability flag is a promise a caller plans against — the runtime
         reads these to decide whether a native protocol may run at all — and
         a promise made from documentation alone is how a mission refuses at
@@ -360,6 +385,7 @@ class MistralBackend(Backend):
         return BackendCapabilities(
             supports_streaming=True,
             supports_json_mode=True,
+            supports_json_schema=False,
             supports_tool_calls=False,
             supports_parallel_tool_calls=False,
             supports_tool_choice_required=False,

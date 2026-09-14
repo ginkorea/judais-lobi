@@ -13,7 +13,9 @@ from core.runtime.backends import state as model_state
 from core.runtime.backends.base import (
     BackendCapabilities,
     ToolCallAccumulator,
+    UndeclaredCapability,
     Usage,
+    json_schema_request,
     tool_calls_from,
 )
 from core.runtime.backends.anthropic_backend import (
@@ -1855,3 +1857,163 @@ class TestEveryBackendSaysWhatTheModelIsDoing:
         record, because de-duplication is the run's business — see
         `core.runtime.run._ModelStates`."""
         assert policy.ERROR_POLICY["connect"].state == model_state.ABSENT
+
+
+class TestAConstrainedDecodeIsADeclaredCapability:
+    """`json_schema=` is asked for at a door, and the door has one owner.
+
+    ROADMAP §2.9.5's grammar compiler needs one thing from this half of the
+    tree: a way to hand a server a schema it enforces WHILE decoding, and a
+    way to find out — before a single call — that this server will not.
+    Both halves are asserted here, per backend, because a capability flag
+    is a promise a caller plans against and the failure it exists to
+    prevent is the quiet one: a run that asked to be constrained, was not,
+    and reported itself as constrained anyway.
+
+    The declarations are PINNED rather than derived. A test that asked a
+    backend what it declares and then asserted that it declares it would
+    pass under any value, a `True` guessed out of a vendor's documentation
+    included.
+    """
+
+    SCHEMA = {"name": "propositions",
+              "schema": {"type": "object",
+                         "properties": {"p": {"type": "string"}},
+                         "required": ["p"], "additionalProperties": False}}
+
+    # ── what each backend declares, and why ──────────────────────────────
+
+    def test_openai_declares_it(self):
+        """`response_format={"type": "json_schema", …}` is a documented
+        parameter of `chat.completions.create`, enforced by the API."""
+        assert OpenAIBackend(openai_client=MagicMock()) \
+            .capabilities.supports_json_schema is True
+
+    def test_local_declares_it(self):
+        """vLLM, SGLang and TensorRT-LLM all take it on the
+        OpenAI-compatible surface. A server that accepts the parameter and
+        ignores it degrades to unconstrained output, which the CONSUMER's
+        validator catches — `core.eval.extraction`'s `constrained_invalid`
+        row is that catch."""
+        backend = LocalBackend(endpoint="http://127.0.0.1:1/v1",
+                               model="gpt-oss-20b")
+        assert backend.capabilities.supports_json_schema is True
+
+    def test_mistral_does_not_because_nothing_has_run_it(self, monkeypatch):
+        """Their API documents a schema-carrying `response_format`; nothing
+        here has sent one and read back what came. The rule this backend's
+        tool-call flags are already held to: a promise made from
+        documentation alone is a mission refusing at step six."""
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        assert MistralBackend().capabilities.supports_json_schema is False
+
+    def test_anthropic_does_not_because_there_is_no_response_format(self):
+        """`output_config.format` and `strict` tool schemas are different
+        requests with different semantics, and this backend implements
+        neither. Declaring the absence is the honest half."""
+        backend = AnthropicBackend(client=_StubAnthropic())
+        assert backend.capabilities.supports_json_schema is False
+
+    # ── the door refuses what the declaration does not cover ─────────────
+
+    def test_the_door_refuses_on_a_backend_that_declares_false(self,
+                                                               monkeypatch):
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        client = _RecordingClient(
+            response=_StubResponse(payload={"choices": []}))
+        with pytest.raises(UndeclaredCapability, match="supports_json_schema"):
+            MistralBackend(client=client).chat(
+                "m", [{"role": "user", "content": "x"}],
+                json_schema=self.SCHEMA)
+        assert client.calls == [], ("the refusal is about the request, so "
+                                    "nothing may have been sent")
+
+    def test_anthropic_refuses_at_its_own_door_too(self):
+        client = _StubAnthropic()
+        with pytest.raises(UndeclaredCapability, match="supports_json_schema"):
+            AnthropicBackend(client=client).chat(
+                "m", [{"role": "user", "content": "x"}],
+                json_schema=self.SCHEMA)
+        assert client.calls == []
+
+    def test_the_refusal_names_the_backend_and_the_way_out(self, monkeypatch):
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        with pytest.raises(UndeclaredCapability) as exc:
+            MistralBackend(client=_RecordingClient()).chat(
+                "m", [], json_schema=self.SCHEMA)
+        message = str(exc.value)
+        assert "mistral" in message
+        assert "constrained" in message
+
+    # ── and carries it, in the provider's shape, where it can ────────────
+
+    def test_openai_sends_it_as_the_sdk_parameter(self):
+        """The SDK takes `response_format` as a keyword of `create`, and
+        the envelope inside it is the base class's."""
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))])
+        OpenAIBackend(openai_client=mock).chat(
+            "gpt-4o-mini", [{"role": "user", "content": "hi"}],
+            json_schema=self.SCHEMA)
+        sent = mock.chat.completions.create.call_args.kwargs
+        assert sent["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {"name": "propositions",
+                            "schema": self.SCHEMA["schema"], "strict": True}}
+
+    def test_an_absent_schema_changes_no_call_shape(self):
+        """The request this backend has always sent is still the request it
+        sends: no `response_format` appears from nowhere."""
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])
+        OpenAIBackend(openai_client=mock).chat(
+            "gpt-4o-mini", [{"role": "user", "content": "hi"}])
+        mock.chat.completions.create.assert_called_once_with(
+            model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+
+    def test_the_typed_argument_wins_over_a_hand_written_one(self):
+        """Two `response_format`s is a caller contradicting itself, and the
+        one that went through the capability door is the checked one."""
+        mock = MagicMock()
+        mock.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))])
+        OpenAIBackend(openai_client=mock).chat(
+            "gpt-4o-mini", [{"role": "user", "content": "hi"}],
+            response_format={"type": "json_object"},
+            json_schema=self.SCHEMA)
+        sent = mock.chat.completions.create.call_args.kwargs
+        assert sent["response_format"]["type"] == "json_schema"
+
+    # ── the envelope, which is refused rather than guessed at ────────────
+
+    def test_strict_is_true_unless_the_caller_says_otherwise(self):
+        assert json_schema_request(self.SCHEMA)["strict"] is True
+        assert json_schema_request(
+            {**self.SCHEMA, "strict": False})["strict"] is False
+
+    def test_a_bare_schema_is_refused_because_a_name_cannot_be_invented(self):
+        """The name is what the server files the grammar under and what its
+        own logs say beside the request; one invented here would be a
+        different name on every deployment."""
+        with pytest.raises(ValueError, match="name"):
+            json_schema_request({"schema": self.SCHEMA["schema"]})
+
+    def test_an_empty_schema_is_refused(self):
+        with pytest.raises(ValueError, match="schema"):
+            json_schema_request({"name": "p", "schema": {}})
+
+    def test_a_key_nobody_reads_is_refused_rather_than_dropped(self):
+        """A misspelled key is a constraint that silently does not apply."""
+        with pytest.raises(ValueError, match="strict_mode"):
+            json_schema_request({**self.SCHEMA, "strict_mode": True})
+
+    def test_something_that_is_not_a_mapping_at_all_is_refused(self):
+        with pytest.raises(ValueError, match="mapping"):
+            json_schema_request('{"type": "object"}')
+
+    def test_a_backend_that_declared_nothing_has_the_door_shut(self):
+        """A platform's own adapter, or a test double: the dataclass
+        default is False, so nobody is constrained by accident."""
+        assert BackendCapabilities().supports_json_schema is False

@@ -1625,7 +1625,11 @@ python -m core.eval ablation --suite path/to/suite.yml --out DIR -- <your spawn 
   suite (`--probes`), and the one this repository ships is
   `tests/fixtures/extraction/probes.jsonl` — a platform writes its own from its
   own receipts the same way it writes its own suite. **This is the one that
-  needs a model.** See `EVAL.md` §13 and ROADMAP §2.9.3.
+  needs a model.** `--constrained` sends a compiled JSON grammar with every
+  call on a backend that declares `supports_json_schema`, and is refused
+  rather than downgraded on one that does not; run it against an
+  unconstrained run of the same model to measure what constrained decoding
+  is worth there. See `EVAL.md` §13 and ROADMAP §2.9.3/§2.9.5.
 
 `live` — a platform's own suite driven against a running deployment rather than
 against an archive — is the one that has not landed.

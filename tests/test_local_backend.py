@@ -911,3 +911,62 @@ class TestAFailureNamesWhatTheServerRefused:
 
     def test_below_400_raises_nothing(self):
         self._backend()._raise_for_status(self._Res(status_code=200), {})
+
+
+class TestAGrammarTravelsInTheBody:
+    """ROADMAP §2.9.5's half of the seam, asserted against a real request.
+
+    What a constrained decode IS, on this surface, is a `response_format`
+    key in the JSON body of `POST /chat/completions` — the placement is the
+    whole difference from the hosted backend, which hands the same envelope
+    to an SDK as a keyword. Asserted off the body the stub server actually
+    received, because a test that read the dict the backend built would
+    pass even if it never reached the wire.
+    """
+
+    SCHEMA = {"name": "propositions",
+              "schema": {"type": "object",
+                         "properties": {"p": {"type": "string"}},
+                         "required": ["p"], "additionalProperties": False}}
+
+    def test_the_schema_is_a_response_format_key_in_the_body(self, stub):
+        backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b")
+        backend.chat("gpt-oss-20b", [{"role": "user", "content": "hi"}],
+                     json_schema=self.SCHEMA)
+        assert stub.last_body["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {"name": "propositions",
+                            "schema": self.SCHEMA["schema"], "strict": True}}
+
+    def test_a_streamed_call_carries_it_too(self, stub):
+        """A constrained decode that only bound when the reply arrived
+        whole would be a different experiment on the streaming path."""
+        backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b")
+        list(backend.chat("gpt-oss-20b", [{"role": "user", "content": "hi"}],
+                          stream=True, json_schema=self.SCHEMA))
+        assert stub.last_body["response_format"]["type"] == "json_schema"
+
+    def test_without_one_the_body_is_the_body_it_always_was(self, stub):
+        backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b")
+        backend.chat("gpt-oss-20b", [{"role": "user", "content": "hi"}])
+        assert "response_format" not in stub.last_body
+
+    def test_the_typed_argument_wins_over_one_written_into_extra(self, stub):
+        """Two of them is a caller contradicting itself; the one that went
+        through the capability door is the one that was checked."""
+        backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b")
+        backend.chat("gpt-oss-20b", [{"role": "user", "content": "hi"}],
+                     response_format={"type": "json_object"},
+                     json_schema=self.SCHEMA)
+        assert stub.last_body["response_format"]["type"] == "json_schema"
+
+    def test_a_server_that_ignores_it_is_not_this_backends_to_catch(self,
+                                                                    stub):
+        """The stub answers prose whatever it is sent, which is exactly
+        what an OpenAI-compatible server that accepts `response_format` and
+        ignores it does. The backend still returns the reply: the capability
+        promises the request CARRIES the schema, and whether the endpoint
+        honoured it is the consumer's validator's question."""
+        backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b")
+        assert backend.chat("gpt-oss-20b", [{"role": "user", "content": "hi"}],
+                            json_schema=self.SCHEMA) == "hello from local"

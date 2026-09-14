@@ -1745,3 +1745,384 @@ class TestARunWhereNothingParsedIsNotAModelScore:
         assert main(["extraction", "--probes", str(PROBES), "--provider",
                      "local", "--only", "no_byte_count", "--only",
                      "totals_records"]) == 0
+
+
+# ── the grammar: ROADMAP §2.9.5, compiled from this module's own table ───────
+
+class TestTheGrammarIsCompiledFromTheTableTheParserReads:
+    """One owner for the shape of a reply.
+
+    `proposition_schema` and `parse_propositions` are a grammar and a
+    validator for the same language, and the failure mode of writing them
+    twice is silent and expensive: a grammar that permits what the parser
+    refuses counts a perfectly obedient endpoint as structurally broken,
+    and every reader of that number blames the model. So the schema is
+    asserted against `STATUSES` and `PROPOSITION_FIELDS` themselves, and
+    then against the parser, by feeding the parser a document the grammar
+    permits.
+    """
+
+    @pytest.fixture(scope="class")
+    def element(self):
+        schema = E.proposition_schema()["schema"]
+        return schema["properties"][E.SCHEMA_ROOT_KEY]["items"]
+
+    def test_the_status_enum_is_the_vocabulary_and_nothing_else(self,
+                                                                element):
+        """Drop a status here and a model using it would be decoded into
+        something else — measured as the model's failure."""
+        assert element["properties"]["status"]["enum"] == list(E.STATUSES)
+
+    def test_every_key_the_parser_demands_is_required_by_the_grammar(
+            self, element):
+        assert element["required"] == list(E.PROPOSITION_KEYS)
+        assert set(E.PROPOSITION_KEYS) == {"status", "field", "value",
+                                           "quote"}
+
+    def test_a_key_the_parser_does_not_read_cannot_be_emitted(self, element):
+        assert element["additionalProperties"] is False
+
+    def test_the_value_types_are_the_types_the_parser_accepts(self, element):
+        """`parse_propositions` refuses an ASSERT whose value is neither,
+        so a grammar permitting a third would permit an unreadable reply."""
+        assert element["properties"]["value"]["type"] == ["string", "number"]
+        assert E._PYTHON_TYPES["value"] == (str, int, float)
+
+    def test_the_root_is_an_object_because_a_strict_surface_demands_one(self):
+        """A bare array is a fine grammar for a local server and refused by
+        the hosted one, so the compiled shape is the shape both take."""
+        schema = E.proposition_schema()["schema"]
+        assert schema["type"] == "object"
+        assert schema["required"] == [E.SCHEMA_ROOT_KEY]
+        assert schema["properties"][E.SCHEMA_ROOT_KEY]["type"] == "array"
+
+    def test_an_empty_array_is_not_a_document_the_grammar_permits(self):
+        """`the array was empty` is a defect the parser names, so the
+        grammar forbids it rather than leaving the repair turn to."""
+        array = E.proposition_schema()["schema"]["properties"][
+            E.SCHEMA_ROOT_KEY]
+        assert array["minItems"] == 1
+
+    def test_it_carries_the_name_the_envelope_needs(self):
+        assert E.proposition_schema()["name"] == E.SCHEMA_NAME
+        assert E.proposition_schema("other")["name"] == "other"
+
+    def test_a_document_the_grammar_permits_is_one_the_parser_reads(self):
+        """The cross-check, and the reason the table exists: the two halves
+        are exercised against each other rather than each against itself."""
+        for status in E.STATUSES:
+            reply = json.dumps({E.SCHEMA_ROOT_KEY: [
+                {"status": status, "field": "records", "value": 12,
+                 "quote": '"records": 12'}]})
+            propositions, defect = E.parse_propositions(reply)
+            assert defect == "", f"{status} is in the grammar and refused"
+            assert propositions[0].status == status
+
+
+class TestTheWrapperTheGrammarEmitsIsRead:
+    """The array may arrive inside the object the grammar roots in.
+
+    Not a widened tolerance for its own sake: it is the shape the compiled
+    grammar can emit, and a parser that could not read what its own
+    grammar produces would score a constrained run at zero.
+    """
+
+    def test_the_array_under_the_declared_key_parses(self):
+        propositions, defect = E.parse_propositions(json.dumps(
+            {E.SCHEMA_ROOT_KEY: [{"status": "ASSERT", "field": "records",
+                                  "value": 12, "quote": "12"}]}))
+        assert defect == ""
+        assert len(propositions) == 1
+
+    def test_a_bare_array_still_parses_exactly_as_it_did(self):
+        propositions, defect = E.parse_propositions(
+            '[{"status": "ASSERT", "field": "records", "value": 12, '
+            '"quote": "12"}]')
+        assert defect == "" and len(propositions) == 1
+
+    def test_an_object_under_some_other_key_is_still_a_defect(self):
+        """Prose-shaped JSON is not a reply; only the key the grammar names
+        is read, so this tolerance cannot grow by accident."""
+        _p, defect = E.parse_propositions(json.dumps(
+            {"answer": [{"status": "ASSERT", "field": "r", "value": 1,
+                         "quote": "1"}]}))
+        assert "no JSON array" in defect
+
+    def test_an_empty_array_inside_the_wrapper_is_the_same_defect(self):
+        _p, defect = E.parse_propositions(
+            json.dumps({E.SCHEMA_ROOT_KEY: []}))
+        assert "empty" in defect
+
+
+class TestAConstrainedRunIsADifferentExperiment:
+    """The identity rule, applied to the one flag that changes what the
+    model is ABLE to answer."""
+
+    def test_the_fingerprint_moves_with_the_flag(self):
+        assert E.prompt_fingerprint(True) != E.prompt_fingerprint(False)
+
+    def test_the_unconstrained_digest_is_the_one_it_always_was(self):
+        """Every report written before this flag existed is still
+        comparable with one written after it."""
+        material = (E.PROMPT + "\x00" + E.REPAIR + "\x00"
+                    + "|".join(E.STATUSES))
+        import hashlib
+        assert E.prompt_fingerprint() == hashlib.sha256(
+            material.encode("utf-8")).hexdigest()[:12]
+
+    def test_the_digest_moves_when_the_grammar_does(self, monkeypatch):
+        """The schema is part of what was asked, so it is part of the
+        interpreter — but only when it was sent."""
+        before, plain = E.prompt_fingerprint(True), E.prompt_fingerprint()
+        monkeypatch.setattr(E, "proposition_schema",
+                            lambda name=E.SCHEMA_NAME: {
+                                "name": name, "schema": {"type": "object"}})
+        assert E.prompt_fingerprint(True) != before
+        assert E.prompt_fingerprint() == plain, (
+            "a run that sent no grammar is not described by one")
+
+    def test_the_header_carries_it_and_the_digest_agrees(self, probes):
+        meta = E.header(probes[:1], PROBES, provider="local", model="a-20b",
+                        constrained=True)
+        assert meta["constrained"] is True
+        assert meta["prompt"] == E.prompt_fingerprint(True)
+
+    def test_an_unconstrained_header_says_so_rather_than_saying_nothing(
+            self, probes):
+        meta = E.header(probes[:1], PROBES, provider="local", model="a-20b")
+        assert meta["constrained"] is False
+
+    def test_the_identity_sentence_names_the_decoding(self, probes):
+        """The SENTENCE, not the page: it is the line somebody copies into
+        a ticket when they quote one number, and a header bullet three
+        lines up does not travel with it."""
+        report = E.ExtractionReport(
+            probes="probes.jsonl", attempts=(),
+            meta=E.header(probes[:1], PROBES, provider="local",
+                          model="a-20b", constrained=True))
+        markdown = report.to_markdown()
+        sentence = next(line for line in markdown.splitlines()
+                        if line.startswith("**Every number below is true of"))
+        assert "constrained (`json_schema`)" in sentence
+        assert "- **decoding** constrained (`json_schema`)" in markdown
+
+    def test_an_unconstrained_reports_sentence_says_that_too(self, probes):
+        """Silence would read as "nobody thought about it" rather than as
+        the plain ask this measurement's baseline is."""
+        report = E.ExtractionReport(
+            probes="probes.jsonl", attempts=(),
+            meta=E.header(probes[:1], PROBES, provider="local",
+                          model="a-20b"))
+        sentence = next(line for line in report.to_markdown().splitlines()
+                        if line.startswith("**Every number below is true of"))
+        assert "unconstrained" in sentence
+
+    def test_pairing_treats_it_as_part_of_the_experiment(self):
+        assert "constrained" in E.PAIRING
+
+    def test_a_mismatch_limits_the_pairing_loudly(self, probes):
+        """A constrained run read against an unconstrained baseline is the
+        §2.9.5 lift measured as if it were a code change."""
+        baseline = E.ExtractionReport(
+            probes="probes.jsonl", attempts=(),
+            meta=E.header(probes[:1], PROBES, provider="local",
+                          model="a-20b")).as_dict()
+        now = E.ExtractionReport(
+            probes="probes.jsonl", attempts=(),
+            meta=E.header(probes[:1], PROBES, provider="local", model="a-20b",
+                          constrained=True))
+        delta = now.as_dict(baseline)["baseline"]
+        assert "constrained" in delta["differs_in"]
+        assert "⚠ the two differ in" in now.to_markdown(baseline)
+
+    def test_a_baseline_written_before_the_flag_existed_is_not_a_mismatch(
+            self, probes):
+        """An absent key means an unconstrained run — reading it as a third
+        state would warn about a pairing that is sound."""
+        meta = dict(E.header(probes[:1], PROBES, provider="local",
+                             model="a-20b"))
+        meta.pop("constrained")
+        baseline = {"meta": meta, "rates": {}, "attempts": []}
+        now = E.ExtractionReport(
+            probes="probes.jsonl", attempts=(),
+            meta=E.header(probes[:1], PROBES, provider="local",
+                          model="a-20b"))
+        assert now.as_dict(baseline)["baseline"]["differs_in"] == []
+
+
+class _StubClient:
+    """A `UnifiedClient` that declares a capability and records the ask."""
+
+    def __init__(self, supports_json_schema=True, reply="[]"):
+        from types import SimpleNamespace
+
+        self.capabilities = SimpleNamespace(
+            supports_json_schema=supports_json_schema)
+        self.default_model = "a-20b"
+        self.reply = reply
+        self.calls = []
+
+    def chat(self, model, messages, stream=False, **kwargs):
+        self.calls.append({"model": model, "messages": messages,
+                           "kwargs": kwargs})
+        return self.reply
+
+
+class TestTheRunRefusesWhatTheBackendCannotEnforce:
+    """`--constrained` on a backend that cannot is a refusal, never a
+    fallback: a run that asked for a grammar, did not get one and printed
+    `constrained` in its header would be the instrument lying about its
+    own experiment."""
+
+    def _client(self, monkeypatch, **kw):
+        client = _StubClient(**kw)
+        import core.unified_client as uc
+        monkeypatch.setattr(uc, "UnifiedClient", lambda **_kw: client)
+        return client
+
+    def test_a_backend_that_does_not_declare_it_stops_the_run(self,
+                                                              monkeypatch):
+        self._client(monkeypatch, supports_json_schema=False)
+        with pytest.raises(E.Unextractable, match="supports_json_schema"):
+            E.asker("local", "a-20b", json_schema=E.proposition_schema())
+
+    def test_the_same_backend_is_fine_without_the_flag(self, monkeypatch):
+        self._client(monkeypatch, supports_json_schema=False)
+        assert E.asker("local", "a-20b") is not None
+
+    def test_the_schema_rides_every_call_including_the_repair(self,
+                                                              monkeypatch):
+        """A repair turn asked without the grammar would be a second,
+        unconstrained experiment inside the first."""
+        client = self._client(monkeypatch)
+        ask = E.asker("local", "a-20b", json_schema=E.proposition_schema())
+        ask([{"role": "user", "content": "one"}])
+        ask([{"role": "user", "content": "one"},
+             {"role": "assistant", "content": "x"},
+             {"role": "user", "content": "again"}])
+        assert len(client.calls) == 2
+        for call in client.calls:
+            assert call["kwargs"]["json_schema"] == E.proposition_schema()
+
+    def test_without_the_flag_nothing_is_attached(self, monkeypatch):
+        client = self._client(monkeypatch)
+        E.asker("local", "a-20b")([{"role": "user", "content": "one"}])
+        assert "json_schema" not in client.calls[0]["kwargs"]
+
+    def test_the_subcommand_exits_two_and_names_the_capability(
+            self, monkeypatch, capsys):
+        self._client(monkeypatch, supports_json_schema=False)
+        code = main(["extraction", "--probes", str(PROBES), "--provider",
+                     "local", "--model", "a-20b", "--only", "totals_records",
+                     "--constrained"])
+        assert code == 2
+        message = capsys.readouterr().err
+        assert "supports_json_schema" in message
+        assert "--constrained" in message
+
+    def test_the_flag_is_on_the_parser(self):
+        actions = [a for a in _parser()._actions
+                   if hasattr(a, "choices") and isinstance(a.choices, dict)]
+        flags = {option
+                 for action in actions[0].choices["extraction"]._actions
+                 for option in action.option_strings}
+        assert "--constrained" in flags
+
+
+class TestWhatAConstrainedRunReports:
+    """End to end, with the model scripted: what the report says when the
+    endpoint honoured the grammar, and what it says when it did not."""
+
+    @pytest.fixture(autouse=True)
+    def known_prompts(self, probes):
+        for probe in probes:
+            _PROBE_BY_PROMPT[E.prompt_for(probe)] = probe
+
+    def _run(self, monkeypatch, capsys, ask, *flags):
+        monkeypatch.setattr(E, "asker", lambda *a, **k: ask)
+        code = main(["extraction", "--probes", str(PROBES), "--provider",
+                     "local", "--model", "a-20b", "--only", "totals_records",
+                     "--only", "no_byte_count", "--json", *flags])
+        return code, json.loads(capsys.readouterr().out)
+
+    def test_an_honouring_endpoint_is_structurally_perfect(self, monkeypatch,
+                                                           capsys):
+        code, payload = self._run(monkeypatch, capsys, asker_for(perfect),
+                                  "--constrained")
+        assert code == 0
+        assert payload["meta"]["constrained"] is True
+        assert payload["rates"]["structural"]["k"] == 2
+        assert payload["rates"]["constrained_invalid"]["k"] == 0
+        assert payload["rates"]["constrained_invalid"]["n"] == 2
+
+    def test_every_attempt_records_that_it_carried_the_grammar(
+            self, monkeypatch, capsys):
+        _code, payload = self._run(monkeypatch, capsys, asker_for(perfect),
+                                   "--constrained")
+        assert all(a["constrained"] for a in payload["attempts"])
+
+    def test_an_unconstrained_run_counts_nothing_in_that_row(self,
+                                                             monkeypatch,
+                                                             capsys):
+        """`0/0`, not a zero that reads like a result."""
+        _code, payload = self._run(monkeypatch, capsys, asker_for(perfect))
+        assert payload["meta"]["constrained"] is False
+        assert payload["rates"]["constrained_invalid"]["n"] == 0
+        assert not any(a["constrained"] for a in payload["attempts"])
+
+    def _ignoring(self):
+        """A server that accepts `response_format` and ignores it: prose,
+        both turns, on one of the two probes."""
+        def ask(messages):
+            probe = _PROBE_BY_PROMPT[messages[0]["content"]]
+            if probe.id == "no_byte_count":
+                return "I could not find a byte count in the receipt."
+            return perfect(probe)
+        return ask
+
+    def test_an_ignoring_endpoint_is_counted(self, monkeypatch, capsys):
+        _code, payload = self._run(monkeypatch, capsys, self._ignoring(),
+                                   "--constrained")
+        assert payload["rates"]["constrained_invalid"]["k"] == 1
+        assert payload["rates"]["structural"]["k"] == 1
+
+    def test_and_flagged_on_its_own_row(self, monkeypatch, capsys):
+        """On the ROW, not only in the prose under the table: the per-probe
+        table is what a reader scans to find which attempt to go and look
+        at, and a paragraph three sections up does not name one."""
+        monkeypatch.setattr(E, "asker", lambda *a, **k: self._ignoring())
+        assert main(["extraction", "--probes", str(PROBES), "--provider",
+                     "local", "--model", "a-20b", "--only", "totals_records",
+                     "--only", "no_byte_count", "--constrained"]) == 0
+        markdown = capsys.readouterr().out
+        row = next(line for line in markdown.splitlines()
+                   if line.startswith("| `no_byte_count`"))
+        assert E.CONSTRAINED_YET_INVALID in row
+        other = next(line for line in markdown.splitlines()
+                     if line.startswith("| `totals_records`"))
+        assert E.CONSTRAINED_YET_INVALID not in other, (
+            "a readable reply was not ignored by anybody")
+        assert "likely ignored the schema" in markdown
+
+    def test_the_same_failure_unconstrained_makes_no_such_claim(self,
+                                                                monkeypatch,
+                                                                capsys):
+        """Without a grammar there is nothing for the endpoint to have
+        ignored, and an accusation would be the instrument inventing one."""
+        monkeypatch.setattr(E, "asker", lambda *a, **k: self._ignoring())
+        assert main(["extraction", "--probes", str(PROBES), "--provider",
+                     "local", "--model", "a-20b", "--only", "totals_records",
+                     "--only", "no_byte_count"]) == 0
+        assert E.CONSTRAINED_YET_INVALID not in capsys.readouterr().out
+
+    def test_the_defect_is_kept_beside_the_accusation(self, monkeypatch,
+                                                      capsys):
+        """The two rules a grammar cannot state — an ASSERT naming no
+        field, an ASSERT quoting nothing — fail here too and are the
+        model's content, so the reader has to see which one happened."""
+        monkeypatch.setattr(E, "asker", lambda *a, **k: self._ignoring())
+        main(["extraction", "--probes", str(PROBES), "--provider", "local",
+              "--model", "a-20b", "--only", "no_byte_count",
+              "--only", "totals_records", "--constrained"])
+        markdown = capsys.readouterr().out
+        assert "no JSON array in the reply" in markdown
