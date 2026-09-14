@@ -261,6 +261,179 @@ class TestWhereTheBlockRides:
         assert seeds[0][1] == seeds[-1][1]
 
 
+class TestTheWindowStillOwnsWhatFits:
+    """The block is inside the bound, and the bound is not this lane's.
+
+    :meth:`core.runtime.run.Run._compile_context` appends **before**
+    :meth:`~core.runtime.run.Run._fit`, which is one line and two claims —
+    and the review asked for both to be pinned rather than argued in a
+    docstring.  A block appended *after* the fit would make a request
+    larger than the window said it was, which is the failure
+    :class:`~core.runtime.context_window.MissionWindow` exists to prevent;
+    and a block the window then evicts must leave the next step's removal a
+    no-op rather than a crash or a wrong deletion.
+    """
+
+    @pytest.fixture
+    def paged(self):
+        from tests.test_mission import paged_bus
+
+        return paged_bus.__wrapped__()
+
+    def _shadow(self, tmp_path, text="x" * 600):
+        """A shadow that always has a big view, without a kernel in it.
+
+        Duck-typed exactly as ``Store.cognition`` is — the loop holds the
+        fact that there is one and not its type — so the window claim can
+        be made against a block of a stated size rather than against
+        whatever a fixture's receipts happened to compile to.
+        """
+        class _Always:
+            def __init__(self):
+                self.blocks = 0
+
+            def receipt(self, *_args, **_kwargs):
+                pass
+
+            def close_step(self):
+                pass
+
+            def compiled_block(self):
+                self.blocks += 1
+                return f"{TITLE} — {text}"
+
+        return _Always()
+
+    def test_the_fit_is_handed_the_block(self, paged, tmp_path,
+                                         monkeypatch):
+        """The precise claim, at the seam it is about.
+
+        Every list that reaches :meth:`~core.runtime.run.Run._fit` on a
+        step that has a view ends with that view — so the window measures
+        the request the model is actually sent. A block appended after the
+        fit would be invisible to the one object that owns what fits, and
+        the first thing anybody would know about it is a 400 from a served
+        endpoint.
+        """
+        from core.runtime.mission import MissionRunner
+        from core.runtime.run import Run
+        from tests.test_mission import _paging_model, _small_window
+
+        seen = []
+        real = Run._fit
+
+        def spy(self, messages):
+            seen.append([dict(message) for message in messages])
+            return real(self, messages)
+
+        monkeypatch.setattr(Run, "_fit", spy)
+        MissionRunner(_paging_model(6), paged, ["catalog.page"], max_steps=8,
+                      window=_small_window(),
+                      cognition=self._shadow(tmp_path)).run("go")
+        withblock = [messages for messages in seen if blocks_in(messages)]
+        assert len(withblock) >= 2, "no step handed the fit a view"
+        for messages in withblock:
+            assert TITLE in messages[-1]["content"]
+
+    def test_the_window_bounds_the_request_the_block_is_in(self, paged,
+                                                           tmp_path):
+        """And the bound still holds with it there.
+
+        Given room for the view, the conversation is compacted around it
+        and every request stays inside the limit — which is what "the
+        window is still the one owner of what fits" has to mean in
+        behaviour and not only in call order. (A window too small for its
+        own pinned prefix plus a view is short by construction and says so
+        in ``tokens_after``; that is the window's documented floor, not
+        this lane's rule.)
+        """
+        from core.runtime.context_window import ContextConfig, MissionWindow
+        from core.runtime.mission import MissionRunner
+
+        from tests.test_mission import _paging_model
+
+        window = MissionWindow(config=ContextConfig(
+            max_context_tokens=2200, max_output_tokens=200))
+        model = _paging_model(6)
+        MissionRunner(model, paged, ["catalog.page"], max_steps=8,
+                      window=window,
+                      cognition=self._shadow(tmp_path)).run("go")
+        assert any(TITLE in str(message.get("content") or "")
+                   for sent in model.seen for message in sent), \
+            "the block never reached a request at all"
+        assert max(window.estimate(sent) for sent in model.seen) \
+            <= window.limit_tokens
+
+    def test_a_block_the_window_evicts_leaves_the_removal_a_no_op(
+            self, paged, tmp_path):
+        """The other half, and the one that could corrupt a conversation.
+
+        Removal is by object identity through a `fit` that rebuilds the
+        list and a `_heal_native` that rebuilds it again; an evicted block
+        is simply not there, and the step that looks for it must delete
+        nothing else and must not raise. Driven at a window small enough
+        that compaction really runs, with the mission asserted to have
+        finished and every request still one block or none.
+        """
+        from core.runtime.mission import MissionRunner
+        from tests.test_mission import _paging_model, _small_window
+
+        window, model = _small_window(), _paging_model(6)
+        shadow = self._shadow(tmp_path)
+        transcript = MissionRunner(model, paged, ["catalog.page"],
+                                   max_steps=8, window=window,
+                                   cognition=shadow).run("go")
+        assert transcript.outcome == "answered"
+        assert shadow.blocks >= 2, "no step compiled a second block"
+        for sent in model.seen:
+            assert len(blocks_in(sent)) <= 1, sent
+
+    def test_an_operator_s_lookalike_injection_is_not_the_block(self,
+                                                                tmp_path):
+        """Removal is by identity and never by matching the text.
+
+        An operator who injects a paragraph that *begins* like the view —
+        quoting it back, arguing with it — would have their instruction
+        silently deleted by a step that recognised blocks by their first
+        words. The one they sent stays; the one the runtime put there is
+        the one that goes.
+        """
+        from core.runtime.run import Run
+
+        run = _bare_run(self._shadow(tmp_path))
+        messages = [{"role": "system", "content": "you are"},
+                    {"role": "user", "content": "go"}]
+        run._compile_context(messages)
+        mine = messages[-1]
+        theirs = {"role": "user",
+                  "content": f"{TITLE} — no it does not, look again"}
+        messages.append(theirs)
+
+        run._compile_context(messages)
+        # BY IDENTITY, both ways: the two blocks are byte-identical here
+        # (the fake shadow answers with one string), which is exactly the
+        # case a value comparison cannot tell apart and the case an
+        # operator quoting the view back produces.
+        assert any(message is theirs for message in messages)
+        assert all(message is not mine for message in messages)
+        assert len(blocks_in(messages)) == 2
+        assert messages[-1] is run._compiled
+
+
+def _bare_run(shadow):
+    """One :class:`~core.runtime.run.Run`, built the way the adapter does."""
+    from core.contracts.schemas import PolicyPack
+    from core.runtime.mission import MissionRunner
+    from core.tools.bus import ToolBus
+    from core.tools.capability import CapabilityEngine
+    from core.tools.sandbox import NoneSandbox
+
+    engine = CapabilityEngine(PolicyPack(allowed_scopes=["*"]))
+    bus = ToolBus(capability_engine=engine, sandbox=NoneSandbox())
+    return MissionRunner(lambda messages, **kw: "{}", bus, [],
+                         cognition=shadow)._run
+
+
 class TestTheBlockCarriesEvidenceForward:
     """The mechanism, against the benchmark pack rather than a fixture.
 

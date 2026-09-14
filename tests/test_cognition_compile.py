@@ -30,6 +30,7 @@ import pytest
 
 from core.cognition import (CognitiveState, EvidenceAuthority, EvidenceRef,
                             compile_view)
+from core.cognition import compile as mod
 from core.cognition.compile import (BANDS, BUDGET_CHARS, CONFLICTS_HEADING,
                                     DISPUTED, FACTS_HEADING,
                                     HYPOTHESES_HEADING, OMITTED, TITLE,
@@ -298,16 +299,25 @@ class TestAGuessIsNeverAFact:
             < text.index(HYPOTHESES_HEADING)
 
     def test_a_guess_is_dropped_before_a_fact_is(self):
-        """The one trade this block must never make. Budgeted just under
-        the whole view, the line that goes is the model's own."""
+        """The one trade this block must never make: a model's claim goes
+        before a receipt's figure does.
+
+        Budgeted a few hundred characters under the whole view, which is
+        the scale at which the question is real — the omission sentence is
+        itself a line, so a block small enough that the sentence costs more
+        than the section it replaces cannot truncate at all, and compiles
+        to nothing instead. That floor is its own test below.
+        """
         state = CognitiveState()
-        observe(state, "t#r1", "units", 120)
-        guess(state, "t#r2", "route", "north")
+        for index in range(30):
+            observe(state, f"t#r{index}", "units", index)
+        for index in range(10):
+            guess(state, f"t#g{index}", "route", f"road-{index}")
         whole = compile_view(state)
-        tight = compile_view(state, budget_chars=len(whole.text) - 1)
-        assert tight.hypotheses_omitted == 1
+        tight = compile_view(state, budget_chars=len(whole.text) - 100)
+        assert tight.hypotheses_omitted
         assert tight.facts_omitted == 0
-        assert "units = 120" in tight.text
+        assert "units = 29" in tight.text
 
 
 # ── what the bands say ───────────────────────────────────────────────────────
@@ -389,10 +399,34 @@ class TestTheBudgetIsHardAndNeverSilent:
         view = compile_view(wide, budget_chars=900)
         assert view.facts_omitted
         assert OMITTED.format(what=f"+{view.facts_omitted} facts") in view.text
+        assert "transcript" not in view.text
 
-    def test_the_escape_is_stated_with_it(self, wide):
-        assert "remain in the transcript" in \
-            compile_view(wide, budget_chars=900).text
+    def test_the_escape_points_at_the_result_store(self, wide):
+        """NOT at the transcript. This block is window pressure like
+        anything else — at a tight window the reviewer measured two tool
+        round trips evicted to make room for one view — so a sentence
+        promising the receipts are "above" can be falsified by the block
+        that promised it. The result store cannot be evicted, and every
+        fact line already prints the handle that addresses it."""
+        text = compile_view(wide, budget_chars=900).text
+        assert "result store" in text
+        assert "handle" in text
+        assert "transcript" not in text
+
+    def test_a_block_too_small_for_its_own_sentence_compiles_nothing(self):
+        """The floor the test above leans on, stated on its own.
+
+        The omission sentence is a line, so a view with two lines in it
+        cannot truncate to one and still explain itself. Rather than lie by
+        omission or exceed the cap, there is no block — and the step is
+        exactly the step it would have been with the flag off.
+        """
+        state = CognitiveState()
+        observe(state, "t#r1", "units", 120)
+        guess(state, "t#r2", "route", "north")
+        whole = compile_view(state)
+        assert compile_view(state,
+                            budget_chars=len(whole.text) - 1).text == ""
 
     def test_nothing_is_dropped_without_saying_so(self, wide):
         """The mutation this catches is one line long: drop the sentence
@@ -435,6 +469,99 @@ class TestTheBudgetIsHardAndNeverSilent:
         """A cap that is exceeded to apologise for itself is not a cap, and
         a block that is all apology is not worth a step."""
         assert compile_view(wide, budget_chars=80).text == ""
+
+
+class TestTheCutIsArithmeticAndNotRepeatedRendering:
+    """The review's M1, pinned as a call count rather than as a stopwatch.
+
+    The first version dropped one line and re-rendered the whole block, per
+    line — quadratic against a store that only grows, measured at 482 ms
+    for four thousand live facts **on the model-call path**.  The cut is
+    now chosen against prefix sums and the block is rendered exactly twice:
+    once under upper bounds for the header and the omission sentence, once
+    with the lengths the first pass produced.
+
+    A number that moves with the machine is no good in a test; the number
+    of renders is the thing that was wrong, so that is what is asserted.
+    """
+
+    def _spy(self, monkeypatch):
+        calls = []
+        real = mod._render
+
+        def counted(*args, **kwargs):
+            calls.append(args)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(mod, "_render", counted)
+        return calls
+
+    @pytest.mark.parametrize("facts", [1, 10, 100, 1000])
+    def test_two_renders_whatever_the_store_holds(self, monkeypatch, facts):
+        state = CognitiveState()
+        for index in range(facts):
+            observe(state, f"t#r{index}", "units", index)
+        calls = self._spy(monkeypatch)
+        assert compile_view(state).text
+        assert len(calls) == 2, len(calls)
+
+    @pytest.mark.parametrize("facts", [10, 100, 1000])
+    def test_two_renders_when_the_budget_bites_as_well(self, monkeypatch,
+                                                       facts):
+        """The path that used to be the quadratic one: the tighter the
+        budget, the more lines the old loop dropped and the more whole
+        blocks it built to find that out."""
+        state = CognitiveState()
+        for index in range(facts):
+            observe(state, f"t#r{index}", "units", index)
+        calls = self._spy(monkeypatch)
+        assert compile_view(state, budget_chars=800).text
+        assert len(calls) == 2, len(calls)
+
+    def test_a_budget_that_fits_nothing_renders_nothing(self, monkeypatch):
+        state = CognitiveState()
+        observe(state, "t#r1", "units", 120)
+        calls = self._spy(monkeypatch)
+        assert compile_view(state, budget_chars=30).text == ""
+        assert calls == []
+
+    @pytest.mark.parametrize("budget", [300, 420, 517, 900, 1000, 2048])
+    def test_the_cut_is_tight(self, budget):
+        """Safe is not enough: a cut that dropped everything would satisfy
+        every cap assertion in this file.  This says the block is the
+        LARGEST one that fits — putting back one dropped line takes it over
+        — which is the half that a conservative arithmetic bug would pass
+        and the half that says the size model agrees with the renderer.
+        """
+        state = CognitiveState()
+        for index in range(60):
+            observe(state, f"mcp.ledger_entry#r{index}", "units", index)
+        view = compile_view(state, budget_chars=budget)
+        assert view.facts_omitted, "pick a budget that actually truncates"
+        assert len(view.text) <= budget
+
+        # Exactly what the next line would have cost: itself and the
+        # newline joining it, plus the section's heading and blank line
+        # when the cut left the section closed. The omission sentence
+        # cannot grow when fewer lines are dropped, so this is the whole
+        # of the difference.
+        whole = compile_view(state, budget_chars=100_000)
+        following = section(whole, FACTS_HEADING)[view.facts]
+        extra = len(following) + 1 + (0 if view.facts
+                                      else len(FACTS_HEADING) + 2)
+        assert compile_view(state,
+                            budget_chars=budget + extra).facts > view.facts
+
+    def test_the_renderer_and_the_arithmetic_are_checked_against_each_other(
+            self, monkeypatch):
+        """The size model is a second reader of the block's shape, which
+        this package otherwise refuses to have — so it is never trusted.
+        A renderer that disagreed with it yields NO block rather than one
+        over the cap somebody set."""
+        state = CognitiveState()
+        observe(state, "t#r1", "units", 120)
+        monkeypatch.setattr(mod, "_render", lambda *a, **k: "x" * 10_000)
+        assert compile_view(state).text == ""
 
 
 # ── that it is deterministic ─────────────────────────────────────────────────
@@ -521,6 +648,26 @@ class TestTheViewReportsItself:
     def test_a_view_is_falsy_when_it_has_nothing_to_say(self):
         assert not CompiledView()
         assert CompiledView(text="x")
+
+    def test_the_header_s_counts_are_all_about_the_same_population(self):
+        """One sentence, one population.
+
+        The header states receipts, facts and conflicts in one breath. The
+        facts are the ones this block SHOWS, so the receipts have to be the
+        receipts of those — a count over the whole store beside a count of
+        the rendered facts is two populations in one sentence with nothing
+        on the line to say which is which, and a model reading "40
+        receipts, 12 facts" has been told something untrue about what it is
+        looking at.
+        """
+        state = CognitiveState()
+        for index in range(40):
+            observe(state, f"mcp.t#r{index}", "units", index)
+        view = compile_view(state, budget_chars=900)
+        assert view.facts_omitted, "this budget has to truncate"
+        assert view.receipts == view.facts
+        assert f"compiled from {view.facts} receipts, {view.facts} facts" \
+            in lines_of(view)[0]
 
     def test_the_header_states_the_three_counts(self, ledger):
         head = lines_of(compile_view(ledger))[0]

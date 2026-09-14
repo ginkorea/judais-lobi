@@ -1757,7 +1757,11 @@ def _mission(elf, args, name, style):
                 console.print(
                     f"🧩 cognition: NOT running — {scrub(str(exc))}. The "
                     f"mission runs exactly as it would have; the existing "
-                    f"{REASONING_LOG} is left untouched",
+                    f"{REASONING_LOG} is left untouched"
+                    + (" — and with no store there is no state to compile, "
+                       "so --compiled-context is off with it and this run's "
+                       "prompts are the prompts it would have had"
+                       if compiling else ""),
                     style="yellow")
             else:
                 reasoning_path = run_store.directory(run_id) / REASONING_LOG
@@ -2794,8 +2798,10 @@ def _main(AgentClass):
                              "protocol, catalogue, conduct) does not move "
                              "for it. Bounded to 4,000 characters, and what "
                              "does not fit is named rather than dropped in "
-                             "silence — the receipts are still in the "
-                             "transcript. This IMPLIES --cognition and turns "
+                             "silence, pointing at the mission's result "
+                             "store, which holds every receipt whole under "
+                             "the handle the fact lines print. This IMPLIES "
+                             "--cognition and turns "
                              "it on rather than refusing, because the view "
                              "is compiled from that state. It gates nothing: "
                              "no answer is held, checked or refused against "

@@ -46,6 +46,21 @@ real number, and a deployment that has budgeted its clock to the millisecond
 should know it is there.  Saying so is the point: a cost nobody wrote down is
 a cost somebody discovers.
 
+**``--compiled-context`` adds a second cost and it grows with the store.**
+:meth:`ShadowCognition.compiled_block` runs on the same thread, in the same
+step, and it walks every live proposition: one
+:meth:`~core.cognition.state.CognitiveState.support` per claim (a memoised
+DAG walk), one line rendered per claim, and then a cut chosen against prefix
+sums.  Measured on this tree: **95 ms** for a store of four thousand live
+facts, and a fraction of a millisecond for the dozens a real mission holds
+— it is **linear in what the store believes**, not in what the block shows,
+because a fact must be graded before it can be ranked out.  It was 482 ms
+before the review: the cut used to re-render the whole block once per
+dropped line, which is quadratic against a store that only grows.  A
+deployment that intends to run thousands of receipts through one mission
+should read that number as the one to watch, and Phase 19's measurement is
+where it gets watched.
+
 ## Where it attaches, and why there is one place
 
 :meth:`core.runtime.run.Run._dispatch` calls

@@ -46,17 +46,32 @@ the writes rather than of who looked.
    one trade this block must never make.
 
 The header names the source: ``compiled from 3 receipts, 7 facts, 1
-conflict``.  A receipt here is a distinct evidence *locator* under the live
-propositions — the leaves of the proofs, not the propositions themselves —
-so a derived figure counts the receipts it rests on and not itself.
+conflict``.  A receipt here is a distinct evidence *locator* under the
+facts **this block shows** — the leaves of their proofs, not the
+propositions themselves, so a derived figure counts the receipts it rests
+on and not itself.  Counted over the shown facts and not over everything
+live, because the three numbers are one sentence: a header that counted
+receipts over the whole store beside a count of the rendered facts would
+be two populations in one breath, with nothing on the line to say which
+was which.
 
 **Truncation is never silent.**  When the budget drops anything the block
 says so in as many words, and says where the dropped material still is:
-the transcript above it.  That is v1's *widening escape*, which §2.9.5
-requires from day one — the compiled view may omit the decisive clue, and
-the model must be able to reach past it.  It is deliberately the cheapest
-possible one (the raw history is still in the window), and a real
-``hydrate``-shaped widening is Phase 20's, behind its own gate.
+the mission's **result store**, under the handle every fact line already
+prints.  That is v1's *widening escape*, which §2.9.5 requires from day
+one — the compiled view may omit the decisive clue, and the model must be
+able to reach past it.
+
+**Not the transcript, and the difference is a measurement.**  The obvious
+escape — "the receipts are still above you" — is falsifiable by this very
+block: the view is window pressure like anything else, and at a tight
+window two tool round trips were measured evicted to make room for one.
+A sentence whose truth the block can destroy is not an escape.  The result
+store is the half that cannot be evicted: it is on disk, it is addressed
+by the same handle the entity names are built from, and the harness
+already tells a model so when it compacts.  A real ``hydrate``-shaped
+widening — asking the *store* for more state rather than for one receipt —
+is Phase 20's, behind its own gate.
 
 **The budget is a hard cap in characters** — :data:`BUDGET_CHARS`, and a
 caller may pass another.  Characters and not tokens: this package has no
@@ -113,11 +128,23 @@ HYPOTHESES_HEADING = "HYPOTHESES — claimed by a model, not established"
 #: every truncated view without matching on prose; one line, so that the
 #: floor of a block is a header and a sentence rather than three of them
 #: (a view whose apology does not fit is a view this module refuses to
-#: render at all — see :func:`compile_view`); and the *escape* stated every
-#: single time, because the receipts really are still in the transcript
-#: above this block and that is what the model must be able to reach for.
-OMITTED = ("{what} not shown at this budget; the receipts remain in the "
-           "transcript above.")
+#: render at all — see :func:`compile_view`).
+#:
+#: **It points at the result store and not at the transcript**, and the
+#: correction is the review's: this block is itself window pressure, so a
+#: sentence promising that the receipts are "above" can be falsified by the
+#: block that promised it — two tool round trips were measured evicted to
+#: make room for one view at a tight window.  What cannot be evicted is the
+#: mission's *result store*: every receipt it took is still in it, under the
+#: handle every fact line already prints.  So the escape names the thing
+#: that is durably there.  The store's tool has a different name in every
+#: deployment and this module is pure, so the sentence says what to ask for
+#: rather than what to call — the harness's own compaction notice names the
+#: tool, and one owner of that name is enough.
+OMITTED = ("{what} not shown at this budget; ask the mission's result store "
+           "for a receipt by the handle its facts are named with "
+           "(entity `tool#handle`) — every receipt this run took is still "
+           "in it, whole.")
 
 #: How each kind of line is counted, singular and plural, in one place so
 #: the header and the omission sentence cannot disagree about a word.
@@ -246,7 +273,9 @@ class CompiledView:
 
     #: The block, ready to be a message.  ``""`` when there is nothing.
     text: str = ""
-    #: How many distinct receipts the facts rest on.
+    #: How many distinct receipts the **rendered** facts rest on — the
+    #: number the header states, over the population the header's other
+    #: numbers are about.
     receipts: int = 0
     #: Facts, conflicts and hypotheses **rendered**.
     facts: int = 0
@@ -295,6 +324,175 @@ def _supports(state: CognitiveState,
     return {prop.id: state.support(prop.id) for prop in props}
 
 
+@dataclass(frozen=True)
+class _Cut:
+    """How many lines of each section survive, and how many did not."""
+
+    facts: int = 0
+    conflicts: int = 0
+    hypotheses: int = 0
+    facts_out: int = 0
+    conflicts_out: int = 0
+    hypotheses_out: int = 0
+
+    @property
+    def lost(self) -> bool:
+        return bool(self.facts_out or self.conflicts_out
+                    or self.hypotheses_out)
+
+
+def _prefix(lines: Sequence[str]) -> List[int]:
+    """``[0, len(l0), len(l0)+len(l1), …]`` — the cost of keeping a prefix."""
+    out = [0]
+    for line in lines:
+        out.append(out[-1] + len(line))
+    return out
+
+
+def _cut_at(dropped: int, totals: Sequence[int]) -> _Cut:
+    """The cut after *dropped* lines have gone, in the documented order.
+
+    Hypotheses first (a guess is the cheapest thing to lose), then facts
+    from the **end**, which is the oldest entity (the receipt the mission
+    just took is the one the next step is about), and conflicts last — an
+    unresolved disagreement the model cannot see is the failure this whole
+    block exists to prevent.
+    """
+    facts, conflicts, hypotheses = totals
+    out_guesses = min(dropped, hypotheses)
+    out_facts = min(dropped - out_guesses, facts)
+    out_clashes = min(dropped - out_guesses - out_facts, conflicts)
+    return _Cut(facts=facts - out_facts, conflicts=conflicts - out_clashes,
+                hypotheses=hypotheses - out_guesses, facts_out=out_facts,
+                conflicts_out=out_clashes, hypotheses_out=out_guesses)
+
+
+def _size(cut: _Cut, prefixes: Sequence[Sequence[int]], head: int,
+          omission: int) -> int:
+    """What :func:`_render` of *cut* will measure, without rendering it.
+
+    The one thing in this module that knows the shape of the block without
+    building it, and it exists for one reason: the drop loop used to
+    re-render the whole block once per dropped line, which is quadratic in
+    a store that only grows.  A line's cost is its length plus the newline
+    that joins it, a section costs its heading and a blank line **only if
+    it keeps a line**, and the omission sentence costs its own two.
+
+    It is a second reader of :func:`_render`'s shape, which is a thing this
+    package otherwise refuses to have — so it is never *trusted*: the cut
+    it chooses is rendered and **measured** before it is returned, and a
+    disagreement between the two yields no block rather than one over its
+    own cap.  ``test_the_cut_is_tight`` is the other half of that guard: it
+    says the cut is not merely safe but the largest one that fits, which is
+    the half a conservative bug would pass.
+    """
+    total, parts = head, 1
+    for heading, kept, prefix in ((FACTS_HEADING, cut.facts, prefixes[0]),
+                                  (CONFLICTS_HEADING, cut.conflicts,
+                                   prefixes[1]),
+                                  (HYPOTHESES_HEADING, cut.hypotheses,
+                                   prefixes[2])):
+        if not kept:
+            continue
+        total += len(heading) + prefix[kept]
+        parts += 2 + kept
+    if cut.lost:
+        total += omission
+        parts += 2
+    return total + parts - 1
+
+
+def _floor(budget: int, totals: Sequence[int],
+           prefixes: Sequence[Sequence[int]]) -> int:
+    """The fewest drops that could *conceivably* fit — a binary search.
+
+    The kept lines and the newlines between them are a **lower bound** on
+    :func:`_size` (which adds a header, the headings and possibly a
+    sentence on top), and that bound falls as more is dropped, so it can be
+    searched where the real size cannot: every ``d`` below this answer is
+    provably too big, and the caller's exact scan can start here instead of
+    at zero.  Against four thousand live facts that is the difference
+    between four thousand candidates and about a dozen.
+
+    Monotone by construction, which is why it is the thing searched: each
+    further drop removes a line and its newline and adds nothing at all.
+    """
+    whole = prefixes[0][-1] + prefixes[1][-1] + prefixes[2][-1]
+    lines = sum(totals)
+    # The drop order's cumulative cost: hypotheses from the end, then
+    # facts, then conflicts — the same order :func:`_cut_at` walks, read as
+    # "what has gone by the time d lines have gone".
+    def kept_at(dropped: int) -> int:
+        cut = _cut_at(dropped, totals)
+        return (prefixes[0][cut.facts] + prefixes[1][cut.conflicts]
+                + prefixes[2][cut.hypotheses])
+
+    if whole + lines <= budget:
+        return 0
+    low, high = 0, lines
+    while low < high:
+        middle = (low + high) // 2
+        if kept_at(middle) + (lines - middle) <= budget:
+            high = middle
+        else:
+            low = middle + 1
+    return low
+
+
+def _choose(budget: int, totals: Sequence[int],
+            prefixes: Sequence[Sequence[int]], head: int,
+            omission: int) -> Optional[_Cut]:
+    """The fewest lines to drop so that the block fits, or ``None``.
+
+    A scan over the *number* dropped, not over renderings: every candidate
+    costs a handful of additions against the prefix sums, so a store with
+    ten thousand live facts is arithmetic rather than ten thousand joins of
+    ten thousand strings.  Bounded by construction — there are finitely
+    many lines and each step drops one more — which is the property a loop
+    inside a mission step has to have.
+
+    The scan is **exact** and starts at :func:`_floor`, which is the first
+    candidate that is not already impossible.  It is not itself a binary
+    search because :func:`_size` is not monotone at the two places that
+    matter: the omission sentence appears when the first line goes, and a
+    section's heading disappears when its last one does.  Searching a
+    function that steps up as well as down is how a block ends up one line
+    over the cap it was obeying.
+
+    *head* and *omission* are **upper bounds** on those two variable-length
+    pieces rather than their exact lengths, because both depend on the
+    counts the scan is choosing.  Reserving the widest they could be makes
+    the answer safe; the caller then spends its second render recovering
+    what that reservation over-reserved.
+    """
+    lines = sum(totals)
+    nothing = _cut_at(0, totals)
+    if _size(nothing, prefixes, head, omission) <= budget:
+        return nothing
+    for dropped in range(max(1, _floor(budget, totals, prefixes)),
+                         lines + 1):
+        cut = _cut_at(dropped, totals)
+        if _size(cut, prefixes, head, omission) <= budget:
+            return cut
+    return None
+
+
+def _widest_head(totals: Sequence[int]) -> int:
+    """The longest the header line can be for any cut of these totals.
+
+    Every count the header states is between zero and its total, and a
+    number's width grows with its value — so the extremes bound the middle.
+    Zero is in the set as well as the total because ``0 facts`` is *longer*
+    than ``1 fact``: the plural is the one place where a smaller number
+    takes more room.
+    """
+    facts, conflicts, _hypotheses = totals
+    return max(len(_head(receipts, kept_facts, kept_clashes))
+               for receipts in (0, sum(totals))
+               for kept_facts in (0, facts)
+               for kept_clashes in (0, conflicts))
+
+
 def compile_view(state: CognitiveState, *,
                  budget_chars: int = BUDGET_CHARS) -> CompiledView:
     """*state* as one block of at most *budget_chars* characters.
@@ -302,13 +500,17 @@ def compile_view(state: CognitiveState, *,
     Deterministic: the same state compiles to the same bytes, every time,
     in any process.  The only inputs are the store and the budget.
 
-    **What is dropped first when the budget bites**, and the order is the
-    argument: hypotheses (a guess is the cheapest thing to lose), then
-    facts, oldest entity first (the receipt the mission just took is the
-    one the next step is about), and conflicts **last** — an unresolved
-    disagreement the model cannot see is the failure this whole block
-    exists to prevent, and silence about it is worse than silence about a
-    fact whose receipt is still in the transcript.
+    **Two renders, whatever the store holds.**  The cut is chosen
+    arithmetically (:func:`_choose`, over prefix sums) and rendered twice:
+    once under upper bounds for the header and the omission sentence, whose
+    lengths depend on the very counts being chosen, and once more with the
+    lengths that first pass actually produced — which gives back the room
+    the upper bound reserved and did not need.  The second is used only if
+    it **measures** within the budget, so the arithmetic is checked against
+    the renderer on every call rather than trusted.  This is the shape the
+    review asked for: the previous version re-rendered the whole block once
+    per dropped line, which is quadratic against a store that only grows —
+    482 ms at four thousand live facts, on the model-call path.
     """
     budget = int(budget_chars)
     live = [prop for prop in state.propositions()
@@ -321,56 +523,68 @@ def compile_view(state: CognitiveState, *,
         return CompiledView()
 
     support = _supports(state, live)
-    receipts = {ref.locator
-                for prop in live
-                for ref in support[prop.id].evidence_leaves}
-
     by_entity: Dict[str, List[Proposition]] = {}
     for prop in live:
         by_entity.setdefault(prop.entity or "", []).append(prop)
-    fact_lines = [_fact_line(prop, support[prop.id])
-                  for entity in _entity_order(live)
-                  for prop in by_entity[entity]]
-
+    ordered = [prop for entity in _entity_order(live)
+               for prop in by_entity[entity]]
+    fact_lines = [_fact_line(prop, support[prop.id]) for prop in ordered]
+    # Beside each fact line, the receipts that fact rests on — so that the
+    # header can count the receipts of the facts it is ABOUT. Counting all
+    # of them there would state two numbers over two different populations
+    # in one sentence, and the reader has no way to see which.
+    fact_receipts = [tuple(ref.locator
+                           for ref in support[prop.id].evidence_leaves)
+                     for prop in ordered]
     clash_lines = [_conflict_line(state, clash) for clash in open_clashes]
     guess_lines = [f"{_claim(prop)}  [{band(prop.authority)}]"
                    for prop in guesses]
 
-    kept_facts, kept_clashes, kept_guesses = (len(fact_lines),
-                                              len(clash_lines),
-                                              len(guess_lines))
-    # Drop one line at a time and re-render, because the omission sentence
-    # itself costs characters: a block that dropped exactly enough lines to
-    # fit and then added a line saying so would be over the cap it was
-    # obeying. Bounded by construction — every pass drops one line and
-    # there are finitely many — which is the property a loop inside a
-    # mission step has to have.
-    while True:
-        text = _render(fact_lines[:kept_facts], clash_lines[:kept_clashes],
-                       guess_lines[:kept_guesses], len(receipts),
-                       len(fact_lines) - kept_facts,
-                       len(clash_lines) - kept_clashes,
-                       len(guess_lines) - kept_guesses)
-        if len(text) <= budget:
-            break
-        if kept_guesses:
-            kept_guesses -= 1
-        elif kept_facts:
-            kept_facts -= 1
-        elif kept_clashes:
-            kept_clashes -= 1
-        else:
-            # Nothing left to drop and it still does not fit: the budget is
-            # too small to hold even the header and the sentence saying
-            # what was dropped. An empty view, not an over-budget one — see
-            # the module docstring.
-            return CompiledView()
+    totals = (len(fact_lines), len(clash_lines), len(guess_lines))
+    prefixes = (_prefix(fact_lines), _prefix(clash_lines),
+                _prefix(guess_lines))
+
+    def receipts_of(kept: int) -> int:
+        return len({locator for refs in fact_receipts[:kept]
+                    for locator in refs})
+
+    def render(cut: _Cut) -> str:
+        return _render(fact_lines[:cut.facts], clash_lines[:cut.conflicts],
+                       guess_lines[:cut.hypotheses], receipts_of(cut.facts),
+                       cut.facts_out, cut.conflicts_out, cut.hypotheses_out)
+
+    first = _choose(budget, totals, prefixes, _widest_head(totals),
+                    len(_omission(*totals)))
+    if first is None:
+        # Not even the header and the sentence saying what went will fit.
+        # An empty view, not an over-budget one — a cap that is exceeded to
+        # apologise for itself is not a cap.
+        return CompiledView()
+    text, cut = render(first), first
+
+    # The second pass, and the only thing it is for: the first reserved the
+    # widest sentence any cut of this store could need, and the cut it made
+    # says which sentence is really wanted. Never a longer one — a pass
+    # that keeps MORE lines drops fewer, and fewer drops cannot make that
+    # sentence grow — so the room given back here is room the block is
+    # entitled to.
+    wider = _choose(budget, totals, prefixes, _widest_head(totals),
+                    len(_omission(first.facts_out, first.conflicts_out,
+                                  first.hypotheses_out)) if first.lost else 0)
+    if wider is not None:
+        second = render(wider)
+        if len(second) <= budget:
+            text, cut = second, wider
+    if len(text) > budget:
+        # The arithmetic and the renderer disagreed, which is the one thing
+        # a second reader of a shape can do wrong. No block, rather than a
+        # block over the cap somebody set.
+        return CompiledView()
     return CompiledView(
-        text=text, receipts=len(receipts),
-        facts=kept_facts, conflicts=kept_clashes, hypotheses=kept_guesses,
-        facts_omitted=len(fact_lines) - kept_facts,
-        conflicts_omitted=len(clash_lines) - kept_clashes,
-        hypotheses_omitted=len(guess_lines) - kept_guesses,
+        text=text, receipts=receipts_of(cut.facts),
+        facts=cut.facts, conflicts=cut.conflicts, hypotheses=cut.hypotheses,
+        facts_omitted=cut.facts_out, conflicts_omitted=cut.conflicts_out,
+        hypotheses_omitted=cut.hypotheses_out,
     )
 
 
@@ -391,24 +605,40 @@ def _conflict_line(state: CognitiveState, clash: Any) -> str:
     return f"{clash.kind}: {left}{SIDE_SEP}{other}"
 
 
+def _head(receipts: int, facts: int, clashes: int) -> str:
+    """The header line.  One owner, because :func:`_size` measures it."""
+    return (f"{TITLE} — compiled from {_plural(receipts, 'receipts')}, "
+            f"{_plural(facts, 'facts')}, "
+            f"{_plural(clashes, 'conflicts')}.")
+
+
+def _omission(facts_out: int, clashes_out: int, guesses_out: int) -> str:
+    """The sentence a dropped line leaves behind, or ``""``.  One owner."""
+    lost = [f"+{_plural(dropped, kind)}"
+            for dropped, kind in ((facts_out, "facts"),
+                                  (clashes_out, "conflicts"),
+                                  (guesses_out, "hypotheses")) if dropped]
+    return OMITTED.format(what=", ".join(lost)) if lost else ""
+
+
 def _render(facts: Sequence[str], clashes: Sequence[str],
             guesses: Sequence[str], receipts: int,
             facts_out: int, clashes_out: int, guesses_out: int) -> str:
     """The block, from lines that have already been chosen.
 
-    One renderer, so the budget loop measures exactly the bytes the model
+    One renderer, so what a caller measures is exactly the bytes the model
     is shown — a second spelling for "what this will look like" is the
-    cheapest way to ship a block that is one line over its own cap.
+    cheapest way to ship a block that is one line over its own cap.  The
+    two pieces whose *length* is needed before the lines are chosen —
+    :func:`_head` and :func:`_omission` — are functions rather than
+    f-strings in here for the same reason: :func:`_size` calls the same two.
 
     A section with no lines is not rendered at all: a heading over nothing
     is the shape that tells a model a thing was searched for and not found,
     which is a claim this block has no business making.  What *was* dropped
     is said once, at the end, in :data:`OMITTED`.
     """
-    head = (f"{TITLE} — compiled from {_plural(receipts, 'receipts')}, "
-            f"{_plural(len(facts), 'facts')}, "
-            f"{_plural(len(clashes), 'conflicts')}.")
-    out: List[str] = [head]
+    out: List[str] = [_head(receipts, len(facts), len(clashes))]
     for heading, lines in ((FACTS_HEADING, facts),
                            (CONFLICTS_HEADING, clashes),
                            (HYPOTHESES_HEADING, guesses)):
@@ -417,11 +647,8 @@ def _render(facts: Sequence[str], clashes: Sequence[str],
         out.append("")
         out.append(heading)
         out.extend(lines)
-    lost = [f"+{_plural(dropped, kind)}"
-            for dropped, kind in ((facts_out, "facts"),
-                                  (clashes_out, "conflicts"),
-                                  (guesses_out, "hypotheses")) if dropped]
-    if lost:
+    sentence = _omission(facts_out, clashes_out, guesses_out)
+    if sentence:
         out.append("")
-        out.append(OMITTED.format(what=", ".join(lost)))
+        out.append(sentence)
     return "\n".join(out)

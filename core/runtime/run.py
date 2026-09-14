@@ -2602,6 +2602,18 @@ class Run:
         like a view would otherwise have it silently deleted, and a
         compaction that already evicted the block leaves this a no-op,
         which is what it should be.
+
+        **One block per run object, compiled from one store.**  A child of
+        a staged turn has its own :class:`Run` and therefore its own
+        handle, and it shares its parent's :class:`Store` — so each stage's
+        conversation carries exactly one view, and every one of them is a
+        rendering of the *same* belief.  That is the kernel's single-writer
+        rule read from the other end: five stages do not hold five
+        opinions, they hold one, and the block each is shown is that one as
+        of its own step.  The turn that composes a staged *answer* is the
+        exception and it is deliberate — see
+        :meth:`core.runtime.swarm.SwarmRunner._synthesis_messages`, which
+        argues the silence and names what would revisit it.
         """
         if self._compiled is not None:
             for position, message in enumerate(messages):
