@@ -165,6 +165,7 @@ python -m core.eval run      --out DIR [--suite …] [--split …] [--json] [--a
 python -m core.eval measure  --out DIR [--report PATH] [--config NAME …] [--only KEY …] [--repeat N] [--per-mission-seconds 600] -- <spawn line>
 python -m core.eval ablation --out DIR [--report PATH] [--arms A,B] [--only KEY …] [--repeats N] [--per-mission-seconds 600] -- <spawn line>
 python -m core.eval extraction --probes PATH [--provider P] [--model M] [--temperature T] [--repeats N] [--only ID …] [--max-seconds S] [--report STEM] [--baseline PATH] [--json]
+python -m core.eval registry [--registry evidence/registry.json] add REPORT.json | show [--model NAME] [--json] | rm DIGEST
 ```
 
 `--suite` takes two in-repo names and otherwise a path. **`stub`** (the
@@ -187,6 +188,10 @@ and nothing to hold out — §13.
 `measure` is `run`, once per configuration, plus the table of the
 differences — §12. `ablation` is `run`, once per arm, plus the **paired**
 difference between arms — §14.
+
+`registry` takes no `--suite` either, and runs nothing at all: it ingests the
+report *files* the three measuring subcommands write and keeps a per-model
+profile of what has actually been measured — §16. It does not route.
 
 `score` scores run directories that already exist — **the no-GPU path**. A run
 directory is a `RunStore` directory: one directory per run with an
@@ -1530,3 +1535,76 @@ The rate the interval is computed over is the **run**-level one — every missio
 of every repeat — because that is the n the interval is honest about. Both
 numbers are printed side by side and neither is derived from the other.
 
+
+---
+
+## 16. The capability registry
+
+```
+python -m core.eval registry add evidence/extraction/extraction-2026-09-14.json
+python -m core.eval registry show [--model openai/gpt-oss-20b]
+python -m core.eval registry rm 73a533e0fe7f
+```
+
+`MODELS.md` §5 ends *register the profile*, and until this subcommand the
+profile was "the deployment's own notes". `evidence/registry.json` (the
+default; `--registry PATH` names another, and it is **not** searched for up the
+tree) holds, per model identity, every measurement that has been ingested —
+each one read out of a report file this package wrote, with the report's own
+identity sentence beside it and every figure carrying its `k` and its `n`.
+
+**`add` is the only writer.** Nothing is typed in. A report is accepted when
+its shape is one of the three (`rates` → extraction, `arms` → ablation,
+`configurations` → measure) *and* its `meta` names a provider and a model;
+anything else is refused with the reason. Re-adding the same bytes is a quiet
+no-op, recognised by the SHA-256 of the file, so running `add` over a directory
+after one new report landed is safe. The endpoint is reduced to
+`scheme://loopback|private|public` — never a host, a port or a path: a report
+is one team's artifact and this file is committed, and what a reader actually
+needs from an endpoint is whether the number came off a local box or a service
+across a network.
+
+**The discipline is the feature.**
+
+* **No bare rates.** Every figure is `k/n`, and the interval is
+  `core.eval.extraction.wilson` — the one Wilson in this package, imported and
+  never re-implemented.
+* **No false precision.** Below **n = 20** a figure prints its `k/n` and
+  *insufficient sample*, with no interval at all. Twenty because that is where
+  this project's own instrument was measured: the 1.0.0 final gate ran a
+  20-scenario tier at a 20B across five release candidates of real change and
+  landed 14, 15, 16, 16, 16 — the spread of the dice with the harness moving
+  underneath it (§12). A perfect 19 of 19 still has a Wilson lower bound near
+  83%.
+* **No cross-interpreter aggregation.** Two measurements whose subcommand,
+  scorer, prompt digest, decoding, temperature or endpoint class differ are two
+  rows and are never averaged. **A profile is the table, never a number.** The
+  one derived line permitted is a paired delta between the newest two
+  measurements of the same model on the same interpreter for the same figure,
+  and it is withheld when either side is under the floor.
+* **No timestamp in the file.** The store is a pure function of the reports it
+  holds, so ingesting the same reports twice produces the same bytes — the same
+  rule `score`'s report is written under (§5). Staleness is computed when the
+  table is rendered, from the reports' own dates, and marked past 90 days.
+
+**Routing is out of scope in v1**, deliberately. ROADMAP §2.9.7 admits the
+registry as *empirical routing across local models, coarse first; route only
+when differences are statistically meaningful*, and the second half has to be
+built before the first. Nothing in the runtime reads this file. Before routing
+lands, four things have to be true: two models measured on the **same**
+interpreter; both sides above n = 20 with **non-overlapping** intervals on the
+figure being routed by; a figure that names the obligation ("resists the
+unit-semantics trap", not "better model"); and a staleness rule, because an
+endpoint's weights and server defaults move with nothing in any log.
+
+**The worked example, both halves.** `evidence/registry.json` is the seeded
+store: one measurement, the reference platform's 20B extraction run of 13
+September 2026, thirteen figures, `probe_reliable` 45/49 with its interval and
+`conflict_surfaced` 6/6 marked insufficient. The other file in `evidence/` —
+the 1.1.3-vs-1.2.0 head-to-head summary — is **refused**, and that refusal is
+the second half of the example: it is a real comparison of two *framework
+versions* over a platform's scenarios, it was not written by this package, and
+it names no model, no provider and no temperature anywhere in it. There is no
+honest partial ingestion of it; a row saying "80% → 96.7%" under a model
+heading would be attributing a framework result to a model. It stays a document
+in `evidence/head-to-head/` and the registry says why it will not take it.

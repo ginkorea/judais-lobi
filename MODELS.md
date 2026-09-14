@@ -129,16 +129,49 @@ The loop, repeatable per model:
 4. **Record the result** beside the model identity, so the next person
    knows what this checkpoint was tuned *for*.
 
-## 5. Register the profile *(planned — Phase 20)*
+## 5. Register the profile *(the store ships today — v1; routing still planned, Phase 20)*
 
-The capability registry routes obligations to the cheapest capable model
-from measured profiles — coarse classes first, statistical significance
-before routing decisions. Until it lands, the profile is this page's
-numbers written into the deployment's own notes.
+The last step of the loop is writing the numbers down somewhere a later
+reader finds them **beside the interpreter that produced them**.
+`evidence/registry.json` is that place, and `python -m core.eval registry`
+is the only way in:
+
+```
+python -m core.eval registry add <report.json>    # extraction | ablation | measure
+python -m core.eval registry show [--model NAME]
+python -m core.eval registry rm <digest>
+```
+
+**Nothing is hand-entered.** `add` takes a report file one of the three
+measuring subcommands wrote, reads its identity sentence and its `k`/`n`,
+and refuses a shape it does not recognise or a report whose `meta` does
+not name a provider and a model — a figure without the model that produced
+it is not a measurement of a model. Re-adding the same bytes is a quiet
+no-op (the file's SHA-256 is the key). The endpoint is recorded as
+`scheme://loopback|private|public` and never as a host, because this file
+is committed and other people's reports pass through it.
+
+What `show` renders is a **table per model, split by interpreter** —
+subcommand, temperature, decoding, prompt digest, scorer, endpoint class —
+with `n` beside every figure, an interval from the package's one Wilson,
+an *insufficient sample* mark and **no interval** below n = 20, and the age
+of the newest measurement. Two measurements on different interpreters are
+two rows and are never averaged: **a profile is the table, never a
+number.** `EVAL.md` §16 is the full account, including why the floor is 20.
+
+**It does not route, and nothing in the runtime reads it.** ROADMAP §2.9.7
+admits routing only when differences are statistically meaningful, so v1
+is the evidence a router would have to read first. Four things have to be
+true before routing lands: two models measured on the *same* interpreter;
+both above n = 20 with non-overlapping intervals on the figure being routed
+by; a figure that names the obligation rather than ranking models in
+general; and a staleness rule, since an endpoint's weights, quantisation
+and server defaults move with nothing in any log.
 
 ---
 
 The one-sentence version: **serve, declare, measure, adapt the knobs,
-fine-tune the residual, and write every number down with its interpreter.**
+fine-tune the residual, and write every number down with its interpreter**
+— that last clause is §5, and it is a file now rather than a habit.
 A model adapted this way can be swapped for another by repeating the steps
 — which is the point.

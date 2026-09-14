@@ -1214,7 +1214,15 @@ this is the thought experiment's remaining machinery, admitted piecewise:
   problem class, the model does not have to remember to ask.
 - **Capability registry**: empirical routing across local models, coarse
   first; route only when differences are statistically meaningful — no false
-  precision from tiny samples.
+  precision from tiny samples. **The STORE ships (`core.eval registry`,
+  `EVAL.md` §16, `MODELS.md` §5): per-model profiles built only by ingesting
+  measured reports, every figure with its `k`/`n`, no interval below n = 20,
+  and no averaging across interpreters — a profile is the table, never a
+  number. The ROUTING stays behind this bullet's own gate**, and the module
+  states what would have to be true first: two models on the same
+  interpreter, both above the floor with non-overlapping intervals on a
+  figure that names the obligation, and a staleness rule. Nothing in the
+  runtime reads the file.
 
 #### 2.9.8 Phase 21 — specialized local models (plural)
 
