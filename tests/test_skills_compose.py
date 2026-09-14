@@ -1036,7 +1036,7 @@ class TestThePlaneDeclarationsMerge:
         assert composed.tools["entries"][0]["establishes"] == ["job_id"]
 
     def test_two_spellings_of_one_tool_are_one_entry(self, tmp_path):
-        """`same_tool`, as everywhere else: an author writes the spelling
+        """`tool_key`, as everywhere else: an author writes the spelling
         their server advertises and every surface derives the rest."""
         composed = compose_manifests([
             skill(tmp_path, "first", tools={"entries": [DISCOVERY]}),
@@ -1047,6 +1047,23 @@ class TestThePlaneDeclarationsMerge:
         assert len(composed.tools["entries"]) == 1
         assert composed.tools["entries"][0]["establishes"] == ["job_id",
                                                                "state"]
+
+    def test_the_kept_spelling_is_chosen_by_sorting_not_by_arrival(self,
+                                                                   tmp_path):
+        """`allowed_tools` keeps the first spelling it sees, and that is
+        fine for a set nobody writes down. This block IS written down — into
+        `reasoning.jsonl`, read back by a resumed run — so the name comes
+        from sorting the declared spellings rather than from which skill
+        was typed first."""
+        bare = skill(tmp_path / "a", "first", tools={"entries": [DISCOVERY]})
+        namespaced = skill(tmp_path / "b", "second", tools={"entries": [
+            {"name": "mcp.narrative_discovery", "establishes": ["state"]}]})
+        forwards = compose_manifests([bare, namespaced])
+        backwards = compose_manifests([namespaced, bare])
+        assert forwards.tools["entries"][0]["name"] \
+            == backwards.tools["entries"][0]["name"] \
+            == "mcp.narrative_discovery"
+        assert forwards.tools == backwards.tools
 
     def test_two_fallback_shapes_for_one_tool_are_a_refusal(self, tmp_path):
         with pytest.raises(SkillManifestError) as exc:
@@ -1141,6 +1158,44 @@ class TestThePlaneDeclarationsMerge:
                         DISCOVERY_MORE]})
         assert compose_manifests([first, second]).tools \
             == compose_manifests([second, first]).tools
+
+    def test_a_family_of_spellings_partitions_the_same_way_round(self,
+                                                                 tmp_path):
+        """`same_tool` is not an equivalence: `runs_get` matches both
+        `mcp.runs_get` and `mcp2.runs_get`, and those two do not match each
+        other. A grouping built in arrival order therefore puts this family
+        in one group or in two depending on which skill was typed first —
+        which is the order of a command line, inside a record a resumed run
+        reads back."""
+        first = skill(tmp_path / "a", "first", tools={"entries": [
+            {"name": "runs_get", "establishes": ["verdict"]}]})
+        second = skill(tmp_path / "b", "second", tools={"entries": [
+            {"name": "mcp.runs_get", "establishes": ["state"]}]})
+        third = skill(tmp_path / "c", "third", tools={"entries": [
+            {"name": "mcp2.runs_get", "establishes": ["owner"]}]})
+        assert compose_manifests([first, second, third]).tools \
+            == compose_manifests([third, second, first]).tools \
+            == compose_manifests([second, third, first]).tools
+
+    def test_a_merged_fallback_shape_is_data_and_not_a_frozen_view(self,
+                                                                    tmp_path):
+        """What comes out of a read block is read-only all the way down;
+        what comes out of a MERGE is a raw block a reader, a dump or a JSON
+        line may meet next. A read-only proxy in one of those is a string
+        nobody can read back."""
+        import json
+
+        shape = {"type": "object", "properties": {"a": {"type": "string"}},
+                 "required": ["a"]}
+        composed = compose_manifests([
+            skill(tmp_path / "a", "first", tools={"entries": [
+                {"name": "t", "output_schema": shape}]}),
+            skill(tmp_path / "b", "second", tools={"entries": [
+                {"name": "t", "establishes": ["verdict"]}]}),
+        ])
+        emitted = composed.tools["entries"][0]["output_schema"]
+        assert emitted == shape
+        assert json.loads(json.dumps(emitted)) == shape
 
 
 class TestTheSdkName:

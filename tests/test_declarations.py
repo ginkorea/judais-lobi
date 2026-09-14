@@ -144,7 +144,49 @@ class TestTheBlockIsReadAllTheWayDownAtTheDoor:
             ToolsBlock.from_mapping({"entries": [
                 {"name": "job_status", "establishes": ["state"]},
                 {"name": "job_status", "establishes": ["verdict"]}]})
-        assert "declares 'job_status' twice" in str(exc.value)
+        assert "declares one tool twice" in str(exc.value)
+        assert "'job_status'" in str(exc.value)
+
+    def test_two_spellings_of_one_tool_are_twice_and_both_are_named(self):
+        """THE SECOND ONE THE REVIEW PAID FOR. Keyed on the name as typed,
+        this door passes — and then every lookup, which matches on
+        `same_tool`, finds TWO entries and binds neither. The tool loses
+        every declaration it had and the plane collects false notes blaming
+        it for offering nothing. The refusal names both spellings, because
+        an author has to know which two lines to look at."""
+        with pytest.raises(DeclarationError) as exc:
+            ToolsBlock.from_mapping({"entries": [
+                {"name": "runs_get",
+                 "identifiers": {"run_id": {"kind": "run"}}},
+                {"name": "runs.get",
+                 "identifiers": {"run_id": {"kind": "job"}}}]})
+        message = str(exc.value)
+        assert "'runs_get'" in message and "'runs.get'" in message
+        assert "same_tool" in message
+
+    def test_a_local_tool_and_a_bridged_one_are_two_entries(self):
+        """The pair the rule deliberately allows: `run_shell_command` on
+        this host and `mcp.run_shell_command` on a server are two tools —
+        the code-plane gate already tells them apart — and a manifest may
+        declare both. `entry_for`'s exact-name-first rule is what keeps
+        that unambiguous."""
+        block = ToolsBlock.from_mapping({"entries": [
+            {"name": "runs_get", "identifiers": {"run_id": {"kind": "run"}}},
+            {"name": "mcp.runs_get",
+             "identifiers": {"run_id": {"kind": "job"}}}]})
+        assert len(block.entries) == 2
+        assert dict(block.entry_for("mcp.runs_get").identifiers) == {
+            "run_id": "job"}
+        assert dict(block.entry_for("runs_get").identifiers) == {
+            "run_id": "run"}
+
+    def test_a_block_that_passed_the_door_binds_every_entry_it_holds(self):
+        """The invariant the refusal above exists for, stated as the thing
+        a caller can rely on: every entry of a block this door accepted is
+        findable, so no tool silently loses what was declared about it."""
+        block = ToolsBlock.from_mapping(BLOCK)
+        for entry in block.entries:
+            assert block.entry_for(entry.name) is entry
 
     def test_a_product_keyed_on_an_identifier_nobody_declared_is_refused(self):
         """A handle nothing names is a hint that can never fire, and the
@@ -156,6 +198,19 @@ class TestTheBlockIsReadAllTheWayDownAtTheDoor:
                                "via": "job_status", "on": "jobid"}]}]})
         assert "'jobid'" in str(exc.value)
 
+    def test_a_product_on_an_entry_with_no_identifiers_is_refused(self):
+        """The emptiest form of the same mistake, and the one an empty
+        default would have excused: a two-phase declaration whose handle
+        nothing at all declares. The wire's case stands down (a server
+        emits whichever verbs it chose); the manifest's never does."""
+        with pytest.raises(DeclarationError) as exc:
+            ToolsBlock.from_mapping({"entries": [
+                {"name": "start",
+                 "produces": [{"kind": "asset", "field": "a",
+                               "via": "fetch", "on": "job_id"}]}]})
+        assert "'job_id'" in str(exc.value)
+        assert "neither it nor the plane declares one" in str(exc.value)
+
     def test_a_product_may_be_keyed_on_a_plane_default(self):
         """`defaults` are identifiers of every tool of the plane, so the
         envelope's own handle is a legal thing to key a chain on."""
@@ -165,6 +220,18 @@ class TestTheBlockIsReadAllTheWayDownAtTheDoor:
                          "produces": [{"kind": "asset", "field": "a",
                                        "via": "fetch", "on": "result_ref"}]}]})
         assert block.entries[0].produces[0].on == "result_ref"
+
+    def test_the_wire_may_declare_a_product_without_declaring_a_handle(self):
+        """The stand-down, and it is `None` rather than emptiness: a server
+        emits whichever verbs its generator knows, and refusing an
+        `x-produces` because the same schema published no `x-identifiers`
+        would be this reader inventing a rule for somebody else's tooling."""
+        plane = PlaneDeclarations.build(wire={"t": {
+            "type": "object", "properties": {"job_id": {}},
+            "x-produces": [{"kind": "asset", "field": "a", "via": "fetch",
+                            "on": "job_id"}]}})
+        assert plane.for_tool("t").produces[0].via == "fetch"
+        assert plane.discrepancies == ()
 
     def test_a_bare_on_is_the_key_it_was_typed_as(self):
         """pyyaml is a YAML 1.1 parser and `on` is a YAML 1.1 boolean, so a
@@ -177,6 +244,60 @@ class TestTheBlockIsReadAllTheWayDownAtTheDoor:
              "produces": [{"kind": "asset", "field": "a", "via": "fetch",
                            True: "job_id"}]}]})
         assert block.entries[0].produces[0].on == "job_id"
+
+    def test_a_boolean_key_is_named_by_the_word_that_was_typed(self):
+        """pyyaml hands back `True` for `on`, `yes` and `true` alike, so a
+        refusal quoting `True` sends an author looking for a word their
+        file does not contain. Outside a `produces` entry — where `on` is
+        the only key it could be — a boolean key is named by its family."""
+        with pytest.raises(DeclarationError) as exc:
+            ToolsBlock.from_mapping({"entries": [
+                {"name": "t", "identifiers": {True: {"kind": "job"}}}]})
+        message = str(exc.value)
+        assert "`on`, `yes` or `true`" in message
+        assert "True" not in message
+
+    def test_a_false_key_is_named_by_its_own_family(self):
+        with pytest.raises(DeclarationError) as exc:
+            ToolsBlock.from_mapping({"entries": [
+                {"name": "t", "identifiers": {"job_id": {"kind": "job"}},
+                 "produces": [{"kind": "asset", "field": "a", "via": "f",
+                               True: "job_id", False: "extra"}]}]})
+        assert "`off`, `no` or `false`" in str(exc.value)
+
+    def test_a_manifest_fallback_that_narrows_nothing_states_no_shape(self):
+        """*Does this schema say anything* has one owner on both sides of
+        the door: a manifest's `{}` or `{type: object}` narrows nothing,
+        exactly as a server's bare object does, so it states no shape
+        rather than claiming one."""
+        block = ToolsBlock.from_mapping({"entries": [
+            {"name": "t", "output_schema": {"type": "object"}}]})
+        assert block.entries[0].shape is None
+
+    def test_a_read_block_cannot_be_edited_afterwards(self):
+        """A declaration that could be edited after the door is a
+        declaration the door did not validate — and a JSON schema is nested
+        all the way down, so a frozen top level over a live `properties`
+        would be the reassuring half of immutability."""
+        block = ToolsBlock.from_mapping({"entries": [
+            {"name": "t", "output_schema": {
+                "type": "object", "properties": {"job_id": {"type": "string"}}}}
+        ]})
+        shape = block.entries[0].shape
+        with pytest.raises(TypeError):
+            shape["properties"] = {}
+        with pytest.raises(TypeError):
+            shape["properties"]["job_id"] = {}
+
+    def test_the_schema_is_not_the_callers_object_any_more(self):
+        """The leak this closes: a mapping handed straight off a YAML load
+        is still the loader's, and a caller that edited it afterwards would
+        change what a run declares."""
+        raw = {"type": "object", "properties": {"job_id": {}}}
+        block = ToolsBlock.from_mapping({"entries": [
+            {"name": "t", "output_schema": raw}]})
+        raw["properties"]["job_id"] = {"type": "number"}
+        assert dict(block.entries[0].shape["properties"]["job_id"]) == {}
 
     def test_every_problem_arrives_in_one_message(self):
         """An author fixing a block should edit the file once.  Three
@@ -290,6 +411,53 @@ class TestTheWireOwnsSemanticsPerVerb:
         assert not plane.for_tool("t")
         assert [note.key for note in plane.discrepancies] == ["outputSchema"]
 
+    def test_an_unusable_extension_key_takes_nothing_away_either(self):
+        """THE ONE THE REVIEW PAID FOR. A verb recorded on key PRESENCE is
+        handed back empty when the read failed, and precedence then lets a
+        malformed `x-identifiers` ERASE the manifest's identifiers for that
+        tool — silently, under a note saying the key contributed nothing.
+        Contributing nothing has to mean nothing to the answer as well as
+        nothing to the log."""
+        plane = PlaneDeclarations.build(
+            wire={"narrative_discovery": {
+                "type": "object",
+                "properties": {"job_id": {}, "corpus_asset_id": {}},
+                "x-identifiers": ["job_id"]}},
+            manifest=BLOCK)
+        declaration = plane.for_tool("narrative_discovery")
+        assert dict(declaration.identifiers) == {
+            "result_ref": "result", "corpus_asset_id": "asset",
+            "job_id": "job"}
+        assert declaration.sources["identifiers"] == MANIFEST
+        assert "outputSchema" in {note.key for note in plane.discrepancies}
+
+    def test_an_explicitly_empty_wire_verb_is_a_declaration_and_wins(self):
+        """The other side of the same line, and the reason it is a line:
+        `x-identifiers: {}` is a value this reader UNDERSTOOD — the plane
+        saying *this tool identifies nothing* — so it wins the verb, while
+        an unusable one leaves the manifest's answer standing. Unusable and
+        empty are different facts about a plane."""
+        plane = PlaneDeclarations.build(
+            wire={"narrative_discovery": {
+                "type": "object", "properties": {"job_id": {}},
+                "x-identifiers": {}}},
+            manifest=BLOCK)
+        declaration = plane.for_tool("narrative_discovery")
+        assert dict(declaration.identifiers) == {}
+        assert declaration.sources["identifiers"] == WIRE
+
+    def test_one_unusable_verb_does_not_take_the_others_down(self):
+        """Per verb, in the failure direction too: a server whose
+        `x-produces` is nonsense has still said what its keys identify."""
+        plane = PlaneDeclarations.build(wire={"t": {
+            "type": "object", "properties": {"job_id": {}},
+            "x-identifiers": {"job_id": {"kind": "job"}},
+            "x-produces": "later"}})
+        declaration = plane.for_tool("t")
+        assert dict(declaration.identifiers) == {"job_id": "job"}
+        assert declaration.produces == ()
+        assert declaration.sources["identifiers"] == WIRE
+
 
 class TestABareObjectContributesNothingAndRefusesNothing:
     """Eight of one real deployment's adapters declare real shapes and the
@@ -357,11 +525,40 @@ class TestAnAnnotationOnAKeyThePlaneDoesNotCarry:
             manifest=BLOCK)
         assert [note.key for note in plane.discrepancies] == []
 
-    def test_a_tool_the_plane_does_not_offer_is_noted_once(self):
+    def test_a_tool_the_run_does_not_offer_is_noted_once(self):
         plane = PlaneDeclarations.build(wire={"runs_get": BARE},
                                         manifest=BLOCK)
         assert [(note.tool, note.key) for note in plane.discrepancies] \
             == [("narrative_discovery", "name")]
+
+    def test_a_tool_the_run_holds_through_another_door_draws_no_note(self):
+        """The servers are not the whole plane. A mission runs bridged
+        tools beside this package's own, so a declaration about a built-in
+        the mission actually holds is true — and blaming it on a
+        `tools/list` that was never asked about `fs` would be a false note,
+        on a console, at the top of every run."""
+        plane = PlaneDeclarations.build(
+            wire={"runs_get": BARE}, manifest=BLOCK,
+            offered=["runs_get", "narrative_discovery"])
+        assert plane.discrepancies == ()
+        assert dict(plane.identifiers_for("narrative_discovery"))
+
+    def test_the_offered_set_is_matched_the_same_way_as_everything_else(self):
+        """`same_tool` here too: a mission offering the namespaced spelling
+        holds the tool a manifest named bare."""
+        plane = PlaneDeclarations.build(
+            wire={"runs_get": BARE}, manifest=BLOCK,
+            offered=["runs_get", "mcp.narrative_discovery"])
+        assert plane.discrepancies == ()
+
+    def test_saying_nothing_about_the_offered_set_falls_back_to_the_wire(self):
+        """Empty means *nobody said*, not *nothing is offered*: a caller
+        that does not pass the resolved set gets the behaviour it had
+        before there was one, rather than a note against every tool."""
+        plane = PlaneDeclarations.build(wire={"runs_get": BARE},
+                                        manifest=BLOCK, offered=())
+        assert [note.tool for note in plane.discrepancies] \
+            == ["narrative_discovery"]
 
     def test_with_no_server_there_is_nothing_to_be_stale_against(self):
         """A built-in plane and an offline replay: nothing spoke, so no
@@ -428,9 +625,15 @@ class TestTheRecordIsWhatAReplayReadsBack:
         assert record["tools"]["narrative_discovery"]["shape"] == WIRE
         assert "properties" not in str(record)
 
-    def test_a_record_from_a_newer_writer_is_refused(self):
+    @pytest.mark.parametrize("version", [DECLARATIONS_SCHEMA_VERSION + 1, 0,
+                                         -1, None, True, "1", 1.0])
+    def test_a_version_this_reader_cannot_take_is_refused(self, version):
+        """Both ends of the range. A newer writer knows things this reader
+        does not; `0`, a missing key and a string are not records any
+        version of this writer wrote, and reading one as version 1 would
+        rebuild hints out of a line nobody meant as declarations."""
         record = PlaneDeclarations.build(manifest=BLOCK).as_record()
-        record[DECLARATIONS_KEY] = DECLARATIONS_SCHEMA_VERSION + 1
+        record[DECLARATIONS_KEY] = version
         with pytest.raises(DeclarationError):
             PlaneDeclarations.from_record(record)
 
@@ -448,3 +651,15 @@ class TestNothingHereCanBeEditedAfterItIsBuilt:
                                         manifest=BLOCK)
         assert "2 tool(s) declared" in plane.describe()
         assert "identifier(s)" in plane.describe()
+
+    def test_a_note_renders_as_one_line_naming_the_tool_and_the_key(self):
+        """What the console block is made of, and the whole of what makes a
+        discrepancy actionable: which tool, which key, and what to do."""
+        plane = PlaneDeclarations.build(
+            wire={"narrative_discovery": {
+                "type": "object", "properties": {"job_id": {}},
+                "x-identifiers": {"job_id": {"kind": "run"}}}},
+            manifest=BLOCK)
+        line = plane.discrepancies[0].sentence()
+        assert line.startswith("narrative_discovery · identifiers:")
+        assert "\n" not in line

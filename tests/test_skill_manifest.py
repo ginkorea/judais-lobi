@@ -776,7 +776,7 @@ class TestThePlaneDeclarations:
         message = str(exc.value)
         assert "`:` or `#`" in message
         assert "`establishes` holds a str" in message
-        assert "declares 't' twice" in message
+        assert "declares one tool twice" in message
 
 
 class TestSdkImport:

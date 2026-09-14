@@ -1470,6 +1470,34 @@ def _merge_cognition(
     return merged
 
 
+def _tool_groups(names: Sequence[str]) -> Dict[str, str]:
+    """``{name as written: the one spelling that stands for all of them}``.
+
+    Two skills naming one tool in two conventions declare it once, and the
+    relation that says so is :func:`~core.tools.descriptors.same_tool` —
+    which is deliberately **not** an equivalence: ``runs_get`` matches both
+    ``mcp.runs_get`` and ``mcp2.runs_get`` and those two do not match each
+    other.  A grouping built by scanning the entries in arrival order
+    therefore partitions such a family differently depending on which skill
+    was listed first, and the merged block would carry the order of a
+    command line into a run's reasoning log.
+
+    So the scan runs over the SET of declared names in one fixed order —
+    by :func:`~core.tools.descriptors.tool_key`, then by the name — and the
+    spelling that stands for a group is the first of its members in that
+    same order.  The result is a function of which names were declared and
+    of nothing else.
+    """
+    ordered = sorted({str(name) for name in names},
+                     key=lambda name: (tool_key(name), name))
+    groups: Dict[str, str] = {}
+    for name in ordered:
+        groups[name] = next((groups[seen] for seen in ordered
+                             if seen in groups and same_tool(seen, name)),
+                            name)
+    return groups
+
+
 def _merge_tools(
     manifests: Sequence["SkillManifest"], problems: List[str],
 ) -> Optional[Dict[str, Any]]:
@@ -1486,13 +1514,15 @@ def _merge_tools(
     (``identifier_pattern``'s) wherever two skills can mean different
     things by one word:
 
-    * **entries union by tool name**, on
+    * **entries union by tool**, on
       :func:`~core.tools.descriptors.same_tool` — this framework's one
       answer to *are these the same tool* — so two skills naming one tool
-      in two conventions declare it once.  The kept spelling is the first
-      one seen, exactly as ``allowed_tools`` keeps it, and for the same
-      reason: nothing binds differently either way, because every lookup
-      matches on ``same_tool`` too;
+      in two conventions declare it once.  The grouping and the kept
+      spelling both come out of :func:`_tool_groups`, which sorts before it
+      scans: nothing binds differently either way (every lookup matches on
+      ``same_tool`` too), but this block is written into a run's reasoning
+      log, and a partition or a name that depended on which skill was typed
+      first would put argument order into a record;
     * **``identifiers`` agree or refuse, per key.**  Two kinds for one key
       is a refusal naming both skills: a key identifies a job or it
       identifies an asset, the resolver would link the same value into two
@@ -1508,15 +1538,16 @@ def _merge_tools(
       question the wire is meant to answer anyway;
     * **``defaults`` merge exactly as ``identifiers`` do.**
 
-    The result is **order-independent**: entries by name, keys, fields and
-    products all sorted, so composing the same skills in the other order is
-    the same block.  Not decoration — a plane's declarations are written
+    The result is **order-independent**: the kept spellings, the entry
+    order, the keys, the fields and the products are all chosen by sorting
+    rather than by arrival, so composing the same skills in the other order
+    is the same block, to the byte.  Not decoration — a plane's declarations are written
     into ``reasoning.jsonl`` and read back by a resumed run, and a block
     that depended on the order a command line listed two skills in would
     make that record a fact about typing.
     """
     from core.runtime.declarations import (ESTABLISHES, IDENTIFIERS, PRODUCES,
-                                           SHAPE, ToolsBlock)
+                                           SHAPE, ToolsBlock, thawed)
 
     declared = [m for m in manifests if m.tools is not None]
     if not declared:
@@ -1563,16 +1594,21 @@ def _merge_tools(
                                  for key in sorted(defaults)}
         merged["defaults"] = body
 
-    # The accumulators, keyed by the spelling that was kept. `wrote` is the
+    # The accumulators, keyed by `tool_key` — the identity, not a spelling —
+    # with every spelling that was declared kept beside it so the emitted
+    # name can be chosen by sorting rather than by arrival. `wrote` is the
     # key-presence half — composition may change a value and may never
     # change a declared key's presence, `_declared`'s lesson one block over
     # — and it is read off the RAW entries, because a parsed entry cannot
     # tell `establishes: []` from a skill that never mentioned it.
     entries: Dict[str, Dict[str, Any]] = {}
+    spellings: Dict[str, List[str]] = {}
     wrote: Dict[str, set] = {}
     entry_owner: Dict[str, str] = {}
     ident_owner: Dict[Tuple[str, str], str] = {}
     shape_owner: Dict[str, str] = {}
+    grouped = _tool_groups([entry.name for manifest in usable
+                            for entry in blocks[manifest.name].entries])
     for manifest in usable:
         raw_entries = {
             str((item or {}).get("name") or "").strip(): item
@@ -1580,22 +1616,28 @@ def _merge_tools(
             if isinstance(item, Mapping)
         }
         for entry in blocks[manifest.name].entries:
-            kept = next((name for name in entries
-                         if same_tool(name, entry.name)), None)
-            if kept is None:
-                kept = entry.name
+            kept = grouped[entry.name]
+            if kept not in entries:
                 entries[kept] = {IDENTIFIERS: {}, ESTABLISHES: [],
                                  PRODUCES: [], SHAPE: None}
+                spellings[kept] = []
                 wrote[kept] = set()
                 entry_owner[kept] = manifest.name
+            if entry.name not in spellings[kept]:
+                spellings[kept].append(entry.name)
             acc = entries[kept]
+            # Refusals name the tool as the skill being merged SPELLED it —
+            # `kept` is an identity and not a word in anybody's file, and a
+            # message quoting it would send an author looking for a name
+            # they never typed.
+            shown = entry.name
             for key, kind in entry.identifiers.items():
                 if key not in acc[IDENTIFIERS]:
                     acc[IDENTIFIERS][key] = kind
                     ident_owner[(kept, key)] = manifest.name
                 elif acc[IDENTIFIERS][key] != kind:
                     problems.append(
-                        f"`tools: {kept}` declares the identifier {key!r} as "
+                        f"`tools: {shown}` declares the identifier {key!r} as "
                         f"two kinds of subject: "
                         f"{ident_owner[(kept, key)]!r} says "
                         f"{acc[IDENTIFIERS][key]!r} and {manifest.name!r} "
@@ -1611,7 +1653,7 @@ def _merge_tools(
                     acc[PRODUCES].append(produced)
                 elif twin != produced:
                     problems.append(
-                        f"`tools: {kept}` declares the product "
+                        f"`tools: {shown}` declares the product "
                         f"{produced.kind}/{produced.field} twice over with "
                         f"different chains: {twin.sentence()} and "
                         f"{produced.sentence()}. One product arrives through "
@@ -1623,7 +1665,7 @@ def _merge_tools(
                     shape_owner[kept] = manifest.name
                 elif _canonical(acc[SHAPE]) != _canonical(entry.shape):
                     problems.append(
-                        f"`tools: {kept}` is given two different "
+                        f"`tools: {shown}` is given two different "
                         f"`{SHAPE}` fallbacks, by {shape_owner[kept]!r} and "
                         f"{manifest.name!r}. A fallback shape is what a "
                         f"server that publishes none is read as, and two of "
@@ -1633,8 +1675,14 @@ def _merge_tools(
                             if key in (raw_entries.get(entry.name) or {})}
 
     if _declares(raw_blocks, "entries"):
-        merged["entries"] = [_tools_entry(name, entries[name], wrote[name])
-                             for name in sorted(entries)]
+        # Ordered by identity and named by the spelling `_tool_groups`
+        # chose: both halves come out of sorting, so the block two skills
+        # compose to does not depend on which of them was typed first.
+        merged["entries"] = [
+            _tools_entry(name, entries[name], wrote[name])
+            for name in sorted(entries, key=lambda name: (tool_key(name),
+                                                          name))
+        ]
 
     # Validated HERE, for `_merge_cognition`'s reason: the merged mapping is
     # a block no skill wrote, and the door is where a mission finds out that
@@ -1659,7 +1707,7 @@ def _tools_entry(name: str, accumulated: Dict[str, Any],
     is what makes composing two skills the other way round the same block.
     """
     from core.runtime.declarations import (ESTABLISHES, IDENTIFIERS, PRODUCES,
-                                           SHAPE)
+                                           SHAPE, thawed)
 
     entry: Dict[str, Any] = {"name": name}
     if IDENTIFIERS in wrote:
@@ -1675,7 +1723,11 @@ def _tools_entry(name: str, accumulated: Dict[str, Any],
                                   key=lambda item: (item.kind, item.field,
                                                     item.via, item.on))]
     if SHAPE in wrote and accumulated[SHAPE] is not None:
-        entry[SHAPE] = accumulated[SHAPE]
+        # `thawed`, because what comes out of a `ToolEntry` is frozen all
+        # the way down and what goes out of here is DATA — a raw block a
+        # reader, a dump or a JSON line may meet next, and a read-only proxy
+        # in one of those is a string nobody can read back.
+        entry[SHAPE] = thawed(accumulated[SHAPE])
     return entry
 
 

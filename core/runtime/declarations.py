@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from core.tools.descriptors import same_tool
+from core.tools.descriptors import same_tool, tool_key
 
 __all__ = [
     "DECLARATIONS_KEY", "DECLARATIONS_SCHEMA_VERSION", "BLOCK_KEYS",
@@ -64,7 +64,7 @@ __all__ = [
     "ESTABLISHES", "IDENTIFIERS", "PRODUCES", "SHAPE", "VERBS", "WIRE_VERBS",
     "MANIFEST", "WIRE", "PROBLEM_SEP",
     "DeclarationError", "Discrepancy", "PlaneDeclarations", "Produced",
-    "ToolDeclaration", "ToolEntry", "ToolsBlock",
+    "ToolDeclaration", "ToolEntry", "ToolsBlock", "thawed",
 ]
 
 #: The key the ``reasoning.jsonl`` declarations record states its own
@@ -134,11 +134,25 @@ PRODUCES_KEYS: Tuple[str, ...] = ("kind", "field", "via", "on")
 #: ``on`` is a **YAML 1.1 boolean**, and pyyaml is a YAML 1.1 parser: a
 #: manifest writing ``on: job_id`` hands this reader the key ``True``.  That
 #: is not an author's mistake in any sense they could act on — it is the
-#: same word, parsed by the loader the mission uses — so it is read back as
-#: the key it was typed as, here, in one place, rather than refused with a
-#: message about quoting.  ``yes``/``no``/``off`` are the same family and
-#: name nothing in this vocabulary, so ``True`` is the only one that arises.
+#: word this vocabulary uses, parsed by the loader the mission itself uses —
+#: so inside a ``produces`` entry, where ``on`` is the only key it could be,
+#: it is read back as that key rather than refused with a message about
+#: quoting.
+#:
+#: Only there.  ``True`` may have been typed ``on``, ``yes`` or ``true`` and
+#: ``False`` may have been ``off``, ``no`` or ``false``, so **anywhere else
+#: a boolean key is a key this reader cannot name** — it says the family
+#: instead (:func:`_spelled`), because quoting the Python word back at
+#: somebody who wrote YAML sends them looking for a word that is not in
+#: their file.
 _YAML_TRUE_KEY = "on"
+
+#: How a YAML 1.1 boolean is described back to the author who typed one.
+#: Both families, because which word was written cannot be recovered.
+_YAML_BOOLS: Mapping[bool, str] = MappingProxyType({
+    True: "a bare `on`, `yes` or `true`",
+    False: "a bare `off`, `no` or `false`",
+})
 
 #: How the problems of one refusal are laid out, and it is **not** ``"; "``:
 #: :data:`core.runtime.cognition.PROBLEM_SEP`'s argument, restated here
@@ -177,14 +191,62 @@ def _text(value: Any) -> str:
     return str(value).strip() if isinstance(value, str) else ""
 
 
+def _spelled(key: Any) -> str:
+    """How a key is named back to the person who typed it.
+
+    ``repr`` for everything a reader can point at in the file, and the
+    YAML 1.1 boolean families for the one thing it cannot: pyyaml hands
+    back ``True`` for ``on``, ``yes`` and ``true`` alike, and a refusal
+    quoting ``True`` sends an author looking for a word their file does
+    not contain.  See :data:`_YAML_BOOLS`.
+    """
+    if isinstance(key, bool):
+        return f"{_YAML_BOOLS[key]} (YAML reads it as a boolean, not a name)"
+    return repr(key)
+
+
+def _frozen(value: Any) -> Any:
+    """*value* as something a later caller cannot edit, all the way down.
+
+    Mappings become :class:`~types.MappingProxyType` over copies and lists
+    become tuples, so a schema that arrived off a YAML load stops being the
+    loader's object.  Scalars are returned as they are, which is what makes
+    this cheap enough to run at every door.
+    """
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _frozen(item)
+                                 for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen(item) for item in value)
+    return value
+
+
+def thawed(value: Any) -> Any:
+    """The inverse of :func:`_frozen`: plain dicts and lists, all the way
+    down.
+
+    For the one caller that has to hand a schema back out as *data* — the
+    composition in :mod:`core.runtime.skills`, which builds a raw block no
+    skill wrote and which a reader, a YAML dump or a JSON line may see
+    next.  A ``MappingProxyType`` in a mapping somebody serialises is a
+    string in a file nobody can read back.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): thawed(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thawed(item) for item in value]
+    return value
+
+
 def _closed(raw: Mapping, allowed: Sequence[str], where: str,
             problems: List[str]) -> None:
     """Every key of *raw* this reader has never heard of, named."""
-    unknown = [str(key) for key in raw if str(key) not in allowed]
-    for key in sorted(unknown):
+    unknown = [key for key in raw if str(key) not in allowed]
+    for key in sorted(unknown, key=str):
         problems.append(
-            f"{where} says {key!r}, which this reader has never heard of; "
-            f"a `tools:` block may say {', '.join(repr(k) for k in allowed)}")
+            f"{where} says {_spelled(key)}, which this reader has never "
+            f"heard of; a `tools:` block may say "
+            f"{', '.join(repr(k) for k in allowed)}")
 
 
 # ── the three verbs.  ONE reader each, for both doors ────────────────────────
@@ -212,9 +274,9 @@ def read_identifiers(raw: Any, where: str,
         path = _text(key)
         if not path or not _PATH.match(path):
             problems.append(
-                f"{where} `{IDENTIFIERS}` names {key!r}, which is not a key "
-                f"path: dotted segments, each optionally ending in `[]` "
-                f"(`data.job_id`, `source_assets[]`)")
+                f"{where} `{IDENTIFIERS}` names {_spelled(key)}, which is "
+                f"not a key path: dotted segments, each optionally ending "
+                f"in `[]` (`data.job_id`, `source_assets[]`)")
             continue
         if not _is_mapping(body):
             problems.append(
@@ -260,8 +322,9 @@ def read_establishes(raw: Any, where: str,
         name = _text(item)
         if not name or not _PATH.match(name):
             problems.append(
-                f"{where} `{ESTABLISHES}` names {item!r}, which is not a "
-                f"field: dotted segments, each optionally ending in `[]`")
+                f"{where} `{ESTABLISHES}` names {_spelled(item)}, which is "
+                f"not a field: dotted segments, each optionally ending in "
+                f"`[]`")
             continue
         if name not in found:
             found.append(name)
@@ -290,16 +353,23 @@ class Produced:
 
 
 def read_produces(raw: Any, where: str, problems: List[str],
-                  keyed_on: Sequence[str] = ()) -> Tuple[Produced, ...]:
+                  keyed_on: Optional[Sequence[str]] = None,
+                  ) -> Tuple[Produced, ...]:
     """The two-phase declarations of one tool.
 
     *keyed_on* is the identifier key paths that tool declares, and an ``on``
     outside it is refused: a handle nothing names is a hint that can never
     fire, and the author who typed the wrong key would find out by never
-    seeing the hint they wrote.  Empty *keyed_on* stands the check down —
-    that is the wire's case, where the schema carries whichever verbs the
-    server chose to emit and this reader is not entitled to an opinion
-    about the ones it did not.
+    seeing the hint they wrote.
+
+    ``None`` — and **only** ``None`` — stands the check down.  That is the
+    wire's case: a schema carries whichever verbs the server chose to emit,
+    and a reader that refused an ``x-produces`` because the same schema
+    published no ``x-identifiers`` would be inventing a rule for somebody
+    else's generator.  The manifest always passes a sequence, **empty
+    included**: an entry that declares a product and no handle at all is
+    the plainest form of the mistake this check exists for, and an empty
+    default would have excused exactly it.
     """
     if raw is None:
         return ()
@@ -315,8 +385,11 @@ def read_produces(raw: Any, where: str, problems: List[str],
                 f"{where} `{PRODUCES}` holds a {type(item).__name__}; each "
                 f"entry is a mapping stating {', '.join(PRODUCES_KEYS)}")
             continue
-        # See `_YAML_TRUE_KEY`: the loader turned a bare `on:` into `True`
-        # before this reader ever saw it.
+        # See `_YAML_TRUE_KEY`: the loader turned a bare `on:` — or `yes:`,
+        # or `true:` — into `True` before this reader ever saw it, and `on`
+        # is the only key it could have been meant as here. `False` is NOT
+        # mapped: no key of this entry is spelled `off`, `no` or `false`,
+        # so one lands in `_closed` and is named by its family.
         item = {(_YAML_TRUE_KEY if key is True else key): value
                 for key, value in item.items()}
         _closed(item, PRODUCES_KEYS, f"{where} `{PRODUCES}` entry", problems)
@@ -330,12 +403,13 @@ def read_produces(raw: Any, where: str, problems: List[str],
                 f"carries it (via) and the handle it is keyed by (on), and "
                 f"one missing term is a hint nobody can act on")
             continue
-        if keyed_on and values["on"] not in keyed_on:
+        if keyed_on is not None and values["on"] not in keyed_on:
+            declared = (", ".join(sorted(keyed_on)) if keyed_on
+                        else "neither it nor the plane declares one")
             problems.append(
                 f"{where} `{PRODUCES}` is keyed on {values['on']!r}, which "
-                f"this tool does not declare as an identifier "
-                f"({', '.join(sorted(keyed_on)) or 'it declares none'}); a "
-                f"handle nothing names is a hint that can never fire")
+                f"this tool does not declare as an identifier ({declared}); "
+                f"a handle nothing names is a hint that can never fire")
             continue
         entry = Produced(**values)
         if entry not in found:
@@ -356,11 +430,20 @@ class ToolEntry:
     produces: Tuple[Produced, ...] = ()
     #: The shape this entry states, for a server that publishes none.  The
     #: wire's is preferred always; see :meth:`PlaneDeclarations.build`.
-    shape: Optional[Dict[str, Any]] = None
+    shape: Optional[Mapping[str, Any]] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "identifiers",
                            MappingProxyType(dict(self.identifiers)))
+        # The schema too, and it was the one leak in an object whose whole
+        # promise is *read once and then quoted*: a nested mapping handed
+        # straight off a YAML load is still the caller's to edit, and a
+        # declaration that could be edited after the door is a declaration
+        # the door did not validate. Deep because a JSON schema is nested
+        # all the way down — a frozen top level over a live `properties`
+        # would be the reassuring half of immutability.
+        if self.shape is not None:
+            object.__setattr__(self, "shape", _frozen(self.shape))
 
 
 @dataclass(frozen=True)
@@ -413,7 +496,9 @@ class ToolsBlock:
 
         entries: List[ToolEntry] = []
         raw_entries = raw.get("entries")
-        seen: Dict[str, int] = {}
+        #: ``tool_key`` → the spelling that claimed it, so a second entry
+        #: for one tool can be refused naming BOTH names as written.
+        seen: Dict[str, str] = {}
         if raw_entries is not None:
             if isinstance(raw_entries, str) or not isinstance(raw_entries,
                                                               Sequence):
@@ -431,7 +516,7 @@ class ToolsBlock:
         return cls(defaults=defaults, entries=tuple(entries))
 
     @staticmethod
-    def _entry(item: Any, defaults: Mapping[str, str], seen: Dict[str, int],
+    def _entry(item: Any, defaults: Mapping[str, str], seen: Dict[str, str],
                problems: List[str]) -> Optional[ToolEntry]:
         if not _is_mapping(item):
             problems.append(
@@ -446,19 +531,38 @@ class ToolsBlock:
                 "about one tool and the name is how a receipt finds it")
             return None
         _closed(item, ENTRY_KEYS, where, problems)
-        if name in seen:
+        key = tool_key(name)
+        if key in seen:
             # Within ONE manifest, and refused rather than merged: two
             # entries for one tool is an author editing the wrong one for
             # the rest of the file's life, and which of them binds would be
             # a fact about listing order. Two SKILLS declaring one tool is a
             # different question and has a different answer — see
             # `core.runtime.skills._merge_tools`.
+            #
+            # Keyed on `tool_key` and NOT on the name as typed, because
+            # that is the identity every consumer of this block uses:
+            # `entry_for` and `for_tool` both match on `same_tool`, so two
+            # spellings of one tool (`runs_get` and `runs.get`) let the door
+            # pass a file whose entries then match a lookup TWICE — and an
+            # ambiguous match binds neither. The tool would silently lose
+            # every declaration it had, and the plane would collect two
+            # false notes blaming it for offering nothing.
+            #
+            # `tool_key` and not `same_tool`, and the difference is one
+            # legitimate pair: `runs_get` and `mcp.runs_get` have different
+            # keys and ARE different tools — this host's own and a bridged
+            # one, which the code-plane gate already tells apart — so a
+            # manifest may declare both. The exact-name rule in `entry_for`
+            # is what keeps that pair unambiguous, and it is why the rule
+            # is *exact first, `same_tool` after*.
             problems.append(
-                f"`tools:` declares {name!r} twice; one tool is one entry, "
-                f"and two of them is an author editing whichever the reader "
-                f"did not take")
+                f"`tools:` declares one tool twice, as {seen[key]!r} and "
+                f"{name!r}; those are the same tool to every lookup here "
+                f"(`same_tool`), so two entries would match a receipt twice "
+                f"and bind neither. Keep one spelling")
             return None
-        seen[name] = 1
+        seen[key] = name
         identifiers = read_identifiers(item.get(IDENTIFIERS), where, problems)
         keyed_on = sorted({*identifiers, *defaults})
         shape = item.get(SHAPE)
@@ -468,6 +572,15 @@ class ToolsBlock:
                 f"JSON-schema mapping, and only for a server that publishes "
                 f"none of its own — where one is published the wire's wins")
             shape = None
+        elif shape is not None and not _properties(shape):
+            # *Does this schema say anything* has ONE owner, and it is the
+            # same function on both sides of the door: a manifest fallback
+            # of `{}` or `{type: object}` narrows nothing, exactly as a
+            # server's bare object narrows nothing, so it states no shape
+            # rather than claiming one. Two answers to that question would
+            # have made a manifest's empty fallback outrank a wire's empty
+            # publication for no reason anybody wrote down.
+            shape = None
         return ToolEntry(
             name=name,
             identifiers=identifiers,
@@ -475,7 +588,7 @@ class ToolsBlock:
                                          problems),
             produces=read_produces(item.get(PRODUCES), where, problems,
                                    keyed_on=keyed_on),
-            shape=dict(shape) if shape is not None else None,
+            shape=shape,
         )
 
     def entry_for(self, name: str) -> Optional[ToolEntry]:
@@ -521,13 +634,27 @@ def _properties(schema: Any) -> Dict[str, Any]:
 
 def read_wire(schema: Any, tool: str,
               problems: List[str]) -> Dict[str, Any]:
-    """The ``x-`` verbs a server published, as ``{verb: value}``.
+    """The ``x-`` verbs a server published **and this reader could use**,
+    as ``{verb: value}``.
 
     Never raises and never refuses the tool: a server is not a file an
     author is editing, and a mission that died because somebody's schema
     generator emitted a malformed extension key would be this layer
     breaking the thing it exists to inform.  Faults come back through
     *problems* and become discrepancies.
+
+    **A verb only appears in the result when its read added no problem**,
+    and that is the whole difference between two facts a caller must not
+    confuse:
+
+    * ``x-identifiers: {}`` — a declaration this reader understood, saying
+      *this tool identifies nothing*.  It is in the result, it wins the
+      verb, and it correctly overrides a manifest that thought otherwise;
+    * ``x-identifiers: ["job_id"]`` — a value this reader could not use at
+      all.  It is **absent** from the result, so precedence never runs for
+      that verb and the manifest's answer stands.  Anything else would let
+      one malformed extension key delete a platform's declarations for a
+      tool while the note beside it said the key contributed nothing.
     """
     found: Dict[str, Any] = {}
     if not _is_mapping(schema):
@@ -537,12 +664,30 @@ def read_wire(schema: Any, tool: str,
         if wire_key not in schema:
             continue
         raw = schema.get(wire_key)
+        before = len(problems)
         if verb == IDENTIFIERS:
             value: Any = read_identifiers(raw, where, problems)
         elif verb == ESTABLISHES:
             value = read_establishes(raw, where, problems)
         else:
             value = read_produces(raw, where, problems)
+        if len(problems) > before:
+            # **A verb this reader could not use is not a verb the server
+            # spoke.** Recorded on key PRESENCE, it would have been handed
+            # back empty — and precedence would then have let an unreadable
+            # `x-identifiers` ERASE the manifest's identifiers for that
+            # tool, silently, under a note that says the extension key
+            # "contributes nothing". It has to contribute nothing to the
+            # ANSWER as well as to the log, which means not being recorded
+            # at all.
+            #
+            # This is exactly not the same event as a server declaring
+            # `x-identifiers: {}` — an empty declaration this reader
+            # understood, which IS the plane saying *this tool identifies
+            # nothing* and does win the verb. Unusable and empty are
+            # different facts about a plane, and the difference is which
+            # declaration a tool ends up standing on.
+            continue
         found[verb] = value
     return found
 
@@ -651,8 +796,21 @@ class PlaneDeclarations:
 
     @classmethod
     def build(cls, *, wire: Optional[Mapping[str, Any]] = None,
-              manifest: Any = None) -> "PlaneDeclarations":
+              manifest: Any = None,
+              offered: Sequence[str] = ()) -> "PlaneDeclarations":
         """Resolve both doors into one answer, counting every disagreement.
+
+        *offered* is every tool name this mission actually has on the
+        table — the resolved set, built-ins included — and it is read for
+        exactly one question: *is a declared tool absent from this run?*
+        The servers are not the whole plane.  A mission runs bridged tools
+        beside ``fs``, ``run_python_code`` and whatever else the bus
+        carries, and a platform that declares an identifier for one of
+        those is declaring something perfectly true; blaming it on the MCP
+        fleet's ``tools/list`` would be a note that is simply wrong, on a
+        console, at the top of every run.  Empty means *nobody said*, which
+        falls back to the wire's own set rather than calling everything
+        missing.
 
         *wire* is ``{bus tool name: outputSchema}`` for a plane that
         answered ``tools/list``; ``None`` — not ``{}`` — is a run with no
@@ -682,31 +840,37 @@ class PlaneDeclarations:
         """
         block = (manifest if isinstance(manifest, ToolsBlock)
                  else ToolsBlock.from_mapping(manifest))
-        offered = dict(wire or {})
+        schemas = dict(wire or {})
+        on_the_table = [str(name) for name in offered] or list(schemas)
         notes: List[Discrepancy] = []
         resolved: Dict[str, ToolDeclaration] = {}
         bound: List[ToolEntry] = []
 
-        for tool in sorted(offered):
+        for tool in sorted(schemas):
             entry = block.entry_for(tool)
             if entry is not None:
                 bound.append(entry)
-            resolved[tool] = cls._resolve(tool, offered[tool], block, notes,
+            resolved[tool] = cls._resolve(tool, schemas[tool], block, notes,
                                           entry)
 
-        # Entries the plane did not offer. Kept — an author wrote them and a
-        # tool absent this morning may be back this afternoon — and noted
-        # only where a plane actually spoke: with no server connected there
-        # is nothing for a memory to be stale against.
+        # Entries no server published a schema for. Kept — an author wrote
+        # them, and a tool the mission holds through another door is still
+        # that tool — and noted only where the tool is absent from the whole
+        # run: `offered` is the resolved set, built-ins included, so a
+        # declaration about `fs` on a mission that has `fs` draws nothing.
+        # With no server connected at all there is nothing for a memory to
+        # be stale against and no note is written either way.
         for entry in block.entries:
             if any(entry is other for other in bound):
                 continue
             if entry.name in resolved:
                 continue
-            if wire is not None:
+            present = any(same_tool(name, entry.name) for name
+                          in on_the_table)
+            if wire is not None and not present:
                 notes.append(Discrepancy(
                     tool=entry.name, key="name",
-                    detail="this manifest declares the tool and the plane "
+                    detail="this manifest declares the tool and this run "
                            "does not offer it; the declaration binds nothing "
                            "until it does"))
             resolved[entry.name] = cls._from_manifest(entry, block)
@@ -895,11 +1059,18 @@ class PlaneDeclarations:
                 f"{PROBLEM_SEP}a declarations record is a mapping, not a "
                 f"{type(record).__name__}")
         version = record.get(DECLARATIONS_KEY)
+        # Both ends of the range, and the lower one is not pedantry: `0`,
+        # `-1` and a missing key all read as *this is not a record written
+        # by any version of this writer*, and a reader that took them for
+        # version 1 would rebuild hints out of a line it had no business
+        # interpreting. `bool` is refused explicitly because `True` is an
+        # `int` in Python and would otherwise pass as version 1 — the same
+        # guard `read_reasoning` keeps on its own header.
         if (not isinstance(version, int) or isinstance(version, bool)
-                or version > DECLARATIONS_SCHEMA_VERSION):
+                or not 1 <= version <= DECLARATIONS_SCHEMA_VERSION):
             raise DeclarationError(
-                f"{PROBLEM_SEP}declarations schema {version!r} is newer than "
-                f"this reader's {DECLARATIONS_SCHEMA_VERSION}")
+                f"{PROBLEM_SEP}declarations schema {version!r} is not one "
+                f"this reader can take (1..{DECLARATIONS_SCHEMA_VERSION})")
         return cls(
             tools={str(tool): ToolDeclaration.from_record(str(tool), body)
                    for tool, body in (record.get("tools") or {}).items()},

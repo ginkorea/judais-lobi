@@ -1311,9 +1311,11 @@ tools:
   quoting it is how the file says what you meant.
 
 **Write `"on"` quoted, and declare a product only where one really is
-two-phase.** A `produces` keyed on an identifier the same entry does not
-declare is refused at the door: a handle nothing names is a hint that can
-never fire.
+two-phase.** A `produces` keyed on anything this entry — or the plane's
+`defaults` — does not declare as an identifier is refused at the door,
+including an entry that declares no identifier at all: a handle nothing
+names is a hint that can never fire, and the author would find out by never
+seeing the hint they wrote.
 
 **The same three verbs may arrive on the wire**, as `x-identifiers`,
 `x-establishes` and `x-produces` inside `outputSchema`, with exactly these
@@ -1335,7 +1337,18 @@ one record in `reasoning.jsonl` — because the usual fate of a stale
 declaration is a hint that quietly binds nothing for a year. The same note
 is written when a manifest annotates a key the published schema no longer
 carries (that annotation binds nothing: a key that never appears can never
-be read) and when a manifest declares a tool this plane does not offer.
+be read) and when a manifest declares a tool **this run** does not offer —
+the whole resolved set, so declaring something about a built-in tool your
+mission holds is not reported as a missing one. The console block is capped
+at twenty lines with the true count on the first line; the log keeps them
+all.
+
+**An `x-` verb this reader cannot use is not a verb your server spoke.** A
+malformed `x-identifiers` contributes nothing *and takes nothing away*: the
+manifest's answer for that tool stands, and the note says the extension key
+could not be used. That is deliberately not the same as `x-identifiers: {}`,
+which is a declaration this reader understood — your plane saying *this tool
+identifies nothing* — and which does win the verb.
 
 **A bare object declares nothing and refuses nothing.** `{"type":
 "object"}` — what a schema generator emits for a return type it could not
@@ -1346,8 +1359,10 @@ schemas and leave the rest alone.
 
 **Refused at the door, whether or not a server ever answers.** The block is
 validated when the manifest loads — closed keys, key-path grammar, kind
-spelling, all four terms of a `produces`, no tool declared twice — and every
-problem arrives in one message. This is stricter than it looks and
+spelling, all four terms of a `produces`, and no tool declared twice *in any
+two spellings of it*, because `runs_get` and `runs.get` are one tool to
+every lookup here and two entries for one tool would match a receipt twice
+and bind neither — and every problem arrives in one message. This is stricter than it looks and
 deliberately so: a rule pack that will not load costs a run its cognition
 and says so in the log, while a malformed identifier costs *nothing anybody
 can see*. It simply binds nothing, for as long as the file exists.
@@ -1358,7 +1373,9 @@ it. Entries union by tool (on the same `same_tool` identity as
 skills could mean different things by one word — an identifier's kind, a
 product's chain, a fallback shape, a plane default — they must agree or the
 composition is refused naming both skills. The merged block does not depend
-on the order the skills were listed in.
+on the order the skills were listed in, down to which spelling of a tool is
+kept: entries are ordered by tool identity and named by the lexically first
+spelling that was declared.
 
 **What it never does.** Declarations *steer*: they are read by the runtime
 and they reach no prompt, no call and no answer. A declared output is your
