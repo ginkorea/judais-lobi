@@ -506,12 +506,30 @@ class TestThereIsOneWilson:
     @pytest.mark.parametrize("passes,total,shown", [
         (8, 8, "68%–100%"),
         (3, 4, "30%–95%"),
-        (1, 2, "9%–91%"),
         (2, 2, "34%–100%"),
+        # The three below MOVED when the twin was unified away — see the
+        # docstring. `14/20` is the tier's own landing zone.
+        (1, 2, "9%–91%"),        # was 10%–90%
+        (11, 12, "65%–99%"),     # was 65%–98%
+        (14, 20, "48%–85%"),     # was 48%–86%
     ])
     def test_the_rendered_interval_is_pinned(self, passes, total, shown):
         """Known values, written out, so the day somebody changes the owner's
-        rounding this table says which cells moved."""
+        rounding this table says which cells moved.
+
+        **The unification moved published intervals, and silence about that
+        would be the defect.** The twin rounded to three decimals and the
+        owner rounds to four, so a cell whose third decimal sat on a half
+        rounds the other way at `.0%`: measured over every `k/n`, **9 of the
+        230 cells with n ≤ 20 change their printed percent**, and 73 of 860
+        with n ≤ 40. The new value is the more correct one — the twin was
+        double-rounding — but a rate a report printed last month may differ
+        from the same rate printed today in its last figure, and the three
+        cells above are here so that is a pinned fact rather than a surprise.
+
+        The one that matters to read: a 20-mission tier landing 14 printed
+        `48%–86%` and now prints `48%–85%`.
+        """
         arm = ArmResult(arm=ARMS[0], reports=(_report(
             {f"m{i}": i < passes for i in range(total)}),))
         assert mod._interval(arm, "train") == shown

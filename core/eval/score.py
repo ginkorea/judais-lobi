@@ -490,6 +490,17 @@ def infra_reason(records: Sequence[Mapping[str, Any]]) -> str:
     answer out and then died is a run the model was in, and a run bounded by
     an operator (``budget_exhausted``) is a bound somebody chose — neither is
     infrastructure, and both stay in the denominator where they belong.
+
+    **When the stream contradicts itself, a speech record beats a zero
+    ledger.**  ``usage`` is a best-effort count from the provider and the
+    records are what happened: a stream carrying a ``tool_call`` under a
+    ``mission_finished`` whose ledger says ``calls: 0`` is a run the model
+    was in and a ledger that did not hear about it, and the two are read that
+    way round.  The benefit of the doubt goes to keeping a run **graded**,
+    because the cost of the two mistakes is not symmetric — a graded run that
+    was really infrastructure is one noisy point in a rate, and an infra run
+    that was really the model is a failure quietly removed from the
+    denominator, which is the thing this column must never become.
     """
     finished = _last(records, "mission_finished")
     calls = ((finished or {}).get("usage") or {}).get("calls") or 0

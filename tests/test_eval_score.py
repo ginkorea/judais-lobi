@@ -30,7 +30,9 @@ from pathlib import Path
 
 import pytest
 
-from core.eval.score import Totals, records_from, score_run, score_suite
+from core.eval import score
+from core.eval.score import (Totals, infra_reason, records_from, score_run,
+                             score_suite)
 from core.eval.stub_suite import SUITE
 from core.eval.suite import Mission, Suite
 
@@ -532,6 +534,23 @@ def dead(**extra):
             finished(outcome="incomplete", steps=0, **extra)]
 
 
+#: One smallest record per member of `score.MODEL_SPOKE`, written out here
+#: rather than derived from it. The judgment the whole classification rests
+#: on is *which records mean the model produced something*, and a list the
+#: test reads back off the code is a list somebody can widen — or narrow —
+#: by accident.
+SPOKE = {
+    "reply_rejected": rejected(),
+    "tool_call": call(),
+    "tool_result": result(),
+    "gate_requested": gate(),
+    "answer_delta": {"event": "answer_delta", "index": 0,
+                     "part": "answer", "text": "42"},
+    "answer": answered(),
+    "grounding": grounding(),
+}
+
+
 def an_infra_suite() -> Suite:
     return Suite(name="infra", flags=("synthesis",),
                  missions=(a_mission(key="lived"), a_mission(key="died")))
@@ -584,6 +603,35 @@ class TestARunThatMeasuredTheEnvironment:
         records = [started(), step(0), call(), finished(outcome="incomplete")]
         assert score_run(records, a_mission()).infra == ""
 
+    def test_the_declared_set_is_the_one_this_file_probes(self):
+        """Both directions. A member added without a case below is untested;
+        a member taken away is a behaviour change, and the case below goes
+        red for it as well — which is the pin, since the parametrisation
+        reads `SPOKE` and never `MODEL_SPOKE`."""
+        assert set(SPOKE) == set(score.MODEL_SPOKE)
+
+    @pytest.mark.parametrize("event", sorted(SPOKE))
+    def test_any_one_of_them_takes_the_run_out_of_infra(self, event):
+        """One signal is enough, on a stream that is otherwise exactly the
+        dead shape: the run reached its endpoint, and whatever happened
+        after that is a measurement of the agent however badly it went."""
+        records = [started(), step(0), SPOKE[event],
+                   finished(outcome="incomplete")]
+        assert infra_reason(records) == "", event
+        assert score_run(records, a_mission()).infra == ""
+
+    def test_a_speech_record_beats_a_zero_ledger(self):
+        """The contradictory stream, and the direction it is read in.
+        `usage` is a best-effort count and the records are what happened, so
+        a `tool_call` under a ledger saying `calls: 0` is a run the model was
+        in and a ledger that did not hear about it. The benefit of the doubt
+        keeps a run GRADED: a graded run that was really infrastructure is
+        one noisy point, and an infra run that was really the model is a
+        failure quietly removed from the denominator."""
+        records = [started(), step(0), call(),
+                   finished(outcome="incomplete", usage={"calls": 0})]
+        assert infra_reason(records) == ""
+
     def test_a_model_call_on_the_ledger_is_not_infra(self):
         """The endpoint answered and the reply was unusable — which is the
         model's doing and belongs in the denominator."""
@@ -617,6 +665,22 @@ class TestARunThatMeasuredTheEnvironment:
         assert totals.graded == 1
         assert totals.passed == 1
         assert totals.success_rate == 1.0    # NOT 0.5
+
+    def test_the_counts_still_add_up_and_say_which_way(self, tmp_path):
+        """`missing` and `infra` are disjoint, so `missing + scored` is no
+        longer `missions`. `graded` is: EVAL.md §5 and §6 say so and this is
+        the arithmetic they promise.
+
+        The two halves of the distinction, one each: `lived` was never
+        spawned (`missing`), `died` was spawned and left a directory with no
+        stream in it (`infra`). A no-stream run is counted on the infra side
+        and NOT also as missing.
+        """
+        totals = score_suite({"died": tmp_path / "nowhere"},
+                             an_infra_suite(), "train").halves["train"].overall
+        assert totals.missions == totals.graded + totals.infra
+        assert totals.graded == totals.scored + totals.missing
+        assert (totals.infra, totals.missing, totals.scored) == (1, 1, 0)
 
     def test_the_dead_run_is_out_of_the_means_too(self):
         """A mission that died in four seconds would otherwise pull a

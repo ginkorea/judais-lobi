@@ -222,8 +222,11 @@ the descriptor), `runs/` (the child's own durable transcript), `stdout.txt`,
 directory outlives the process that was handed one.
 
 Exit code is 1 when any mission failed, 0 with `--allow-failures`. A mission
-with no run at all is scored as a failure and counted as `missing`, so a half
-that never started cannot report a clean 100%.
+with **no entry at all** — nothing was spawned for it — is scored as a failure
+and counted as `missing`, so a half that never started cannot report a clean
+100%. A mission that *was* spawned and left a directory with no `events.jsonl`
+in it is a different fact and is counted as `infra` rather than `missing`: it
+is still a failure, it is just not one the model had any part in. See §6.
 
 ---
 
@@ -302,8 +305,21 @@ for the whole bound without reaching a model hung on the way to one. A run
 that hung *after* the model spoke keeps its `FAIL`, because the stream says
 the model was in it.
 
-With no infra run every figure in a report is the one it always was, and
-`Verdict.infra` is absent from the JSON rather than empty.
+**`missing` and `infra` are disjoint, and `graded` is the field to sum
+against.** `missing` is a mission nothing was spawned for; `infra` is a run
+that happened and never reached a model. A no-stream run is `infra` and is
+*not* also counted in `missing`, so `missing + scored` no longer adds up to
+`missions` — `graded` does: `missions = graded + infra`, and
+`graded = scored + missing`.
+
+**The shape widened; the figures did not.** Every `Totals` now carries
+`infra` and `graded` — always present, zero included, appended after
+`reply_rejected` so the keys a recorded report already had keep their order —
+and every table gains the `infra` column whether or not it is zero. Only
+`Verdict.infra` is conditional: absent from the JSON rather than empty, the
+same rule `mission_class` follows. A consumer reading these reports should
+expect the two new keys and the extra column on a suite whose every run
+reached its model, and identical numbers in all the old ones.
 
 `Verdict.kpis` carries more for a reader: tools called, refusals, staged,
 repairs, grounded/verified, budget, protocol, profile, sandbox, run id. The
@@ -1462,6 +1478,14 @@ piece that may not be built yet and has to be able to say so.
   reporting rule `band()`, which is that an arm with no runs gets no interval
   at all — `wilson(0, 0)` is `(0.0, 0.0)`, the honest interval of nothing, and
   printing `0%–0%` would claim a score for a configuration nobody ran.
+  **Intervals printed before that unification can differ from today's in the
+  last figure.** `ablation` used to carry its own copy rounded to three
+  decimals where the owner rounds to four, so a cell whose third decimal sat
+  on a half rounds the other way at `.0%`: 9 of the 230 `k/n` cells with
+  n ≤ 20 change their printed percent — a 20-mission tier landing 14 read
+  `48%–86%` and now reads `48%–85%`. The new figure is the more correct one;
+  the old one was double-rounded. The moved cells are pinned in
+  `tests/test_eval_ablation.py::TestThereIsOneWilson`.
 * **infra, per arm**: repeats that never reached a model (§6). They are out of
   `k`, out of `n` and out of the interval — a flag delta cannot be credited or
   blamed for a run the endpoint ate — and a mission whose *every* repeat was
