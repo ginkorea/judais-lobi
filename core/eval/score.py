@@ -50,6 +50,16 @@ The KPI columns are February's Phase 10 list, unchanged in what they are for:
 success rate, iterations, wall time, tokens, and above all **human
 interventions required** — the last being the number a deployment actually
 feels, and the one an agent cannot improve by writing a better summary.
+
+Beside them there is now one column that is not about the agent at all.  A
+run that never reached its model measured the **environment**, and scoring it
+as a FAIL is a claim about a model that was never asked: the reference
+deployment lost thirteen missions to an endpoint blink and read them off the
+table as thirteen model failures.  So such a run is classed ``infra``, kept
+out of the rate's denominator, and printed with its run ids — see
+:func:`infra_reason` for the rule and ``EVAL.md`` §6 for what it is worth.
+It is never dropped: a column that silently disappeared would be the same
+error told the other way round.
 """
 
 from __future__ import annotations
@@ -68,7 +78,7 @@ from core.eval.suite import (SPLITS, Mission, RubricChange, Suite,
 
 __all__ = [
     "Verdict", "Totals", "Half", "Report", "records_from", "score_run",
-    "score_suite", "NoStream",
+    "score_suite", "NoStream", "MODEL_SPOKE", "ERRORED", "infra_reason",
 ]
 
 #: A run's stream, however the caller has it: the records themselves, a
@@ -182,6 +192,11 @@ class Verdict:
     #: :attr:`core.eval.suite.Mission.mission_class`.  ``""`` for a suite
     #: that does not, which is every suite written before classes existed.
     mission_class: str = ""
+    #: Why this run measured the ENVIRONMENT and not the agent, or ``""``.
+    #: See :func:`infra_reason`.  Non-empty keeps the verdict out of the
+    #: rate's denominator and puts it in its own column — never dropped, and
+    #: never silently folded into the failures.
+    infra: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -194,6 +209,10 @@ class Verdict:
         # report ever recorded stays byte-identical.
         if self.mission_class:
             out["mission_class"] = self.mission_class
+        # Same rule, same reason: a suite whose runs all reached their model
+        # produces exactly the report it always did.
+        if self.infra:
+            out["infra"] = self.infra
         return out
 
 
@@ -414,6 +433,95 @@ def _recovered(records: Sequence[Mapping[str, Any]], tool: str) -> str:
     return problems[0]
 
 
+# ── the environment, told apart from the agent ───────────────────────────────
+
+#: The records that are **the model having produced something**.  Any one of
+#: them on a stream means the run reached its endpoint, and whatever happened
+#: next is a measurement of the agent however badly it went.
+#:
+#: ``mission_started`` is deliberately not here, and
+#: ``contract.EXIT_CONTRACT['silence']`` says why: it is emitted before the
+#: model is asked and before the tool plane is touched.  ``step_started`` is
+#: not here for the same reason one step further in — it opens a step, ahead
+#: of the call — so a run that died reaching for the endpoint has one of each
+#: and nothing else, which is exactly the shape this set exists to tell apart.
+#: ``model_state`` is not here either: it is the harness saying the model is
+#: cold, queued or absent, which is the environment speaking and not the
+#: model.
+MODEL_SPOKE: Tuple[str, ...] = (
+    "reply_rejected", "tool_call", "tool_result", "gate_requested",
+    "answer_delta", "answer", "grounding",
+)
+
+#: The outcome a mission that ended by **raising** carries.
+#: ``mission_finished`` comes out of a ``finally``, so a crash still closes
+#: its own stream and closes it holding the word nothing got round to
+#: setting.  See ``contract.OUTCOMES``.
+ERRORED = "incomplete"
+
+
+def infra_reason(records: Sequence[Mapping[str, Any]]) -> str:
+    """Why this run measured the **environment**, or ``""`` for a real run.
+
+    The reference deployment lost thirteen missions in an endpoint blink and
+    read them off the table as thirteen model failures.  They were not: no
+    model was asked, so no model failed, and a rate computed over them is a
+    rate about the network.
+
+    **The rule, and it is honestly a v1 rule** — it is what the recorded
+    stream can answer today.  A run is ``infra`` when BOTH:
+
+    1. **nothing on it is the model having spoken** — not one record of
+       :data:`MODEL_SPOKE` is on it, and ``mission_finished.usage.calls`` is
+       absent or zero; and
+    2. **it ended in an error shape** — no stream at all (a spawn that
+       failed, a process that died before ``mission_started``), an empty
+       stream (``EXIT_CONTRACT['silence']``), a stream that stopped without
+       closing, or a ``mission_finished`` carrying :data:`ERRORED`.
+
+    What the stream cannot yet do is name the *cause*: ``incomplete`` is one
+    word for a cold endpoint, a refused token, an unreachable MCP server and
+    a caller who cancelled, and this function does not guess between them.
+    So the rule is stated as *zero model output and an error outcome* rather
+    than as *the endpoint was down*, and the reason sentence says which of
+    the four shapes was seen rather than what it was caused by.
+
+    It is deliberately conservative in one direction only.  A run that got an
+    answer out and then died is a run the model was in, and a run bounded by
+    an operator (``budget_exhausted``) is a bound somebody chose — neither is
+    infrastructure, and both stay in the denominator where they belong.
+
+    **When the stream contradicts itself, a speech record beats a zero
+    ledger.**  ``usage`` is a best-effort count from the provider and the
+    records are what happened: a stream carrying a ``tool_call`` under a
+    ``mission_finished`` whose ledger says ``calls: 0`` is a run the model
+    was in and a ledger that did not hear about it, and the two are read that
+    way round.  The benefit of the doubt goes to keeping a run **graded**,
+    because the cost of the two mistakes is not symmetric — a graded run that
+    was really infrastructure is one noisy point in a rate, and an infra run
+    that was really the model is a failure quietly removed from the
+    denominator, which is the thing this column must never become.
+    """
+    finished = _last(records, "mission_finished")
+    calls = ((finished or {}).get("usage") or {}).get("calls") or 0
+    if calls or any(r.get("event") in MODEL_SPOKE for r in records):
+        return ""
+    if not records:
+        return ("the stream is empty: not one record, so the only thing this "
+                "run measured was whether the harness could start — see "
+                "contract.EXIT_CONTRACT['silence']")
+    if finished is None:
+        return ("the stream stopped without closing and nothing on it is the "
+                "model having spoken: no reply, no tool call, no answer")
+    if finished.get("outcome") == ERRORED:
+        return (f"ended {ERRORED!r} with no model call on the ledger and "
+                f"nothing from the model on the stream: the run raised on its "
+                f"way to the endpoint" + (
+                    f" (reason {finished.get('reason')!r})"
+                    if finished.get("reason") else ""))
+    return ""
+
+
 def _kpis(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     """The report's columns for one run, all of them off the stream."""
     started = _last(records, "mission_started") or {}
@@ -478,6 +586,10 @@ def score_run(source: Source, mission: Mission) -> Verdict:
     entirely is a **failure**, not a skip: the exit contract says a mission
     that emits zero events has failed, and a harness that quietly dropped it
     would report a success rate over the missions that happened to work.
+
+    It is a failure that is also marked ``infra`` — see :func:`infra_reason`.
+    The two are not in tension: the run failed, and it failed without ever
+    asking the model, so the rate leaves it out and the report names it.
     """
     try:
         records = records_from(source)
@@ -486,7 +598,10 @@ def score_run(source: Source, mission: Mission) -> Verdict:
             key=mission.key, flag=mission.flag, split=mission.split,
             passed=False, reasons=(f"no stream: {exc}",), kpis={},
             needs_reader=_rubric(mission),
-            mission_class=mission.mission_class)
+            mission_class=mission.mission_class,
+            infra=f"no stream at all ({exc}): a run that left a directory and "
+                  f"no records is a spawn that failed or a process that died "
+                  f"before mission_started")
 
     reasons: List[str] = []
     kpis = _kpis(records)
@@ -593,7 +708,12 @@ def score_run(source: Source, mission: Mission) -> Verdict:
         key=mission.key, flag=mission.flag, split=mission.split,
         passed=not reasons, reasons=tuple(reasons), kpis=kpis,
         needs_reader=_rubric(mission), answer=text,
-        mission_class=mission.mission_class)
+        mission_class=mission.mission_class,
+        # Read off the same records every check above was read off, and
+        # AFTER them: a run that measured the environment still gets its
+        # reasons, because the sentence a person acts on is "no stream" and
+        # not "infra".
+        infra=infra_reason(records))
 
 
 def _rubric(mission: Mission) -> Tuple[str, ...]:
@@ -610,6 +730,13 @@ class Totals:
     A mean is ``None`` rather than zero where nothing reported the number —
     ``usage`` is absent, never zero, when a provider said nothing, and a
     column of zeros would read as a run that cost nothing.
+
+    :attr:`missions` is still every mission of the half.  :attr:`graded` is
+    the denominator the rate is actually over — missions minus
+    :attr:`infra` — and the two are printed together on purpose: a rate over
+    a shrunken denominator with nothing saying it shrank is the number this
+    column exists to stop.  With no infra run they are equal and every figure
+    here is the one it always was.
     """
 
     missions: int = 0
@@ -622,6 +749,13 @@ class Totals:
     tokens: Optional[float] = None
     human_interventions: int = 0
     reply_rejected: int = 0
+    #: Runs that measured the ENVIRONMENT and not the agent — see
+    #: :func:`infra_reason`.  Appended rather than slotted beside
+    #: :attr:`missions` so the keys a recorded report already carries keep
+    #: their order.
+    infra: int = 0
+    #: ``missions - infra``: what :attr:`success_rate` is computed over.
+    graded: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return dict(self.__dict__)
@@ -635,17 +769,25 @@ def _mean(values: Iterable[Any]) -> Optional[float]:
 
 
 def _totals(verdicts: Sequence[Verdict]) -> Totals:
+    """The columns for one group of verdicts, with the environment held out.
+
+    An ``infra`` run is out of every figure here except its own count: out of
+    the rate's denominator, because no model was asked; out of the means,
+    because a mission that died in four seconds would otherwise pull the wall
+    time of a suite down and read as a run that got faster.
+    """
     if not verdicts:
         return Totals()
-    scored = [v for v in verdicts if v.kpis]
-    missing = len(verdicts) - len(scored)
-    passed = len([v for v in verdicts if v.passed])
+    graded = [v for v in verdicts if not v.infra]
+    scored = [v for v in graded if v.kpis]
+    missing = len([v for v in graded if not v.kpis])
+    passed = len([v for v in graded if v.passed])
     return Totals(
         missions=len(verdicts),
         scored=len(scored),
         missing=missing,
         passed=passed,
-        success_rate=round(passed / len(verdicts), 3),
+        success_rate=(round(passed / len(graded), 3) if graded else None),
         steps=_mean(v.kpis.get("steps") for v in scored),
         elapsed_s=_mean(v.kpis.get("elapsed_s") for v in scored),
         tokens=_mean(v.kpis.get("tokens") for v in scored),
@@ -653,6 +795,8 @@ def _totals(verdicts: Sequence[Verdict]) -> Totals:
                                 for v in scored),
         reply_rejected=sum(int(v.kpis.get("reply_rejected") or 0)
                            for v in scored),
+        infra=len(verdicts) - len(graded),
+        graded=len(graded),
     )
 
 
@@ -777,10 +921,22 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
+def _outcome_cell(verdict: Verdict) -> str:
+    """``PASS``, ``FAIL`` — or ``INFRA`` for a run that never asked a model.
+
+    A third word rather than a footnote on ``FAIL``: the reader scanning
+    this column is counting reds, and a run the endpoint ate is not one of
+    them.
+    """
+    if verdict.infra:
+        return "INFRA"
+    return "PASS" if verdict.passed else "FAIL"
+
+
 _COLUMNS = (
     ("mission", lambda v: v.key),
     ("flag", lambda v: v.flag),
-    ("pass", lambda v: "PASS" if v.passed else "FAIL"),
+    ("pass", _outcome_cell),
     ("steps", lambda v: _cell(v.kpis.get("steps"))),
     ("wall s", lambda v: _cell(v.kpis.get("elapsed_s"))),
     ("tokens", lambda v: _cell(v.kpis.get("tokens"))),
@@ -810,11 +966,20 @@ def _markdown(report: Report) -> str:
 
     for name, half in report.halves.items():
         totals = half.overall
-        lines.append(f"## {name} — {totals.passed}/{totals.missions} "
+        lines.append(f"## {name} — {totals.passed}/{totals.graded} "
                      f"({_percent(totals.success_rate)})")
         if totals.missing:
             lines.append(f"*{totals.missing} mission(s) had no run and are "
                          f"counted as failures.*")
+        if totals.infra:
+            # In prose and not only as a number, because the number is the
+            # part a reader skips: these runs measured the ENVIRONMENT.
+            lines.append(
+                f"*{totals.infra} of {totals.missions} run(s) never reached "
+                f"a model: they measured the ENVIRONMENT and not the agent, "
+                f"so the rate above is over the {totals.graded} that did. "
+                f"They are listed below with their run ids and are not "
+                f"dropped from anything else.*")
         lines.append("")
         lines += _table(
             [[render(v) for _, render in _COLUMNS] for v in half.verdicts],
@@ -823,12 +988,13 @@ def _markdown(report: Report) -> str:
         lines.append(f"### {name} — by flag")
         lines.append("")
         lines += _table(
-            [[flag, f"{t.passed}/{t.missions}", _percent(t.success_rate),
+            [[flag, f"{t.passed}/{t.graded}", _percent(t.success_rate),
               _cell(t.steps), _cell(t.elapsed_s), _cell(t.tokens),
-              _cell(t.human_interventions), _cell(t.reply_rejected)]
+              _cell(t.human_interventions), _cell(t.reply_rejected),
+              _cell(t.infra)]
              for flag, t in half.by_flag.items()],
             ["flag", "passed", "rate", "steps", "wall s", "tokens", "human",
-             "rejected"])
+             "rejected", "infra"])
         lines.append("")
         if half.by_class:
             # Beside the flag table and never instead of it: a flag is a
@@ -837,22 +1003,38 @@ def _markdown(report: Report) -> str:
             lines.append(f"### {name} — by class")
             lines.append("")
             lines += _table(
-                [[mission_class, f"{t.passed}/{t.missions}",
+                [[mission_class, f"{t.passed}/{t.graded}",
                   _percent(t.success_rate), _cell(t.steps),
                   _cell(t.elapsed_s), _cell(t.tokens),
-                  _cell(t.human_interventions), _cell(t.reply_rejected)]
+                  _cell(t.human_interventions), _cell(t.reply_rejected),
+                  _cell(t.infra)]
                  for mission_class, t in half.by_class.items()],
                 ["class", "passed", "rate", "steps", "wall s", "tokens",
-                 "human", "rejected"])
+                 "human", "rejected", "infra"])
             lines.append("")
         lines.append(
-            f"**{name} overall** — success {_percent(totals.success_rate)}, "
+            f"**{name} overall** — success {_percent(totals.success_rate)} "
+            f"over {totals.graded} graded run(s), infra {totals.infra}, "
             f"steps {_cell(totals.steps)}, wall {_cell(totals.elapsed_s)} s, "
             f"tokens {_cell(totals.tokens)}, human interventions "
             f"{totals.human_interventions}, rejected replies "
             f"{totals.reply_rejected}.")
         lines.append("")
-        failed = [v for v in half.verdicts if not v.passed]
+        infra = [v for v in half.verdicts if v.infra]
+        if infra:
+            lines.append(f"### {name} — measured the environment ({len(infra)})")
+            lines.append("")
+            lines.append("No model was asked on these runs, so no model "
+                         "failed on them. They are out of the rate above and "
+                         "here instead, with the run id that finds the "
+                         "stream:")
+            lines.append("")
+            for verdict in infra:
+                lines.append(
+                    f"- **{verdict.key}** (`{verdict.kpis.get('run_id') or '—'}`)"
+                    f": {verdict.infra}")
+            lines.append("")
+        failed = [v for v in half.verdicts if not v.passed and not v.infra]
         if failed:
             lines.append(f"### {name} — why they failed")
             lines.append("")

@@ -222,8 +222,11 @@ the descriptor), `runs/` (the child's own durable transcript), `stdout.txt`,
 directory outlives the process that was handed one.
 
 Exit code is 1 when any mission failed, 0 with `--allow-failures`. A mission
-with no run at all is scored as a failure and counted as `missing`, so a half
-that never started cannot report a clean 100%.
+with **no entry at all** — nothing was spawned for it — is scored as a failure
+and counted as `missing`, so a half that never started cannot report a clean
+100%. A mission that *was* spawned and left a directory with no `events.jsonl`
+in it is a different fact and is counted as `infra` rather than `missing`: it
+is still a failure, it is just not one the model had any part in. See §6.
 
 ---
 
@@ -240,6 +243,83 @@ February's Phase 10 list, unchanged in what it is for, per flag and overall,
 | tokens | `mission_finished.usage.total_tokens` — absent, never zero, when the provider reported nothing |
 | **human interventions** | `gate_requested` + `step_started.injected` |
 | rejected replies | `reply_rejected` |
+| **infra** | runs that never reached a model — see below |
+
+### `infra`: the runs that measured the environment
+
+The reference deployment lost thirteen missions in an endpoint blink and read
+them off the table as thirteen model failures. They were not. No model was
+asked, so no model failed, and a rate computed over them is a rate about the
+network.
+
+So a run that never reached its model is classed **`infra`**, and the rule is
+mechanical — `core.eval.score.infra_reason`, read off the recorded stream and
+nowhere else. A run is `infra` when **both** hold:
+
+1. **nothing on the stream is the model having spoken** — not one of
+   `reply_rejected`, `tool_call`, `tool_result`, `gate_requested`,
+   `answer_delta`, `answer` or `grounding` is on it, and
+   `mission_finished.usage.calls` is absent or zero; **and**
+2. **it ended in an error shape** — no stream at all (a spawn that failed, a
+   process that died before `mission_started`), an empty stream
+   (`contract.EXIT_CONTRACT["silence"]`), a stream that stopped without
+   closing, or a `mission_finished` carrying `incomplete`, which is the word
+   `contract.OUTCOMES` gives a mission that ended by raising.
+
+`mission_started` is not in (1) because the silence clause says it is emitted
+before the model is asked; `step_started` is not in it because it opens a step
+ahead of the call; `model_state` is not in it because it is the *harness*
+saying the model is cold, queued or absent, which is the environment speaking
+and not the model.
+
+**This is honestly a v1 rule and it is stated as such.** The stream can say
+that no model was asked and that the run ended badly; it cannot yet say
+*why* — `incomplete` is one word for a cold endpoint, a refused token, an
+unreachable MCP server and a caller who cancelled. So the rule is *zero model
+output and an error outcome*, and each verdict's reason names which of the
+four shapes was seen rather than guessing at a cause. When the stream learns
+to distinguish them, this rule narrows and the column does not move.
+
+What it does:
+
+- **out of the denominator.** `Totals.graded` is `missions - infra` and
+  `success_rate` is over `graded`. A run nobody's model took part in cannot
+  make a model look worse.
+- **out of the means too.** A mission that died in four seconds would
+  otherwise pull a suite's wall time down and read as a run that got faster.
+- **never dropped.** The column prints beside the rates with its `n`, in the
+  per-flag and per-class tables, in `measure`'s matrix row and in each
+  ablation arm's row; the per-mission cell reads `INFRA` rather than `FAIL`;
+  and a report whose infra count is nonzero carries a *measured the
+  environment* section in prose, listing every such run with its `run_id` and
+  the shape that classed it. A column that silently disappeared would be the
+  same error told the other way round.
+- **still a failure for the exit status.** `python -m core.eval run` exits
+  non-zero when any verdict did not pass, infra included: an environment that
+  blinked is a thing to fix, and it is the rate — not the exit code — that
+  was lying.
+
+A mission the harness kills at `--timeout` lands here whenever it wrote
+nothing first: that is the `silence` clause's own shape, and a run that hung
+for the whole bound without reaching a model hung on the way to one. A run
+that hung *after* the model spoke keeps its `FAIL`, because the stream says
+the model was in it.
+
+**`missing` and `infra` are disjoint, and `graded` is the field to sum
+against.** `missing` is a mission nothing was spawned for; `infra` is a run
+that happened and never reached a model. A no-stream run is `infra` and is
+*not* also counted in `missing`, so `missing + scored` no longer adds up to
+`missions` — `graded` does: `missions = graded + infra`, and
+`graded = scored + missing`.
+
+**The shape widened; the figures did not.** Every `Totals` now carries
+`infra` and `graded` — always present, zero included, appended after
+`reply_rejected` so the keys a recorded report already had keep their order —
+and every table gains the `infra` column whether or not it is zero. Only
+`Verdict.infra` is conditional: absent from the JSON rather than empty, the
+same rule `mission_class` follows. A consumer reading these reports should
+expect the two new keys and the extra column on a suite whose every run
+reached its model, and identical numbers in all the old ones.
 
 `Verdict.kpis` carries more for a reader: tools called, refusals, staged,
 repairs, grounded/verified, budget, protocol, profile, sandbox, run id. The
@@ -617,8 +697,11 @@ says what produced it. The header is the provenance — **the tree's commit, the
 date, the provider and model, the endpoint with any credential scrubbed out of
 it, the repeat count and the per-mission bound** — followed by the newest three
 `RUBRIC_CHANGES`. Then, per half and never blended: one row per configuration
-over the §6 KPI columns, a per-mission PASS/FAIL grid, the failure sentences,
-the directory each row was recorded in, and each row's spawn line with
+over the §6 KPI columns — `infra` among them, and a row's `passed`/`rate` are
+over the runs that reached a model — a per-mission PASS/FAIL grid whose cell
+reads `INFRA` where every repeat of a mission measured the environment, the
+runs that did so with their `run_id`s, the failure sentences, the directory
+each row was recorded in, and each row's spawn line with
 `--mcp-url`/`--mcp-stdio` values withheld.
 
 `--repeat N` runs the whole matrix N times into `rep1…repN`; counts are summed
@@ -1386,10 +1469,29 @@ piece that may not be built yet and has to be able to say so.
 * **The arm table**: every arm, its exact flag delta, whether it ran, and why
   not. A comparison whose deltas are not printed is one a reader cannot check.
 * **Per arm, per half**: missions passed (all-must-pass), runs `k/n`, the rate,
-  and a **95% Wilson interval**. Wilson and not the normal approximation: at the
-  n an eval tier actually runs the normal interval goes outside [0, 1], and it
-  collapses to ±0 on a clean sweep — which is the case a benchmark hits most
-  often and the one where a false certainty does the most damage.
+  a **95% Wilson interval**, and **infra**. Wilson and not the normal
+  approximation: at the n an eval tier actually runs the normal interval goes
+  outside [0, 1], and it collapses to ±0 on a clean sweep — which is the case a
+  benchmark hits most often and the one where a false certainty does the most
+  damage. There is exactly **one** Wilson in this package
+  (`core.eval.extraction.wilson`); `ablation` imports it and keeps only the
+  reporting rule `band()`, which is that an arm with no runs gets no interval
+  at all — `wilson(0, 0)` is `(0.0, 0.0)`, the honest interval of nothing, and
+  printing `0%–0%` would claim a score for a configuration nobody ran.
+  **Intervals printed before that unification can differ from today's in the
+  last figure.** `ablation` used to carry its own copy rounded to three
+  decimals where the owner rounds to four, so a cell whose third decimal sat
+  on a half rounds the other way at `.0%`: 9 of the 230 `k/n` cells with
+  n ≤ 20 change their printed percent — a 20-mission tier landing 14 read
+  `48%–86%` and now reads `48%–85%`. The new figure is the more correct one;
+  the old one was double-rounded. The moved cells are pinned in
+  `tests/test_eval_ablation.py::TestThereIsOneWilson`.
+* **infra, per arm**: repeats that never reached a model (§6). They are out of
+  `k`, out of `n` and out of the interval — a flag delta cannot be credited or
+  blamed for a run the endpoint ate — and a mission whose *every* repeat was
+  infra drops out of the mission tally rather than counting as a loss, which is
+  the same rule the paired table states for a mission one arm did not run: an
+  absence is not a tie. Each one is listed under the arm with its `run_id`.
 * **Per class, per arm**: how many missions of each *kind of problem* the arm
   passed. This is the block an ablation of a cognitive layer is actually read
   by. **Read it beside the paired table and never on its own**: a class tally

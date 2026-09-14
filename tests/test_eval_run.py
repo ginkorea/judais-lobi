@@ -263,6 +263,16 @@ class TestRun:
 
     def test_a_child_that_never_finishes_is_killed_and_scored_as_failed(
             self, fake_judais, streams, tmp_path, capsys):
+        """Killed at the bound, non-zero exit, and read as INFRA.
+
+        The hanging child writes NOTHING before it is killed, so this is the
+        `silence` clause's own shape: zero events, no model asked. It is a
+        failure — the status is 1 and the mission is not passed — and it is
+        `infra` rather than `FAIL`, because a run that never reached a model
+        is a measurement of the environment and scoring it against the model
+        is the error `core.eval.score.infra_reason` exists to stop. The
+        report says so in prose rather than dropping it.
+        """
         out = tmp_path / "out"
         code = main(["run", "--split", "test", "--out", str(out),
                      "--timeout", "1",
@@ -272,7 +282,9 @@ class TestRun:
         assert code == 1
         key = SUITE.missions_in("test")[0].key
         assert json.loads((out / key / "command.json").read_text())["timed_out"]
-        assert "FAIL" in printed
+        assert "INFRA" in printed
+        assert "measured the ENVIRONMENT and not the agent" in printed
+        assert "FAIL" not in printed
 
     def test_the_spawn_line_is_recorded_without_the_credential(
             self, fake_judais, streams, tmp_path, capsys):

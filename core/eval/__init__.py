@@ -60,12 +60,13 @@ from core.eval.extraction import (CATEGORIES, FAMILIES, KINDS, STATUSES,
                                   Unextractable, load_probes,
                                   parse_propositions, rates_of, run_probes,
                                   score_attempt, wilson)
-# `wilson` is deliberately NOT re-exported from `ablation`: two modules
-# grew one statistic on parallel branches, the facade names ONE owner
-# (extraction's, clamped), and unifying the module-local twin is a filed
-# follow-up rather than a merge-time semantics edit.
+# `wilson` above is the ONE owner. `ablation` used to carry a twin of it —
+# same statistic, its own z, its own rounding, grown on a parallel branch —
+# and that twin is gone: the module imports this one and keeps only
+# `ablation.band`, which is the reporting rule (no runs, no interval) and
+# not a second implementation of the arithmetic.
 from core.eval.ablation import (ARMS, Ablation, Arm, ArmResult, Unavailable,
-                                ablate, accepted_flags, paired)
+                                ablate, accepted_flags, band, paired)
 from core.eval.measure import (MEASUREMENTS, Configured, Matrix, Measurement,
                                Unmeasurable)
 from core.eval.score import (Half, NoStream, Report, Totals, Verdict,
@@ -89,5 +90,5 @@ __all__ = [
     "Unextractable", "load_probes", "parse_propositions", "rates_of",
     "run_probes", "score_attempt", "wilson",
     "ARMS", "Ablation", "Arm", "ArmResult", "Unavailable", "ablate",
-    "accepted_flags", "paired",
+    "accepted_flags", "band", "paired",
 ]

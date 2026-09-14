@@ -20,6 +20,9 @@ from core.tools.capability import CapabilityEngine
 from core.contracts.schemas import PolicyPack
 from core.tools.descriptors import ToolDescriptor
 from core.tools.mcp_client import (
+    DEFAULT_TIMEOUT_S,
+    TIMEOUT_ENV,
+    TIMEOUT_FLAG,
     McpCallResult,
     McpClient,
     McpConnectionError,
@@ -177,6 +180,39 @@ class TestProtocol:
         )
         with pytest.raises(McpConnectionError):
             McpClient(transport, timeout=15.0).start()
+
+    def test_a_server_that_starts_and_says_nothing_names_its_timeout(self):
+        """Spawn-then-silence, which is the failure a deployment sees most.
+
+        The transport came up — the subprocess is RUNNING — and the
+        `initialize` handshake never came back, so the caller watches a
+        process live for exactly the timeout and die. The message used to
+        carry the number and not the name of the number, which leaves a
+        reader with a constant they cannot trace to a knob. So it names the
+        bound, the flag, the variable and the default.
+        """
+        transport = StdioTransport(
+            command=sys.executable, args=["-c", "import time; time.sleep(5)"])
+        with pytest.raises(McpConnectionError) as caught:
+            McpClient(transport, timeout=1.0).start()
+        said = str(caught.value)
+        assert "initialize" in said            # what was waited FOR
+        assert "within 1s" in said             # the value it waited
+        assert TIMEOUT_FLAG in said            # the knob that sets it
+        assert TIMEOUT_ENV in said
+        assert f"default {DEFAULT_TIMEOUT_S:g}s" in said
+
+    def test_the_default_bound_has_one_owner(self):
+        """Three constructors here and one in the CLI all wrote `30.0`. A
+        message naming a default that a caller's own default disagreed with
+        would be worse than no message."""
+        from core.tools.mcp_client import McpFleet, StreamableHttpTransport
+
+        assert McpClient(StdioTransport(command="x"))._timeout == \
+            DEFAULT_TIMEOUT_S
+        assert StreamableHttpTransport(url="http://x/mcp").timeout == \
+            DEFAULT_TIMEOUT_S
+        assert McpFleet((), object())._timeout == DEFAULT_TIMEOUT_S
 
     def test_list_changed_notification_is_acted_on(self, client):
         """The server adds a tool and says so; the client re-lists itself."""

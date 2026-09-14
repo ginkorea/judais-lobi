@@ -722,6 +722,68 @@ class TestTheColumns:
         assert row["staged"] == 1
 
 
+class TestTheRowKnowsWhatMeasuredTheEnvironment:
+    """A configuration whose endpoint blinked ran a SMALLER experiment; it
+    did not run a worse model. `core.eval.score.infra_reason` decides which
+    runs those were, and these are the columns that have to agree with it.
+    """
+
+    def _configured(self, *repeats):
+        from core.eval.score import Half, Report, Totals
+
+        reports = [Report(suite="s", halves={"train": Half(
+            split="train", verdicts=tuple(verdicts), overall=Totals(),
+            by_flag={})}) for verdicts in repeats]
+        return M.Configured(name="c", reports=tuple(reports),
+                            directories=tuple(Path("/x") for _ in reports))
+
+    def _verdict(self, key="k", passed=True, infra="", **kpis):
+        from core.eval.score import Verdict
+        base = {"steps": 3, "model_calls": 4, "prompt_tokens": 100,
+                "completion_tokens": 10, "elapsed_s": 2.0, "staged": False,
+                "reply_rejected": 0, "human_interventions": 0,
+                "grounded": True, "run_id": "run_dead"}
+        base.update(kpis)
+        return Verdict(key=key, flag="f", split="train", passed=passed,
+                       infra=infra, kpis=base)
+
+    def _row(self):
+        return M.columns_for(self._configured(
+            [self._verdict(),
+             self._verdict(key="j", passed=False, infra="the stream is empty",
+                           elapsed_s=4.0)]), "train")
+
+    def test_the_dead_run_is_out_of_the_rate(self):
+        row = self._row()
+        assert (row["missions"], row["passed"], row["infra"]) == (1, 1, 1)
+        assert row["rate"] == 1.0            # NOT 0.5
+        assert M._cell(row, "infra") == "1"
+
+    def test_it_is_out_of_the_means_as_well(self):
+        assert self._row()["elapsed_s"] == 2.0
+
+    def test_the_column_is_in_the_table_beside_the_rate(self):
+        assert ("infra", "infra") in M._COLUMNS
+
+    def test_a_mission_whose_every_repeat_died_reads_INFRA(self):
+        configured = self._configured(
+            [self._verdict(key="j", passed=False, infra="no stream at all")])
+        assert M._verdict_cell(configured, "train", "j") == "INFRA"
+
+    def test_it_is_listed_with_its_run_id_and_not_among_the_failures(self):
+        configured = self._configured(
+            [self._verdict(key="j", passed=False, infra="no stream at all")])
+        assert M._failures(configured, "train") == []
+        listed = M._environment(configured, "train")
+        assert listed and "run_dead" in listed[0][0]
+
+    def test_a_clean_configuration_reads_as_it_always_did(self):
+        row = M.columns_for(self._configured(
+            [self._verdict(), self._verdict(key="j", passed=False)]), "train")
+        assert (row["missions"], row["passed"], row["infra"]) == (2, 1, 0)
+        assert row["rate"] == 0.5
+
+
 # ── the command line ─────────────────────────────────────────────────────────
 
 def cli(*args, expect=None, cwd=REPO):
