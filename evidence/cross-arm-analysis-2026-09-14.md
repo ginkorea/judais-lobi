@@ -69,3 +69,47 @@ Two candidate causes, both platform-side, neither framework:
 Everything a recording can answer has been answered, and it exonerates
 the framework twice over: byte-identical requests in, normal decode rate
 throughout, 4–8× output length as the only moved variable.
+
+## Extension — the v1.1.3 production window (78 dirs, second handover)
+
+**The heavy tail already existed at v1.1.3, and it is worse there than at
+v1.4.0.** The champion window is the only clean one of the three.
+
+* Classification: 63 benchmark runs (three clean 14-scenario reps + one
+  aborted partial + one full 27-scenario tier pass) / 13 tier-only
+  singletons / 2 owner asks (set aside).
+* **The 224 s run found and anatomized** (`b0ad00aa`, followup_plot
+  turn 1 = plot): step 0 latency 212 s, **8,904 completion tokens at
+  42.0 tok/s** — a clean matplotlib payload, produced too slowly for the
+  pane's 220 s ceiling; the pane recorded `timeout` and launched turn 2
+  into a dead harness while the turn-1 process ran on and `finished` at
+  230.5 s. Identical signature to every v1.4.0 stall: long chain of
+  thought at a dead-normal decode rate.
+* v1.1.3's worst call: **15,926 tokens in one 402 s generation**
+  (plot_trig) — 1.8× larger than anything in the v1.4.0 window. Three
+  windows, all calls: v1.1.3 max 15,926 (three ≥4,000) · champion max
+  3,166 (**zero** ≥4,000, zero steps ≥150 s) · v1.4.0 max 8,794 (two
+  ≥4,000, five steps ≥150 s).
+* **Request hashes: ten for ten identical across two release
+  boundaries.** One masked system-prompt hash and one tool-block hash
+  across all 408 mission calls in all three windows; every single-turn
+  scenario's whole-request hash identical v1.1.3 = champion = v1.4.0.
+  The mesh clause: 0/69 in v1.1.3, 0/43 champion, 39/39 v1.4.0 — absent
+  from the window with the worst tail, so **the clause cannot be the
+  cause**. Sampling params constant across all 408 calls; no event
+  vocabulary drift at all across the releases; context size within 0.6%.
+* **"The day" is too coarse.** The v1.1.3 production window
+  (03:39–05:03Z) and the clean champion window (04:06–05:09Z) overlap
+  by nearly an hour on the same platform: during the overlap, production
+  drew a 212 s / 8,904-token stall while the benchmark harness, running
+  byte-identical requests at the same decode rate, never exceeded 72 s.
+  Same day, same hour, same bytes — one session tailed, one clean.
+
+**Conclusion: the variable is per-session serving conditions** — which
+node, which cards, which vLLM process a session landed on — not the
+release, not the prompt, not the date. The v1.4.0 arm's 3/3 plot ceiling
+is the same pre-existing failure mode drawn more often. The remaining
+discriminator narrows to: the vLLM launch line, version, chat template
+and reasoning-effort default **per serving process, per session**.
+Everything a recording can answer is answered across three windows and
+189 run directories, and none of it implicates the framework.
