@@ -160,9 +160,9 @@ in this package does.
 from core.cognition.compile import (BANDS, BUDGET_CHARS, STEERING_GROUP,
                                     STEERING_GROUPS,
                                     STEERING_LINES, STEERING_TITLE,
-                                    CompiledView, band,
-                                    compile_view, owed_line, steering_hint,
-                                    violation_line)
+                                    CompiledView, RelatedEdge, band,
+                                    compile_view, owed_line, related_line,
+                                    steering_hint, violation_line)
 from core.cognition.constraints import (CONSTRAINT_KEYS, OVER_KEYS,
                                         SOLVER_EXTRA, SOLVER_TIMEOUT_MS,
                                         VIOLATION_KIND,
@@ -240,6 +240,7 @@ __all__ = [
     "Proposition",
     "PropositionStatus",
     "RECEIPT_MARKER",
+    "RelatedEdge",
     "ReplayRefused",
     "Rule",
     "RuleAuthority",
@@ -282,6 +283,7 @@ __all__ = [
     "needs_solver",
     "owed_line",
     "parse_constraint",
+    "related_line",
     "resolve",
     "solver_names",
     "steering_hint",

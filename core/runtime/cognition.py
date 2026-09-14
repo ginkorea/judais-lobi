@@ -288,6 +288,49 @@ states for a replay generally.
 :func:`open_shadow` is the one door, and it writes no second header.  A
 resumed run that appended the events it had already written would build a
 store with every observation twice.
+
+## The topology beside it (``--graph-context``, Phase 20a)
+
+:data:`GRAPH_LOG` is the second file and the **third** switch on this same
+object (:attr:`ShadowCognition.graphing`).  What it holds is a
+:class:`~core.cognition.graph.store.KnowledgeGraph` built from **this
+store's own links** — :class:`~core.cognition.graph.harvest.LinkHarvest`,
+which is a translation and not a second reading: a link's edge carries the
+link's authority and the link's evidence, and nothing in it was guessed.
+There is no second harvest of receipts, no model proposal and no value
+coincidence at any point.
+
+What it buys is the RELATED section of the compiled view: a bounded walk
+out from **what is owed** (:func:`~core.cognition.graph.harvest.seeds_from`
+over the ranked frontier, :func:`~core.cognition.graph.harvest.working_set`
+for how far), rendered by :func:`core.cognition.compile.related_line`.  A
+run with no goals has an empty frontier, therefore no seeds, therefore no
+RELATED section — which is the honest behaviour and worth knowing before
+reading a block that has none: the graph is hydrated *around a question*,
+and a run that has not been given one has nothing to hydrate around.
+
+Same three rules as everything else in this module.  It is **additive**:
+the flag implies ``--compiled-context`` implies ``--cognition``, it adds
+one section that drops first under the budget, and with it off not a byte
+of any stream, any prompt or any other file moves.  It is **total**: the
+harvest, the flush and the hydrate are each inside one ``try`` whose
+failure writes :data:`UNGRAPHED_NOTE`, turns the graph off for the rest of
+the run, and leaves the harvest, the view, the log and the mission exactly
+as they were.  And it **never gates**: nothing waits on it, nothing is
+refused because of it.
+
+The file is written the way :data:`REASONING_LOG` is — one
+:func:`~core.durable.fsync_append` of :func:`~core.runtime.replay.canonical`
+lines per step, a versioned header on line one — and it states **three**
+versions of its own: :data:`GRAPH_SCHEMA_VERSION` (this file's shape),
+:data:`~core.cognition.graph.events.GRAPH_EVENT_SCHEMA_VERSION` (the shape
+of an event) and
+:data:`~core.cognition.graph.events.GRAPH_PACKAGE_VERSION` (what an op
+means, and therefore which edge a given ``eN`` is).  None of them is the
+kernel's, and none of them is
+:data:`core.runtime.contract.SCHEMA_VERSION`: five numbers now, because
+five things change for five reasons, and collapsing any two makes one
+experiment a break in another.
 """
 
 from __future__ import annotations
@@ -308,13 +351,20 @@ from core.cognition import (BUDGET_CHARS, CARDINALITIES, CONSTRAINT_KEYS,
                             EVENT_SCHEMA_VERSION,
                             KERNEL_KEY, KERNEL_VERSION, CognitionError,
                             CognitiveState, Constraint, EvidenceAuthority,
-                            EvidenceRef, ReplayRefused, RuleAuthority,
+                            EvidenceRef, RelatedEdge, ReplayRefused,
+                            RuleAuthority,
                             SOLVER_EXTRA, Violation, check_constraints,
                             check_pattern, compile_view, deep_copy, have_z3,
                             needs_solver, owed_line, parse_constraint,
                             solver_names, steering_hint,
                             STEERING_GROUP, subject_entity)
 
+from core.cognition.graph import GRAPH_COUNT_KEY, GRAPH_PACKAGE_KEY
+from core.cognition.graph import GRAPH_EVENT_SCHEMA_VERSION
+from core.cognition.graph import GRAPH_PACKAGE_VERSION
+from core.cognition.graph import GRAPH_SCHEMA_KEY as GRAPH_EVENT_SCHEMA_KEY
+from core.cognition.graph import (KnowledgeGraph, LinkHarvest, seeds_from,
+                                  working_set)
 from core.durable import fsync_append
 from core.runtime.declarations import DECLARATIONS_KEY as _DECLARATIONS_KEY
 from core.runtime.declarations import IDENTIFIERS, values_at
@@ -322,6 +372,9 @@ from core.runtime.grounding import harvest_fields, json_blocks
 from core.runtime.replay import canonical
 
 __all__ = [
+    "GRAPH_LOG", "GRAPH_SCHEMA_KEY", "GRAPH_SCHEMA_VERSION",
+    "UNGRAPHED_NOTE", "graph_header_record", "read_graph", "related_rows",
+    "replay_graph",
     "REASONING_LOG", "REASONING_SCHEMA_VERSION", "SCHEMA_KEY",
     "KERNEL_SCHEMA_KEY", "KERNEL_KEY", "KERNEL_EVENTS_KEY",
     "KERNEL_COUNT_KEY", "DECLARATIONS_KEY", "declarations_in",
@@ -358,6 +411,37 @@ REASONING_SCHEMA_VERSION = 2
 #: The key the header states :data:`REASONING_SCHEMA_VERSION` under, and the
 #: key that identifies the header line.
 SCHEMA_KEY = "reasoning_schema"
+
+#: The graph's file, beside :data:`REASONING_LOG` in the same run directory
+#: and under the same ``JUDAIS_LOBI_RUNS`` policy.  Its own file and not more
+#: lines in the reasoning log: the two logs have different schemas, different
+#: ops and different replays, and one reader handed a mixed file would have
+#: to tell them apart line by line — which is the thing a version key exists
+#: to make unnecessary.
+GRAPH_LOG = "graph.jsonl"
+
+#: The shape of THIS file — the header, and which lines are graph events.
+#: Bumped when that shape changes.
+#:
+#: **Not the graph package's two numbers**, which the header also carries:
+#: :data:`~core.cognition.graph.events.GRAPH_EVENT_SCHEMA_VERSION` says what
+#: an event looks like and
+#: :data:`~core.cognition.graph.events.GRAPH_PACKAGE_VERSION` says what an op
+#: means, and both are the sibling package's to move.  This one is the
+#: runtime's: it says what a *file* written here holds.  The argument is
+#: :data:`REASONING_SCHEMA_VERSION`'s, one file further on — three questions,
+#: three numbers, and a reader that had to infer any of them from another is
+#: a reader that will infer wrong exactly once.
+#:
+#: 1 — the first shape: a header line, then kernel-graph events, verbatim.
+GRAPH_SCHEMA_VERSION = 1
+
+#: The key the graph log's header states :data:`GRAPH_SCHEMA_VERSION` under,
+#: and the key that identifies that header line.  Not
+#: :data:`SCHEMA_KEY` and not the graph package's own
+#: :data:`~core.cognition.graph.events.SCHEMA_KEY`, so a reader handed a naked
+#: line can tell which of the three files it came out of.
+GRAPH_SCHEMA_KEY = "graph_log_schema"
 
 #: The key a note line carries.  A note is not an event and is never replayed.
 NOTE_KEY = "note"
@@ -424,6 +508,24 @@ UNWATCHED_NOTE = ("the epistemic-progress signal stopped; the harvest "
 #: cost a mission anything would be the gate this layer is forbidden to be.
 UNCHECKED_NOTE = ("the constraint checker stopped; the harvest continued and "
                   "the mission was not told")
+
+#: The eighth note: the graph stopped — a harvest, a flush or a hydrate
+#: raised — so ``--graph-context`` contributes nothing for the rest of the
+#: run.  Its own sentence for :data:`UNCOMPILED_NOTE`'s reason, one more
+#: time: five things can stop independently now, and a reader that could not
+#: tell them apart would go looking in the wrong file.  It says the mission
+#: was untouched because that is the floor: a topology this run cannot walk
+#: is not a view it cannot render and is certainly not a store it cannot
+#: hold.
+#:
+#: **Written into** :data:`REASONING_LOG`, not into :data:`GRAPH_LOG`, and
+#: that is deliberate: a note is not a graph event, the graph's own
+#: :func:`~core.cognition.graph.events.check_snapshot` refuses a log carrying
+#: anything that is not one, and the reasoning log is already the place this
+#: module says what stopped.  A reader of a short graph log is told why one
+#: file over.
+UNGRAPHED_NOTE = ("the graph stopped; the harvest continued and the mission "
+                  "was not told")
 
 #: The seventh note, and **not a failure either**: a pack declares
 #: ``require_z3:`` constraints and this box has no solver, so those
@@ -1199,6 +1301,135 @@ def header_record() -> Dict[str, Any]:
             KERNEL_KEY: KERNEL_VERSION}
 
 
+def graph_header_record() -> Dict[str, Any]:
+    """Line one of :data:`GRAPH_LOG`: three versions, and nothing else.
+
+    :func:`header_record`'s sibling, argued the same way and for the same
+    three kinds of question: this file's shape, the event vocabulary, and
+    the engine that assigned the ids.  The third is the one that is easy to
+    leave out here too — a graph's ``eN`` comes from insertion order, so a
+    consumer holding a persisted edge id has no way to know it still names
+    the same edge unless the log says which package wrote it.
+
+    No run id and no clock, for :func:`header_record`'s reason: both are
+    properties of the run happening now, and either would mean a replay of a
+    recorded run could never produce the recorded bytes.
+    """
+    return {GRAPH_SCHEMA_KEY: GRAPH_SCHEMA_VERSION,
+            GRAPH_EVENT_SCHEMA_KEY: GRAPH_EVENT_SCHEMA_VERSION,
+            GRAPH_PACKAGE_KEY: GRAPH_PACKAGE_VERSION}
+
+
+def read_graph(path: Any) -> Tuple[Optional[dict], List[dict], List[dict]]:
+    """``(header, events, notes)`` out of a :data:`GRAPH_LOG`.
+
+    :func:`read_reasoning`'s shape exactly, down to the three-tuple, because
+    a reader that has both files open should not have to hold two habits.
+    Lines are told apart by what they carry: the header states
+    :data:`GRAPH_SCHEMA_KEY`, an event states an ``op``, anything else is a
+    note — and this file writes none, which is why the third slot is still
+    here rather than trimmed away: a future line that is not an event must
+    not have to break the shape to be added, and a reader that unpacked two
+    values would be the thing that broke.
+
+    A torn last line is skipped for :func:`read_reasoning`'s reason (one
+    ``fsync_append`` per step, so a killed process leaves a prefix), and a
+    torn line that is *not* last still refuses one layer down: the graph's
+    own :func:`~core.cognition.graph.events.check_snapshot` requires every
+    ``n`` to be its position.
+    """
+    target = Path(path)
+    if not target.exists():
+        return None, [], []
+    header: Optional[dict] = None
+    events: List[dict] = []
+    notes: List[dict] = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            raise ReplayRefused(f"a graph log line is a record: {record!r}")
+        if GRAPH_SCHEMA_KEY in record:
+            if header is not None:
+                raise ReplayRefused(
+                    f"{target} states {GRAPH_SCHEMA_KEY!r} twice; two headers "
+                    "are two logs in one file, and every event before the "
+                    "second would be read under a version it was not written "
+                    "under")
+            header = record
+        elif "op" in record:
+            events.append(record)
+        else:
+            notes.append(record)
+    if header is None:
+        raise ReplayRefused(
+            f"{target} states no {GRAPH_SCHEMA_KEY!r}, and an unversioned log "
+            "cannot be trusted to mean what this reader would read into it")
+    version = header.get(GRAPH_SCHEMA_KEY)
+    if (not isinstance(version, int) or isinstance(version, bool)
+            or version > GRAPH_SCHEMA_VERSION):
+        raise ReplayRefused(
+            f"graph log schema {version!r} is newer than this reader's "
+            f"{GRAPH_SCHEMA_VERSION}")
+    return header, events, notes
+
+
+def replay_graph(path: Any) -> KnowledgeGraph:
+    """The graph a :data:`GRAPH_LOG` is, rebuilt.
+
+    Through :meth:`~core.cognition.graph.store.KnowledgeGraph.replay` and the
+    graph package's own envelope, so *its* version check runs on the version
+    its header recorded rather than on this reader's opinion of it — which is
+    :func:`replay_reasoning`'s rule, and there is no second application path
+    here for the reason there is none there.
+    """
+    return _graph_of(*read_graph(path)[:2])
+
+
+def _graph_of(header: Optional[dict], events: List[dict]) -> KnowledgeGraph:
+    """The graph package's envelope around a log's events, and its replay.
+
+    One function because two callers need it — :func:`replay_graph` and
+    :func:`open_shadow`'s resume branch — which is :func:`_state_of`'s
+    argument, and the ``count`` is vacuous here for :func:`_state_of`'s
+    reason as well: it is derived from the lines just read, so it can never
+    disagree with them, and a prefix of this file is the ordinary state of a
+    killed run rather than a corruption.  Filled in truthfully rather than
+    faked or omitted.
+    """
+    version = (header or {}).get(GRAPH_EVENT_SCHEMA_KEY,
+                                 GRAPH_EVENT_SCHEMA_VERSION)
+    return KnowledgeGraph.replay({GRAPH_EVENT_SCHEMA_KEY: version,
+                                  GRAPH_COUNT_KEY: len(events),
+                                  KERNEL_EVENTS_KEY: events})
+
+
+def related_rows(working: Any) -> Tuple[RelatedEdge, ...]:
+    """A working set's edges as the compiler's rows.
+
+    The one place the two packages meet on this, and it is four fields wide.
+    :mod:`core.cognition.compile` does not import
+    :mod:`core.cognition.graph` — see :class:`~core.cognition.compile
+    .RelatedEdge` for the import cycle and the wall underneath it — so the
+    runtime, which imports both, translates.  It is the same shape as
+    :func:`resolvers_of`, which hands the compiler what a plane declared
+    rather than the declarations themselves, and it is a *projection* rather
+    than a second owner: nothing here is stored, and a row is discarded the
+    moment the block is rendered.
+
+    Order is the working set's own, which is the walk's, which is the
+    store's insertion order — so the section's lines are a function of the
+    log and the seeds and of nothing else.
+    """
+    return tuple(RelatedEdge(src=edge.src, relation=edge.relation,
+                             dst=edge.dst, authority=edge.authority)
+                 for edge in getattr(working, "edges", ()))
+
+
 def read_reasoning(path: Any) -> Tuple[Optional[dict], List[dict], List[dict]]:
     """``(header, events, notes)`` out of a :data:`REASONING_LOG`.
 
@@ -1426,7 +1657,10 @@ class ShadowCognition:
                  written: int = 0, compiling: bool = False,
                  budget_chars: int = BUDGET_CHARS,
                  noted: Sequence[Tuple[str, str]] = (),
-                 unsolved: bool = False, steering: bool = False) -> None:
+                 unsolved: bool = False, steering: bool = False,
+                 graphing: bool = False,
+                 graph: Optional[KnowledgeGraph] = None,
+                 graph_written: int = 0) -> None:
         #: Where the log is.
         self.path = Path(path)
         #: The run whose receipts these are — the first term of every
@@ -1560,6 +1794,31 @@ class ShadowCognition:
         #: difference is one walk of the declarations per run instead of one
         #: per step.
         self._resolvers: Optional[Dict[str, Tuple[str, ...]]] = None
+        #: Whether this run keeps a topology beside the store, and shows the
+        #: RELATED section — ``--graph-context``.  **Off unless somebody
+        #: asked**, like the two switches above it, and it implies both.
+        self.graphing = bool(graphing)
+        #: The topology, or ``None`` for every run without the flag.  One
+        #: per run, like the store: the graph is built from this store's
+        #: links and a second one would be a second answer to what this run
+        #: is connected to.
+        self.graph: Optional[KnowledgeGraph] = (
+            graph if graph is not None
+            else (KnowledgeGraph() if self.graphing else None))
+        #: Where the topology's log is: beside this one, in the same run
+        #: directory.  Derived rather than passed, so the two files cannot
+        #: end up in two places.
+        self.graph_path = self.path.parent / GRAPH_LOG
+        #: How many of the graph's events are on the disk already.
+        self._graph_written = int(graph_written)
+        #: The link cursor, so a step harvests only what is new.  See
+        #: :class:`~core.cognition.graph.harvest.LinkHarvest`.
+        self._harvest = LinkHarvest()
+        #: Links written into the graph as edges.
+        self.harvested = 0
+        #: How many times the graph raised.  Never more than one: the first
+        #: one turns the graph off and leaves everything else running.
+        self.graph_failures = 0
 
     # ── what the door calls, once ───────────────────────────────────────
 
@@ -1744,6 +2003,14 @@ class ShadowCognition:
         which is the order a reader of the file reconstructs the step in.
         The check is its own ``try`` and its own switch: a checker that
         raised must cost the checking and not the harvest.
+
+        **Then the graph**, after the flush and before the check.  After the
+        flush because it reads the links the derive has just settled and its
+        own log should follow the events those links are in; before the
+        check because a constraint violation's note talks about the store,
+        and a reader reconstructing the step wants the two files' writes in
+        the order the step made them.  Its own ``try`` and its own switch
+        too, for the same reason the check has one.
         """
         if not self.on:
             return
@@ -1754,6 +2021,7 @@ class ShadowCognition:
             except Exception as exc:                # noqa: BLE001 - the point
                 self._stopped(exc)
                 return
+            self._harvest_graph()
             self._check()
 
     def compiled_block(self) -> str:
@@ -1762,10 +2030,17 @@ class ShadowCognition:
         The **whole** of what ``--compiled-context`` adds to a mission, and
         it is one string: :func:`core.cognition.compile.compile_view` over
         the state this object already holds — plus the violations of the
-        last check, which are the one thing in the block that is not in the
-        store — rendered under :attr:`budget_chars`.  The loop appends it and
-        nothing else happens — no record, no file, no gate, and no second
-        copy of the state anywhere.
+        last check and, under ``--graph-context``, the working set hydrated
+        around what is owed, which are the two things in the block that are
+        not in the store — rendered under :attr:`budget_chars`.  The loop
+        appends it and nothing else happens — no record, no file, no gate,
+        and no second copy of the state anywhere.
+
+        The working set is read **before** the compiler's ``try`` and
+        through its own (:meth:`_related`), so the two failures stay
+        separate: a graph that cannot be walked costs the RELATED section
+        and the block still renders, and a compiler that raises stops the
+        block without saying anything about the graph.
 
         ``""`` for every reason there is not to show one, and the caller
         cannot tell them apart because none of them is its business: the
@@ -1783,11 +2058,14 @@ class ShadowCognition:
         if not self.compiling or not self.on:
             return ""
         with self._lock:
+            related, capped = self._related()
             try:
                 view = compile_view(self.state,
                                     budget_chars=self.budget_chars,
                                     violations=self.violations,
-                                    resolvers=self.resolvers())
+                                    resolvers=self.resolvers(),
+                                    related=related,
+                                    related_capped=capped)
             except Exception as exc:                # noqa: BLE001 - the point
                 self._uncompiled(exc)
                 return ""
@@ -2120,6 +2398,104 @@ class ShadowCognition:
                 self._unchecked(exc)
                 return
 
+    def _harvest_graph(self) -> None:
+        """This step's links, as edges, and the graph's own log appended.
+
+        Called inside :meth:`close_step`'s lock.  Total and narrow: the
+        first exception turns the graph off for the rest of the run, writes
+        :data:`UNGRAPHED_NOTE` into :data:`REASONING_LOG`, and leaves the
+        store, the view, the frontier and the mission exactly as they were.
+
+        **Only what is new.**  :class:`~core.cognition.graph.harvest
+        .LinkHarvest` holds the cursor, because
+        :meth:`~core.cognition.graph.store.KnowledgeGraph.add_edge` appends
+        an event whether or not it changes anything — right for a log a
+        replay applies, and quadratic for a caller that re-states every
+        link it has ever seen at every step boundary.
+        """
+        if not self.graphing or self.graph is None:
+            return
+        try:
+            self.harvested += self._harvest.into(self.state, self.graph)
+            self._flush_graph()
+        except Exception as exc:                    # noqa: BLE001 - the point
+            self._ungraphed(exc)
+
+    def _flush_graph(self) -> None:
+        """The graph's events since the last flush, appended. One ``fsync``.
+
+        :meth:`_flush`'s shape exactly — the same tail cursor off the
+        event's own ``n``, the same single append of joined
+        :func:`~core.runtime.replay.canonical` lines, the same
+        :func:`~core.cognition.events.deep_copy` before any of them reaches
+        ``json``.  That last one is not belt and braces: the graph hands
+        back read-only views to the leaves for the same reason the kernel
+        does, ``json`` will not take a ``MappingProxyType``, and under
+        ``canonical``'s ``default=str`` it does not *fail* — it writes the
+        view's ``repr`` as a string and the file replays as a log of
+        records holding prose where their evidence should be.
+        """
+        if self.graph is None:                      # pragma: no cover
+            return
+        fresh = self.graph.events[self._graph_written:]
+        if not fresh:
+            return
+        fsync_append(self.graph_path, "\n".join(
+            canonical(deep_copy(event)) for event in fresh))
+        self._graph_written = int(fresh[-1]["n"])
+
+    def _related(self) -> Tuple[Tuple[RelatedEdge, ...], bool]:
+        """The working set around what is owed, as rows.  Never raises.
+
+        ``((), False)`` for every reason there is not to have one, and the
+        caller cannot tell them apart because none of them is its business:
+        the flag is off, cognition stopped, the graph stopped, nothing is
+        owed, or this read raised.
+
+        **Seeded from the frontier and from nothing else.**  A run with no
+        goals has no obligations, therefore no seeds, therefore no section —
+        which is the honest answer rather than a gap: the graph is hydrated
+        *around a question*, and a run nobody gave one to has nothing to
+        hydrate around.  Filling the section with "recent subjects" instead
+        would be the runtime deciding what is interesting, which is the one
+        thing this layer has never been allowed to do.
+
+        The frontier read is the kernel's, cached per epoch, and this runs
+        at the same epoch as :meth:`compiled_block`'s own — so a step that
+        shows both sections pays for the obligation walk once.
+        """
+        if not self.graphing or self.graph is None or not self.on:
+            return (), False
+        try:
+            found = working_set(self.graph,
+                                seeds_from(self.state.ranked_frontier()))
+        except Exception as exc:                    # noqa: BLE001 - the point
+            self._ungraphed(exc)
+            return (), False
+        return related_rows(found), bool(found.truncated)
+
+    def _ungraphed(self, exc: BaseException) -> None:
+        """The topology is over for this run; everything else runs.
+
+        :meth:`_unchecked`'s sibling and just as narrow, one file further
+        out. What stops is the harvest, the graph's log and the RELATED
+        section; the store goes on believing, the block goes on rendering
+        without that section, and the mission is the mission it would have
+        been.  The graph itself is dropped rather than kept half-written, so
+        nothing downstream can read a topology that stopped being fed.
+        """
+        self.graph_failures += 1
+        self.graphing = False
+        self.graph = None
+        try:
+            fsync_append(self.path, canonical({
+                NOTE_KEY: UNGRAPHED_NOTE,
+                "error": f"{type(exc).__name__}: {exc}",
+                "written": self._written,
+            }))
+        except Exception:                           # pragma: no cover
+            pass
+
     def _flush(self) -> None:
         """Everything the kernel has logged since the last flush, appended.
 
@@ -2337,7 +2713,8 @@ def open_shadow(store: Any, run_id: str, *,
                 resumed: bool = False, compiling: bool = False,
                 budget_chars: int = BUDGET_CHARS,
                 cognition_block: Any = None,
-                steering: bool = False) -> ShadowCognition:
+                steering: bool = False,
+                graphing: bool = False) -> ShadowCognition:
     """The shadow for *run_id* in *store*: a new one, or the one on disk.
 
     *store* is a :class:`core.durable.RunStore`; it is asked for the run's
@@ -2386,6 +2763,19 @@ def open_shadow(store: Any, run_id: str, *,
     :meth:`~ShadowCognition.load_constraints` reads them off the manifest,
     which is not a second load of anything — there was nothing to replay.
 
+    *graphing* is ``--graph-context``, and it is carried on both paths for
+    *compiling*'s reason.  The topology has its own file and its own door
+    (:func:`_open_graph`) and the same two cases: no file, a fresh graph and
+    a header; a file, replayed, with the write cursor set past it.  A
+    resumed graph is **replayed and not rebuilt** even though the links it
+    was built from are in the reasoning log this call has just replayed —
+    rebuilding would append every one of those edges to a file that already
+    holds them, and a log whose ``n`` values restart is a log the graph
+    package refuses.  A ``ReplayRefused`` out of the graph's own log leaves
+    this call exactly as a refusal out of the reasoning log does: it raises,
+    and ``core.cli`` runs the mission with no shadow rather than half of
+    one.
+
     **The one call in this module that raises**, and deliberately: a log
     this reader or the kernel cannot trust is a
     :class:`~core.cognition.types.ReplayRefused` — no header, a version from
@@ -2397,12 +2787,12 @@ def open_shadow(store: Any, run_id: str, *,
     """
     directory = Path(store.directory(run_id))
     path = directory / REASONING_LOG
-    # The three prompt-facing switches, resolved ONCE and carried onto both
+    # The prompt-facing switches, resolved ONCE and carried onto both
     # paths below. A door that resolved them on the fresh path only is a
     # resumed run that quietly stopped showing the model its own view — and
     # would now quietly stop offering its planner the frontier as well.
     view = {"compiling": compiling, "budget_chars": budget_chars,
-            "steering": steering}
+            "steering": steering, "graphing": graphing}
     if path.exists():
         header, events, notes = read_reasoning(path)
         # Through `_state_of`, which exists so that "what version was this
@@ -2426,14 +2816,22 @@ def open_shadow(store: Any, run_id: str, *,
                                         == VIOLATION_NOTE],
                                  unsolved=any(note.get(NOTE_KEY)
                                               == UNSOLVED_NOTE
-                                              for note in notes), **view)
+                                              for note in notes),
+                                 **dict(view, **_open_graph(directory,
+                                                            graphing)))
         # The one thing a resume reads off the manifest, and the one thing
         # that is not in the log: a constraint is not a kernel event, so
         # there is nothing here to replay and nothing to load twice. See
         # `ShadowCognition.load_constraints`.
         shadow.load_constraints(cognition_block)
+        # The link cursor, seeded off the topology that came back, so the
+        # resumed process does not re-state every edge it just replayed into
+        # the log it just read. See `LinkHarvest.seed_from`.
+        if shadow.graph is not None:
+            shadow._harvest.seed_from(shadow.state, shadow.graph)
         return shadow
     fsync_append(path, canonical(header_record()))
+    view.update(_open_graph(directory, graphing))
     if resumed:
         # THE GAP, said out loud. A resumed run re-records its recorded
         # results into the result store (`core.runtime.resume`) rather than
@@ -2458,3 +2856,30 @@ def open_shadow(store: Any, run_id: str, *,
     # contract every other call on the object has.
     shadow.load_pack(cognition_block)
     return shadow
+
+
+def _open_graph(directory: Path, graphing: bool) -> Dict[str, Any]:
+    """The topology for this run: a new one and a header, or the one on disk.
+
+    :func:`open_shadow`'s door for the second file, returning the two
+    constructor arguments that say which it found.  A function rather than
+    two branches inline because both of :func:`open_shadow`'s paths need it
+    and the answer is the same on each: the reasoning log's presence says
+    whether the *store* is being resumed, and the graph log's says whether
+    the *topology* is — a run that gained the flag between two processes
+    resumes a store and starts a graph, and that is a perfectly ordinary
+    state rather than a case to refuse.
+
+    Called **after** the reasoning log has been read or written, so a run
+    whose reasoning log is refused leaves no graph header behind for a
+    shadow that never opened.
+    """
+    if not graphing:
+        return {}
+    path = directory / GRAPH_LOG
+    if path.exists():
+        header, events, _notes = read_graph(path)
+        return {"graph": _graph_of(header, events),
+                "graph_written": len(events)}
+    fsync_append(path, canonical(graph_header_record()))
+    return {"graph": KnowledgeGraph(), "graph_written": 0}

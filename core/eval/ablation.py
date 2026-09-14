@@ -19,9 +19,10 @@ month is one entry here and no branch anywhere.
 
 **Availability is mechanical and never a list somebody maintains.**  Every
 arm here was declared before its flag existed: ``--cognition`` landed with
-the shadow lane, ``--compiled-context`` with Phase 18, and the graph
-working set is Phase 20 and still to come.  Each of them graduated — and
-the last will graduate — with **no edit to this module**.  An arm whose
+the shadow lane, ``--compiled-context`` with Phase 18, and
+``--graph-context`` with Phase 20a.  Each of them graduated with **no edit
+to this module's machinery** — an arm's ``why`` is retold when it lands,
+and nothing else moves.  An arm whose
 flags the installed CLI does not accept is
 **SKIPPED with the reason**, and whether it accepts them is settled by
 asking the spawn line's own ``--help`` — see :func:`accepted_flags`.  So
@@ -165,9 +166,12 @@ ARMS: Tuple[Arm, ...] = (
     Arm(
         name="graph",
         flags=("--graph-context",),
-        why="ROADMAP §2.9.7: the graph working set, which is conditional "
-            "on Phase 19 reading positive. Declared now, skipped until "
-            "the flag exists",
+        why="ROADMAP §2.9.7: the run's links kept as a topology and the "
+            "compiled block's RELATED section hydrated around what is "
+            "owed. The question this arm answers is whether telling a "
+            "model what is connected to the question changes how it "
+            "spends its calls. Declared before the flag existed; "
+            "graduated with Phase 20a",
     ),
     Arm(
         name="swarm-steering",

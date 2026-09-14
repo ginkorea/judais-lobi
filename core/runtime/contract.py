@@ -910,7 +910,8 @@ CLI_FLAGS: tuple[str, ...] = (
     "--gate-wait", "--replay", "--grant",
     "--campaign", "--campaign-plan",
     "--no-grounding",
-    "--cognition", "--compiled-context", "--swarm-steering",
+    "--cognition", "--compiled-context", "--graph-context",
+    "--swarm-steering",
     "--version",
 )
 
@@ -1022,6 +1023,18 @@ CLI_FLAGS: tuple[str, ...] = (
 #: it off — which is the point of the flag and the reason it is off by
 #: default.
 #:
+#: ``JUDAIS_LOBI_GRAPH_CONTEXT`` is the environment form of
+#: ``--graph-context`` — set to anything non-empty and the run keeps its
+#: links as a topology in ``graph.jsonl`` beside the reasoning log, and the
+#: compiled block gains one RELATED section naming what a bounded walk out
+#: from the owed lines reaches.  It **implies**
+#: ``JUDAIS_LOBI_COMPILED_CONTEXT``, and through it ``JUDAIS_LOBI_COGNITION``,
+#: and turns them on rather than refusing.  It adds nothing to this contract
+#: either: no record type, no field, no outcome, nothing new on the wire, and
+#: one more file a run leaves behind.  What changes is the model's *input*,
+#: one section further than the flag above it, and the same warning applies
+#: to a consumer comparing recorded prompts.
+#:
 #: ``JUDAIS_LOBI_SWARM_STEERING`` is the environment form of
 #: ``--swarm-steering`` — set to anything non-empty and a **staged** turn's
 #: planner is offered the independent groups of what the run still owes,
@@ -1077,6 +1090,7 @@ ENV_VARS: tuple[str, ...] = (
     "JUDAIS_LOBI_APPROVALS",
     "JUDAIS_LOBI_MEMORY", "JUDAIS_LOBI_MEMORY_PRINCIPAL",
     "JUDAIS_LOBI_COGNITION", "JUDAIS_LOBI_COMPILED_CONTEXT",
+    "JUDAIS_LOBI_GRAPH_CONTEXT",
     "JUDAIS_LOBI_SWARM_STEERING",
 )
 
