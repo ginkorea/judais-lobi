@@ -10,7 +10,7 @@ looks like, what must never be invented — belongs to whoever operates the
 platform being driven.  A manifest is how that half arrives, and this
 module is deliberately the only place that reads one.
 
-Five things come out of a manifest, and nothing else does:
+Six things come out of a manifest, and nothing else does:
 
 * a **closed tool subset**, intersected with what was actually
   discovered.  A skill that names a tool the server does not offer is a
@@ -31,6 +31,15 @@ Five things come out of a manifest, and nothing else does:
   where ``ROADMAP.md`` §2.9.4 puts rule authorship: *rules arrive through
   skills*, because a runtime that derives has to say who wrote the clauses
   and what they cost to write;
+* an optional **plane declaration block** (``tools:``): which of a tool's
+  result keys are *identifiers* of which kind of subject, what a call
+  can establish, and what it produces later through which other call.
+  Read by :class:`core.runtime.declarations.ToolsBlock` and never here
+  beyond its shape — ``grounding:``'s and ``cognition:``'s arrangement
+  exactly.  It is the **fallback** door: the wire owns shape, a server's
+  own ``outputSchema`` wins wherever it published one, and this block is
+  how a platform declares the same things about a server it does not
+  control.  Nothing in it reaches the model;
 * an optional **SDK import name** (``sdk_import``): what a platform calls
   itself to Python.  A planner that can propose *code which fetches
   platform data itself* has to name the module that does the fetching,
@@ -137,9 +146,14 @@ _OPTIONAL = "?"
 #: derived facts — and a block of YAML horn clauses rendered into a system
 #: message would be the runtime asking a 20B to do the inference the
 #: runtime just did.
+#:
+#: ``tools`` is held back for the same reason and one more: it is a
+#: statement about what the plane RETURNS, the model is shown what it may
+#: call, and the difference between those two is the whole argument for
+#: keeping schemas out of a catalogue whose size is a measured hazard.
 _STRUCTURAL = frozenset({
     "name", "skill_id", "version", "description",
-    "allowed_tools", "grounding", "sdk_import", "cognition",
+    "allowed_tools", "grounding", "sdk_import", "cognition", "tools",
 })
 
 #: Operational fields rendered first, in this order, with these labels.
@@ -309,6 +323,14 @@ class SkillManifest:
     #: ``None`` is a skill that wrote none; ``{}`` is a skill that wrote an
     #: empty one, and composition keeps the difference.
     cognition: Optional[Dict[str, Any]] = None
+    #: The raw ``tools:`` block — what this platform says its plane returns
+    #: — or ``None``.  Interpreted by
+    #: :class:`core.runtime.declarations.ToolsBlock`, never here beyond its
+    #: shape, and resolved against the wire's own ``outputSchema`` at
+    #: fleet-connect, where both halves are in hand.  ``None`` is a skill
+    #: that declared nothing; ``{}`` is a skill that wrote an empty block,
+    #: and composition keeps the difference.
+    tools: Optional[Dict[str, Any]] = None
     #: What the platform's SDK is called to ``import``, or ``""``.  Read
     #: by :mod:`core.runtime.swarm` to compose the ``code+sdk`` rung, and
     #: the reason that rung is offered at all.  Empty is not a defect: a
@@ -464,6 +486,43 @@ class SkillManifest:
                 problems.append(f"`cognition:` is not a usable rule "
                                 f"pack:{exc}")
 
+        # The plane's declarations, validated ALL THE WAY DOWN at the door
+        # and stored raw, on the rule the rule pack above follows: shape is
+        # this module's (it is a mapping, or it is not a block) and
+        # everything else belongs to the reader, which answers it by
+        # building the block.
+        #
+        # The door is the only moment these faults can be found. A rule pack
+        # that does not load costs a run its cognition and says so; a
+        # malformed identifier declaration costs NOTHING visible — it simply
+        # binds nothing, silently, for as long as the file exists — which
+        # makes the load-time refusal the whole of this block's safety.
+        #
+        # Imported inside the function for the reason `RulePack` is: a
+        # manifest loader has no business dragging the runtime's plane
+        # resolver in at import time.
+        # `plane` and not `tools`: the local name above is the CLOSED SET,
+        # and this block is what the plane returns. Two different facts, and
+        # a shared name here once cost the loader every manifest it had.
+        plane = fields.get("tools")
+        if plane is not None and not isinstance(plane, Mapping):
+            problems.append(
+                f"`tools:` holds a {type(plane).__name__}; it is a mapping "
+                f"(defaults, entries) or absent"
+            )
+            plane = None
+        elif plane is not None:
+            from core.runtime.declarations import ToolsBlock
+
+            try:
+                ToolsBlock.from_mapping(plane)
+            except ValueError as exc:
+                # No space before `{exc}`, as with the pack above: the
+                # block's own faults arrive as their own indented lines
+                # under this one item of the manifest's list.
+                problems.append(f"`tools:` is not a usable declaration "
+                                f"block:{exc}")
+
         # Refused rather than coerced. `sdk_import: [acme]` would render as
         # "import ['acme']" in a sentence handed to a model, and the model
         # would write that line.
@@ -525,6 +584,7 @@ class SkillManifest:
             output_contract=output,
             grounding=dict(grounding) if grounding is not None else None,
             cognition=dict(cognition) if cognition is not None else None,
+            tools=dict(plane) if plane is not None else None,
             sdk_import=sdk_import,
             sandbox=sandbox,
             source=path,
@@ -1410,6 +1470,215 @@ def _merge_cognition(
     return merged
 
 
+def _merge_tools(
+    manifests: Sequence["SkillManifest"], problems: List[str],
+) -> Optional[Dict[str, Any]]:
+    """One ``tools:`` block out of several, appending every problem.
+
+    :func:`_merge_cognition`'s shape exactly — raw mappings in, a raw
+    mapping out, each input validated on its own first, a key any input
+    declared present in the result — and for its reason: the reader of this
+    block is :class:`core.runtime.declarations.ToolsBlock`, and a merge that
+    went through it and took it apart again would be a second reader of one
+    fact.
+
+    The disciplines, per verb, and they are the scalar one
+    (``identifier_pattern``'s) wherever two skills can mean different
+    things by one word:
+
+    * **entries union by tool name**, on
+      :func:`~core.tools.descriptors.same_tool` — this framework's one
+      answer to *are these the same tool* — so two skills naming one tool
+      in two conventions declare it once.  The kept spelling is the first
+      one seen, exactly as ``allowed_tools`` keeps it, and for the same
+      reason: nothing binds differently either way, because every lookup
+      matches on ``same_tool`` too;
+    * **``identifiers`` agree or refuse, per key.**  Two kinds for one key
+      is a refusal naming both skills: a key identifies a job or it
+      identifies an asset, the resolver would link the same value into two
+      different subjects, and choosing between them would be a fact about
+      argument order;
+    * **``establishes`` unions.**  A list of what a call can answer cannot
+      disagree with another list of what it can answer;
+    * **``produces`` unions by ``(kind, field)``**, and two declarations of
+      one product arriving through different calls is a refusal — that is
+      the scalar discipline again, one product at a time;
+    * **``output_schema`` agrees or refuses.**  It is a fallback shape for a
+      server that publishes none, and two of them is two answers to a
+      question the wire is meant to answer anyway;
+    * **``defaults`` merge exactly as ``identifiers`` do.**
+
+    The result is **order-independent**: entries by name, keys, fields and
+    products all sorted, so composing the same skills in the other order is
+    the same block.  Not decoration — a plane's declarations are written
+    into ``reasoning.jsonl`` and read back by a resumed run, and a block
+    that depended on the order a command line listed two skills in would
+    make that record a fact about typing.
+    """
+    from core.runtime.declarations import (ESTABLISHES, IDENTIFIERS, PRODUCES,
+                                           SHAPE, ToolsBlock)
+
+    declared = [m for m in manifests if m.tools is not None]
+    if not declared:
+        return None
+
+    usable: List["SkillManifest"] = []
+    blocks: Dict[str, Any] = {}
+    for manifest in declared:
+        try:
+            blocks[manifest.name] = ToolsBlock.from_mapping(manifest.tools)
+        except ValueError as exc:
+            problems.append(
+                f"skill {manifest.name!r} has a `tools:` block that is not "
+                f"usable on its own, so there is nothing to merge:{exc}")
+            continue
+        usable.append(manifest)
+    if not usable:
+        return None
+
+    raw_blocks = [m.tools for m in usable]
+    merged: Dict[str, Any] = {}
+
+    defaults: Dict[str, str] = {}
+    default_owner: Dict[str, str] = {}
+    for manifest in usable:
+        for key, kind in blocks[manifest.name].defaults.items():
+            if key not in defaults:
+                defaults[key] = kind
+                default_owner[key] = manifest.name
+            elif defaults[key] != kind:
+                problems.append(
+                    f"`tools: defaults` declares {key!r} as two kinds of "
+                    f"subject: {default_owner[key]!r} says "
+                    f"{defaults[key]!r} and {manifest.name!r} says {kind!r}. "
+                    f"One key is one identity, and taking either answer "
+                    f"would link the other skill's receipts into a subject "
+                    f"it never named")
+    if _declares(raw_blocks, "defaults"):
+        body: Dict[str, Any] = {}
+        if any(IDENTIFIERS in (raw.get("defaults") or {})
+               for raw in raw_blocks
+               if isinstance(raw.get("defaults"), Mapping)):
+            body[IDENTIFIERS] = {key: {"kind": defaults[key]}
+                                 for key in sorted(defaults)}
+        merged["defaults"] = body
+
+    # The accumulators, keyed by the spelling that was kept. `wrote` is the
+    # key-presence half — composition may change a value and may never
+    # change a declared key's presence, `_declared`'s lesson one block over
+    # — and it is read off the RAW entries, because a parsed entry cannot
+    # tell `establishes: []` from a skill that never mentioned it.
+    entries: Dict[str, Dict[str, Any]] = {}
+    wrote: Dict[str, set] = {}
+    entry_owner: Dict[str, str] = {}
+    ident_owner: Dict[Tuple[str, str], str] = {}
+    shape_owner: Dict[str, str] = {}
+    for manifest in usable:
+        raw_entries = {
+            str((item or {}).get("name") or "").strip(): item
+            for item in (manifest.tools.get("entries") or ())
+            if isinstance(item, Mapping)
+        }
+        for entry in blocks[manifest.name].entries:
+            kept = next((name for name in entries
+                         if same_tool(name, entry.name)), None)
+            if kept is None:
+                kept = entry.name
+                entries[kept] = {IDENTIFIERS: {}, ESTABLISHES: [],
+                                 PRODUCES: [], SHAPE: None}
+                wrote[kept] = set()
+                entry_owner[kept] = manifest.name
+            acc = entries[kept]
+            for key, kind in entry.identifiers.items():
+                if key not in acc[IDENTIFIERS]:
+                    acc[IDENTIFIERS][key] = kind
+                    ident_owner[(kept, key)] = manifest.name
+                elif acc[IDENTIFIERS][key] != kind:
+                    problems.append(
+                        f"`tools: {kept}` declares the identifier {key!r} as "
+                        f"two kinds of subject: "
+                        f"{ident_owner[(kept, key)]!r} says "
+                        f"{acc[IDENTIFIERS][key]!r} and {manifest.name!r} "
+                        f"says {kind!r}. One key is one identity")
+            for name in entry.establishes:
+                if name not in acc[ESTABLISHES]:
+                    acc[ESTABLISHES].append(name)
+            for produced in entry.produces:
+                twin = next((item for item in acc[PRODUCES]
+                             if (item.kind, item.field)
+                             == (produced.kind, produced.field)), None)
+                if twin is None:
+                    acc[PRODUCES].append(produced)
+                elif twin != produced:
+                    problems.append(
+                        f"`tools: {kept}` declares the product "
+                        f"{produced.kind}/{produced.field} twice over with "
+                        f"different chains: {twin.sentence()} and "
+                        f"{produced.sentence()}. One product arrives through "
+                        f"one call, and a hint pointing at two is a hint "
+                        f"nobody can follow")
+            if entry.shape is not None:
+                if acc[SHAPE] is None:
+                    acc[SHAPE] = entry.shape
+                    shape_owner[kept] = manifest.name
+                elif _canonical(acc[SHAPE]) != _canonical(entry.shape):
+                    problems.append(
+                        f"`tools: {kept}` is given two different "
+                        f"`{SHAPE}` fallbacks, by {shape_owner[kept]!r} and "
+                        f"{manifest.name!r}. A fallback shape is what a "
+                        f"server that publishes none is read as, and two of "
+                        f"them is two planes")
+            wrote[kept] |= {key for key in (IDENTIFIERS, ESTABLISHES,
+                                            PRODUCES, SHAPE)
+                            if key in (raw_entries.get(entry.name) or {})}
+
+    if _declares(raw_blocks, "entries"):
+        merged["entries"] = [_tools_entry(name, entries[name], wrote[name])
+                             for name in sorted(entries)]
+
+    # Validated HERE, for `_merge_cognition`'s reason: the merged mapping is
+    # a block no skill wrote, and the door is where a mission finds out that
+    # it does not stand up. It can find something the inputs could not — a
+    # `produces` keyed on an identifier the composition dropped is the shape
+    # of it — and the cost is one read over a small mapping.
+    try:
+        ToolsBlock.from_mapping(merged)
+    except ValueError as exc:
+        problems.append(
+            f"the merged `tools:` block is not one the plane resolver would "
+            f"take:{exc}")
+    return merged
+
+
+def _tools_entry(name: str, accumulated: Dict[str, Any],
+                 wrote: set) -> Dict[str, Any]:
+    """One merged entry as the mapping a reader takes, in a fixed order.
+
+    Sorted throughout, and a verb appears only where some skill wrote it:
+    the presence rule is the same one ``grounding:`` keeps, and the sorting
+    is what makes composing two skills the other way round the same block.
+    """
+    from core.runtime.declarations import (ESTABLISHES, IDENTIFIERS, PRODUCES,
+                                           SHAPE)
+
+    entry: Dict[str, Any] = {"name": name}
+    if IDENTIFIERS in wrote:
+        entry[IDENTIFIERS] = {
+            key: {"kind": accumulated[IDENTIFIERS][key]}
+            for key in sorted(accumulated[IDENTIFIERS])
+        }
+    if ESTABLISHES in wrote:
+        entry[ESTABLISHES] = sorted(accumulated[ESTABLISHES])
+    if PRODUCES in wrote:
+        entry[PRODUCES] = [item.as_record() for item in
+                           sorted(accumulated[PRODUCES],
+                                  key=lambda item: (item.kind, item.field,
+                                                    item.via, item.on))]
+    if SHAPE in wrote and accumulated[SHAPE] is not None:
+        entry[SHAPE] = accumulated[SHAPE]
+    return entry
+
+
 def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
     """Several manifests as the ONE a mission runs under, or a refusal.
 
@@ -1458,6 +1727,12 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
       Nobody's clause is dropped and nobody's clause is replaced, because a
       pack is a set of named things and a name is what everything
       downstream says;
+    * the **plane declarations**, merged by :func:`_merge_tools`: entries
+      union by tool, ``establishes`` and ``produces`` union, and every
+      place two skills could mean different things by one word —
+      an identifier's kind, a product's chain, a fallback shape — agrees
+      or refuses naming both.  The result is order-independent, because it
+      is written into a run's reasoning log and read back;
     * the ``sdk_import``, if exactly one distinct one was named, and the
       ``sandbox``, at the strictest thing anybody asked for.  The
       code-plane gate then runs over **each input manifest** under that
@@ -1596,6 +1871,7 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
             )
 
     cognition = _merge_cognition(loaded, problems)
+    tools = _merge_tools(loaded, problems)
 
     composed = SkillManifest(
         name=primary.name,
@@ -1608,6 +1884,7 @@ def compose_manifests(manifests: Sequence["SkillManifest"]) -> "SkillManifest":
         output_contract=primary.output_contract,
         grounding=grounding,
         cognition=cognition,
+        tools=tools,
         sdk_import=sdk_import,
         sandbox=sandbox,
         source=primary.source,

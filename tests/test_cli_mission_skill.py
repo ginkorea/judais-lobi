@@ -3487,3 +3487,120 @@ class TestADeploymentThatDoesNotCheckItsAnswers:
         MockClass, _agent = elf
         run_cli(MockClass, "--skill", str(skill_file), "--no-grounding")
         assert "no grounding grammar" in capsys.readouterr().out
+
+
+#: The recon skill, plus what its platform knows about what those tools
+#: RETURN: the envelope's own chaining handle for every tool of the plane,
+#: and one tool's identifier and what it establishes.
+DECLARING_SKILL = textwrap.dedent("""\
+    ---
+    name: recon
+    skill:
+      skill_id: recon
+      when_to_use: Arriving at a mission cold.
+      allowed_tools:
+        - governed_read
+      policy:
+        - Never invent an asset id.
+      output_format: A table.
+      grounding:
+        identifier_pattern: '\\basset\\.[0-9a-z]{4,}\\b'
+      tools:
+        defaults:
+          identifiers:
+            result_ref: {kind: result}
+        entries:
+          - name: governed_read
+            identifiers:
+              asset_id: {kind: asset}
+            establishes: [posture]
+    ---
+
+    # Recon
+
+    Start broad, then narrow by facet.
+    """)
+
+
+class TestThePlaneDeclarationsFromTheCommandLine:
+    """The wiring, where an operator touches it: a server answers
+    `tools/list`, a skill declares what those tools return, and the two are
+    resolved once — at the one moment both halves are in hand.
+
+    The stub publishes a real `outputSchema` for every tool (FastMCP
+    generates one), so this exercises the ordinary shape of the feature
+    rather than a hand-built mapping: the wire owns the shape, the manifest
+    brings the semantics no schema can carry, and what the run writes down
+    is what it will steer under.
+
+    Nothing here may change the mission. The declarations reach no prompt
+    and no call, and with `--cognition` off there is no log to write them
+    into at all.
+    """
+
+    @pytest.fixture
+    def declaring_skill(self, tmp_path):
+        path = tmp_path / "declaring" / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(DECLARING_SKILL, encoding="utf-8")
+        return path
+
+    def _reasoning(self, tmp_path):
+        from core.runtime.cognition import REASONING_LOG
+
+        found = sorted((tmp_path / "runs").glob(f"*/{REASONING_LOG}"))
+        assert len(found) == 1, found
+        return found[0]
+
+    def test_the_console_says_what_the_plane_declares(self, elf,
+                                                      declaring_skill,
+                                                      capsys):
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill))
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "declarations:" in out
+        assert "tool(s) declared" in out
+
+    def test_the_record_is_written_when_cognition_is_on(self, elf,
+                                                        declaring_skill,
+                                                        tmp_path):
+        from core.runtime.cognition import (DECLARATIONS_KEY, declarations_in,
+                                            read_reasoning)
+
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill), "--cognition")
+        records = declarations_in(
+            read_reasoning(self._reasoning(tmp_path))[2])
+        assert len(records) == 1
+        assert records[0][DECLARATIONS_KEY] == 1
+        declared = records[0]["tools"]["mcp.governed_read"]
+        assert declared["identifiers"] == {"asset_id": "asset",
+                                           "result_ref": "result"}
+        assert declared["establishes"] == ["posture"]
+        # The wire published a shape for this tool and the manifest did
+        # not: shape from the plane, semantics from the platform, which is
+        # the whole division of labour.
+        assert declared["shape"] == "wire"
+
+    def test_the_declarations_reach_no_prompt(self, elf, declaring_skill):
+        """A declaration is about what comes BACK. The catalogue is about
+        what may be called, and catalogue size is a measured hazard."""
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(declaring_skill), "--cognition")
+        system = agent.client.chat.call_args_list[0].kwargs["messages"][0][
+            "content"]
+        assert "result_ref" not in system
+        assert "posture" not in system
+
+    def test_a_skill_that_declares_nothing_writes_no_record(self, elf,
+                                                            skill_file,
+                                                            tmp_path):
+        """The stub publishes shapes and says nothing about identity, so a
+        run with no `tools:` block resolves to nothing — and an absent
+        record already means that."""
+        from core.runtime.cognition import declarations_in, read_reasoning
+
+        MockClass, _agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--cognition")
+        assert declarations_in(
+            read_reasoning(self._reasoning(tmp_path))[2]) == []

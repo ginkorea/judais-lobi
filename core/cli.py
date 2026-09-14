@@ -1121,6 +1121,7 @@ def _mission(elf, args, name, style):
     )
     from core.runtime.context_window import MissionWindow
     from core.runtime.control import ControlChannel
+    from core.runtime.declarations import PlaneDeclarations
     from core.runtime.grounding import GroundingConfig, GroundingValidator
     from core.runtime.mission import (
         ANSWER_FUNCTION, AWAITING_APPROVAL, CANCELLED, JSON_PROTOCOL,
@@ -2061,6 +2062,56 @@ def _mission(elf, args, name, style):
             if recorder is not None:
                 recorder.catalogue(bus, tool_names)
             _redeclare(tool_names)
+            # What the plane says its tools RETURN, resolved once and here:
+            # this is the only moment both halves are in hand — every
+            # server has answered `tools/list` and the manifests have
+            # composed — and a second place that resolved precedence would
+            # be the second answer to which door won.
+            #
+            # `wire=None` and not `{}` for a run with no server: a built-in
+            # plane and an offline replay have nothing to disagree with a
+            # manifest's memory, and `{}` would mean a plane that answered
+            # with no tools, which is a different fact.
+            #
+            # Total, like the shadow beside it: declarations steer and
+            # never gate, so a resolution that failed costs this run its
+            # hints and says so, and the mission is the mission it was.
+            declarations = None
+            try:
+                declarations = PlaneDeclarations.build(
+                    wire=(fleet.output_schemas() if fleet is not None
+                          else None),
+                    manifest=(manifest.tools if manifest else None))
+            except Exception as exc:            # noqa: BLE001 - see above
+                console.print(
+                    f"🏷  declarations: NOT resolved — {scrub(str(exc))}. "
+                    f"The mission runs exactly as it would have, with no "
+                    f"declarations at all rather than half of them",
+                    style="yellow")
+            if declarations is not None and (declarations
+                                             or declarations.discrepancies):
+                console.print(
+                    f"🏷  declarations: {declarations.describe()} — what "
+                    f"this plane says its tools return, from the servers' "
+                    f"`outputSchema` and the skill's `tools:` block. It "
+                    f"steers the runtime and reaches no prompt",
+                    style=style)
+                if declarations.discrepancies:
+                    # Never silent, and one line per disagreement: the wire
+                    # is the plane speaking now and the manifest is a
+                    # memory of it, so a difference means the plane moved
+                    # and somebody's file is stale. The wire wins either
+                    # way; what this line buys is that a person finds out.
+                    console.print(
+                        f"⚖️  declarations: "
+                        f"{len(declarations.discrepancies)} disagreement(s) "
+                        f"— the wire wins, and the manifest is a memory of "
+                        f"a plane that has changed:\n  - "
+                        + "\n  - ".join(note.sentence() for note
+                                        in declarations.discrepancies),
+                        style="yellow")
+                if shadow is not None:
+                    shadow.declare_plane(declarations)
             # The identifier check must not flag the name of a tool this
             # mission offered — the harness wrote that name into the prompt
             # itself. Derived from the resolved set rather than typed into a

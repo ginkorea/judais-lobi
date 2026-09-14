@@ -159,6 +159,23 @@ class TestProtocol:
         assert spec.argument_names == ["a", "b"]
         assert spec.input_schema["type"] == "object"
 
+    def test_tool_spec_carries_the_output_schema(self, client):
+        """The half this client used to drop on the floor. A server's
+        `outputSchema` is the plane's own word about what a call RETURNS,
+        and without it a runtime can say what may be called and nothing at
+        all about what comes back — which is why receipts about one job
+        could never be told to be about one job."""
+        spec = next(t for t in client.list_tools() if t.name == "governed_view")
+        assert spec.output_schema["type"] == "object"
+        assert "properties" in spec.output_schema
+
+    def test_a_spec_is_carried_whole_and_not_summarised(self, client):
+        """Both schemas on one object, neither reduced: the declarations
+        resolver reads the output half and the catalogue renderers read the
+        input half, and a summary here would be a third opinion."""
+        spec = next(t for t in client.list_tools() if t.name == "add")
+        assert spec.input_schema and spec.output_schema
+
     def test_tools_call(self, client):
         result = client.call_tool("echo", {"text": "ping"})
         assert isinstance(result, McpCallResult)
@@ -282,6 +299,30 @@ class TestBridge:
 
         assert bus.dispatch("run_shell_command").stdout == "the local shell tool"
         assert "mcp.run_shell_command" in bus.list_tools()
+
+    def test_output_schemas_are_keyed_by_the_name_the_bus_knows(self, client,
+                                                                bus):
+        """The bridge is where the server's name and the bus's name meet,
+        so it is where the mapping a declaration is looked up by belongs.
+        A caller that rebuilt this from `tools/list` would be prefixing
+        namespaces for itself, and would get it wrong the first time two
+        servers were bridged."""
+        bridge = McpToolBridge(client, bus)
+        bridge.sync()
+        schemas = bridge.output_schemas()
+        assert set(schemas) == set(bridge.registered)
+        assert schemas["mcp.governed_view"]["type"] == "object"
+
+    def test_a_tool_whose_server_publishes_nothing_is_still_listed(self,
+                                                                   client,
+                                                                   bus):
+        """`{}` means *this tool declares no shape*; a missing entry would
+        mean *no plane spoke about it*, and those are different facts to
+        the resolver."""
+        bridge = McpToolBridge(client, bus)
+        bridge.sync()
+        client._tools = [McpToolSpec(name="quiet")]
+        assert bridge.output_schemas() == {"mcp.quiet": {}}
 
     def test_capability_gating_still_applies(self, client):
         """The bridge buys the gate; that is why it is a bridge."""

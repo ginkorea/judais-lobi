@@ -207,8 +207,15 @@ bearing on what a platform pins.
 Every line after the header is one kernel event, verbatim, so that
 :func:`replay_reasoning` over the file rebuilds the state exactly — through
 :meth:`~core.cognition.state.CognitiveState.replay`, which is the kernel's
-own single application path.  A ``note`` line is the one exception and it is
-not an event: it says cognition stopped and why, and a reader skips it.
+own single application path.  Two kinds of line are not events and a replay
+skips both: a ``note``, which says cognition stopped and why, and the
+**declarations record** (:meth:`ShadowCognition.declare_plane`), which says
+what the plane this run connected to declares about what its tools return.
+The second is not a kernel event on purpose — the kernel knows nothing about
+tools — and it is in this file rather than in a file of its own because a
+resumed run reads one log to find out what the process before it steered
+under, and a plane that has moved since then is then a difference two
+records apart rather than a thing nobody wrote down.
 
 **A log this reader cannot trust is refused, and a refusal disables
 cognition rather than ending a mission.**  The kernel checks more than the
@@ -253,13 +260,15 @@ from core.cognition import (BUDGET_CHARS, CARDINALITIES, EVENT_SCHEMA_VERSION,
                             ReplayRefused, RuleAuthority, check_pattern,
                             compile_view, deep_copy)
 from core.durable import fsync_append
+from core.runtime.declarations import DECLARATIONS_KEY as _DECLARATIONS_KEY
 from core.runtime.grounding import harvest_fields, json_blocks
 from core.runtime.replay import canonical
 
 __all__ = [
     "REASONING_LOG", "REASONING_SCHEMA_VERSION", "SCHEMA_KEY",
     "KERNEL_SCHEMA_KEY", "KERNEL_KEY", "KERNEL_EVENTS_KEY",
-    "KERNEL_COUNT_KEY", "NOTE_KEY", "RECEIPT_KIND", "RESUMED_NOTE",
+    "KERNEL_COUNT_KEY", "DECLARATIONS_KEY", "declarations_in",
+    "NOTE_KEY", "RECEIPT_KIND", "RESUMED_NOTE",
     "STOPPED_NOTE", "UNCOMPILED_NOTE", "UNLOADED_NOTE",
     "COGNITION_KEYS", "GOAL_KEYS", "PACK_AUTHORITY", "PROBLEM_SEP",
     "RULE_KEYS",
@@ -271,12 +280,19 @@ __all__ = [
 #: The shadow's file, in the run directory beside ``events.jsonl``.
 REASONING_LOG = "reasoning.jsonl"
 
-#: The shape of THIS file — the header, the note line, which records are
-#: events.  Bumped when that shape changes.  Not the kernel's version (the
-#: header carries that too, under :data:`~core.cognition.events.SCHEMA_KEY`)
-#: and emphatically not :data:`core.runtime.contract.SCHEMA_VERSION`: three
-#: numbers because three things change for three different reasons.
-REASONING_SCHEMA_VERSION = 1
+#: The shape of THIS file — the header, the note line, the declarations
+#: record, which records are events.  Bumped when that shape changes.  Not
+#: the kernel's version (the header carries that too, under
+#: :data:`~core.cognition.events.SCHEMA_KEY`) and emphatically not
+#: :data:`core.runtime.contract.SCHEMA_VERSION`: three numbers because three
+#: things change for three different reasons.
+#:
+#: **2** adds the declarations record.  Bumped rather than added quietly,
+#: even though a version-1 reader would skip the line as it skips a note and
+#: rebuild the state correctly: it would also rebuild *fewer hints than the
+#: log holds* and say nothing, which is this file's own definition of a log
+#: misread exactly once.  A reader that refuses is a reader somebody fixes.
+REASONING_SCHEMA_VERSION = 2
 
 #: The key the header states :data:`REASONING_SCHEMA_VERSION` under, and the
 #: key that identifies the header line.
@@ -284,6 +300,13 @@ SCHEMA_KEY = "reasoning_schema"
 
 #: The key a note line carries.  A note is not an event and is never replayed.
 NOTE_KEY = "note"
+
+#: The key the declarations record carries, and the version it states under
+#: it — :data:`~core.runtime.declarations.DECLARATIONS_KEY`, imported rather
+#: than respelled, because the record is built by the module that owns what
+#: is in it and a second spelling here is the second answer to *which line
+#: is this*.
+DECLARATIONS_KEY = _DECLARATIONS_KEY
 
 #: What an :class:`~core.cognition.types.EvidenceRef` out of this module
 #: calls itself.  The kernel never dereferences it; a reader of the log does.
@@ -807,12 +830,18 @@ def header_record() -> Dict[str, Any]:
 def read_reasoning(path: Any) -> Tuple[Optional[dict], List[dict], List[dict]]:
     """``(header, events, notes)`` out of a :data:`REASONING_LOG`.
 
-    Three kinds of line and they are told apart by what they carry rather
-    than by position: the header states :data:`SCHEMA_KEY`, an event states
-    an ``op`` (the kernel's own discriminator — see
+    Lines are told apart by what they carry rather than by position: the
+    header states :data:`SCHEMA_KEY`, an event states an ``op`` (the
+    kernel's own discriminator — see
     :data:`core.cognition.events.EVENT_OPS`), and anything else is a note.
     Position would be the wrong rule the first time a note lands between
     two events, which is exactly where a note lands.
+
+    **The declarations record is among the notes**, and deliberately: it is
+    the same kind of line — not the header, not an event, never replayed
+    into the store — and a fourth return value would make every caller of
+    this function unpack one.  :func:`declarations_in` is how a reader
+    picks it out, on :data:`DECLARATIONS_KEY`.
 
     A header from a newer writer is **refused**, the way
     :func:`core.cognition.events.check_snapshot` refuses a newer kernel log
@@ -884,6 +913,21 @@ def read_reasoning(path: Any) -> Tuple[Optional[dict], List[dict], List[dict]]:
             f"reasoning schema {version!r} is newer than this reader's "
             f"{REASONING_SCHEMA_VERSION}")
     return header, events, notes
+
+
+def declarations_in(records: Sequence[dict]) -> List[dict]:
+    """The declarations records among *records*, in the order they were
+    written.
+
+    Plural, and that is the point: a resumed run resolves its plane again
+    and writes what it found, so a log may hold several — and the
+    difference between the first and the last is exactly *what changed
+    about the plane while this run was away*.  A reader wanting what the
+    run is steering under now takes the last; a reader wanting to know
+    whether anything moved compares them.
+    """
+    return [record for record in records
+            if isinstance(record, dict) and DECLARATIONS_KEY in record]
 
 
 def replay_reasoning(path: Any) -> CognitiveState:
@@ -994,6 +1038,13 @@ class ShadowCognition:
         self.pack: Optional[RulePack] = None
         #: ``(fields, rules, goals)`` the pack wrote.  Zeroes until one does.
         self.loaded: Tuple[int, int, int] = (0, 0, 0)
+        #: What the plane this run connected to declares about what its
+        #: tools return — a
+        #: :class:`core.runtime.declarations.PlaneDeclarations`, or ``None``
+        #: until :meth:`declare_plane` is called with one.  Held rather than
+        #: consumed here: this lane writes it down, and what reads it is the
+        #: linking that comes next.
+        self.declarations: Any = None
 
     # ── what the door calls, once ───────────────────────────────────────
 
@@ -1034,6 +1085,47 @@ class ShadowCognition:
                 return
             self.pack = pack
             self.loaded = counts
+
+    def declare_plane(self, declarations: Any) -> None:
+        """What the plane declares, written into the log.  Never raises.
+
+        Called once, at fleet-connect: the moment both halves of a
+        declaration are in hand (the server's ``outputSchema`` and the
+        composed manifest's ``tools:`` block) and the first moment there is
+        anything to write.  It lands after the header — and, on a fresh
+        run, after the pack's own events, which is where a reader wants it:
+        the pack is what this store believes before any receipt, and this
+        is what the *plane* says about receipts that have not happened yet.
+
+        **One record, not a merge.**  A resumed run resolves its plane
+        again and appends its own, so a log may hold two — and two that
+        differ is the honest rendering of a plane that changed while the
+        run was away.  Rewriting the first would be this module deciding
+        which of two true statements about two moments to keep.
+
+        Nothing is written for declarations that declare nothing **and
+        disagree about nothing**: a record saying a plane said nothing is a
+        line a reader has to interpret, and an absent one already means it.
+        A discrepancy alone is enough to write one — a server whose
+        extension key this reader could not use has said something about
+        the plane even though it declared nothing, and that is precisely
+        the thing nobody would otherwise find out.
+
+        Total, like every other call on this object: a log that cannot be
+        written must not cost a mission, and a shadow that stopped stays
+        stopped.
+        """
+        if declarations is None or not self.on:
+            return
+        with self._lock:
+            try:
+                if declarations or declarations.discrepancies:
+                    fsync_append(self.path,
+                                 canonical(declarations.as_record()))
+            except Exception as exc:                # noqa: BLE001 - the point
+                self._stopped(exc)
+                return
+            self.declarations = declarations
 
     # ── what the loop calls ─────────────────────────────────────────────
 

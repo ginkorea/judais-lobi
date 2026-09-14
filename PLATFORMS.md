@@ -1257,6 +1257,115 @@ entity — is a later phase, and is deliberately not faked here: a store that
 guessed two receipts were about one entity would manufacture contradictions
 out of two tools that never disagreed.
 
+### `tools` — what your plane returns
+
+A tool descriptor says what may be *called*. Nothing in a receipt says what a
+call *would* return, and that missing half is why a runtime cannot tell that
+two receipts are about one job, cannot say which call would answer an open
+question, and cannot know that the asset a handle stands for arrives later
+through a different tool. A **declaration** is how a platform says those
+things. There are two doors, and they divide by shape and semantics.
+
+**Door 1, the wire — `outputSchema`, and it is preferred.** Any MCP server
+that publishes `outputSchema` at `tools/list` is already declaring the shape
+of its results, and the client now ingests it exactly as it ingests
+`inputSchema`. Nothing is asked of you and nothing is rendered into the
+model's catalogue: catalogue size is a measured hazard, and a declaration
+feeds the runtime, not the prompt.
+
+**Door 2, the manifest — a `tools:` block**, for a server you do not control
+or for the semantics no JSON schema can carry:
+
+```yaml
+tools:
+  defaults:                        # applies to every tool of the plane
+    identifiers:
+      result_ref: {kind: result}   # the envelope's own chaining handle
+  entries:
+    - name: narrative_discovery
+      identifiers:
+        corpus_asset_id: {kind: asset}
+        job_id: {kind: job}
+      establishes: [job_id]        # fields this call can establish
+      produces:
+        - kind: asset
+          field: label_set_asset_id
+          via: job_status          # the product arrives LATER, through `via`
+          "on": job_id             #   keyed by this handle
+```
+
+* **`identifiers`** — key → the *kind of subject* that key identifies. Keys
+  are dotted/bracketed paths into the payload (`data.job_id`,
+  `source_assets[]`, `data.items[].id`), because a governed envelope puts the
+  real fields under `data.*`. A kind may not contain `:` or `#`: a subject is
+  spelled `kind:value` and a receipt `tool#seq`, and a kind carrying either
+  separator would put two namespaces into one string.
+* **`establishes`** — what this call can settle about the subjects it names.
+  Advisory vocabulary, read where a runtime asks *what would answer this*.
+* **`produces`** — the two-phase declaration: this call yields a handle
+  (`on`), and the real product (`field`, of `kind`) arrives through a later
+  call to `via`, keyed by that handle. It creates no facts and no
+  obligations; what it adds is the runtime knowing which call would move
+  one. **Quote the key**: `on` is a YAML 1.1 boolean and an unquoted `on:`
+  parses as `true` — the loader reads that back as the key you meant, and
+  quoting it is how the file says what you meant.
+
+**Write `"on"` quoted, and declare a product only where one really is
+two-phase.** A `produces` keyed on an identifier the same entry does not
+declare is refused at the door: a handle nothing names is a hint that can
+never fire.
+
+**The same three verbs may arrive on the wire**, as `x-identifiers`,
+`x-establishes` and `x-produces` inside `outputSchema`, with exactly these
+shapes. That is the **recommended end state**: a server generated from typed
+contracts can emit them, and then the manifest has nothing to say at all and
+cannot go stale. The manifest door exists so the feature can be adopted
+against a server nobody here controls.
+
+**Where the two disagree, the wire wins.** On shape outright — a manifest
+may not re-declare a shape a server publishes, because a second copy of one
+fact is a copy that drifts — and on semantics per tool per verb. The
+argument is not taste: the wire is the plane speaking about itself now, and
+the manifest is your memory of the plane; when a memory disagrees with the
+thing it remembers, the thing is right and the memory is stale.
+
+**And it is never silent.** Every disagreement is a counted discrepancy —
+one console line at the start of the run naming the tool and the key, and
+one record in `reasoning.jsonl` — because the usual fate of a stale
+declaration is a hint that quietly binds nothing for a year. The same note
+is written when a manifest annotates a key the published schema no longer
+carries (that annotation binds nothing: a key that never appears can never
+be read) and when a manifest declares a tool this plane does not offer.
+
+**A bare object declares nothing and refuses nothing.** `{"type":
+"object"}` — what a schema generator emits for a return type it could not
+narrow — contributes no shape, no verbs and no complaints, and those tools
+behave exactly as they did before this layer existed. That is the floor the
+whole feature is built on: adopt it for the eight adapters that have real
+schemas and leave the rest alone.
+
+**Refused at the door, whether or not a server ever answers.** The block is
+validated when the manifest loads — closed keys, key-path grammar, kind
+spelling, all four terms of a `produces`, no tool declared twice — and every
+problem arrives in one message. This is stricter than it looks and
+deliberately so: a rule pack that will not load costs a run its cognition
+and says so in the log, while a malformed identifier costs *nothing anybody
+can see*. It simply binds nothing, for as long as the file exists.
+
+**Composing.** Several skills sharing a plane declare overlapping parts of
+it. Entries union by tool (on the same `same_tool` identity as
+`allowed_tools`), `establishes` and `produces` union, and everywhere two
+skills could mean different things by one word — an identifier's kind, a
+product's chain, a fallback shape, a plane default — they must agree or the
+composition is refused naming both skills. The merged block does not depend
+on the order the skills were listed in.
+
+**What it never does.** Declarations *steer*: they are read by the runtime
+and they reach no prompt, no call and no answer. A declared output is your
+claim about your plane, never evidence of what a call did return — the
+receipt remains the only evidence — and a declaration that turns out to be
+wrong costs a hint, never a fact.
+
 ### Composing skills
 
 `--skill` **repeats**, and several manifests become one mission — which is how

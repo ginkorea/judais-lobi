@@ -45,15 +45,17 @@ from core.cognition import (EVENT_SCHEMA_VERSION, KERNEL_VERSION,
                             CognitiveState, EvidenceAuthority,
                             PropositionStatus, ReplayRefused)
 from core.durable import RunStore, fsync_append
-from core.runtime.cognition import (KERNEL_COUNT_KEY, KERNEL_EVENTS_KEY,
-                                    KERNEL_KEY,
+from core.runtime.cognition import (DECLARATIONS_KEY, KERNEL_COUNT_KEY,
+                                    KERNEL_EVENTS_KEY, KERNEL_KEY,
                                     KERNEL_SCHEMA_KEY, NOTE_KEY,
                                     REASONING_LOG,
                                     REASONING_SCHEMA_VERSION, RESUMED_NOTE,
                                     SCHEMA_KEY, STOPPED_NOTE,
-                                    ShadowCognition, header_record,
+                                    ShadowCognition, declarations_in,
+                                    header_record,
                                     observations_of, open_shadow,
                                     read_reasoning, replay_reasoning)
+from core.runtime.declarations import PlaneDeclarations
 from core.runtime import cognition as cognition_module
 from core.runtime.replay import canonical
 from tests.test_record_replay import (CORPUS, CORPUS_RUNS, REPLAY_FLAGS,
@@ -682,6 +684,134 @@ class TestResumePicksTheStoreUpWhereItStopped:
         _header, events, _notes = read_reasoning(first.path)
         assert [event["n"] for event in events] == list(
             range(1, len(events) + 1))
+
+
+class TestThePlaneIsWrittenDownBesideTheState:
+    """The declarations record: what the plane this run connected to says
+    its tools RETURN, resolved once at fleet-connect and put in the log.
+
+    It is in `reasoning.jsonl` and it is NOT a kernel event, which is the
+    whole of its design: the kernel knows nothing about tools, and a
+    resumed run needs one file to answer *what was this run steering
+    under*. A plane that moved while a run was away is then two records
+    apart in one file rather than a thing nobody wrote down.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        return RunStore(tmp_path / "store")
+
+    def plane(self, kind="job"):
+        return PlaneDeclarations.build(
+            wire={"mcp.job_status": {"type": "object",
+                                     "properties": {"job_id": {}}}},
+            manifest={"entries": [
+                {"name": "job_status",
+                 "identifiers": {"job_id": {"kind": kind}},
+                 "establishes": ["state"]}]})
+
+    def test_the_record_is_written_after_the_header(self, store):
+        run = store.create()
+        shadow = open_shadow(store, run.run_id)
+        shadow.declare_plane(self.plane())
+        written = lines(shadow.path)
+        assert SCHEMA_KEY in written[0]
+        assert written[1][DECLARATIONS_KEY] == 1
+        assert written[1]["tools"]["mcp.job_status"]["identifiers"] == {
+            "job_id": "job"}
+
+    def test_the_record_is_not_an_event_and_a_replay_skips_it(self, store):
+        run = store.create()
+        shadow = open_shadow(store, run.run_id)
+        shadow.declare_plane(self.plane())
+        shadow.receipt("t", "r1", RECEIPT)
+        shadow.close_step()
+        _header, events, notes = read_reasoning(shadow.path)
+        assert declarations_in(notes)
+        assert all("op" in event for event in events)
+        assert replay_reasoning(shadow.path).propositions()
+
+    def test_a_plane_that_declares_nothing_writes_nothing(self, store):
+        """An absent record already means *nothing was declared*, and a
+        record saying so is a line a reader has to interpret."""
+        run = store.create()
+        shadow = open_shadow(store, run.run_id)
+        shadow.declare_plane(PlaneDeclarations.build(
+            wire={"mcp.echo": {"type": "object"}}))
+        assert declarations_in(read_reasoning(shadow.path)[2]) == []
+
+    def test_a_discrepancy_alone_is_worth_a_record(self, store):
+        """A server whose extension key this reader could not use declared
+        nothing and still said something about the plane — and it is
+        precisely the thing nobody would otherwise find out."""
+        run = store.create()
+        shadow = open_shadow(store, run.run_id)
+        shadow.declare_plane(PlaneDeclarations.build(wire={"mcp.t": {
+            "type": "object", "properties": {"job_id": {}},
+            "x-identifiers": ["job_id"]}}))
+        record = declarations_in(read_reasoning(shadow.path)[2])[0]
+        assert record["discrepancies"]
+
+    def test_the_disagreement_is_in_the_log_and_not_only_on_a_console(self,
+                                                                      store):
+        run = store.create()
+        shadow = open_shadow(store, run.run_id)
+        shadow.declare_plane(PlaneDeclarations.build(
+            wire={"mcp.job_status": {
+                "type": "object", "properties": {"job_id": {}},
+                "x-identifiers": {"job_id": {"kind": "run"}}}},
+            manifest={"entries": [
+                {"name": "job_status",
+                 "identifiers": {"job_id": {"kind": "job"}}}]}))
+        record = declarations_in(read_reasoning(shadow.path)[2])[0]
+        assert [(note["tool"], note["key"]) for note
+                in record["discrepancies"]] == [("mcp.job_status",
+                                                 "identifiers")]
+
+    def test_a_resume_reconstructs_the_hints_the_first_process_had(self,
+                                                                   store):
+        """The replay half. A second process reads the record back and gets
+        the same identifiers, the same establishes and the same sources —
+        so a replayed run steers under what the recorded run steered
+        under rather than under whatever the plane says today."""
+        run = store.create()
+        first = open_shadow(store, run.run_id)
+        first.declare_plane(self.plane())
+        resumed = open_shadow(store, run.run_id)
+        record = declarations_in(read_reasoning(resumed.path)[2])[-1]
+        rebuilt = PlaneDeclarations.from_record(record)
+        assert dict(rebuilt.identifiers_for("mcp.job_status")) == \
+            dict(first.declarations.identifiers_for("mcp.job_status"))
+        assert rebuilt.for_tool("mcp.job_status").establishes == ("state",)
+
+    def test_a_plane_that_changed_is_two_records_and_not_a_rewrite(self,
+                                                                   store):
+        """The resumed run resolves its own plane and appends what it
+        found. Rewriting the first would be this module choosing which of
+        two true statements about two moments to keep."""
+        run = store.create()
+        first = open_shadow(store, run.run_id)
+        first.declare_plane(self.plane())
+        resumed = open_shadow(store, run.run_id)
+        resumed.declare_plane(self.plane(kind="run"))
+        records = declarations_in(read_reasoning(resumed.path)[2])
+        assert [record["tools"]["mcp.job_status"]["identifiers"]["job_id"]
+                for record in records] == ["job", "run"]
+
+    def test_a_stopped_shadow_declares_nothing(self, shadow, monkeypatch):
+        monkeypatch.setattr("core.runtime.cognition.observations_of", _boom)
+        shadow.receipt("t", "r1", RECEIPT)
+        shadow.declare_plane(self.plane())
+        assert shadow.declarations is None
+
+    def test_the_flag_off_run_has_no_log_to_declare_into(self, corpus,
+                                                         tmp_path):
+        """The floor, restated for this record: with `--cognition` off
+        there is no shadow, so there is nothing to write it to and nothing
+        about the run changes. The ablation class below proves the bytes;
+        this says which object is missing."""
+        fresh = _replay(corpus, tmp_path, CORPUS_RUNS[0])
+        assert not (Path(_reasoning(corpus, fresh))).exists()
 
 
 class TestALibraryCallerDoesNotLoseTheShadow:
