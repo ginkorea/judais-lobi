@@ -1191,7 +1191,7 @@ class TestThePackageStandsAlone:
     """
 
     @pytest.mark.parametrize("name", ["__init__", "types", "matching",
-                                      "events", "state"])
+                                      "events", "state", "constraints"])
     def test_no_module_imports_the_runtime(self, name):
         source = (PACKAGE / f"{name}.py").read_text(encoding="utf-8")
         code = "\n".join(line for line in source.splitlines()
@@ -1200,7 +1200,7 @@ class TestThePackageStandsAlone:
                              re.MULTILINE), f"{name}.py reaches into the runtime"
 
     @pytest.mark.parametrize("name", ["__init__", "types", "matching",
-                                      "events", "state"])
+                                      "events", "state", "constraints"])
     def test_no_io_and_no_clock(self, name):
         """Deterministic and replayable is a property of the whole package,
         not of the tests that happen to avoid these. `json` is allowed — it
@@ -1243,6 +1243,7 @@ class TestThePackageStandsAlone:
         loaded = ast.literal_eval(result.stdout.strip())
         assert set(loaded) == {
             "core.cognition", "core.cognition.compile",
+            "core.cognition.constraints",
             "core.cognition.events",
             "core.cognition.matching", "core.cognition.state",
             "core.cognition.types",

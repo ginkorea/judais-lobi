@@ -87,6 +87,7 @@ none of them.
 | `server` | the SSE endpoint's dependencies | you want to follow a run over HTTP instead of a pipe. **0.16** |
 | `treesitter` | tree-sitter and seven grammars | the repo map should parse C, C++, Rust, Go, JavaScript, TypeScript or Java rather than fall back |
 | `faiss` | `faiss-cpu` | the long-term memory is big enough for the vector index to matter. The numpy inner-product fallback is always there |
+| `solver` | `z3-solver` | you want a skill's `cognition: constraints:` `require_z3:` lines **checked**. Nothing refuses without it: the manifest loads anywhere, the built-in `require:` language needs nothing, and the solver's constraints simply go unchecked with one note in `reasoning.jsonl` naming this extra |
 | `voice` | TTS, torch, audio | you want the agent to speak |
 | `dev` | `pytest`, `pytest-cov` | you are running the suite |
 
@@ -1183,6 +1184,13 @@ cognition:
   goals:                  # optional: what the run is trying to establish
     - name: owner_known
       pattern: ["?a", "controls", "?c"]
+  constraints:            # optional: arithmetic that must hold over the facts
+    - name: share_bounded
+      over: {entity: "?e"}
+      require: "share <= 100"
+    - name: parts_sum
+      over: {entity: "?e"}
+      require: "settled + pending == total"
 ```
 
 * **`cardinality`** turns collision detection on for a field. A field carries
@@ -1202,13 +1210,73 @@ cognition:
 * **`goals`** are target patterns. Nothing authors an obligation: the runtime
   reads goals against trusted rules against what it holds, and every premise
   it cannot satisfy becomes one. The `name` becomes the kernel goal's note.
+* **`constraints`** are arithmetic that must hold over what the run has
+  established, and a constraint that does not hold is **recorded, never
+  enforced**: it becomes a line in the compiled view's CONFLICTS section
+  (`constraint: parts_sum — mcp.ledger#r3  ⇄  settled 204 + pending 631 = 835
+  != total 631`) and one record in `reasoning.jsonl` the first time each
+  `(constraint, entity)` pair appears. Nothing reads it back, no answer is
+  held or checked against it, and there is no supervisor signal in v1 — a
+  violation changes the model's *view* and the *log*, and nothing else.
+  * `over: {entity: "?e"}` quantifies over entities: every entity whose live
+    facts carry **all** the fields the expression names is checked. A field
+    the store does not hold for an entity means that entity is **not bound**
+    and yields no violation — absence is `UNKNOWN`, never zero — and the same
+    goes for a field the store holds two live values for (choosing one would
+    be deciding a contradiction the kernel is keeping open) and for a value
+    that is a string, a boolean or null.
+  * `require:` is one comparison — `< <= == != >= >` — over `+ - *` on the
+    numeric fields of one entity, with one side of a `*` a constant, and it
+    is evaluated in **exact rational arithmetic** with no dependency at all:
+    there is no precision to exceed, so a sum of very large figures is
+    decided correctly rather than rounded into a violation that is not
+    there, and nothing a host process has done to `decimal`'s ambient
+    settings can move a verdict. Anything else (a call, an attribute, a
+    chained comparison, a boolean constant) is refused at the door by name.
+  * **Field names are Python identifiers.** The expression is read as an
+    expression, so `total_s` is a field and `total-s` is a *subtraction* of
+    two fields — which binds nothing, forever, and silently: a field whose
+    name the syntax cannot spell cannot be constrained in v1. Identifiers
+    are also NFKC-normalized when parsed, so a name containing a Unicode
+    look-alike matches its normalized spelling in the store and not the one
+    in the file. Name the fields you intend to constrain accordingly.
+  * `require_z3:` is the opt-in escalation, and the **key** says so rather
+    than a flag beside it: it accepts the same syntax plus division and
+    products of two fields, and `z3` decides it (with a wall-clock bound, on
+    the mission's own thread). **The extra buys checking, never
+    loadability**: a manifest that writes `require_z3:` loads on every box —
+    the grammar is read the same with or without the wheel — and where
+    `pip install 'judais-lobi[solver]'` is missing those constraints are
+    simply not checked, which yields no violation and one note in
+    `reasoning.jsonl` naming the extra. The rest of the pack is checked
+    exactly as it would have been. Exactly one of the two keys per
+    constraint.
+  * v1 **checks**; it does not solve. Every value is bound before the solver
+    is asked. Scheduling, dependency ordering and feasibility — the classes
+    `ROADMAP.md` §2.9.7 names — are questions about unbound variables and
+    come with their own review.
+  * A constraint is the one part of a pack that is **not** an event in
+    `reasoning.jsonl` (the kernel has no door to record a violation through
+    yet), so `--resume` reads the constraints off the manifest again — which
+    is not a second load of anything, because there was nothing to replay.
+  * **`over:` is part of a constraint's identity when several skills
+    compose**, although the checker never reads the variable's name. Two
+    skills declaring one name must declare the same constraint, and *what it
+    quantifies over* is half of what a constraint says — the day `over:`
+    grows a second key (two entities, or a premise pattern that filters
+    them), two packs that differ only there will differ in meaning, and a
+    composition that had been comparing only the expression would have
+    silently kept one of them. Identity is the whole declaration, from the
+    first version, so the rule does not have to change when the language
+    does.
 * **Rules arrive at `SKILL` authority through the wall's own door**: they are
   added `PROPOSED` and then promoted, both as events in `reasoning.jsonl`, so
   "who stands behind this clause" is a question the log answers. A model may
   propose a rule at any time; proposing one never makes it derive.
 * **Refused at the door, whether or not you use it.** The block is validated
   when the manifest loads — shape, pattern arity, variable spelling,
-  `one`/`many`, unique names — and then **dry-run through a throwaway kernel**,
+  `one`/`many`, unique names, every constraint expression through the
+  checker's own parser — and then **dry-run through a throwaway kernel**,
   so a rule the kernel would refuse is a manifest that does not load rather
   than a mission that dies at its first step. Every problem arrives in one
   message.

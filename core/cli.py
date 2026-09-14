@@ -320,6 +320,43 @@ def _local_plane_or_refuse(manifest, bus):
     )
 
 
+def pack_line(loaded, constraints: int, skill: str) -> str:
+    """What a rule pack loaded, in a sentence that claims **only that**.
+
+    ``loaded`` is :attr:`core.runtime.cognition.ShadowCognition.loaded` —
+    ``(fields, rules, goals)`` — and *constraints* is how many the pack
+    carries.  The counts are always stated; the clauses about what the run
+    will now *do* appear only for the halves that are there.
+
+    A pack of constraints alone loads no clause and no goal, and a fixed
+    sentence about receipts deriving and goals computing what is owed would
+    be the harness reporting work it did not do — the same defect the
+    truthiness check on ``shadow.pack`` exists to avoid, one level down.
+    Public and separate from the printing so that what the operator is told
+    can be stated in a test without running a mission.
+    """
+    fields, rules, goals = loaded
+    does = []
+    if rules:
+        does.append("receipts now DERIVE through the skill's clauses")
+    if goals:
+        does.append("the goals compute what is still owed")
+    if constraints:
+        does.append("a constraint that does not hold is recorded and shown, "
+                    "never enforced")
+    sentence = "; ".join(does)
+    return (f"{rules} rule(s), {goals} goal(s), {constraints} constraint(s) "
+            f"and {fields} field declaration(s) from skill {skill}, loaded "
+            f"before the first receipt"
+            # Capitalised, because it follows a full stop: the clauses are
+            # assembled rather than written out, and an assembled sentence
+            # that reads like a typo is the cost of assembling it.
+            + (f". {sentence[:1].upper()}{sentence[1:]}" if does else "")
+            + (". Every clause is in the log, promoted to SKILL authority in "
+               "an event of its own" if rules else "")
+            + ". None of it gates anything")
+
+
 def _load_skill(args):
     """The ``--skill`` manifest, or ``None``.
 
@@ -1798,16 +1835,10 @@ def _mission(elf, args, name, style):
                     # `cognition: {}` — a block that is there and says
                     # nothing — and announcing nought rules would be the
                     # harness reporting work it did not do.
-                    fields, rules, goals = shadow.loaded
                     console.print(
-                        f"🧾 rule pack: {rules} rule(s), {goals} goal(s) and "
-                        f"{fields} field declaration(s) from skill "
-                        f"{manifest.describe()}, loaded before the first "
-                        f"receipt. Receipts now DERIVE through the skill's "
-                        f"clauses and the goals compute what is still owed; "
-                        f"every clause is in the log, promoted to SKILL "
-                        f"authority in an event of its own, and none of it "
-                        f"gates anything",
+                        "🧾 rule pack: "
+                        + pack_line(shadow.loaded, len(shadow.constraints),
+                                    manifest.describe()),
                         style=style)
                 elif (manifest is not None and manifest.cognition
                       and not shadow.on):

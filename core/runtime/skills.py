@@ -25,7 +25,8 @@ Six things come out of a manifest, and nothing else does:
   the answer.  The grammar is content and lives in the file.  What the
   harness owns is the checking;
 * an optional **rule pack** (``cognition:``): the cardinalities, horn
-  clauses and goals a run reasons under when ``--cognition`` is on.  Read
+  clauses, goals and constraints a run reasons under when ``--cognition``
+  is on.  Read
   by :class:`core.runtime.cognition.RulePack` and never here beyond its
   shape — same division as ``grounding:``, and for the same reason.  It is
   where ``ROADMAP.md`` §2.9.4 puts rule authorship: *rules arrive through
@@ -469,7 +470,7 @@ class SkillManifest:
         if cognition is not None and not isinstance(cognition, Mapping):
             problems.append(
                 f"`cognition:` holds a {type(cognition).__name__}; it is a "
-                f"mapping (cardinality, rules, goals) or absent"
+                f"mapping (cardinality, rules, goals, constraints) or absent"
             )
             cognition = None
         elif cognition is not None:
@@ -1343,10 +1344,11 @@ def _merge_cognition(
     block is :class:`core.runtime.cognition.RulePack`, and a merge that went
     through it and took it apart again would be a second reader of one fact.
 
-    The three keys, and the two disciplines they follow:
+    The four keys, and the two disciplines they follow:
 
-    * **``rules:`` and ``goals:`` union by name.**  A pack is a set of
-      named clauses; two skills that each bring their own bring both.  A
+    * **``rules:``, ``goals:`` and ``constraints:`` union by name.**  A pack
+      is a set of named clauses; two skills that each bring their own bring
+      both.  A
       name declared twice with *different* content is refused naming both
       skills, for the reason one plane name over two tool sets is: a name
       is what a refusal, a log line and the next author's grep say, and
@@ -1354,7 +1356,11 @@ def _merge_cognition(
       under a fact about argument order.  An identical redeclaration is a
       family restating the clause it shares, and is deduplicated in
       silence — compared on :func:`_canonical`, so YAML style is not
-      content.
+      content.  A constraint's content is its whole declaration — what it
+      quantifies over and the expression, in whichever of the two keys
+      carries it — so the same arithmetic under one name composes, and
+      ``require:`` in one skill against ``require_z3:`` in another under one
+      name is the collision it looks like.
     * **``cardinality:`` agrees or refuses, per field.**  It is the scalar
       discipline (``identifier_pattern``'s), one field at a time: a field
       is single-valued or it is not, the kernel refuses to hold both
@@ -1410,8 +1416,11 @@ def _merge_cognition(
     if _declares(blocks, "cardinality"):
         merged["cardinality"] = cardinality
 
-    for key, identity in (("rules", ("head", "body")),
-                          ("goals", ("pattern",))):
+    for key, identity, noun in (("rules", ("head", "body"), "clause"),
+                                ("goals", ("pattern",), "target"),
+                                ("constraints",
+                                 ("over", "require", "require_z3"),
+                                 "constraint")):
         entries: Dict[str, Any] = {}
         wrote: Dict[str, str] = {}
         for manifest in usable:
@@ -1431,7 +1440,7 @@ def _merge_cognition(
                         f"`cognition: {key}` declares {name!r} twice over "
                         f"with different content: {wrote[name]!r} and "
                         f"{manifest.name!r} do not agree. One name is one "
-                        f"{'clause' if key == 'rules' else 'target'}: rename "
+                        f"{noun}: rename "
                         f"one of them, or make the two declarations identical"
                     )
         if _declares(blocks, key):
