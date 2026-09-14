@@ -1785,6 +1785,27 @@ class TestTheGrammarIsCompiledFromTheTableTheParserReads:
         assert (E.STATUS_KEY, E.FIELD_KEY, E.VALUE_KEY, E.QUOTE_KEY) == \
             E.PROPOSITION_KEYS
 
+    def test_the_column_names_are_unpacked_and_not_typed(self):
+        """The guard's own mechanism, guarded (the delta review's m5).
+
+        The AST scan above looks only inside ``parse_propositions``, so
+        four module-level string literals standing in for the unpacking
+        would be invisible to it — and with that one edit in place,
+        dropping a table row would produce exactly the silent drift M4
+        was about.  This pins the assignment's SHAPE: the four names are
+        bound by unpacking ``PROPOSITION_KEYS``, not typed out.
+        """
+        import ast
+        from pathlib import Path
+        tree = ast.parse(Path(E.__file__).read_text(encoding="utf-8"))
+        assign = next(n for n in tree.body if isinstance(n, ast.Assign)
+                      and isinstance(n.targets[0], ast.Tuple)
+                      and [t.id for t in n.targets[0].elts] ==
+                          ["STATUS_KEY", "FIELD_KEY", "VALUE_KEY",
+                           "QUOTE_KEY"])
+        assert isinstance(assign.value, ast.Name)
+        assert assign.value.id == "PROPOSITION_KEYS"
+
     def test_the_parser_spells_no_column_name_of_its_own(self):
         """One owner, checked where a second one would have to appear.
 
