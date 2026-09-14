@@ -1376,6 +1376,13 @@ README's closing section quotes are all here, under the same names.
   travels with every proposition and every rule; a model may propose, and
   proposing does not establish. This is the same boundary the grounding
   validator already enforces for answers, extended to beliefs.
+- **Context is a budget, not a dumping ground.** (Owner, 14 Sep 2026: what
+  we add must not make the context bloated and the agent less capable.)
+  Every cognitive addition to the model's input lives inside ONE bounded,
+  per-step-replaced block; declarations and runtime state feed the runtime,
+  never the catalogue; the pinned prefix stays byte-stable; and context
+  cost is a MEASURED COLUMN beside every capability delta — an arm that
+  adds context and no capability is flagged by the report, not defended.
 - **Model calls per successful mission is the cost metric.** Not symbolic
   microseconds, not token counts alone — the count of model invocations a
   mission needed to succeed, which is what a cognitive runtime is supposed to
