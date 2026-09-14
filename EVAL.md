@@ -165,6 +165,7 @@ python -m core.eval run      --out DIR [--suite …] [--split …] [--json] [--a
 python -m core.eval measure  --out DIR [--report PATH] [--config NAME …] [--only KEY …] [--repeat N] [--per-mission-seconds 600] -- <spawn line>
 python -m core.eval ablation --out DIR [--report PATH] [--arms A,B] [--only KEY …] [--repeats N] [--per-mission-seconds 600] -- <spawn line>
 python -m core.eval extraction --probes PATH [--provider P] [--model M] [--temperature T] [--repeats N] [--only ID …] [--max-seconds S] [--report STEM] [--baseline PATH] [--json]
+python -m core.eval corpus   --out PATH [--from-extraction REPORT … --probes PATH] [--from-runs DIR …] [--flag-filter K=V …] [--note TEXT] [--floor SHARE] [--balance] [--seed N] [--json]
 ```
 
 `--suite` takes two in-repo names and otherwise a path. **`stub`** (the
@@ -182,7 +183,9 @@ compared to anything, and a `run` against one spends a model first. Where the
 suite groups its missions into classes, `check` prints the per-class counts
 beside the per-flag one. `extraction` is the exception and takes no `--suite`
 at all: it scores receipts rather than missions, so there is nothing to spawn
-and nothing to hold out — §13.
+and nothing to hold out — §13. `corpus` is the second exception and for the
+same reason one step further along: it reads evidence that already exists and
+writes training data, scoring nothing — §17.
 
 `measure` is `run`, once per configuration, plus the table of the
 differences — §12. `ablation` is `run`, once per arm, plus the **paired**
@@ -1530,3 +1533,119 @@ The rate the interval is computed over is the **run**-level one — every missio
 of every repeat — because that is the n the interval is honest about. Both
 numbers are printed side by side and neither is derived from the other.
 
+
+## 17. The training corpus
+
+`python -m core.eval corpus` — ROADMAP §2.9.8, and step 1 of `MODELS.md` §4's
+per-model loop. Everything else in this package produces a number; this
+produces a **file a trainer reads**, out of evidence the rest of the package
+already wrote.
+
+```
+python -m core.eval corpus --out corpus.jsonl \
+    --from-extraction evidence/extraction/<report>.json \
+    --probes tests/fixtures/extraction/probes.jsonl \
+    --from-runs ~/runs --note "<whose data this is, and what may be done with it>"
+```
+
+### The one rule
+
+**A completion is copied, never invented.** Every completion in the file is a
+string a model actually emitted, at a turn where an instrument that was not
+looking at it afterwards said the behaviour was right. The alternative — a
+corpus of ideal answers somebody wrote — is how a tune moves prose quality and
+moves no rate, which is `MODELS.md` §4's stated failure mode.
+
+### What each source yields, and the bar
+
+| source | what becomes an example | the bar |
+|---|---|---|
+| `--from-extraction` | one per attempt, messages rebuilt through `extraction.prompt_for` from the probe the report names, completion = the model's own reply | the attempt's `verdict` is true. A repaired attempt keeps all three turns — the prompt, the reply that could not be read, and the repair naming the defect — because that is the conversation its pass answered |
+| `--from-runs` | one per recorded model call: the request as recorded, the reply as recorded, tagged `planning` / `tool_call` / `answer` | the run's `mission_finished` says `answered` (**not** `answered_with_caveat`), no `reply_rejected` is in its stream, and any grounding that *ran* came back grounded and verified |
+
+Two refusals protect the weights rather than the run. A report naming a probe
+the `--probes` corpus does not hold is refused: rebuilding a prompt from the
+wrong corpus trains a model on questions it was never asked. A report whose
+`meta.prompt` fingerprint is not this tree's is refused for the same reason one
+step further out — yesterday's replies under today's wording is a file of
+answers to an instruction the model will never see again, and every line of it
+looks perfectly well formed.
+
+Everything else is a **counted exclusion**, never a silent one; the reasons and
+their sentences are `core.eval.corpus.EXCLUSIONS`, and the counts are on the
+header and on the console.
+
+### The honest v1 bounds
+
+* No synthetic repair and no editing. A run with a `reply_rejected` in it
+  leaves **whole** rather than being trimmed into a version of itself that
+  never happened — v1 does not reconstruct which recorded call was the
+  rejected one.
+* Text completions only. A `--protocol native` turn puts its payload in
+  `tool_calls`, which is a structure and not a string; it is counted as
+  `no_text_reply` rather than rendered into a target format the model never
+  emitted.
+* `--flag-filter KEY=VALUE` selects runs by their `meta.json` flags (all
+  filters must match; `flags.skill` has been a list since 1.1.0 and the filter
+  reads both spellings).
+
+### Abstention-heavy, by discipline
+
+§2.9.8 puts it above the rest: a useful semantic compiler must know *when not
+to create a fact*. The shipped probe corpus is 51% abstain-or-trap by
+construction (25 of 49), so the floor is **0.40** — a fifth below that design
+margin. Below it the build **warns and still writes**: the share is a property
+of a sample nobody controls (a model that fails every trap leaves few passing
+trap examples behind, which is exactly when the operator most needs telling and
+least needs a tool that declines), and the floor is computed only over
+kind-bearing examples — a corpus built from runs alone reports "not computed"
+rather than a zero it invented.
+
+`--balance` is the opt-in fix: downsample the `assert`-kind examples until the
+floor is met, ordered by `sha256(seed, provenance)` so two people building from
+the same report get the same file, and with no file path in the provenance key
+so that "the same file" does not depend on which directory the report was
+downloaded into. A corpus with no abstentions at all is left alone: that ratio
+is fixed by measuring more, not by deleting the sample.
+
+### The file, and its identity
+
+Line one is a header — the schema version, the tool's version and the tree's
+commit, the counts by source / kind / stance / position, the exclusions, the
+share and the floor, the scrub statement, and the operator's `--note`. Every
+line after it is `{"messages": [...], "completion": "...", "meta": {...}}`, in
+input order, with the provenance on each: the source file and its digest, the
+probe id or the run id and the call's ordinal, the interpreter identity out of
+the report (`provider`, `model`, `temperature`, `endpoint`, `prompt`,
+`scorer`), and the `license_note`.
+
+Then a **sha256 of the whole file** is printed. The corpus is an experiment
+input like any other, so it carries an interpreter: a checkpoint reported
+against "the corpus" names which bytes.
+
+### The scrub, and the second opinion
+
+Every string of every example passes `core.redact.scrub` — the established
+family: credentials, absolute paths, this host's name — and the count of
+examples it rewrote is on the header, because a rebuilt prompt the scrub then
+edited is no longer byte-identical to what the model was asked and that is a
+fact about the sample.
+
+Then `core.eval.corpus.residue_in` looks again with patterns of its own, and an
+example still carrying a credential shape is **refused, counted, and absent
+from the file**. The second look is not the first one repeated: a scrubber is
+idempotent, so asking it again about its own output answers a question nobody
+had. What it catches is what the redactor has no rule for — a bearer token that
+arrives without the word `Bearer` in front of it, a bare JWT under a key nobody
+named `_TOKEN`, a PEM block. A corpus leaves the building, and a redactor
+nobody double-checks is how one leaves with a key in it.
+
+One bound stated rather than implied: **principals inside a receipt's own
+content are not renamed.** `scrub` takes out this host, its paths and any home
+directory's user name, but a handle, an account or an operator's name *inside a
+tool result* is data the extraction grounding checks byte for byte, and a
+builder that generalised it to a role would be editing the evidence a
+completion cites. Generalising principals to roles (`MODELS.md` §4) is the
+corpus author's call, made on the receipts before they are recorded or on the
+file afterwards — and `--note` is where the deployment says which of those it
+did.

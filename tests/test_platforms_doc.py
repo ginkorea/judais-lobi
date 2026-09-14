@@ -138,6 +138,11 @@ NOT_A_MISSION_FLAG = {
                      "reads it, no event carries it, and a platform that "
                      "wants a grammar on a mission is asking for a feature "
                      "that does not exist yet rather than for this flag",
+    "--note": "a flag of `python -m core.eval corpus` (§9). It writes the "
+              "operator's licence sentence onto a training file that never "
+              "goes near a mission — no wire carries it and nothing spawns "
+              "with it, the same way --probes and --out are not contract "
+              "flags",
 }
 
 #: Same, for environment variables, and scoped to the families this repository

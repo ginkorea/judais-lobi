@@ -25,7 +25,11 @@ The package is six modules and one rule:
 * :mod:`core.eval.score` — the verdict, computed **only** from the recorded
   stream.
 * :mod:`core.eval.run` — ``python -m core.eval
-  run|measure|ablation|score|check|extraction``.
+  run|measure|ablation|score|check|extraction|corpus``.
+* :mod:`core.eval.corpus` — ROADMAP §2.9.8's first step: validated traces
+  in, fine-tune examples out.  The only module here that writes training
+  data, and the only rule it has is that a completion is copied and never
+  invented.
 * :mod:`core.eval.extraction` — ROADMAP §2.9.3's gatekeeper: real recorded
   receipts in, typed propositions with abstention out, and a rate per
   failure class with an interval on it.  The one measurement in this
@@ -71,6 +75,11 @@ from core.eval.measure import (MEASUREMENTS, Configured, Matrix, Measurement,
                                Unmeasurable)
 from core.eval.score import (Half, NoStream, Report, Totals, Verdict,
                              records_from, score_run, score_suite)
+from core.eval.corpus import (ABSTAINING, ABSTENTION_FLOOR,
+                              CORPUS_SCHEMA_VERSION, EXCLUSIONS, POSITIONS,
+                              STANCES, CorpusRefused, Example, balance,
+                              from_extraction, from_runs, residue_in,
+                              stance_of)
 from core.eval.suite import (FLAGS, HARNESS_OWNED_FLAGS, MIN_TEST_MISSIONS,
                              RUBRIC_CHANGES, SPLITS, TEST_SHARE, Mission,
                              MissionMisdeclared, RubricChange, Split, Suite,
@@ -91,4 +100,7 @@ __all__ = [
     "run_probes", "score_attempt", "wilson",
     "ARMS", "Ablation", "Arm", "ArmResult", "Unavailable", "ablate",
     "accepted_flags", "band", "paired",
+    "ABSTAINING", "ABSTENTION_FLOOR", "CORPUS_SCHEMA_VERSION", "EXCLUSIONS",
+    "POSITIONS", "STANCES", "CorpusRefused", "Example", "balance",
+    "from_extraction", "from_runs", "residue_in", "stance_of",
 ]

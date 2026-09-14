@@ -1,10 +1,9 @@
 # core/eval/run.py — spawn the missions, capture the streams, score them
 
 """The harness's command line: ``run``, ``measure``, ``ablation``,
-``score``, ``check``, ``extraction``.
+``score``, ``check``, ``extraction``, ``corpus``.
 
-Five subcommands because there are five jobs, and only three of them need a
-model:
+One subcommand per job, and only three of them need a model:
 
 ``run``
     Spawns the mission command once per mission — the platform's own spawn
@@ -45,6 +44,11 @@ model:
     tool receipt and one question per probe, and the model asked for typed
     propositions with abstention.  ROADMAP §2.9.3's gatekeeper — see
     :mod:`core.eval.extraction`.  It needs a model and takes no suite.
+``corpus``
+    The other no-model path, and the only one that writes training data:
+    passing extraction attempts and recorded missions that answered become
+    fine-tune examples, completions verbatim and never synthesised.
+    ROADMAP §2.9.8 / ``MODELS.md`` §4 step 1 — see :mod:`core.eval.corpus`.
 
 **A run directory is a RunStore directory.**  That is the whole agreement
 between this harness, the recorder and a platform's archive: one directory per
@@ -364,6 +368,12 @@ def _parser() -> argparse.ArgumentParser:
     # out and nothing to spawn. See `core.eval.extraction.add_parser`.
     from core.eval.extraction import add_parser as _add_extraction
     _add_extraction(subs)
+    # And without `common` for the same reason, one step further along:
+    # `corpus` reads evidence that already exists — reports and recorded
+    # runs — so it spawns nothing, grades nothing and needs no model. See
+    # `core.eval.corpus.add_parser`.
+    from core.eval.corpus import add_parser as _add_corpus
+    _add_corpus(subs)
 
     checker = subs.add_parser(
         "check", help="refuse a suite that cannot be graded")
@@ -385,6 +395,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "extraction":
         from core.eval.extraction import from_args as _extraction
         return _extraction(args)
+
+    # Same door, same reason: `corpus` opens no suite. It opens reports and
+    # run directories, which are evidence and not a gradeable mission set.
+    if args.command == "corpus":
+        from core.eval.corpus import from_args as _corpus
+        return _corpus(args)
 
     try:
         suite = resolve_suite(args.suite)

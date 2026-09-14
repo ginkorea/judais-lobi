@@ -150,6 +150,7 @@ sandbox.
 | a supervisor instead of a step budget | `core/runtime/supervisor.py` | on by default; `Bounds(supervisor=NO_SUPERVISOR)` opts out |
 | a human gate as a durable record | `core/runtime/approvals.py` | `--gate-tool`, `--approval` / `MISSION_APPROVAL` |
 | a reproducible eval harness | `core/eval/` | `python -m core.eval check|run|score|measure` |
+| a fine-tune corpus from validated traces | `core/eval/corpus.py` | `python -m core.eval corpus --out FILE` |
 | three first-party mission packs | `core/skills/library/` | `--skill analyst|research|coding` |
 | a memory bank | `core/memory/bank.py` | `JUDAIS_LOBI_MEMORY` |
 | campaigns — a plan of missions | `core/runtime/campaign.py` | `--campaign` / `--campaign-plan` |
@@ -413,6 +414,7 @@ python -m core.eval check                    # refuse a suite that cannot be gra
 python -m core.eval run     --out DIR -- …    # spawn every mission, capture the stream, score it
 python -m core.eval measure --out DIR -- …    # the same suite over a matrix of configurations
 python -m core.eval score   --runs DIR        # score run directories that already exist — no GPU
+python -m core.eval corpus  --out FILE …       # validated traces → fine-tune examples, no GPU
 ```
 
 A behavioural change nobody scored is a change nobody can defend, which is
@@ -821,7 +823,7 @@ If you want to understand the **current implementation**, inspect:
 * `core/skills/library/` — the three first-party packs, loaded by `core.skills.load`/`packs`
 * `core/runtime/grounding.py`, `results.py`, `reading.py` — the claim validator, the per-mission result store, the field-misreading tier
 * `core/runtime/replay.py` — recorded model/tool calls and `--replay`
-* `core/eval/` — the eval harness: suite, run, score, measure
+* `core/eval/` — the eval harness: suite, run, score, measure, ablation, extraction, corpus
 * `core/critic/mission.py` — the mission-tier critic (`advisory: true`, local first)
 * `core/runtime/schema_check.py` — argument validation against a tool's own JSON Schema
 * `core/runtime/answer_stream.py` — `answer_delta` fragments out of a half-written reply
