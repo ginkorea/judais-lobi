@@ -123,7 +123,7 @@ from core.runtime.replay import MODEL_LOG, canonical
 
 __all__ = [
     "BLOCK_ROLE", "CRITERION", "SEPARATOR", "NO_MODEL_LOG", "NO_CALLS",
-    "Part", "CallCost",
+    "EXTRACTION_KIND", "Part", "CallCost",
     "Conversation", "RunCost", "ContextSummary", "ContextProfile",
     "render_request", "parts_of", "common_prefix", "head_of", "is_block",
     "sections_in", "cost_of_run", "profile", "run_shaped", "summarise",
@@ -152,6 +152,22 @@ NO_MODEL_LOG = (
 NO_CALLS = (
     "{log} holds no readable call — every line was empty, unparseable, or "
     "carried no request messages")
+
+#: The recorded ``kind`` an EXTRACTION call is written under, declared here
+#: **before the door that makes one exists**.
+#:
+#: ROADMAP §2.9's W2 (the ``--extract`` door, Q1 held for the owner) will
+#: spend extra model calls turning receipts into propositions, and the
+#: measurement's rule is that those calls are *broken out of* the call
+#: count rather than folded into it — a run that spent three calls on the
+#: mission and two on extraction did two different things with five calls,
+#: and the extraction arm's price is exactly the split.  ``kind`` is the
+#: recorder's own field and already partitions a run's conversations
+#: (router, children, synthesis), so the door's contract is one line:
+#: record its calls under this kind.  Until it lands, no recorder writes
+#: it and the column reads 0 — which is the honest number, not a
+#: placeholder: zero extraction calls is what every current run makes.
+EXTRACTION_KIND = "extraction"
 
 #: The role the runtime injects the compiled view under, and the second
 #: half of recognising one.
@@ -477,6 +493,18 @@ class RunCost:
         return self.block_chars / self.chars if self.chars else 0.0
 
     @property
+    def extraction_calls(self) -> int:
+        """How many of this run's calls were the extraction door's.
+
+        Counted by the recorded ``kind`` (:data:`EXTRACTION_KIND`) —
+        the recorder's own partition, not a heuristic — so the count is 0
+        for every run recorded before the door exists, which is the true
+        figure and not a default.
+        """
+        return len([call for call in self.calls
+                    if call.kind == EXTRACTION_KIND])
+
+    @property
     def slope(self) -> Optional[float]:
         """Mean characters added per step, or ``None`` under two calls.
 
@@ -534,6 +562,7 @@ class RunCost:
             "mean_chars": round(self.mean_chars, 1),
             "block_chars": self.block_chars,
             "block_share": round(self.block_share, 4),
+            "extraction_calls": self.extraction_calls,
             "slope": None if self.slope is None else round(self.slope, 1),
             "prompt_tokens": self.prompt_tokens,
             "stable": self.stable, "diverged_at": self.diverged_at,
@@ -759,6 +788,12 @@ class ContextSummary:
 
     runs: int = 0
     calls: int = 0
+    #: How many of ``calls`` were the extraction door's, by recorded
+    #: ``kind`` (:data:`EXTRACTION_KIND`).  0 until the ``--extract`` door
+    #: exists — the true count, not a placeholder — and broken out here so
+    #: that "model calls" in any table this summary feeds can print the
+    #: split rather than fold the door's spend into the mission's.
+    extraction_calls: int = 0
     chars: int = 0
     block_chars: int = 0
     prefix_chars: int = 0
@@ -797,7 +832,8 @@ class ContextSummary:
 
     def as_dict(self) -> Dict[str, Any]:
         return {
-            "runs": self.runs, "calls": self.calls, "chars": self.chars,
+            "runs": self.runs, "calls": self.calls,
+            "extraction_calls": self.extraction_calls, "chars": self.chars,
             "block_chars": self.block_chars,
             "prefix_chars": self.prefix_chars, "peak_chars": self.peak_chars,
             "mean_chars": round(self.mean_chars, 1),
@@ -821,6 +857,8 @@ def summarise(runs: Sequence[RunCost]) -> ContextSummary:
         tokens = sum(int(call.prompt_tokens or 0) for call in calls)
     return ContextSummary(
         runs=len(measured), calls=len(calls),
+        extraction_calls=len([call for call in calls
+                              if call.kind == EXTRACTION_KIND]),
         chars=sum(call.chars for call in calls),
         block_chars=sum(call.block_chars for call in calls),
         prefix_chars=sum(call.prefix_chars for call in calls),

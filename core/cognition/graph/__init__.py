@@ -77,6 +77,15 @@ and the bounds this release hydrates at).
 
 from core.cognition.graph.events import COUNT_KEY as GRAPH_COUNT_KEY
 from core.cognition.graph.events import EVENTS_KEY as EVENTS_KEY
+# The qualified spelling of the same key, for a SIBLING module to import:
+# the kernel exports its own `EVENTS_KEY`, the two values coincide today,
+# and a caller that builds a GRAPH envelope out of the KERNEL's constant
+# is correct only until one of the two packages moves its spelling — at
+# which point the bug is silent, because the value was never wrong, only
+# its owner.  `EVENTS_KEY` stays for callers inside this package, where
+# there is no second key to confuse it with; this is the same rule the
+# two header keys above already keep.
+from core.cognition.graph.events import EVENTS_KEY as GRAPH_EVENTS_KEY
 from core.cognition.graph.events import GRAPH_EVENT_OPS, GRAPH_EVENT_SCHEMA_VERSION
 from core.cognition.graph.events import GRAPH_PACKAGE_VERSION
 from core.cognition.graph.events import PACKAGE_KEY as GRAPH_PACKAGE_KEY
@@ -101,6 +110,7 @@ __all__ = [
     "EDGE_KEYS",
     "EVENTS_KEY",
     "GRAPH_COUNT_KEY",
+    "GRAPH_EVENTS_KEY",
     "Edge",
     "GRAPH_EVENT_OPS",
     "GRAPH_EVENT_SCHEMA_VERSION",

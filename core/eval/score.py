@@ -433,6 +433,114 @@ def _recovered(records: Sequence[Mapping[str, Any]], tool: str) -> str:
     return problems[0]
 
 
+# ── the W5 columns: what a run SPENT, against what it owed ───────────────────
+#
+# Three metrics EVAL.md §20 reads the attribution table by, each of them a
+# COLUMN and never a verdict: a mission passes or fails on its rubric, and
+# these say what the passing (or failing) cost.  All three are defined
+# against the mission's DECLARED obligation set — `expects_tools` and
+# `expects_carried`, the rubric author's rendering of what the run owes —
+# and never against the run's own frontier: `reasoning.jsonl` is the run's
+# belief, it exists only on cognition arms, and a metric readable on one
+# side of a paired table is a story about half the pair.
+
+
+def dead_ends(records: Sequence[Mapping[str, Any]], mission: Mission
+              ) -> Optional[int]:
+    """Dispatched calls that lie on **no obligation path** of *mission*.
+
+    The definition is stated once, here, so no second tally can drift from
+    it: **a dead-end action is a ``tool_call`` whose tool is outside the
+    mission's declared obligation set** — ``expects_tools`` plus the
+    result store, which the runner puts on every table.
+
+    Counted per DISPATCH, not per tool: a run that wandered into the
+    window rollup four times took four dead-end actions, and the number
+    the subject spine's ``resolvable via:`` line is supposed to move is
+    that one.  A retry of an on-path tool is deliberately not a dead end —
+    retrying the right door with a corrected argument is the recovery
+    class's conduct, and counting it here would punish exactly what the
+    harness teaches.
+
+    ``None``, never 0, for a mission that declares no ``expects_tools``:
+    with no path declared there is no off-path fact, and a zero would read
+    as a run that stayed on a road nobody drew.
+    """
+    if not mission.expects_tools:
+        return None
+    # `mission_result` is the result store the runner adds to every plane:
+    # writing a result is on every obligation path there is.
+    on_path = set(mission.expects_tools) | {"mission_result"}
+    return len([record for record in _all(records, "tool_call")
+                if str(record.get("tool") or "") not in on_path])
+
+
+def calls_to_chain(records: Sequence[Mapping[str, Any]], mission: Mission
+                   ) -> Optional[int]:
+    """How many calls the first completed carried-chain cost.
+
+    ``calls-to-first-correct-chain``, for the dependency class: the
+    1-based ordinal — counting one emitter's ``tool_call`` dispatches in
+    its own order — of the first call whose **arguments** carry every one
+    of the mission's ``expects_carried`` literals at once.  That call is
+    the chain's last link (the release carrying the token the entry's own
+    record produced), so the ordinal is the price of getting there: list,
+    read, release pays 3; a run that wandered first pays more.
+
+    Per emitter (:func:`_by_branch`), like every stream check here: on a
+    staged turn the chain must complete within ONE agent's sequence, and
+    the cheapest emitter's price is the run's.  Whether the values were
+    CARRIED rather than typed stays :func:`_carried`'s check — this is a
+    cost and that is a verdict, and folding them would hand the fabricated
+    chain a price instead of a failure.
+
+    ``None`` for a mission with no ``expects_carried``, and ``None`` for a
+    run that never completed the chain: an unpaid price is not a price of
+    zero, and a mean over this column must skip both.
+    """
+    if not mission.expects_carried:
+        return None
+    best: Optional[int] = None
+    for group in _by_branch(records):
+        count = 0
+        for record in group:
+            if record.get("event") != "tool_call":
+                continue
+            count += 1
+            if all(_holds(record.get("arguments"), literal)
+                   for literal in mission.expects_carried):
+                best = count if best is None else min(best, count)
+                break
+    return best
+
+
+def premature(records: Sequence[Mapping[str, Any]], mission: Mission
+              ) -> Optional[bool]:
+    """Did this run serve an answer with its obligation path unwalked?
+
+    ``True`` when the outcome is an answer (``answered`` or
+    ``answered_with_caveat`` — the caveat form is still a completion)
+    while some tool of the mission's declared obligation set
+    (:func:`dead_ends`'s set, one owner) was never called.  The multi-hop
+    class's signature failure — an answer assembled from the receipts
+    still in the window, reading exactly like the finished one — kept as
+    its own column because the verdict folds it in with every other
+    reason and a paired table needs the specific disease visible.
+
+    ``None`` where the question does not apply: no declared path, or an
+    outcome that is not an answer.  A refusal is not premature, it is a
+    refusal, and scoring it here would punish abstention — the one thing
+    this harness must never teach a model to skip.
+    """
+    if not mission.expects_tools:
+        return None
+    finished = _last(records, "mission_finished") or {}
+    if finished.get("outcome") not in ("answered", "answered_with_caveat"):
+        return None
+    called = set(_tools_called(records))
+    return any(tool not in called for tool in mission.expects_tools)
+
+
 # ── the environment, told apart from the agent ───────────────────────────────
 
 #: The records that are **the model having produced something**.  Any one of
@@ -569,6 +677,13 @@ def _kpis(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "verified": (None if grounding is None
                      else bool(grounding.get("verified"))),
         "repairs": (grounding or {}).get("repairs"),
+        # How many figures the final verdict could not find a receipt for
+        # — the W5 "unsupported claims" column, read off the grounding
+        # record and never recomputed here (the validator is the one
+        # owner of what counts as unsupported). `None` where no grammar
+        # ran: an unchecked answer and a clean one are different facts.
+        "unsupported": (None if grounding is None
+                        else len(grounding.get("unsupported") or [])),
         "answer_chars": len(str((answer or {}).get("text") or "")),
         "protocol": started.get("protocol", "json"),
         "profile": started.get("profile"),
@@ -605,6 +720,14 @@ def score_run(source: Source, mission: Mission) -> Verdict:
 
     reasons: List[str] = []
     kpis = _kpis(records)
+    # The three mission-aware columns, beside the stream-only ones: they
+    # need the rubric's declared obligation set, which `_kpis` — a reader
+    # of records alone — rightly never sees. Columns, not checks: none of
+    # them appends a reason, because each is a COST the paired ablation
+    # table reads and the verdict already owns the corresponding failure.
+    kpis["dead_end_calls"] = dead_ends(records, mission)
+    kpis["calls_to_chain"] = calls_to_chain(records, mission)
+    kpis["premature"] = premature(records, mission)
 
     if not records:
         reasons.append(

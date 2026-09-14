@@ -335,7 +335,19 @@ expect the two new keys and the extra column on a suite whose every run
 reached its model, and identical numbers in all the old ones.
 
 `Verdict.kpis` carries more for a reader: tools called, refusals, staged,
-repairs, grounded/verified, budget, protocol, profile, sandbox, run id. The
+repairs, grounded/verified, budget, protocol, profile, sandbox, run id — and
+§20's spend columns, each `None` where the question does not apply, never a
+lying zero: `unsupported` (figures the final grounding verdict found no
+receipt for; `None` where no grammar ran), `dead_end_calls` (dispatches off
+the mission's declared obligation path — `expects_tools` plus the result
+store, counted per dispatch; `None` where no path is declared),
+`calls_to_chain` (the 1-based ordinal, within one emitter's own sequence, of
+the first call whose arguments carry every `expects_carried` literal at once;
+`None` where the chain never completed — an unpaid price is not a price of
+zero) and `premature` (an answer served while some declared tool was never
+called; `None` for a refusal, which is not premature, it is a refusal). Each
+is defined once, in `core.eval.score`, and every table that prints one reads
+it rather than recomputing. The
 report is a pure function of the runs it scored — no timestamp — so scoring the
 same runs twice produces the same bytes, which is what "measurable" was
 supposed to mean.
@@ -1422,13 +1434,14 @@ no branch anywhere.
 | `compiled-context` | `--compiled-context` | ROADMAP §2.9.5 — the runtime's view of the problem compiled into each step's input instead of accumulated as a transcript. Landed in Phase 18; this arm graduated with no edit to the table |
 | `graph` | `--graph-context` | ROADMAP §2.9.7 — Phase 20, conditional on Phase 19 |
 | `swarm-steering` | `--swarm-steering` | ROADMAP §2.9.7 — a staged turn's planner is offered the independent groups of what is still owed. A **conditional** reading: the delta can only show on a mission the router staged whose frontier had two independent groups, so a suite of direct missions reports this arm as a faithful null |
+| `extraction` | `--extract` | the design's A4 (§20) — the extraction door spends extra model calls turning receipts the deterministic harvest cannot read into HYPOTHESIZED propositions. Declared before the door exists (it is held for the owner); SKIPPED loudly until the flag lands, and read as A4−A3, never A4−A0 |
 
-`--graph-context` does not exist in this release. It is declared anyway, so the
+`--extract` does not exist in this release. It is declared anyway, so the
 column is in the table from the first run and says SKIPPED until the flag lands
-— rather than appearing one day with no history behind it. `--cognition` and
-`--compiled-context` were declared the same way and have since landed, which is
-the graduation this table was designed around: an arm becomes runnable the day
-its flag is published, with no edit here.
+— rather than appearing one day with no history behind it. `--cognition`,
+`--compiled-context` and `--graph-context` were declared the same way and have
+since landed, which is the graduation this table was designed around: an arm
+becomes runnable the day its flag is published, with no edit here.
 
 ### The availability rule
 
@@ -1795,6 +1808,14 @@ the day a lane pins the view into the head — a cached preamble, a view that
 leads the request — three independent sums would silently report a request
 larger than the request. It costs one interval merge.
 
+The recorded `kind` also carries §20's **extraction breakout**: a call the
+extraction door makes is recorded under `kind: "extraction"`
+(`context.EXTRACTION_KIND` — the contract the `--extract` lane records
+against, declared from this side before the door exists), and
+`extraction_calls` counts them per run and per summary. It reads 0 on every
+run recorded today, which is the true count and not a placeholder, and starts
+moving the day the door lands, with no edit to the counting.
+
 A run is grouped into conversations by the recorded `kind` before any of this.
 A swarm records its router, its children and its synthesis in one
 `model.jsonl` and they share no system prompt; one "longest common prefix of
@@ -2019,3 +2040,126 @@ per source. Those are different tools to `entry_for`, and a generator that
 merged them would be guessing which spelling a manifest should use. Keeping one
 spelling is the first thing a reviewer of the page does — which is what the
 header asked for.
+
+
+## 20. The five-arm attribution table (W5)
+
+The subject-spine design (ROADMAP §2.9's W1–W5) is measured by ONE
+experiment shape, and this section is its standing interpretation — written
+before the platform numbers land, so that when they land nobody invents the
+reading to fit them.
+
+### The arms
+
+Arms are flag-deltas on §15's machinery — one model, one pack, paired, n
+stated, unavailable arms mechanically skipped — with one exception the table
+below is honest about:
+
+| arm | delta | isolates |
+|---|---|---|
+| **A0** | *(none)* | baseline |
+| **A1** | `--cognition` | shadow cost only. The answer effect must be nil — the corpus guard proves the flag-off path byte-identical and the shadow never gates — so this arm is the wall-clock and context price tag of holding the problem at all |
+| **A2** | `--compiled-context` | the view **without subjects**: the 1.3.x compiler plus 19b's OWED section, on a plane that declares no identifiers |
+| **A3** | A2 **+ a declaring plane** | **W1+W4**: subject facts, subject contests, `resolvable via:` |
+| **A4** | A3 + `--extract` | **W2**: model-extracted facts and their call cost. The flag does not exist (the door is held for the owner); the `extraction` arm is DECLARED in §15's table and skipped loudly until it lands |
+
+**A3 is not a flag, and the table does not pretend it is.** The spine binds
+exactly where the plane declares identifiers — a server's `outputSchema`, a
+skill's `tools:` block — so on any given plane only ONE of A2/A3 exists:
+`--compiled-context` against a non-declaring plane IS A2, and against a
+declaring plane IS A3. A second arm carrying A2's tokens would pair two
+identical configurations and report dice as the spine. So the ablation stays
+flag-honest, and the report says **which design arm its `compiled-context`
+column is** by reading the runs' own reasoning logs: the arm table's *design
+arms* block prints the subject-link tally per arm (`core.eval.ablation.spine`
+— replayed through the log's one reader, never grepped), zero links meaning
+A2 and links meaning A3, with a log that refused replay counted rather than
+skipped. The A3−A2 delta is therefore the SAME suite run twice — once
+against the declaring plane or skill, once with the declarations withheld —
+paired mission by mission across the two tables. The plane is the dial; the
+spawn line never moves.
+
+### The attribution rules
+
+Printed in every ablation report (`SPINE_NOTE`), because a table outlives
+the person who knew how to read it:
+
+- **A2−A0 is the view.** What compiling the problem state buys, before
+  subjects exist.
+- **A3−A2 is the spine.** What declared identity and the subject join buy,
+  on top of the view. This is the arc's center, and Phase 19's
+  kill-criterion shape applies to it — see below.
+- **A4−A3 is extraction.** What model-extracted facts buy, against the
+  spine that grounds them, WITH the extraction calls broken out of the call
+  count (§18) so the price is on the same line.
+- **Never A4−A0 as one number.** Four mechanisms folded into one delta is a
+  number that praises or damns all of them for whichever one moved.
+
+A1−A0 must be a null on answers and a price on wall clock; the corpus guard
+is the proof of the first half, and an A1 answer delta on a platform run is
+a bug report, not a finding.
+
+### The classes, mapped to mechanisms
+
+The benchmark pack's six classes (§14) were chosen so the runtime could be
+the thing that fails; this maps each to the mechanism that is supposed to
+prevent it (`core.eval.benchmark_suite.CLASS_MECHANISMS`, data beside the
+classes so the two cannot drift), and to the §6 spend columns it is read by:
+
+| class | mechanism | read by |
+|---|---|---|
+| multi-hop evidence | **W1/W4** — facts joined across receipts through declared identity | success, `unsupported`, `premature` |
+| dependency reasoning | **W1/W4** — `resolvable via:` on owed lines, the subject join | `dead_end_calls` (dispatches off the declared obligation path), `calls_to_chain` (the price of the first completed carried-chain) |
+| contradictory evidence | **W1** — subject contests: two receipts, one subject, one field, both sides shown | conflict surfaced vs one side served — the caveat-accepting rubric (§14), the `staged_arithmetic` failure shape |
+| missing evidence | **W2** — the extraction door's abstention half | abstention/caveat correctness via the existing grounding checks |
+| misleading evidence | **W2/W4** — declared semantics: the wrong field beside the right one | grounding's `unsupported`, the attribution check |
+| long-horizon recovery | conduct, not a cognitive arm — the rc5 error-recovery sentences | `expects_recovered`, deliberately mapped to no W lane |
+
+Metrics throughout, per arm per half, in the ablation's *what the runs
+spent* table: success, unsupported claims, dead-ends, premature completion,
+model calls **with extraction calls broken out** (a column that exists now
+and reads 0 until A4 lives — `context.EXTRACTION_KIND` is the recording
+contract), tokens, wall clock — beside §18's context cost columns, which
+ride in the same tables.
+
+### The false-link probe corpus
+
+The spine's own instrument, shipped with the lane and not after: a wrong
+link **manufactures contradictions**, so the linker's number is the
+**false-link rate and the target is ~0**.
+
+`python -m core.eval linker --probes tests/fixtures/cognition/link_probes.jsonl`
+
+runs receipts with fully known subject identity — adversarial near-misses
+included: the same value under a non-identifier key, the declared path's
+name appearing under an undeclared path, colliding values across kinds, a
+value that cannot spell a subject — through the PRODUCTION attachment (a
+real `ShadowCognition`, a real kernel store) and reports links made against
+total ground truth. A link the truth does not hold is a **false link**; a
+link owed and not made is a **missed link**, reported apart because the two
+failures have opposite costs. Probes also pin the projected consequences
+(`forbid_subject_fields` is where a broken cross-kind guard shows as a
+manufactured claim) and the counters (`ambiguous`, `unlinked`, `refused`).
+The instrument is deterministic — no model anywhere in it — so its identity
+block is the commit and the kernel version, and a rerun reproduces the
+bytes. The cross-kind classes REFUSE by design and the corpus proves the
+guard can be caught: breaking it in a scratch copy turns exactly the
+cross-kind probes red with the manufactured claims named (the lane's
+mutation table carries that run). An instrument, never a gate: nothing in
+the mission path reads this number.
+
+### The standing interpretation rule for A3
+
+Phase 19's kill criterion, applied in advance to the arc's center: **small
+gain = simplify or stop.** When the platform numbers land, if A3−A2 —
+paired, n stated, interpreter identity beside it — does not move the
+harness-sensitive classes it maps to (multi-hop, dependency, contradictory)
+by more than the instrument's own noise (§15's twenty-dice lesson: a
+20-scenario tier at a 20B lands 14–16), then the spine does not earn its
+machinery at that model class, and the answer is to simplify it or stop
+extending it — not to re-roll, not to widen the suite until something moves,
+and not to read A4−A0 as evidence for it. The rule is written down now,
+against the numbers arriving later, because the alternative is choosing the
+interpretation after seeing which number needs one. What HOLDS regardless of
+the score, as with rc5: the declarations door, the probe corpus, and every
+mechanism that pays for itself in a class it maps to.

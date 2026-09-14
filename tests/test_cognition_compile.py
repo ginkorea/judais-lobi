@@ -161,6 +161,21 @@ class TestTheFactsCarryTheirReceipts:
         assert any("checked = true" in line
                    for line in section(compile_view(ledger), FACTS_HEADING))
 
+    def test_an_integer_past_the_str_limit_is_described_not_raised(self):
+        """The store CAN hold an int past CPython's decimal-conversion
+        limit — the harvest takes whatever figure a receipt carried — and
+        ``json.dumps`` raises ``ValueError`` out of ``str`` itself on one.
+        This runs on the model-call path, so the limit is described rather
+        than hit: a named escape, in DIGITS (the same ``643/2136``
+        arithmetic ``constraints._show`` uses), never an exception through
+        the render.  10**5000 is 5,001 digits, which the escape must say
+        exactly — an off-by-a-factor bit count would also 'not raise'."""
+        state = CognitiveState()
+        observe(state, "t#r1", "count", 10 ** 5000)
+        rendered = section(compile_view(state), FACTS_HEADING)
+        assert any("count = a 5001-digit integer  [" in line
+                   for line in rendered), rendered
+
     def test_one_entity_s_facts_are_contiguous(self, ledger):
         entities = [line.split(" · ")[0]
                     for line in section(compile_view(ledger), FACTS_HEADING)]
@@ -1163,7 +1178,8 @@ def _shaped(shape):
     return state, edges
 
 
-def _brute_force(state: CognitiveState, related, budget: int) -> str:
+def _brute_force(state: CognitiveState, related, budget: int,
+                 related_capped: bool = False) -> str:
     """What a renderer alone would choose: the first cut in order that fits.
 
     No arithmetic, no prefix sums, no reserved lengths — every cut in the
@@ -1182,8 +1198,17 @@ def _brute_force(state: CognitiveState, related, budget: int) -> str:
     all; and related above everything, because a related line is two names
     and a relation with no claim in it, and the walk that produced it runs
     again next step.
+
+    *related_capped* rides through to the production compiler untouched:
+    the walk's truncation note is the first ROW of the related section, so
+    to this oracle it is one more line that is cut like any other — which
+    is exactly the claim being checked, because the production arithmetic
+    also has to have priced it as a row and the two agree or the bytes
+    differ.
     """
-    whole = compile_view(state, related=related, budget_chars=1_000_000)
+    whole = compile_view(state, related=related,
+                         related_capped=related_capped,
+                         budget_chars=1_000_000)
     held = (whole.facts, whole.conflicts, whole.owed, whole.hypotheses,
             whole.related)
     headings = (FACTS_HEADING, CONFLICTS_HEADING, OWED_HEADING,
@@ -1265,8 +1290,10 @@ class TestTheCutIsArithmeticAndNotRepeatedRendering:
         assert compile_view(state, budget_chars=30).text == ""
         assert calls == []
 
+    @pytest.mark.parametrize("capped", [False, True])
     @pytest.mark.parametrize("shape", sorted(_SHAPES))
-    def test_the_cut_is_what_brute_force_would_have_chosen(self, shape):
+    def test_the_cut_is_what_brute_force_would_have_chosen(self, shape,
+                                                           capped):
         """The oracle, and it is the only honest form of this claim.
 
         Safe is not enough: a cut that dropped everything would satisfy
@@ -1282,12 +1309,23 @@ class TestTheCutIsArithmeticAndNotRepeatedRendering:
         a line they had room for and two of them a block entirely.  A test
         that only asked "does one more line fit at a slightly larger
         budget" passed through all of it.
+
+        Gridded over *related_capped* as well (the 20a review's m4): the
+        walk's truncation note is one more related ROW, first in its
+        section and therefore last of it to go, and the arithmetic has to
+        price it exactly as the renderer spends it — at every budget, not
+        at the one a hand-written case happened to pick.  On a shape with
+        no related lines the flag inserts nothing and the two grids are
+        the same claim, which is the production rule and is asserted by
+        riding through it rather than skipped around.
         """
         state, related = _shaped(shape)
         for budget in _BUDGETS:
             assert compile_view(state, related=related,
+                                related_capped=capped,
                                 budget_chars=budget).text == \
-                _brute_force(state, related, budget), (shape, budget)
+                _brute_force(state, related, budget,
+                             related_capped=capped), (shape, budget, capped)
 
     def test_the_renderer_and_the_arithmetic_are_checked_against_each_other(
             self, monkeypatch):
