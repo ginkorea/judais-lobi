@@ -15,20 +15,27 @@ the instrument for the claims that make that safe to ship:
   entity is not bound and there is no violation — the one mistake that would
   turn this feature into a generator of confident nonsense, because a
   receipt that has not arrived yet is not a receipt that said zero;
-* **it needs nothing installed.**  ``require:`` is exact decimal arithmetic
-  over a deliberately small language; ``require_z3:`` is an opt-in spelled in
-  the manifest, and on a box without the extra it is refused **at the door**
-  naming it rather than loading and checking nothing;
+* **it needs nothing installed, and it never makes a manifest unloadable.**
+  ``require:`` is **exact rational** arithmetic over a deliberately small
+  language — no precision to exceed, no ambient ``decimal`` context to
+  inherit, so a very large sum is decided rather than rounded into a
+  violation that is not there.  ``require_z3:`` is an opt-in spelled in the
+  manifest, and on a box without the extra it loads exactly as it does
+  everywhere else and simply goes **unchecked**, with one note naming the
+  extra;
 * **it is a record, not a diary.**  One line per ``(constraint, entity)``
   pair for the life of the run, resumes included, while the view shows what
-  is true *now*.
+  is true *now*; and what the budget drops, it drops **honestly** — a
+  dropped violation is never sent to a result store that does not hold one.
 
 The refusals are checked one expression at a time and by message, because a
 refusal an author cannot act on is a refusal that costs them an afternoon.
 """
 
+import decimal
 import json
 import textwrap
+from fractions import Fraction
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,16 +43,20 @@ import pytest
 
 from core.cognition import (CognitiveState, EvidenceAuthority, EvidenceRef,
                             PropositionStatus)
-from core.cognition.compile import (CONFLICTS_HEADING, SIDE_SEP, compile_view,
+from core.cognition.compile import (CONFLICTS_HEADING, OMITTED, SIDE_SEP,
+                                    VIOLATIONS_OMITTED, compile_view,
                                     violation_line)
 from core.cognition.constraints import (MAX_EXPRESSION, SOLVER_EXTRA,
                                         VIOLATION_KIND, Constraint,
                                         ConstraintMalformed, Violation,
-                                        check_constraints, have_z3,
-                                        parse_constraint)
+                                        SOLVER_TIMEOUT_MS,
+                                        _show_number, check_constraints,
+                                        have_z3, needs_solver,
+                                        parse_constraint, solver_names)
 from core.durable import RunStore
-from core.runtime.cognition import (NOTE_KEY, UNCHECKED_NOTE, VIOLATION_NOTE,
-                                    RulePack, open_shadow, read_reasoning)
+from core.runtime.cognition import (NOTE_KEY, UNCHECKED_NOTE, UNSOLVED_NOTE,
+                                    VIOLATION_NOTE, RulePack, open_shadow,
+                                    read_reasoning)
 from core.runtime.skills import SkillManifestError, compose_manifests, load_skill
 
 #: One receipt, four figures, two of them wrong about each other: the
@@ -222,27 +233,38 @@ class TestOneConstraintIsOneExpressionInOneLanguage:
                              "share <= 1")
         assert "both `require:` and `require_z3:`" in str(raised.value)
 
-    def test_the_z3_form_without_the_extra_refuses_at_the_door(self):
-        """The point of the whole opt-in: a manifest that needs the solver
-        finds out when it LOADS, naming the extra, rather than loading and
-        silently checking nothing for a whole mission.
-
-        Patched rather than left to the box, because this has to be the
-        refusal where the solver IS installed too.
-        """
-        with patch("core.cognition.constraints.have_z3", return_value=False):
-            with pytest.raises(ConstraintMalformed) as raised:
-                parse_constraint("c", {"entity": "?e"}, None,
-                                 "share / total <= 1")
-        assert SOLVER_EXTRA in str(raised.value)
-        assert "require_z3" in str(raised.value)
-
     def test_the_z3_form_reads_what_the_linear_one_refuses(self):
-        with patch("core.cognition.constraints.have_z3", return_value=True):
-            parsed = parse_constraint("c", {"entity": "?e"}, None,
-                                      "share / total <= 1")
+        parsed = parse_constraint("c", {"entity": "?e"}, None,
+                                  "share / total <= 1")
         assert parsed.engine == "z3"
         assert parsed.fields == ("share", "total")
+
+    def test_a_z3_form_parses_with_no_solver_on_the_box(self):
+        """THE DOOR DOES NOT ASK THE BOX, and this is the review's
+        correction. A manifest's validity is a property of the manifest: the
+        grammar is an `ast` walk that reads the same with or without the
+        wheel, and refusing here made an optional extra mandatory to LOAD a
+        skill — and therefore to start a mission, with cognition OFF, on a
+        layer that may never block an answer."""
+        with patch("core.cognition.constraints.have_z3", return_value=False):
+            parsed = parse_constraint("c", {"entity": "?e"}, None,
+                                      "share * rate <= cap")
+        assert parsed.engine == "z3"
+        assert parsed.fields == ("share", "rate", "cap")
+
+    def test_a_pack_of_them_loads_with_no_solver_on_the_box(self):
+        """The same claim one level up, where it bites: the manifest door."""
+        with patch("core.cognition.constraints.have_z3", return_value=False):
+            pack = RulePack.from_mapping({"constraints": [
+                {"name": "ratio", "over": {"entity": "?e"},
+                 "require_z3": "part / whole <= 1"}]})
+        assert [c.engine for c in pack.constraints] == ["z3"]
+
+    def test_a_z3_form_is_still_refused_for_a_fault_of_its_own(self):
+        """Not asking the box is not the same as not reading the line."""
+        with pytest.raises(ConstraintMalformed) as raised:
+            parse_constraint("c", {"entity": "?e"}, None, "abs(share) <= 1")
+        assert "Call" in str(raised.value)
 
 
 # ── binding: what the store has to hold before anything is checked ───────────
@@ -386,6 +408,21 @@ class TestTheViolationStatesWhatIsTrue:
             state, [constraint("share <= 100")])[0].detail == \
             "share 121.2 > 100"
 
+    def test_a_negative_literal_is_not_restated_as_its_own_value(self):
+        """m1: `-5 = -5` is a block saying one thing twice and inviting a
+        reader to look for the difference. A sign in front of a bare term is
+        still a bare term."""
+        state = store_with(share=5)
+        assert check_constraints(
+            state, [constraint("share <= -5")])[0].detail == "share 5 > -5"
+
+    def test_the_sentence_and_the_verdict_are_one_arithmetic(self):
+        """MAJOR 3: the numbers in the sentence are the numbers that decided
+        it, because there is only one evaluation to disagree with."""
+        state = store_with(a=0.1, b=0.2, c=0.4)
+        found = check_constraints(state, [constraint("a + b == c")])[0]
+        assert found.detail == "a 0.1 + b 0.2 = 0.3 != c 0.4"
+
     def test_precedence_is_rendered_with_the_parentheses_it_needs(self):
         state = store_with(settled=1, pending=5, total=0)
         assert check_constraints(
@@ -410,12 +447,96 @@ class TestTheViolationStatesWhatIsTrue:
                                   [constraint("share <= 100", name="b")])[0]
         assert found.key == ("b", "tool#r1")
 
-    def test_exact_decimal_arithmetic_and_not_float(self):
+    def test_exact_arithmetic_and_not_float(self):
         """`0.1 + 0.2 == 0.3` is false in floats and true in the arithmetic
         a run is judged by. A checker that reported this store would be
         reporting Python's rounding as the run's fault."""
         state = store_with(a=0.1, b=0.2, c=0.3)
         assert check_constraints(state, [constraint("a + b == c")]) == ()
+
+
+class TestTheArithmeticHasNoBoundAndNoAmbientState:
+    """The review's MAJOR 2, as the tests that would have caught it.
+
+    The first version computed in decimals under ``localcontext()`` at fifty
+    digits. Fifty digits is exact for every figure a receipt plausibly
+    carries and **silently rounds** above it, and ``localcontext()`` inherits
+    whatever the host process has done to :mod:`decimal` — so a consistent
+    store could be reported as violating its own constraint, and a host that
+    had set its own precision could flip a verdict without touching a
+    manifest. A fabricated violation is a line in the model's prompt saying a
+    store disagrees with itself. :class:`~fractions.Fraction` has neither
+    failure mode: no precision to exceed, no context to inherit.
+    """
+
+    #: Big enough that fifty significant digits cannot hold the sum: the
+    #: rounding puts `settled + pending` back onto `total`.
+    BIG = 10 ** 60
+
+    def test_a_sum_above_any_precision_bound_is_decided_correctly(self):
+        """`10**60 + 1 > 10**60` is TRUE, so this store violates nothing —
+        and under a rounding arithmetic it was reported as a violation."""
+        state = store_with(settled=self.BIG, pending=1, total=self.BIG)
+        assert check_constraints(
+            state, [constraint("settled + pending > total")]) == ()
+
+    def test_the_mirror_case_is_not_missed(self):
+        """The same rounding hid a REAL violation: `10**60 + 1 == 10**60` is
+        false, and an arithmetic that rounded the sum called it true."""
+        state = store_with(settled=self.BIG, pending=1, total=self.BIG)
+        found = check_constraints(
+            state, [constraint("settled + pending == total")])
+        assert [v.constraint for v in found] == ["c"]
+
+    def test_the_sentence_carries_the_exact_figure(self):
+        state = store_with(settled=self.BIG, pending=1, total=self.BIG)
+        found = check_constraints(
+            state, [constraint("settled + pending == total")])
+        assert f"= {self.BIG + 1} !=" in found[0].detail
+
+    def test_a_hosts_decimal_context_cannot_move_a_verdict(self):
+        """We ship behind an SDK front door, so ambient process state is
+        real: a host that narrowed `decimal`'s precision used to change what
+        a mission reported about a store it never touched."""
+        state = store_with(settled=204.5, pending=631.25, total=835.75)
+        expression = "settled + pending == total"
+        before = check_constraints(state, [constraint(expression)])
+        with decimal.localcontext() as context:
+            context.prec = 3
+            during = check_constraints(state, [constraint(expression)])
+        assert before == during == ()
+
+    def test_a_hosts_context_cannot_move_the_rendered_bytes_either(self):
+        """`compile_view`'s promise is the same state, the same bytes, in any
+        process — and the sentence is part of those bytes."""
+        state = store_with(settled=100.125, pending=1, total=2)
+        found = check_constraints(
+            state, [constraint("settled + pending == total")])
+        with decimal.localcontext() as context:
+            context.prec = 2
+            under = check_constraints(
+                state, [constraint("settled + pending == total")])
+        assert found[0].detail == under[0].detail
+        assert "= 101.125 !=" in found[0].detail
+
+    def test_a_figure_too_big_to_spell_does_not_raise_mid_render(self):
+        """m2. CPython refuses to turn an integer of more than ~4,300 digits
+        into a string, and the harvest takes whatever figure a receipt
+        carried — so a line of model input can be built around one. The limit
+        is described rather than hit: a rendering that raised would be an
+        advisory check costing a step."""
+        huge = 10 ** 6000
+        state = store_with(total=huge, part=1)
+        found = check_constraints(state, [constraint("part >= total")])
+        assert len(found) == 1
+        assert "integer" in found[0].detail
+
+    def test_a_fraction_that_is_not_a_decimal_still_renders(self):
+        """Only the solver's division can make one, and a rendering nobody
+        recognises beats a number that is not the one that decided it."""
+        assert _show_number(Fraction(1, 3)) == "1/3"
+        assert _show_number(Fraction(-1, 8)) == "-0.125"
+        assert _show_number(Fraction(835)) == "835"
 
 
 # ── the view ─────────────────────────────────────────────────────────────────
@@ -470,6 +591,85 @@ class TestViolationsRenderWhereConflictsDo:
                              violations=found)
         assert tight.text != wide.text
         assert len(tight.text) <= len(wide.text) - 1
+
+    @pytest.fixture
+    def crowded(self):
+        """A store whose CONFLICTS section can lose lines one at a time.
+
+        Twelve entities, one constraint, twelve violations — and the size is
+        the point rather than decoration. Dropping the FIRST line of a
+        section adds an omission clause longer than the line it saved, so a
+        section of one line is all-or-nothing: the budget that would drop it
+        cannot fit the sentence explaining the drop, and the whole view goes
+        empty instead. A section of twelve has a band of budgets where lines
+        come off one by one, which is where the sentence can be read.
+        """
+        state = CognitiveState()
+        for index in range(12):
+            state.assert_observation(
+                (f"tool#r{index}", "share", 200 + index),
+                evidence=(EvidenceRef(kind="receipt",
+                                      locator=f"run/r{index}/tool"),),
+                authority=EvidenceAuthority.DETERMINISTIC)
+        return state, check_constraints(state, [constraint("share <= 100")])
+
+    def test_a_dropped_violation_is_not_sent_to_the_result_store(self, crowded):
+        """MAJOR 4. The CONFLICTS section's escape sentence says *ask the
+        mission's result store, every receipt is still in it, whole* — which
+        is true of a dropped fact and false of a violation: a violation is
+        computed from the pack against the store, it is in no receipt and no
+        tool's output, and a model that spent a call asking for one would
+        learn only that the runtime was wrong about itself."""
+        state, found = crowded
+        wide = compile_view(state, violations=found)
+        for budget in range(len(wide.text), 0, -1):
+            view = compile_view(state, budget_chars=budget, violations=found)
+            if min(view.conflicts_omitted, len(found)):
+                assert VIOLATIONS_OMITTED.split("{what}")[1][:40] in view.text
+                assert "constraint violation" in view.text
+                return
+        pytest.fail("no budget dropped the violation")
+
+    def test_each_clause_names_only_what_it_is_true_of(self, crowded):
+        """A budget that loses both kinds writes both clauses, and each one
+        counts only its own: the store clause is about the twelve facts, the
+        violation clause about the violations, and neither sentence claims
+        the other's lines."""
+        state, found = crowded
+        view = compile_view(state, budget_chars=707, violations=found)
+        assert (view.facts_omitted,
+                min(view.conflicts_omitted, len(found))) == (12, 8)
+        assert "+12 facts not shown at this budget; ask the mission's " \
+            "result store" in view.text
+        assert "+8 constraint violations not shown at this budget — " \
+            "nothing to ask for" in view.text
+
+    def test_a_dropped_fact_still_points_at_the_store(self, crowded):
+        """The other clause still says what it always said: three losses,
+        three truths, and neither one swallowed the other."""
+        state, found = crowded
+        wide = compile_view(state, violations=found)
+        for budget in range(len(wide.text), 0, -1):
+            view = compile_view(state, budget_chars=budget, violations=found)
+            if view.facts_omitted and not view.conflicts_omitted:
+                assert OMITTED.split("{what}")[1][:40] in view.text
+                assert "constraint violation" not in view.text
+                return
+        pytest.fail("no budget dropped a fact and kept the violation")
+
+    def test_the_counters_tell_violations_from_contradictions(self):
+        state = store_with(share=121.2)
+        state.declare_field("blocks", "one")
+        for value, seq in ((7, "r1"), (9, "r2")):
+            state.assert_observation(
+                ("tool#r1", "blocks", value),
+                evidence=(EvidenceRef(kind="receipt",
+                                      locator=f"run/{seq}/tool"),),
+                authority=EvidenceAuthority.DETERMINISTIC)
+        found = check_constraints(state, [constraint("share <= 100")])
+        view = compile_view(state, violations=found)
+        assert (view.conflicts, view.conflicts_omitted) == (2, 0)
+        assert view.text.count(f"{VIOLATION_KIND}: ") == 1
 
     @pytest.mark.parametrize("budget", list(range(0, 900, 37)))
     def test_no_budget_is_ever_exceeded(self, budget):
@@ -578,6 +778,26 @@ class TestTheShadowChecksAtTheStepBoundary:
         assert shadow.violations == () and shadow.checked == 0
         assert notes(shadow.path) == []
 
+    def test_the_line_says_only_what_loaded(self):
+        """m6. The console sentence is what an operator is told a pack DID,
+        and a pack of constraints alone derives nothing and owes nothing —
+        so a fixed sentence about clauses and goals would be the harness
+        reporting work it did not do."""
+        from core.cli import pack_line
+
+        only = pack_line((0, 0, 0), 2, "packed")
+        assert "0 rule(s), 0 goal(s), 2 constraint(s)" in only
+        assert "DERIVE" not in only and "still owed" not in only
+        assert "recorded and shown, never enforced" in only
+        assert only.endswith("None of it gates anything")
+
+        whole = pack_line((1, 2, 1), 1, "packed")
+        assert "DERIVE" in whole and "still owed" in whole
+        assert "promoted to SKILL authority" in whole
+
+        bare = pack_line((1, 0, 0), 0, "packed")
+        assert "never enforced" not in bare and "still owed" not in bare
+
     def test_a_run_with_no_pack_at_all_checks_nothing(self, runs):
         run = runs.create()
         shadow = open_shadow(runs, run.run_id)
@@ -625,6 +845,59 @@ class TestAResumePicksTheConstraintsBackUp:
                              cognition_block={"constraints": "nonsense"})
         assert shadow.on and not shadow.checking
         assert notes(shadow.path, UNCHECKED_NOTE)
+
+
+class TestAMissingSolverCostsTheCheckingAndSaysSo:
+    """The other half of the review's MAJOR 1.
+
+    The manifest loads, the mission runs, the linear constraints are checked
+    and the solver's are not — with one note in the log naming the extra, so
+    a reader never has to work out why half a pack was silent.
+    """
+
+    PACK = {"constraints": [
+        {"name": "bounded", "over": {"entity": "?e"},
+         "require": "share <= 100"},
+        {"name": "ratio", "over": {"entity": "?e"},
+         "require_z3": "settled / total <= 1"},
+    ]}
+
+    @pytest.fixture
+    def shadow(self, runs):
+        run = runs.create()
+        shadow = open_shadow(runs, run.run_id, cognition_block=self.PACK)
+        with patch("core.runtime.cognition.have_z3", return_value=False):
+            shadow.receipt("mcp.view", "r1", RECEIPT)
+            shadow.close_step()
+            shadow.close_step()
+        return shadow
+
+    def test_the_pack_loaded_whole(self, shadow):
+        assert [c.name for c in shadow.constraints] == ["bounded", "ratio"]
+        assert shadow.on and shadow.checking
+
+    def test_the_linear_half_is_checked(self, shadow):
+        assert [v.constraint for v in shadow.violations] == ["bounded"]
+
+    def test_the_note_is_written_once_and_names_the_extra(self, shadow):
+        written = notes(shadow.path, UNSOLVED_NOTE)
+        assert len(written) == 1
+        assert written[0]["extra"] == SOLVER_EXTRA
+        assert written[0]["constraints"] == ["ratio"]
+
+    def test_a_pack_with_no_solver_constraints_says_nothing(self, runs):
+        run = runs.create()
+        shadow = open_shadow(runs, run.run_id, cognition_block=PACK)
+        with patch("core.runtime.cognition.have_z3", return_value=False):
+            shadow.receipt("mcp.view", "r1", RECEIPT)
+            shadow.close_step()
+        assert notes(shadow.path, UNSOLVED_NOTE) == []
+
+    def test_the_names_come_from_one_owner(self):
+        pack = RulePack.from_mapping(self.PACK)
+        assert solver_names(pack.constraints) == ("ratio",)
+        assert needs_solver(pack.constraints)
+        assert not needs_solver(RulePack.from_mapping(PACK).constraints)
 
 
 class TestNothingHereCanCostAMission:
@@ -864,6 +1137,27 @@ class TestTheSolverDecidesWhatTheLinearEngineWillNot:
             state, [parse_constraint("d", {"entity": "?e"}, None,
                                      "part / whole <= 1")]) == ()
 
+    def test_the_solver_is_given_a_wall_clock_bound(self, z3):
+        """m4. It runs on the mission's own thread inside `close_step`, so
+        the one thing it may never do is not come back. Every value is bound
+        before it is asked, so this can only fire on something pathological —
+        and `unknown` is already the undecidable answer that yields nothing.
+        """
+        seen = {}
+        real = z3.Solver
+
+        class Timed(real):
+            def set(self, *args, **kwargs):
+                if args[:1] == ("timeout",):
+                    seen["timeout"] = args[1]
+                return real.set(self, *args, **kwargs)
+
+        with patch.object(z3, "Solver", Timed):
+            check_constraints(store_with(rate=3, units=4), [
+                parse_constraint("area", {"entity": "?e"}, None,
+                                 "rate * units <= 10")])
+        assert seen.get("timeout") == SOLVER_TIMEOUT_MS
+
     def test_the_record_says_which_engine_decided_it(self):
         state = store_with(rate=3, units=4)
         found = check_constraints(
@@ -876,22 +1170,29 @@ class TestTheSolverDecidesWhatTheLinearEngineWillNot:
 
 class TestTheSolverIsNeverRequired:
     """The floor, stated as a test: the built-in language works with nothing
-    installed, and it is what a pack gets unless it asks for more."""
+    installed, it is what a pack gets unless it asks for more, and asking for
+    more costs a deployment **checking** and never a mission."""
 
     def test_the_probe_answers_without_raising(self):
         assert have_z3() in (True, False)
 
-    def test_the_refusal_names_an_extra_that_fixes_it(self):
-        """The rule ``tests/test_packaging.py`` already keeps for pyyaml: a
-        refusal that names an extra is worth exactly as much as the extra
-        being the one that carries the wheel."""
+    def test_the_sentence_names_an_extra_that_exists_and_carries_the_wheel(
+            self):
+        """m3, and the rule ``tests/test_server.py`` already keeps for
+        ``[server]``: a sentence that names an extra is worth exactly as much
+        as the extra being real and being the one with the wheel in it. The
+        name is READ OUT of the sentence rather than typed here, so a rename
+        in either place has to be a rename in both."""
         import ast
+        import re
 
         from tests.test_packaging import _setup_kwargs
 
-        assert "judais-lobi[solver]" in SOLVER_EXTRA
+        named = re.search(r"judais-lobi\[([a-z0-9_-]+)]", SOLVER_EXTRA)
+        assert named, SOLVER_EXTRA
         extras = ast.literal_eval(_setup_kwargs()["extras_require"])
-        assert [item for item in extras["solver"]
+        assert named.group(1) in extras
+        assert [item for item in extras[named.group(1)]
                 if item.startswith("z3-solver")]
 
     def test_the_linear_engine_is_the_default(self):

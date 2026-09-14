@@ -1260,10 +1260,14 @@ this is the thought experiment's remaining machinery, admitted piecewise:
   **recorded and advisory** — a line in the compiled view's CONFLICTS
   section and one record in `reasoning.jsonl` per `(constraint, entity)`
   pair, never a gate and, in v1, not even a supervisor signal. The floor is
-  a linear comparison decided in exact decimals with **no new dependency**;
-  `require_z3:` is an opt-in spelled in the manifest (extra `[solver]`,
-  refused at the door when it is absent) that buys rationals, division and
-  non-linear products. **The SOLVING stays behind this bullet's own gate**:
+  a linear comparison decided in **exact rationals** with **no new
+  dependency** (no precision to exceed and no ambient decimal context to
+  inherit — the first version had both and fabricated a violation above its
+  bound); `require_z3:` is an opt-in spelled in the manifest that buys
+  division and non-linear products, and the `[solver]` extra buys
+  **checking, not loadability**: a manifest that writes one loads on every
+  box, and where the wheel is missing those constraints are simply not
+  checked, with one note naming the extra. **The SOLVING stays behind this bullet's own gate**:
   every value is bound before the solver is asked, so v1 decides ground
   expressions, and the three named classes are questions about *unbound*
   variables — they need a way to declare those variables and a way to render

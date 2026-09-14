@@ -280,9 +280,10 @@ from core.cognition import (BUDGET_CHARS, CARDINALITIES, CONSTRAINT_KEYS,
                             KERNEL_KEY, KERNEL_VERSION, CognitionError,
                             CognitiveState, Constraint, EvidenceAuthority,
                             EvidenceRef, ReplayRefused, RuleAuthority,
-                            Violation, check_constraints, check_pattern,
-                            compile_view, deep_copy, owed_line,
-                            parse_constraint)
+                            SOLVER_EXTRA, Violation, check_constraints,
+                            check_pattern, compile_view, deep_copy, have_z3,
+                            needs_solver, owed_line, parse_constraint,
+                            solver_names)
 
 from core.durable import fsync_append
 from core.runtime.grounding import harvest_fields, json_blocks
@@ -296,7 +297,8 @@ __all__ = [
     "GOAL_KEYS", "PACK_AUTHORITY", "PROBLEM_SEP", "RULE_KEYS", "PackGoal",
     "PackRule", "RulePack", "ShadowCognition", "header_record",
     "observations_of", "open_shadow", "read_reasoning", "replay_reasoning",
-    "UNWATCHED_NOTE", "Progress", "UNCHECKED_NOTE", "VIOLATION_NOTE"
+    "UNWATCHED_NOTE", "Progress", "UNCHECKED_NOTE", "UNSOLVED_NOTE",
+    "VIOLATION_NOTE"
 
 ]
 
@@ -357,6 +359,21 @@ UNWATCHED_NOTE = ("the epistemic-progress signal stopped; the harvest "
 #: cost a mission anything would be the gate this layer is forbidden to be.
 UNCHECKED_NOTE = ("the constraint checker stopped; the harvest continued and "
                   "the mission was not told")
+
+#: The seventh note, and **not a failure either**: a pack declares
+#: ``require_z3:`` constraints and this box has no solver, so those
+#: constraints are not checked.  Written once per run, naming the extra.
+#:
+#: This is where the missing solver is reported, and the argument for that is
+#: the floor rule.  Refusing the manifest instead — which this lane shipped
+#: for one commit — makes an optional wheel mandatory to *start* a mission,
+#: cognition on or off: a skill file with one ``require_z3:`` line would not
+#: load, ``--skill`` would refuse, and a layer that may never block an answer
+#: would be blocking one from outside itself.  A manifest's validity is a
+#: property of the manifest; what an extra buys is checking.
+UNSOLVED_NOTE = ("a constraint needs the solver and this box has none, so "
+                 "those constraints are not checked; the rest of the pack is, "
+                 "and the mission was not told")
 
 #: **Not a failure**: one line per constraint violation, the first time each
 #: ``(constraint, entity)`` pair is seen.  A note and not a kernel event,
@@ -1194,6 +1211,10 @@ class ShadowCognition:
         self.checked = 0
         #: How many times the checker raised.  Never more than one.
         self.check_failures = 0
+        #: Whether :data:`UNSOLVED_NOTE` has been written for this run.  Once
+        #: per run: a pack that needs a solver this box does not have is one
+        #: fact about the run, not one per step.
+        self._said_unsolved = False
         #: The ``(constraint, entity)`` pairs already noted in the log, so
         #: that a violation that persists for thirty steps is one line.
         #: Seeded on a resume from the log's own violation notes, because the
@@ -1451,6 +1472,7 @@ class ShadowCognition:
         """
         if not self.checking or not self.constraints:
             return
+        self._say_unsolved()
         try:
             found = check_constraints(self.state, self.constraints)
         except Exception as exc:                    # noqa: BLE001 - the point
@@ -1596,6 +1618,35 @@ class ShadowCognition:
             fsync_append(self.path, canonical({
                 NOTE_KEY: UNWATCHED_NOTE,
                 "error": f"{type(exc).__name__}: {exc}",
+                "written": self._written,
+            }))
+        except Exception:                           # pragma: no cover
+            pass
+
+    def _say_unsolved(self) -> None:
+        """Once per run: this pack wanted a solver and this box has none.
+
+        Said rather than refused, and said **once**.  A pack's ``require_z3:``
+        constraints go unchecked where the wheel is missing — which is an
+        ordinary undecidable answer, not a failure — and the run is otherwise
+        exactly the run it would have been, rules, goals, view and all.  The
+        note exists because the alternative to saying it is a log in which
+        half a pack is silent for a reason nobody can see, and the
+        alternative to *this* design is the one the review rejected: a
+        manifest that will not load without an optional wheel.
+
+        Best-effort, like every write here, and it never touches
+        :attr:`checking`: there is nothing wrong with this run.
+        """
+        if self._said_unsolved or not needs_solver(self.constraints) \
+                or have_z3():
+            return
+        self._said_unsolved = True
+        try:
+            fsync_append(self.path, canonical({
+                NOTE_KEY: UNSOLVED_NOTE,
+                "extra": SOLVER_EXTRA,
+                "constraints": list(solver_names(self.constraints)),
                 "written": self._written,
             }))
         except Exception:                           # pragma: no cover

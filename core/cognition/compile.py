@@ -172,7 +172,7 @@ __all__ = [
     "DROP_ORDER",
     "FACTS_HEADING", "FRONTIER_CAPPED", "HYPOTHESES_HEADING", "OMITTED",
     "OWED_OMITTED",
-    "OWED_HEADING", "SECTIONS", "TITLE", "UNGRADED",
+    "OWED_HEADING", "SECTIONS", "TITLE", "UNGRADED", "VIOLATIONS_OMITTED",
     "CompiledView", "band", "compile_view", "owed_line", "violation_line",
 ]
 
@@ -257,6 +257,27 @@ OWED_OMITTED = ("{what} not shown at this budget — nothing to ask for: the "
                 "what is not shown renders as soon as the lines above it "
                 "are resolved or there is room.")
 
+#: The clause a dropped **violation** leaves behind, beside the other two.
+#:
+#: A third sentence for a third truth, and the review is why there are three.
+#: A violation shares the CONFLICTS section with the store's own
+#: contradictions, so a dropped one used to leave :data:`OMITTED` behind —
+#: *ask the mission's result store, every receipt this run took is still in
+#: it, whole*.  That is false of a violation and expensively so: a violation
+#: is **computed** from a pack's arithmetic against the store, it is in no
+#: tool's output and no receipt, and a model that spent a call asking for one
+#: would learn only that the runtime was wrong about itself.
+#:
+#: What is true of it is what is true of an owed line — it is recomputed
+#: every step, nothing was lost, and it renders again as soon as there is
+#: room — so this says that, in its own clause rather than inside
+#: :data:`OWED_OMITTED`, because a reader counting owed lines should not find
+#: violations in the number.
+VIOLATIONS_OMITTED = ("{what} not shown at this budget — nothing to ask for: "
+                      "a constraint is checked against the store again at "
+                      "every step, and what is not shown renders as soon as "
+                      "there is room.")
+
 #: How each kind of line is counted, singular and plural, in one place so
 #: the header and the omission sentence cannot disagree about a word.
 KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
@@ -265,6 +286,7 @@ KINDS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "conflicts": ("conflict", "conflicts"),
     "owed": ("owed line", "owed lines"),
     "hypotheses": ("hypothesis", "hypotheses"),
+    "violations": ("constraint violation", "constraint violations"),
 })
 
 #: The line an :data:`OWED` section begins with when the kernel's own walk
@@ -521,6 +543,15 @@ class CompiledView:
     owed: int = 0
     hypotheses: int = 0
     #: And the same four, **dropped** for the budget.
+    #:
+    #: **Four, and no fifth pair for violations**, although the omission
+    #: sentence does tell them apart inside the conflicts count.  The counters
+    #: here are the *sections*, one spelling shared with :data:`SECTIONS`, and
+    #: a fifth pair that was not a section would be the shape this class is
+    #: arranged to avoid (``test_and_the_view_carries_the_same_four_twice_over``
+    #: states it).  A caller that wants to know how many of its violations
+    #: were dropped passed them in and can say ``min(conflicts_omitted,
+    #: len(violations))`` — which is exactly what the renderer does.
     facts_omitted: int = 0
     conflicts_omitted: int = 0
     owed_omitted: int = 0
@@ -617,8 +648,19 @@ def _cut_at(dropped: int, totals: Sequence[int]) -> _Cut:
                            for name, count in gone.items()})
 
 
+def _violations_lost(cut: "_Cut", violations: int) -> int:
+    """How many of the dropped conflict lines were violations.  One owner.
+
+    Violations are last in the CONFLICTS section and a section loses its
+    lines from the end, so the dropped ones are the violations first.  Both
+    the measurer and the renderer ask this, because a sentence measured under
+    one answer and rendered under another is a block one clause over its cap.
+    """
+    return min(cut.conflicts_out, int(violations))
+
+
 def _size(cut: _Cut, prefixes: Sequence[Sequence[int]],
-          receipts: Sequence[int]) -> int:
+          receipts: Sequence[int], violations: int = 0) -> int:
     """What :func:`_render` of *cut* will measure, without rendering it.
 
     The one thing in this module that knows the shape of the block without
@@ -661,7 +703,7 @@ def _size(cut: _Cut, prefixes: Sequence[Sequence[int]],
             continue
         total += len(heading) + prefix[kept]
         parts += 2 + kept
-    sentence = _omission(cut.out)
+    sentence = _omission(cut.out, _violations_lost(cut, violations))
     if sentence:
         total += len(sentence)
         parts += 2
@@ -707,7 +749,7 @@ def _floor(budget: int, totals: Sequence[int],
 
 def _choose(budget: int, totals: Sequence[int],
             prefixes: Sequence[Sequence[int]],
-            receipts: Sequence[int]) -> Optional[_Cut]:
+            receipts: Sequence[int], violations: int = 0) -> Optional[_Cut]:
     """The fewest lines to drop so that the block fits, or ``None``.
 
     **Brute force, computed instead of rendered.**  Every cut in the
@@ -730,12 +772,12 @@ def _choose(budget: int, totals: Sequence[int],
     """
     lines = sum(totals)
     nothing = _cut_at(0, totals)
-    if _size(nothing, prefixes, receipts) <= budget:
+    if _size(nothing, prefixes, receipts, violations) <= budget:
         return nothing
     for dropped in range(max(1, _floor(budget, totals, prefixes)),
                          lines + 1):
         cut = _cut_at(dropped, totals)
-        if _size(cut, prefixes, receipts) <= budget:
+        if _size(cut, prefixes, receipts, violations) <= budget:
             return cut
     return None
 
@@ -855,14 +897,15 @@ def compile_view(state: CognitiveState, *,
     totals = tuple(len(lines) for lines in sections)
     prefixes = tuple(_prefix(lines) for lines in sections)
 
-    cut = _choose(budget, totals, prefixes, receipts)
+    cut = _choose(budget, totals, prefixes, receipts, len(clash_rows))
     if cut is None:
         # Not even the header and the sentence saying what went will fit.
         # An empty view, not an over-budget one — a cap that is exceeded to
         # apologise for itself is not a cap.
         return CompiledView()
+    lost_rows = _violations_lost(cut, len(clash_rows))
     text = _render([lines[:kept] for lines, kept in zip(sections, cut.kept)],
-                   receipts[cut.facts], cut.out)
+                   receipts[cut.facts], cut.out, lost_rows)
     if len(text) > budget:
         # The arithmetic and the renderer disagreed, which is the one thing
         # a second reader of a shape can do wrong. No block, rather than a
@@ -901,36 +944,49 @@ def _head(receipts: int, facts: int, clashes: int) -> str:
             f"{_plural(clashes, 'conflicts')}.")
 
 
-def _omission(dropped: Sequence[int]) -> str:
+def _omission(dropped: Sequence[int], violations: int = 0) -> str:
     """The sentence a dropped line leaves behind, or ``""``.  One owner.
 
     *dropped* is per section, in :data:`SECTIONS` order — so the sentence
     names its losses in the order the block renders them, not in the order
-    it lost them.
+    it lost them.  *violations* is how many of the dropped **conflict** lines
+    were constraint violations rather than contradictions the store recorded;
+    they are last in that section and a section loses its lines from the end,
+    so they are also the first of it to go.
 
-    **Two clauses and not one**, on one line, because the two kinds of
-    loss have two different truths: what came off a receipt is still in
-    the result store (:data:`OMITTED`), and an owed line is in no store at
-    all (:data:`OWED_OMITTED`).  Each clause appears only when something
-    it is true of was dropped, so a block that lost only owed lines never
-    points at a store, and a block that lost no owed lines reads exactly
-    as it did before this existed.
+    **Three clauses and not one**, on one line, because three kinds of loss
+    have three different truths: what came off a receipt is still in the
+    result store (:data:`OMITTED`), an owed line is in no store at all
+    (:data:`OWED_OMITTED`), and a violation is computed rather than stored
+    (:data:`VIOLATIONS_OMITTED`).  Each clause appears only when something it
+    is true of was dropped, so a block that lost only owed lines never points
+    at a store, a block that lost no violations reads exactly as it did
+    before they existed, and no sentence ever sends a model to look for
+    something that was never there.
     """
-    lost = [(count, kind) for count, kind in zip(dropped, SECTIONS) if count]
+    # The violations come OUT of the conflicts count in place, so the losses
+    # stay in `SECTIONS` order: the sentence names them in the order the
+    # block renders them, which is a property a reader depends on and a
+    # re-ordering would quietly take away.
+    lost = [(count - (violations if kind == "conflicts" else 0), kind)
+            for count, kind in zip(dropped, SECTIONS)]
     stored = [f"+{_plural(count, kind)}"
-              for count, kind in lost if kind != "owed"]
+              for count, kind in lost if count > 0 and kind != "owed"]
     owed = [f"+{_plural(count, kind)}"
-            for count, kind in lost if kind == "owed"]
+            for count, kind in lost if count > 0 and kind == "owed"]
     clauses = []
     if stored:
         clauses.append(OMITTED.format(what=", ".join(stored)))
     if owed:
         clauses.append(OWED_OMITTED.format(what=", ".join(owed)))
+    if violations:
+        clauses.append(VIOLATIONS_OMITTED.format(
+            what=f"+{_plural(violations, 'violations')}"))
     return " ".join(clauses)
 
 
 def _render(sections: Sequence[Sequence[str]], receipts: int,
-            dropped: Sequence[int]) -> str:
+            dropped: Sequence[int], violations: int = 0) -> str:
     """The block, from lines that have already been chosen.
 
     One renderer, so what a caller measures is exactly the bytes the model
@@ -952,7 +1008,7 @@ def _render(sections: Sequence[Sequence[str]], receipts: int,
         out.append("")
         out.append(heading)
         out.extend(lines)
-    sentence = _omission(dropped)
+    sentence = _omission(dropped, violations)
     if sentence:
         out.append("")
         out.append(sentence)

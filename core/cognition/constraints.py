@@ -44,11 +44,21 @@ entity:
 ``+``, ``-``, ``*`` (one side of a ``*`` a constant), unary minus, parentheses
 and exactly one of ``< <= == != >= >``.  That is deliberately the *linear*
 fragment, and the bound is on the **language** rather than on the arithmetic:
-a linear comparison over bound values is decided exactly by decimal
-arithmetic with no dependency at all, which is what makes the feature work on
-a box that installed nothing.  The moment a constraint needs more, it says so
-in the file (``require_z3:``) rather than silently costing every deployment a
-solver.
+a linear comparison over bound values is decided **exactly**, in
+:class:`~fractions.Fraction` arithmetic that has no precision to exceed and
+no ambient state to inherit, with no dependency at all — which is what makes
+the feature work on a box that installed nothing.  The moment a constraint
+needs more, it says so in the file (``require_z3:``) rather than silently
+costing every deployment a solver.
+
+**A field is named the way an expression names one**, so the fields a
+constraint can reach are the ones whose names are Python identifiers.
+``total_s`` is a field; ``total-s`` is a *subtraction* of two fields, which
+binds nothing for the life of the pack and says nothing while it does — a
+real bound, stated here because the failure is silent.  Identifiers are
+NFKC-normalised on the way through :mod:`ast`, so a name written with a
+Unicode look-alike binds against its normalised spelling and not the bytes
+in the file.
 
 **Why a separate key and not a `solver:` flag beside `require:`.**  Three
 spellings were possible and only one of them leaves a manifest readable on
@@ -72,13 +82,21 @@ nothing, both is a constraint with two answers about which engine runs it,
 and both are refused at the door.
 
 **``require_z3:`` is an escalation and not a floor.**  It accepts the same
-surface syntax plus the two things the built-in evaluator will not do —
-products of two fields, and division — and it is decided by ``z3``: the
-solver works in exact rationals, and ``a / b == c`` is a question decimal
-arithmetic can only answer approximately.  A ``require_z3:`` constraint on a
-box without ``z3-solver`` is refused **at the manifest door**, naming the
-extra (:data:`SOLVER_EXTRA`), rather than loading and quietly checking
-nothing.
+surface syntax plus the two things the built-in language will not take —
+products of two fields, and division — and it is decided by ``z3``.
+
+**The extra buys CHECKING, never loadability.**  A manifest that writes
+``require_z3:`` is valid on every box: the grammar is read by the same
+``ast`` walk with or without the wheel, so the skill loads, the mission runs
+and the rest of the pack is checked exactly as it would have been.  Where
+the solver is missing those constraints are simply **not checked** — the
+ordinary undecidable answer, which is never a violation — and the shadow
+writes one note naming :data:`SOLVER_EXTRA` so a reader of the log knows
+which half of a pack was silent.  The first version of this lane refused at
+the manifest door instead, and the review caught what that meant: one
+optional line in a skill file made an optional wheel mandatory to *start* a
+mission, with cognition off, on a layer whose floor rule is that it can
+never block an answer.  A manifest's validity is a property of the manifest.
 
 **What v1 deliberately does NOT do**: solve.  Every value is bound before the
 solver is asked, so z3 is here as an exact decision procedure over a ground
@@ -112,7 +130,7 @@ from __future__ import annotations
 import ast
 import math
 from dataclasses import dataclass, field as dataclass_field
-from decimal import Decimal, localcontext
+from fractions import Fraction
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.cognition.state import CognitiveState
@@ -121,9 +139,10 @@ from core.cognition.types import (CognitionError, LIVE_STATUSES, Proposition,
 
 __all__ = [
     "CONSTRAINT_KEYS", "COMPARATORS", "ENGINES", "LINEAR", "MAX_EXPRESSION",
-    "NEGATIONS", "OVER_KEYS", "SOLVER_EXTRA", "VIOLATION_KIND", "Z3",
+    "NEGATIONS", "OVER_KEYS", "SOLVER_EXTRA", "SOLVER_TIMEOUT_MS",
+    "VIOLATION_KIND", "Z3",
     "Constraint", "ConstraintMalformed", "Violation", "check_constraints",
-    "have_z3", "parse_constraint",
+    "have_z3", "needs_solver", "parse_constraint", "solver_names",
 ]
 
 
@@ -160,6 +179,15 @@ SOLVER_EXTRA = "pip install 'judais-lobi[solver]'"
 #: :data:`~core.cognition.types.CONTRADICTION_KINDS`: no such contradiction
 #: is recorded in the store — see :func:`check_constraints`.
 VIOLATION_KIND = "constraint"
+
+#: How long the solver may think about one ground comparison, in
+#: milliseconds.  It runs on the mission's own thread inside
+#: :meth:`~core.runtime.cognition.ShadowCognition.close_step`, every value is
+#: bound before it is asked, and a bound comparison is decided in
+#: microseconds — so this can only fire on something pathological, and when
+#: it does the answer is ``unknown``, which is already the undecidable answer
+#: that yields no violation.  An advisory check may not hold up a step.
+SOLVER_TIMEOUT_MS = 1000
 
 #: The longest expression this parser will read.  A bound rather than a
 #: judgement about what is useful: ``ast.parse`` on a pathological string is
@@ -287,9 +315,18 @@ def have_z3() -> bool:
     effect a caller can observe, and the answer is the same for the life of
     a process.
 
+    **It is asked at CHECK time and never at the door.**  The first version
+    asked it inside :func:`parse_constraint`, and the review found what that
+    made true: a manifest carrying one ``require_z3:`` line would not LOAD on
+    a box without the wheel, so ``--skill`` refused and the mission never ran
+    — with cognition off, where this layer is supposed to be invisible.  A
+    manifest's validity is a property of the manifest, not of the box it is
+    read on.  So the grammar is read anywhere, the solver decides what it
+    can, and a constraint it cannot reach is the ordinary undecidable answer
+    with one note in the log naming the extra.
+
     A function rather than a module-level constant so a test can state both
-    worlds on one box: the refusal at the door has to be checked where the
-    solver *is* installed too.
+    worlds on one box.
     """
     try:
         import z3                                  # noqa: F401
@@ -300,6 +337,24 @@ def have_z3() -> bool:
         # a mission exactly what an extra exists to avoid.
         return False
     return True
+
+
+def solver_names(constraints: Sequence[Constraint]) -> Tuple[str, ...]:
+    """The names of the constraints only the solver can decide.
+
+    What the shadow puts in the log when it says — **once**, naming
+    :data:`SOLVER_EXTRA` — that part of a pack is going unchecked on this
+    box.  Here rather than in the runtime, beside the engine names it is
+    about: a caller that wrote ``c.engine == "z3"`` for itself would be the
+    second place that knows what the engines are called.
+    """
+    return tuple(constraint.name for constraint in constraints or ()
+                 if constraint.engine == Z3)
+
+
+def needs_solver(constraints: Sequence[Constraint]) -> bool:
+    """Whether any of *constraints* is one only the solver can decide."""
+    return bool(solver_names(constraints))
 
 
 # ── the door: one expression, read once ──────────────────────────────────────
@@ -341,12 +396,13 @@ def parse_constraint(name: Any, over: Any, require: Any = None,
     key = keys[0]
     engine = ENGINE_KEYS[key]
     text = declared[key] or ""
-    if engine == Z3 and not have_z3():
-        raise ConstraintMalformed(
-            f"constraint {label!r} uses `require_z3:`, which needs the "
-            f"solver: {SOLVER_EXTRA}. The built-in `require:` language "
-            f"({', '.join(sorted(NEGATIONS))} over `+ - *` on one "
-            f"entity's numeric fields) needs nothing")
+    # THE SOLVER IS NOT ASKED ABOUT HERE, and that is the review's correction.
+    # `_walk` reads the `require_z3:` grammar perfectly well with no z3
+    # installed — it is a walk of an `ast`, not an evaluation — so a manifest
+    # that writes one is valid everywhere and its constraints go unchecked
+    # where the wheel is missing. The alternative shipped for one commit and
+    # was a mission that would not START on a box without an optional extra,
+    # flags off, which is the floor rule broken from the outside.
     tree, fields = _parse_expression(text, label, engine)
     return Constraint(name=label, entity_var=var, require=text, engine=engine,
                       fields=fields, tree=tree)
@@ -483,7 +539,7 @@ def _walk(node: Any, label: str, engine: str, fields: List[str]) -> bool:
         if engine == LINEAR and symbol == "/":
             raise ConstraintMalformed(
                 f"constraint {label!r} divides, and `require:` is exact "
-                f"decimal arithmetic over `+ - *`. Division is the solver's: "
+                f"rational arithmetic over `+ - *`. Division is the solver's: "
                 f"write it as `require_z3:` ({SOLVER_EXTRA}), which decides "
                 f"it in rationals")
         left = _walk(node.left, label, engine, fields)
@@ -549,12 +605,18 @@ def check_constraints(state: CognitiveState,
             if bound is None:
                 continue
             values = {name: value for name, (value, _pid) in bound.items()}
-            holds = _holds(constraint, values)
+            # ONE evaluation, and the sentence is rendered from ITS numbers.
+            # The first version evaluated twice — once for the verdict and
+            # once inside the rendering — and the review found what two
+            # evaluations of one expression buy: the two ran under different
+            # arithmetic, so a block could state `X + 1 = X != X` in bytes
+            # while the verdict standing behind it was correct. One owner.
+            holds, left, right = _decide(constraint, values)
             if holds is None or holds:
                 continue
             out.append(Violation(
                 constraint=constraint.name, entity=entity,
-                detail=_detail(constraint, values),
+                detail=_detail(constraint, values, left, right),
                 require=constraint.require, engine=constraint.engine,
                 bindings=tuple((name, values[name])
                                for name in constraint.fields),
@@ -610,16 +672,30 @@ def _bind(held: Dict[str, List[Tuple[Any, str]]], fields: Sequence[str]
     return out
 
 
-def _number(value: Any) -> Optional[Decimal]:
-    """A kernel value as an exact decimal, or ``None``.
+def _number(value: Any) -> Optional[Fraction]:
+    """A kernel value as an **exact rational**, or ``None``.
 
-    ``Decimal`` for :func:`core.runtime.grounding.as_decimal`'s reason —
-    ``0.1 + 0.2`` arithmetic has no business deciding whether a run violated
-    what it declared — and spelled again here rather than imported, because
-    this package does not import :mod:`core.runtime` and never will.  The two
-    are not a divided fact: that one owns *what number is in this receipt
-    text*, this one owns *what arithmetic this kernel value is worth*, and
-    the values arriving here have already been through the first.
+    ``Fraction`` and not ``Decimal``, and the review is why.  The first
+    version worked in decimals under a fifty-digit context, which is exact
+    for everything a receipt plausibly carries and *silently rounds* for
+    everything else: ``settled = 10**60``, ``pending = 1``,
+    ``total = 10**60`` made ``settled + pending > total`` — which is true —
+    report a **violation**, because the sum rounded back onto the total.  A
+    fabricated violation is a line in the model's prompt saying a consistent
+    store disagrees with itself, which is worse than no checking at all.
+    Worse still, the context was ``localcontext()``, which *inherits* the
+    process's ambient ``decimal`` settings: a host that had set its own
+    precision — and this package ships behind an SDK front door — could flip
+    a verdict without touching a manifest.
+
+    ``Fraction`` has no precision to exceed and no ambient state to inherit.
+    Every value that reaches here is an ``int`` or a ``float``, and a float
+    is converted **through its decimal spelling** (``str``), not through its
+    binary value: ``0.1`` becomes exactly one tenth, which is the figure the
+    receipt stated, rather than the binary double nearest to it.  That is the
+    same choice :func:`core.runtime.grounding.as_decimal` makes for the same
+    reason, spelled again rather than imported because this package does not
+    import :mod:`core.runtime` and never will.
 
     ``bool`` is not a number: ``True == 1`` is a fact about Python and not a
     claim about a run, and the kernel keeps the two apart in
@@ -628,47 +704,49 @@ def _number(value: Any) -> Optional[Decimal]:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
-        return Decimal(value)
+        return Fraction(value)
     if isinstance(value, float):
-        try:
-            number = Decimal(str(value))
-        except (ArithmeticError, ValueError):      # pragma: no cover - NaN
+        if not math.isfinite(value):
             return None
-        return number if number.is_finite() else None
+        try:
+            return Fraction(str(value))
+        except (ValueError, OverflowError):        # pragma: no cover - guard
+            return None
     return None
 
 
-def _holds(constraint: Constraint, values: Dict[str, Any]) -> Optional[bool]:
-    """Whether *constraint* holds for these values; ``None`` if undecidable.
+def _decide(constraint: Constraint, values: Dict[str, Any]
+            ) -> Tuple[Optional[bool], Optional[Fraction], Optional[Fraction]]:
+    """``(holds, left, right)`` — the verdict **and** the numbers behind it.
 
-    ``None`` is the third answer and it is never a violation: an overflow, a
-    division by zero, a solver that returns ``unknown``.  A checker that
-    called any of those a violation would be reporting its own limits as the
-    run's fault, and this layer's whole discipline is that what it does not
-    know it does not claim.
+    One evaluation, and the sentence a model reads is rendered from *these*
+    two values rather than from a second walk of the same tree.  The review
+    found what the second walk cost: it ran outside the verdict's arithmetic,
+    so the block could print bytes that contradicted the verdict standing
+    behind them, and the compiled view's "same state, same bytes, in any
+    process" promise held only while the ambient context was the default.
+
+    ``holds`` is ``None`` where the expression is undecidable, and that is
+    never a violation: a division by zero, a value that is not a number, a
+    solver that answers ``unknown``.  A checker that called any of those a
+    violation would be reporting its own limits as the run's fault.
+
+    ``left``/``right`` are ``None`` for a ``require_z3:`` constraint: the
+    solver decided it, this module did not compute it, and printing a number
+    it did not use would be the second arithmetic all over again.
     """
     node = constraint.tree
     symbol = COMPARATORS[type(node.ops[0])]
     if constraint.engine == Z3:
-        return _holds_z3(node, symbol, values)
-    try:
-        with localcontext() as context:
-            # A bounded context, so that a pathological constant cannot turn
-            # one step's check into an unbounded computation. Fifty digits is
-            # exact for everything a receipt plausibly carries, and anything
-            # that overflows it raises — into the undecidable answer below
-            # rather than into a wrong one.
-            context.prec = 50
-            left = _decimal(node.left, values)
-            right = _decimal(node.comparators[0], values)
-            if left is None or right is None:
-                return None
-            return _compare(symbol, left, right)
-    except (ArithmeticError, ValueError, TypeError):   # pragma: no cover
-        return None
+        return _holds_z3(node, symbol, values), None, None
+    left = _value_of(node.left, values)
+    right = _value_of(node.comparators[0], values)
+    if left is None or right is None:
+        return None, left, right
+    return _compare(symbol, left, right), left, right
 
 
-def _compare(symbol: str, left: Decimal, right: Decimal) -> bool:
+def _compare(symbol: str, left: Fraction, right: Fraction) -> bool:
     if symbol == "<":
         return left < right
     if symbol == "<=":
@@ -682,27 +760,31 @@ def _compare(symbol: str, left: Decimal, right: Decimal) -> bool:
     return left >= right
 
 
-def _decimal(node: Any, values: Dict[str, Any]) -> Optional[Decimal]:
-    """One operand subtree as a decimal, or ``None`` where it will not be.
+def _value_of(node: Any, values: Dict[str, Any]) -> Optional[Fraction]:
+    """One operand subtree as an exact rational, or ``None``.
 
-    Division is here as well as in the solver path because the solver path
-    needs it: a divisor of zero has no value, and asking z3 about an
-    expression that divides by zero asks it about its own underspecified
-    semantics rather than about the run.  So the pre-check that finds a zero
-    divisor is this walk, and a ``require:`` expression never reaches the
-    branch at all — its language has no ``/``.
+    No precision, no context, no rounding: every operation here is exact for
+    every input the store can hold, so the only way to get ``None`` out of it
+    is a term that is genuinely not a number — a missing or non-numeric
+    binding, or a division whose divisor is zero.
+
+    Division is in this walk although the ``require:`` language has no ``/``,
+    because the solver path needs it: a divisor of zero has no value, and
+    asking z3 about an expression that divides by zero asks it about its own
+    underspecified semantics rather than about the run.  This walk is that
+    pre-check.
     """
     if isinstance(node, ast.Constant):
         return _number(node.value)
     if isinstance(node, ast.Name):
         return _number(values.get(node.id))
     if isinstance(node, ast.UnaryOp):
-        inner = _decimal(node.operand, values)
+        inner = _value_of(node.operand, values)
         if inner is None:
             return None
         return -inner if isinstance(node.op, ast.USub) else inner
-    left = _decimal(node.left, values)
-    right = _decimal(node.right, values)
+    left = _value_of(node.left, values)
+    right = _value_of(node.right, values)
     if left is None or right is None:
         return None
     symbol = _OPERATORS[type(node.op)][0]
@@ -726,29 +808,49 @@ def _holds_z3(node: Any, symbol: str,
     neither ``True`` nor ``False`` would have to be interpreted here, which is
     the second opinion this whole module is arranged to avoid.  Every variable
     is bound before the call, so the question is ground and the answer is
-    exact — z3 works in rationals, which is what ``a / b == c`` needs and what
-    decimal arithmetic cannot give.
+    exact.  What the escalation buys is not exactness — the built-in
+    evaluator is exact too — but **reach**: division and products of two
+    fields, which the linear language deliberately does not take.
 
-    Anything the solver will not answer — ``unknown``, or a divisor that is
-    zero, which is underspecified in its semantics and not a fact about the
-    run — is ``None``: undecidable, never a violation.
+    Anything the solver will not answer — ``unknown``, a solver that is not
+    installed at all, or a divisor that is zero, which is underspecified in
+    its semantics and not a fact about the run — is ``None``: undecidable,
+    never a violation.  **A missing solver is exactly that case**, and it is
+    the whole of what the ``[solver]`` extra costs a deployment that does not
+    have it: these constraints are not checked, the rest of the pack is, and
+    :data:`core.runtime.cognition.UNSOLVED_NOTE` says so once in the log.
     """
-    if _decimal(node.left, values) is None \
-            or _decimal(node.comparators[0], values) is None:
-        # The zero-divisor (and overflow) pre-check, in the walk that already
-        # knows the arithmetic. z3 would answer an underspecified question.
+    try:
+        # The zero-divisor pre-check, in the walk that already knows the
+        # arithmetic — z3 would answer an underspecified question. Wrapped
+        # like every other arithmetic here: a walk that raises is a question
+        # this module could not put, which is the undecidable answer and not
+        # an exception a step has to survive.
+        if _value_of(node.left, values) is None \
+                or _value_of(node.comparators[0], values) is None:
+            return None
+    except (ArithmeticError, ValueError, TypeError, OverflowError,
+            RecursionError):                       # pragma: no cover - guard
         return None
     try:
         import z3
-    except Exception:                              # pragma: no cover - env
-        # Refused at the door, so reaching here means the solver went away
-        # between load and step. Undecidable, and the mission never learns.
+    except Exception:
+        # Not installed, or installed broken. The manifest loaded anyway —
+        # a manifest's validity is not a property of the box — so this is a
+        # perfectly ordinary run of a pack whose solver constraints go
+        # unchecked.
         return None
     try:
         left = _z3_term(z3, node.left, values)
         right = _z3_term(z3, node.comparators[0], values)
         claim = _z3_compare(symbol, left, right)
         solver = z3.Solver()
+        # A WALL CLOCK BOUND, because this runs on the mission's own thread
+        # inside `close_step`. Ground arithmetic is decided in microseconds,
+        # so the timeout can only ever fire on something pathological — and
+        # when it does the answer is `unknown`, which is already the
+        # undecidable answer. An advisory check may not hold up a step.
+        solver.set("timeout", SOLVER_TIMEOUT_MS)
         solver.add(z3.Not(claim))
         answer = solver.check()
         if answer == z3.unsat:
@@ -763,14 +865,16 @@ def _holds_z3(node: Any, symbol: str,
 def _z3_term(z3: Any, node: Any, values: Dict[str, Any]) -> Any:
     """One operand subtree as a z3 rational term.
 
-    Constants and bound values become ``RealVal`` **from their decimal
-    spelling**, which is exact: ``RealVal("0.1")`` is one tenth, where a
-    float is not.  That exactness is the reason a pack escalates here at all.
+    Constants and bound values become ``RatVal`` from the exact
+    :class:`~fractions.Fraction` this module already read them as — numerator
+    and denominator, with no decimal spelling in between — so the solver is
+    given the same number the linear evaluator would have used.  That
+    exactness is the reason a pack escalates here at all.
     """
     if isinstance(node, ast.Constant):
-        return z3.RealVal(str(_number(node.value)))
+        return _z3_number(z3, _number(node.value))
     if isinstance(node, ast.Name):
-        return z3.RealVal(str(_number(values.get(node.id))))
+        return _z3_number(z3, _number(values.get(node.id)))
     if isinstance(node, ast.UnaryOp):
         inner = _z3_term(z3, node.operand, values)
         return -inner if isinstance(node.op, ast.USub) else inner
@@ -784,6 +888,11 @@ def _z3_term(z3: Any, node: Any, values: Dict[str, Any]) -> Any:
     if symbol == "*":
         return left * right
     return left / right
+
+
+def _z3_number(z3: Any, number: Optional[Fraction]) -> Any:
+    """One exact rational as a z3 term.  One owner of that conversion."""
+    return z3.RatVal(number.numerator, number.denominator)
 
 
 def _z3_compare(symbol: str, left: Any, right: Any) -> Any:
@@ -803,7 +912,9 @@ def _z3_compare(symbol: str, left: Any, right: Any) -> Any:
 # ── what a violation says ────────────────────────────────────────────────────
 
 
-def _detail(constraint: Constraint, values: Dict[str, Any]) -> str:
+def _detail(constraint: Constraint, values: Dict[str, Any],
+            left: Optional[Fraction] = None,
+            right: Optional[Fraction] = None) -> str:
     """The arithmetic that failed, as a sentence about what IS true.
 
     ``settled 204 + pending 631 = 835 != total 631`` — each field beside the
@@ -818,6 +929,11 @@ def _detail(constraint: Constraint, values: Dict[str, Any]) -> str:
     decided it is a rational the solver held and not one this module
     computed, and a sentence that printed an approximation of it would be
     the module claiming a figure it did not use.
+
+    *left* and *right* are the values :func:`_decide` actually compared.
+    They are passed in rather than recomputed: two walks of one tree is two
+    arithmetics, and the day they disagree the block prints one number while
+    the verdict rests on another.
     """
     if constraint.engine == Z3:
         held = ", ".join(f"{name} {_show(values.get(name))}"
@@ -825,22 +941,36 @@ def _detail(constraint: Constraint, values: Dict[str, Any]) -> str:
         return f"`{constraint.require}` is false where {held}"
     node = constraint.tree
     symbol = COMPARATORS[type(node.ops[0])]
-    return (f"{_side(node.left, values)} {NEGATIONS[symbol]} "
-            f"{_side(node.comparators[0], values)}")
+    return (f"{_side(node.left, values, left)} {NEGATIONS[symbol]} "
+            f"{_side(node.comparators[0], values, right)}")
 
 
-def _side(node: Any, values: Dict[str, Any]) -> str:
-    """One side of the comparison, with its value where it has computed one.
+def _is_bare(node: Any) -> bool:
+    """Whether *node* renders as a thing that already shows its own value.
+
+    A field, a constant, or a sign in front of either: ``total 631``,
+    ``100``, ``-5``.  Those need no ``= …`` after them, and the review caught
+    what the first version's ``isinstance(node, (Name, Constant))`` missed —
+    a negative literal rendered as ``-5 = -5``, which is a block saying one
+    thing twice and inviting a reader to look for the difference.
+    """
+    if isinstance(node, (ast.Name, ast.Constant)):
+        return True
+    return isinstance(node, ast.UnaryOp) and _is_bare(node.operand)
+
+
+def _side(node: Any, values: Dict[str, Any],
+          value: Optional[Fraction]) -> str:
+    """One side of the comparison, with the value the verdict used.
 
     A bare field or a bare constant renders as itself — ``total 631``, ``100``
     — because ``total 631 = 631`` says one thing twice.  Anything with an
     operator in it renders as the arithmetic and then what it came to.
     """
     text = _expression(node, values, 0)
-    if isinstance(node, (ast.Name, ast.Constant)):
+    if _is_bare(node) or value is None:
         return text
-    value = _decimal(node, values)
-    return text if value is None else f"{text} = {_show_decimal(value)}"
+    return f"{text} = {_show_number(value)}"
 
 
 def _expression(node: Any, values: Dict[str, Any], precedence: int) -> str:
@@ -859,18 +989,57 @@ def _expression(node: Any, values: Dict[str, Any], precedence: int) -> str:
 
 
 def _show(value: Any) -> str:
-    """A number as the file and the receipt spell it."""
+    """A number as the file and the receipt spell it.
+
+    Total, which is the point: this runs while a line of model input is being
+    built, and an integer big enough to trip CPython's decimal-conversion
+    limit (``sys.set_int_max_str_digits``, 4,300 digits by default) raises
+    ``ValueError`` out of ``str`` itself.  A store CAN hold one — the harvest
+    takes whatever figure a receipt carried — so the limit is described
+    rather than hit.  (:func:`core.cognition.compile._value` has the same
+    exposure through ``json.dumps`` and is not this lane's file; it is
+    written down in the lane report rather than fixed here in passing.)
+    """
     if isinstance(value, bool) or value is None:    # pragma: no cover - bound
         return repr(value)
-    if isinstance(value, float) and value.is_integer():
-        # `121.0` and not `121`: the store's fidelity rule is that a figure
-        # renders as the type it was asserted under, which is the same
-        # argument `core.cognition.compile._value` makes with `json.dumps`.
-        return repr(value)
-    return str(value)
+    try:
+        if isinstance(value, float) and value.is_integer():
+            # `121.0` and not `121`: the store's fidelity rule is that a
+            # figure renders as the type it was asserted under, which is the
+            # same argument `core.cognition.compile._value` makes with
+            # `json.dumps`.
+            return repr(value)
+        return str(value)
+    except ValueError:
+        return f"a {value.bit_length()}-digit-class integer"
 
 
-def _show_decimal(value: Decimal) -> str:
-    """A computed decimal, without an exponent for the sizes in reach."""
-    text = format(value.normalize(), "f")
-    return text
+def _show_number(value: Fraction) -> str:
+    """A computed rational, as the decimal it exactly is.
+
+    Every value the ``require:`` language can produce is a sum, difference or
+    product of decimals, so its denominator has no prime factor but two and
+    five and it has an **exact** finite decimal expansion — which this writes
+    out, rather than dividing into a float and printing something close to
+    it.  A ratio that is not decimal (only ``require_z3:``'s division can
+    make one, and that engine renders its own sentence) falls back to
+    ``n/d``: an unfamiliar rendering is better than a wrong number.
+    """
+    numerator, denominator = value.numerator, value.denominator
+    if denominator == 1:
+        return _show(numerator)
+    twos = fives = 0
+    rest = denominator
+    while rest % 2 == 0:
+        rest //= 2
+        twos += 1
+    while rest % 5 == 0:
+        rest //= 5
+        fives += 1
+    if rest != 1:                                   # pragma: no cover - z3 only
+        return f"{_show(numerator)}/{_show(denominator)}"
+    places = max(twos, fives)
+    scaled = value.numerator * 10 ** places // value.denominator
+    sign = "-" if scaled < 0 else ""
+    digits = _show(abs(scaled)).rjust(places + 1, "0")
+    return f"{sign}{digits[:-places]}.{digits[-places:]}"
