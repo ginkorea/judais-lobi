@@ -1442,14 +1442,76 @@ skills could mean different things by one word — an identifier's kind, a
 product's chain, a fallback shape, a plane default — they must agree or the
 composition is refused naming both skills. The merged block does not depend
 on the order the skills were listed in, down to which spelling of a tool is
-kept: entries are ordered by tool identity and named by the lexically first
-spelling that was declared.
+kept: entries are ordered by tool identity and named by the first spelling
+that was declared **by `(tool_key, name)`** — the same order the grouping
+itself runs in, which is not the lexical order of the names (`runs_get`
+comes before `Z.runs_get`, because the identity is compared before the
+word). One consequence, if you declare one tool under two namespaces *and*
+its bare name: all three pool into one entry named by that first spelling,
+and a run that offers only the other namespace will not find it. **Name a
+tool as your run offers it** and none of this can reach you.
 
 **What it never does.** Declarations *steer*: they are read by the runtime
 and they reach no prompt, no call and no answer. A declared output is your
 claim about your plane, never evidence of what a call did return — the
 receipt remains the only evidence — and a declaration that turns out to be
 wrong costs a hint, never a fact.
+
+**What an `identifiers` declaration buys, with `--cognition` on.** This is
+the one verb that changes what the store holds, and it is worth being exact
+about what changes:
+
+* the declared key's **string value is harvested** — the one exception to
+  the rule that a string is not a figure, and it is narrow: a key nobody
+  declared is still dropped, because a string that looks like an identifier
+  is not one. The path is walked from the root of the payload, so
+  `data.job_id` never reads a `job_id` somewhere else in your envelope. A
+  key holding *two* different values in one receipt identifies nothing and
+  is counted — **and a `[]` path is such a key in v1**: `source_assets[]`
+  binds only where the list holds exactly one element, because three
+  elements are three *distinct subjects* and one link per element is a
+  v1.1 lift rather than something to guess at. A longer list contributes
+  provenance and no join, and nothing is silently half-read;
+* the receipt is **linked** to the subject it names (`job:jl-731`), and the
+  link is a claim with two premises — the receipt, and your declaration —
+  recorded at `source` authority, which is the weaker of the two;
+* the store **projects** that receipt's facts onto the subject, so two
+  receipts naming one job join, a field you declared `one` in a `cognition:`
+  block finally contests *at the subject* (where two tools really do
+  disagree) while both receipts stay live, and every projected fact still
+  proves down to the call it was read from;
+* with `--compiled-context`, the block shows the figure **once**, at the
+  subject, with the receipt handle folded into the line — `job:jl-731 ·
+  state = "completed"  [sourced · via mcp.job_status#r5]` — and a contest at
+  a subject renders both calls on the CONFLICTS line. `establishes` and
+  `produces` add one clause to an OWED line naming what your plane says
+  would answer it.
+
+**Declare `cardinality: one` on a field your tools *establish*, not on an
+identifier field.** `one` turns on collision detection, and it is worth
+having exactly where two calls can give one subject two different answers —
+`state`, `verdict`, `pct`. An identifier is not that field: every receipt
+that names `job:jl-731` says its id is `jl-731`, so `one` on `job_id` can
+never catch a real disagreement, and on a plane whose tools name several
+kinds of subject it is the declaration most likely to produce a *false*
+one. The runtime guards the worst of it — a receipt that names **two kinds**
+of subject writes no identifier fact at all, so one kind's id can never land
+on another kind's subject — and the honest reading is that `one` belongs on
+what a call settles, not on what it points at.
+
+The guard has a stated price. A receipt that returns **nothing but handles
+of several kinds** — no figures at all — is not linked: it holds no fact for
+a link to be a claim about, and the alternative was manufacturing a
+cross-kind one. Its subjects are not lost, because the call that later
+establishes something about one of them links and projects normally; that is
+the two-phase flow this design is built on. A run's counters say how often
+it happened.
+
+There is no `unlink`. A wrong `identifiers` declaration is wrong for every
+receipt of that tool — links are made deterministically, from declarations
+only, and nothing here guesses from value coincidence — so it is a file you
+fix, not a state somebody has to repair. That is the trade this version
+takes deliberately, and the reason model-proposed links are not in it.
 
 **Writing the first draft of this block, and of `cognition:` above.** Both
 blocks cost an afternoon with your plane the first time, so there is a tool

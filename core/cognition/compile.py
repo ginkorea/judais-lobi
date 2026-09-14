@@ -41,8 +41,23 @@ the writes rather than of who looked.
    the band cannot say is that there is no receipt behind this line at
    all.  Its receipts are its premises'; the heading says so and
    :data:`DERIVED` argues why they are not listed on it.
+
+   **Subjects fold.**  Where a platform declared which fields identify
+   what (``core.runtime.declarations``) the runtime links receipts to the
+   subject they are about, and the kernel projects their facts onto it —
+   so one figure is in the store twice, at the receipt and at the
+   subject.  It is shown **once, at the subject**, with the receipt handle
+   on the line: ``job:jl-731 · state = "completed"  [sourced · via
+   mcp.job_status#r5]``.  Every line still carries its citation, the
+   budget pays once for one figure, and the line a rule joins on and a
+   goal is about is the one the model reads.  :func:`_folding` owns which
+   receipt lines that suppresses and the two cases where it suppresses
+   none.
 2. **CONFLICTS** — every *open* contradiction, one line, **both sides
-   named, each with its handle**.  The owner's rule of 13 September 2026:
+   named, each with its handle** — and where the two sides are one
+   subject, each side names the call it was read from, which is what
+   turns ``job:jl-731 · state = x ⇄ job:jl-731 · state = y`` into two
+   tools disagreeing.  The owner's rule of 13 September 2026:
    surfacing both sides beats silence, and a compiled view that quietly
    picked a side would be the laundering the kernel's walls exist to stop.
    Settled rows are history and are not here — see
@@ -72,7 +87,13 @@ the writes rather than of who looked.
    reader's eye lands on first is the cheapest true thing to do next.
    Empty frontier, no section: a run with no goals loaded is not told
    that nothing is owed, it is told nothing, which is the same
-   no-empty-headings rule the other three keep.
+   no-empty-headings rule the other three keep.  A caller that passes
+   *resolvers* — the plane's ``establishes``/``produces`` declarations,
+   read by the runtime and handed over as a plain mapping because this
+   module imports nothing from :mod:`core.runtime` — adds one clause
+   naming what the plane says would answer the line
+   (:data:`RESOLVABLE`).  Still state: a declaration is the platform's
+   claim about its own tools, and naming one is not asking for it.
 4. **HYPOTHESES** — what a model claimed, marked as claimed and never
    mixed in with the facts, and **only if the budget has room left after
    the facts and the conflicts**.  A guess crowding out a receipt is the
@@ -162,17 +183,18 @@ from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from core.cognition.constraints import VIOLATION_KIND, Violation
-from core.cognition.state import CognitiveState
+from core.cognition.state import PROJECTION_RULE_ID, CognitiveState
 from core.cognition.types import (EvidenceAuthority, LIVE_STATUSES,
                                   Obligation, ObligationState, Proposition,
-                                  PropositionStatus, Support)
+                                  PropositionStatus, Support, subject_parts)
 
 __all__ = [
     "BANDS", "BUDGET_CHARS", "CONFLICTS_HEADING", "DERIVED", "DISPUTED",
     "DROP_ORDER",
-    "FACTS_HEADING", "FRONTIER_CAPPED", "HYPOTHESES_HEADING", "OMITTED",
-    "OWED_OMITTED",
-    "OWED_HEADING", "SECTIONS", "TITLE", "UNGRADED", "VIOLATIONS_OMITTED",
+    "FACTS_HEADING", "FRONTIER_CAPPED", "HYPOTHESES_HEADING", "MORE",
+    "OMITTED", "OWED_OMITTED",
+    "OWED_HEADING", "RESOLVABLE", "RESOLVER_CAP", "SECTIONS", "TITLE",
+    "UNGRADED", "VIA", "VIA_CAP", "VIOLATIONS_OMITTED",
     "CompiledView", "band", "compile_view", "owed_line", "violation_line",
 ]
 
@@ -375,6 +397,76 @@ DISPUTED = "disputed"
 #: Phase 19's measurement may buy; it is not a thing to guess at.
 DERIVED = "derived"
 
+#: What a **subject** line says instead of :data:`DERIVED`: the receipt (or
+#: receipts) its figure was read off, folded into the line that shows it
+#: once.
+#:
+#: ``job:jl-731 · state = "completed"  [sourced · via mcp.job_status#r5]``.
+#:
+#: A subject fact is derived — the store concluded it from a receipt fact and
+#: a link — and by :data:`DERIVED`'s own argument a derived line must not
+#: impersonate a receipt.  The argument turns on a fact about *rule*
+#: conclusions: their premises are other claims, they are unbounded in
+#: number, and naming their receipts would need a second citation vocabulary
+#: (evidence locators) beside the handles every other line prints.  A
+#: projection is the one derivation where none of that holds.  It has exactly
+#: one premise, the premise is one receipt fact saying this field and this
+#: value, and the citation is a **handle** — the same word, in the same
+#: vocabulary, that the receipt's own line would have printed.  So the line
+#: names it, and the receipt's duplicate line is suppressed rather than
+#: printed twice at two entities: the budget pays once for one figure, and
+#: the citation discipline is kept rather than apologised for.
+#:
+#: The word ``derived`` is therefore **not** added to a folded line.  It
+#: exists to say *there is no receipt behind this*; there is one, and it is
+#: on the line.
+#:
+#: **And only where there really is one.**  A projection's premise can
+#: itself be a conclusion — a pack rule firing at the receipt level — and
+#: naming the receipt for a figure it never returned would be this module
+#: writing, in its own voice, the fabricated attribution the grounding
+#: checks exist to catch in the model's.  :func:`_via` names a handle only
+#: for an un-derived premise, and a claim with none falls back to
+#: :data:`DERIVED`, which is then simply true.
+VIA = "via "
+
+#: How many receipt handles a folded line names before it stops naming them
+#: — and, because the two decisions have to agree, **the most a line may
+#: fold**.  Beyond it the subject line still renders with its first
+#: :data:`VIA_CAP` handles and a :data:`MORE` tail, and the receipts' own
+#: lines are **kept**: a fold is only honest while the line that replaces
+#: those lines can still name every one of them, and a subject agreed by
+#: twenty receipts is exactly where a reader needs the list it is not being
+#: shown.  Three, because that is a sentence a reader takes in at a glance
+#: and is more receipts than any real agreement this store has seen.
+VIA_CAP = 3
+
+#: The tail a capped list of names ends in — one spelling for the two lists
+#: that have a cap (:data:`VIA_CAP`, :data:`RESOLVER_CAP`), so a reader
+#: meets one shape and a test matches one string.
+MORE = "+{count} more"
+
+#: What an OWED line says about the calls that could answer it, from the
+#: plane's ``establishes``/``produces`` declarations.
+#:
+#: ``owed: (?j, label_set, ?a) — for goal g1, open — resolvable via:
+#: job_status``.
+#:
+#: **State, like the rest of the line** (see :func:`owed_line`): it names
+#: the tools that *declare* they can establish this field, which is a fact
+#: about the plane, not an instruction to call one.  The declaration may be
+#: wrong — a plane's schema can drift from its behaviour — and that is
+#: exactly why this is a hint in a line of state rather than anything the
+#: runtime acts on: a wrong ``establishes`` costs one phrase, never a call
+#: and never a fact.
+RESOLVABLE = " — resolvable via: "
+
+#: How many tools a :data:`RESOLVABLE` clause names before the
+#: :data:`MORE` tail.  Same argument as :data:`VIA_CAP` and a different
+#: number is not worth a second constant: an owed line whose hint is longer
+#: than the obligation is a line that buries what it is about.
+RESOLVER_CAP = 3
+
 #: The separator between an entity and its field on a fact line, and
 #: between the two sides of a conflict.  Constants because the corpus and
 #: three tests read them.
@@ -415,6 +507,57 @@ def _value(value: Any) -> str:
         return repr(value)
 
 
+@dataclass(frozen=True)
+class _Projection:
+    """What one subject claim was projected from — see :func:`_via`."""
+
+    #: The receipt handles the line may name: the entities of premises the
+    #: store **read** rather than concluded.
+    handles: Tuple[str, ...] = ()
+    #: The claims whose own line the subject's line replaces.  A subset of
+    #: :attr:`premises`: a derived premise is never folded away, because
+    #: the subject's line is not saying what that premise says.
+    facts: Tuple[str, ...] = ()
+    #: Every projection premise, derived ones included — the population the
+    #: header counts receipts through.
+    premises: Tuple[str, ...] = ()
+
+
+def _entity(name: Any) -> str:
+    """An entity name as a line may print it — **visibly**, or escaped.
+
+    An entity is ASCII in every deployment this framework has met: a tool
+    name and a handle on one side of the ``#``, and on the other a subject
+    spelled ``kind:value`` out of a *payload string a platform declared to
+    be an identity*.  That last half is the new one, and it is the reason
+    this function exists: a value carrying a zero-width joiner, a Cyrillic
+    ``а`` or a right-to-left override renders as a line **visually
+    identical** to another subject's, and a reader comparing two lines of a
+    CONFLICTS section would be deciding about identity on a rendering that
+    cannot show the difference.  The kernel refuses whitespace and control
+    characters in a subject and nothing more — no store can own a table of
+    confusables — so the view says it here, where the reading happens.
+
+    Printable ASCII passes through untouched, which is every line this
+    block has ever rendered.  Anything else is rendered through
+    :func:`json.dumps` with ``ensure_ascii``: the confusable becomes a
+    ``\\uXXXX`` escape inside quotes, so two lines that looked the same
+    stop looking the same.  Ugly on purpose, and only where it matters.
+
+    **Values are not escaped**, and that bound is deliberate rather than
+    forgotten: ``_value`` renders with ``ensure_ascii=False`` because a
+    figure's *type* is what that rendering protects and a payload's prose
+    is not an identity anybody joins on.  A confusable inside a value can
+    still mislead a reader; what it cannot do is make two different
+    subjects look like one, which is the failure this lane introduced the
+    surface for.
+    """
+    text = str(name)
+    if all(" " <= char <= "~" for char in text):
+        return text
+    return json.dumps(text, ensure_ascii=True)
+
+
 def _claim(prop: Proposition) -> str:
     """One proposition as ``entity · field = value``, or as its text.
 
@@ -428,32 +571,184 @@ def _claim(prop: Proposition) -> str:
     if triple is None:
         return f"“{prop.text}”"
     entity, field_, value = triple
-    text = f"{entity}{FIELD_SEP}{field_} = {_value(value)}"
+    text = f"{_entity(entity)}{FIELD_SEP}{field_} = {_value(value)}"
     return text if prop.text is None else f"{text} “{prop.text}”"
 
 
-def _fact_line(prop: Proposition, support: Support) -> str:
+def _named(names: Sequence[str], cap: int) -> str:
+    """*names*, up to *cap* of them, and how many did not fit.
+
+    The one owner of a capped list of names, for the two lines that have
+    one: a folded fact's receipts (:data:`VIA_CAP`) and an owed line's
+    resolvers (:data:`RESOLVER_CAP`).  Two spellings of "and three more"
+    is the shape where a reader learns one of them and misreads the other.
+    """
+    shown = list(names[:cap])
+    rest = len(names) - len(shown)
+    if rest > 0:
+        shown.append(MORE.format(count=rest))
+    return ", ".join(shown)
+
+
+def _via(state: CognitiveState, prop: Proposition) -> "_Projection":
+    """What a subject claim was projected from: handles, folds, premises.
+
+    Three readings of one walk because they are one fact about the claim:
+    a subject claim the store derived through
+    :data:`~core.cognition.state.PROJECTION_RULE_ID` rests on one claim per
+    proof, and *which receipts may be named*, *which lines the subject's
+    line therefore replaces*, and *which claims the header counts through*
+    are that same list read three ways.  One owner, so a folded line and
+    the receipt line it replaces can never disagree about what was folded.
+
+    **A handle is named only where the premise is itself un-derived**, and
+    this is the line between a citation and a fabrication.  A pack's rule
+    can conclude a *receipt-level* claim — ``job_status#r5 · fast = true``
+    out of ``elapsed < 10`` — and that conclusion projects like any other
+    live triple.  Naming the receipt on the subject's line would say the
+    call returned a ``fast`` field it never returned: the framework
+    generating, in its own voice, exactly the attribution the grounding
+    checks exist to catch in the model's.  So a projection whose premise
+    is ``DERIVED`` names nothing, the line falls back to :data:`DERIVED`
+    (there is no receipt behind it, which is true), and the premise keeps
+    its own line saying the same thing one level down.
+
+    ``premises`` keeps **every** projection premise, derived ones included,
+    because the header's question is different: how many receipts does this
+    line rest on.  A derived premise's own leaves are the receipts under
+    *its* proof, which is the honest count, and counting the projection's
+    own leaves instead would count the link's declaration as a call.
+
+    Handles are **sorted**.  The walk order is the store's history — which
+    proof was recorded first — and a line whose word order depends on which
+    of two identical receipts arrived first is a line that renders two ways
+    for one belief.  Sorting costs nothing and makes the line a function of
+    the claim.
+    """
+    if prop.entity is None or subject_parts(prop.entity) is None:
+        return _Projection()
+    handles: List[str] = []
+    facts: List[str] = []
+    premises: List[str] = []
+    for derivation in state.derivations_for(prop.id):
+        if derivation.rule != PROJECTION_RULE_ID:
+            continue
+        for pid in derivation.premises:
+            if pid not in premises:
+                premises.append(pid)
+            source = state.proposition(pid)
+            if source.status is PropositionStatus.DERIVED:
+                # A conclusion, not a reading. The receipt never said it.
+                continue
+            if source.entity and source.entity not in handles:
+                handles.append(source.entity)
+                facts.append(pid)
+    return _Projection(handles=tuple(sorted(handles)), facts=tuple(facts),
+                       premises=tuple(premises))
+
+
+def _via_mark(handles: Sequence[str]) -> str:
+    """``via mcp.job_status#r5`` — the one spelling, for both sections.
+
+    A fact line carries it as a mark inside the brackets and a conflict
+    line carries it beside each side, and both come through here: the
+    finding-D pair (two status tools, one job, two answers) is only worth
+    rendering if the two sides say **which call** said each, in the same
+    words the FACTS section uses for the same thing.
+    """
+    return VIA + _named([_entity(handle) for handle in handles], VIA_CAP)
+
+
+def _fact_line(prop: Proposition, support: Support,
+               handles: Sequence[str] = ()) -> str:
     """One live proposition as one line, with its band and its marks.
 
-    Band first — it is the thing a reader decides on — then
-    :data:`DERIVED` where the store concluded this rather than read it,
-    then :data:`DISPUTED` where something contradicts it.  The order is
+    Band first — it is the thing a reader decides on — then where it came
+    from (:data:`VIA` for a subject fact folded out of its receipts,
+    :data:`DERIVED` for a conclusion that has no receipt to name), then
+    :data:`DISPUTED` where something contradicts it.  The order is
     strongest claim about the line to weakest: what it is worth, where it
     came from, and who disagrees.
+
+    A projected line takes ``via`` **instead of** ``derived``, and
+    :data:`VIA` argues why: the word exists to say there is no receipt
+    behind the line, and here the receipt is on it.  A subject claim that
+    is *also* concluded by a pack's rule is still named by its receipts —
+    the projection is a true account of where the figure was read — and
+    the rule's proof stays one ``prove`` away, as it is for every other
+    line in this section.
     """
     marks = [band(support.grade)]
-    if prop.status is PropositionStatus.DERIVED:
+    if handles:
+        marks.append(_via_mark(handles))
+    elif prop.status is PropositionStatus.DERIVED:
         marks.append(DERIVED)
     if support.contested_by or support.hypothesis:
         marks.append(DISPUTED)
     return f"{_claim(prop)}  [{' · '.join(marks)}]"
 
 
-def owed_line(obligation: Obligation) -> str:
+def _resolvable(obligation: Obligation,
+                resolvers: Optional[Mapping[str, Sequence[str]]]) -> str:
+    """The :data:`RESOLVABLE` clause for one obligation, or ``""``.
+
+    *resolvers* is ``{field: tool names}`` — what the plane **declared** it
+    can establish — and it arrives as a plain mapping because this module
+    is pure: :class:`core.runtime.declarations.PlaneDeclarations` lives in
+    :mod:`core.runtime`, the kernel imports nothing from there, and a
+    compiler that reached for a tool plane would have acquired the
+    dependency this package's constitution exists to refuse.  The runtime
+    reads the declarations and hands over the answer.
+
+    **This does not share an owner with the grounding checks' remedy**
+    (``core.runtime.grounding``'s ``CheckResult.remedy``, which names the
+    code-plane tools a repair should use), and the reason is worth writing
+    down rather than leaving as a layering accident.  Two reasons, and
+    either alone would be enough:
+
+    * the layer.  ``grounding`` is runtime — it holds a mission's offered
+      set, its sandbox and its conduct — and importing it here would drag
+      all of that into a module whose whole testable property is that a
+      state and a budget are its only inputs;
+    * the question.  The remedy answers *which tool on this table could
+      compute a figure the model derived in prose*; this answers *which
+      tool declares it establishes this field*.  One is about the
+      code plane and an answer already written, the other about a plane's
+      declarations and a fact nobody holds yet.  A shared owner would be
+      one function with two meanings, which is the second answer to each of
+      them — the failure "one owner per fact" is about, arrived at from the
+      other side.
+
+    Where they would genuinely meet is a platform wanting the remedy to
+    name a *declared* establisher.  That is the runtime's call to make,
+    with both in hand, and it belongs on the runtime side of this wall.
+
+    Only a literal field binds: an obligation missing the field itself
+    (``(?e, ?f, ?v)``) is a hole a declaration cannot name.
+    """
+    if not resolvers:
+        return ""
+    field = obligation.pattern[1]
+    if not isinstance(field, str):
+        return ""
+    names = [str(name) for name in resolvers.get(field, ())]
+    return f"{RESOLVABLE}{_named(names, RESOLVER_CAP)}" if names else ""
+
+
+def owed_line(obligation: Obligation,
+              resolvers: Optional[Mapping[str, Sequence[str]]] = None) -> str:
     """One unresolved obligation as one line of **state**.
 
     ``owed: (alice, payment_link, ?c) — for goal g1, open``, and when
     something has to come first: ``… — for goal g1, blocked on 2``.
+
+    With *resolvers* — what the plane declares it can establish — the line
+    ends in :data:`RESOLVABLE` and the tools that said so.  It is a fourth
+    fact of the same kind as the other three (what is missing, which goal
+    wants it, whether it can be worked, and what the plane says would
+    answer it), and it is still not an instruction: a declaration is the
+    platform's claim about its own tools, and a line naming one steers no
+    more than a line naming a goal does.
 
     The goal is named by its **id**, which is what the reasoning log, the
     obligation's own id and every other reader call it.  Its ``note`` is
@@ -461,24 +756,27 @@ def owed_line(obligation: Obligation) -> str:
     sometimes carries one and sometimes does not is a line nothing can
     parse and nobody can predict the width of.
 
-    Three facts and no fourth: what is missing, which goal wants it, and
-    whether it can be worked now.  Not "call the payments tool", not "you
-    should" — the owner's ruling of 13 September 2026 is that the cognitive
-    layer is shadow and additive, and a line in the imperative is the layer
-    steering with a verb rather than reporting.  The state is named even
-    when it is ``open``, because a reader should not have to know that
-    *absence* means workable.
+    Facts and no instruction: what is missing, which goal wants it,
+    whether it can be worked now, and — where a plane declared one — what
+    would establish it.  Not "call the payments tool", not "you should" —
+    the owner's ruling of 13 September 2026 is that the cognitive layer is
+    shadow and additive, and a line in the imperative is the layer steering
+    with a verb rather than reporting.  The state is named even when it is
+    ``open``, because a reader should not have to know that *absence* means
+    workable.
 
     **Public, and the one owner of this spelling.**
     :meth:`core.runtime.cognition.ShadowCognition.progress` renders the top
     of the frontier with it for the supervisor's stall sentence, so the line
-    the model reads and the line a review quotes are the same line.
+    the model reads and the line a review quotes are the same line — which
+    is why *resolvers* is a parameter here and not a thing the block adds
+    afterwards: the runtime hands the same mapping to both calls.
     """
     blocked = obligation.state is ObligationState.BLOCKED
     where = (f"blocked on {len(obligation.depends_on)}" if blocked
              else obligation.state.value)
     return (f"owed: {obligation.render()} — for goal {obligation.goal}, "
-            f"{where}")
+            f"{where}{_resolvable(obligation, resolvers)}")
 
 
 def violation_line(violation: Violation) -> str:
@@ -791,9 +1089,102 @@ def _choose(budget: int, totals: Sequence[int],
     return None
 
 
+@dataclass(frozen=True)
+class _Folding:
+    """What the subject spine does to one block's fact lines.
+
+    Three readings of one walk, kept together because they are one fact
+    about each claim and three parallel dicts is the shape where a line is
+    folded away by one of them and still counted by another.
+    """
+
+    #: ``{subject claim: the receipt handles its line names}``.
+    handles: Mapping[str, Tuple[str, ...]]
+    #: ``{subject claim: the receipt FACTS it was projected from}`` — the
+    #: claims whose evidence is the receipt evidence, which is what the
+    #: header counts rather than the projection's own leaves (a link's
+    #: declaration is a leaf of the proof and is not a receipt).
+    premises: Mapping[str, Tuple[str, ...]]
+    #: Receipt facts whose line the subject's line replaces.
+    hidden: frozenset
+
+
+def _folding(state: CognitiveState, live: Sequence[Proposition],
+             support: Mapping[str, Support]) -> _Folding:
+    """What folds into what, for one block's live claims.
+
+    **The subject spine, in the one place a reader meets it.**  A link says
+    a receipt is about a subject and the kernel projects the receipt's
+    facts onto it, so the store now holds one figure twice: once where it
+    was read (``mcp.job_status#r5 · state = "completed"``) and once about
+    the thing it is about (``job:jl-731 · state = "completed"``).  Printing
+    both would pay the budget twice for one figure and would teach a reader
+    that the store believes two things.  So the subject line is printed —
+    it is the one a rule joins on, a cardinality contests at, and a goal is
+    about — with the receipt handle folded into it, and the receipt's own
+    line goes.
+
+    Two bounds, each one a case where folding would lose something a line
+    was carrying:
+
+    * **a disputed receipt fact is never folded away.**  Its line carries
+      :data:`DISPUTED` because something contradicts *it*, and the subject
+      copy need not be contested at all (a model's hypothesis against one
+      receipt does not reach the projection).  The subject line still names
+      the receipt; the receipt's line still says it is disputed;
+    * **nothing is folded that the line cannot name** — more than
+      :data:`VIA_CAP` receipts agreeing on one subject fact keeps every
+      receipt line, because the replacement would be naming three of them
+      and silently standing for twenty.
+
+    What folding *does* cost, stated rather than discovered: the subject
+    line is now the only line for that figure, so a budget that cuts it
+    cuts both.  The escape is unchanged and is the one the block already
+    prints — the handle is on the line, and the result store holds the
+    receipt whole — and the alternative (print both, cut the receipt line
+    first) spends the budget twice on every linked figure a mission holds.
+
+    **And what it costs to compute**, beside the module docstring's
+    numbers: one :meth:`~core.cognition.state.CognitiveState
+    .derivations_for` lookup per live claim and one
+    :meth:`~core.cognition.state.CognitiveState.proposition` per
+    projection premise — dictionary reads, no second DAG walk and no
+    second render.  It is dominated by the ``support`` pass that was
+    already there, and a store with no links pays for the lookup and
+    nothing else.
+    """
+    handles: Dict[str, Tuple[str, ...]] = {}
+    premises: Dict[str, Tuple[str, ...]] = {}
+    folded: set = set()
+    shown = {prop.id for prop in live}
+    for prop in live:
+        projection = _via(state, prop)
+        if projection.premises:
+            # The header counts through every premise — a derived one
+            # included, whose own leaves are the receipts under its proof.
+            premises[prop.id] = projection.premises
+        names = projection.handles
+        if not names:
+            continue
+        handles[prop.id] = names
+        if len(names) > VIA_CAP:
+            continue
+        for pid in projection.facts:
+            grade = support.get(pid)
+            if pid not in shown or grade is None:
+                continue
+            if grade.contested_by or grade.hypothesis:
+                continue
+            folded.add(pid)
+    return _Folding(handles=handles, premises=premises,
+                    hidden=frozenset(folded))
+
+
 def compile_view(state: CognitiveState, *,
                  budget_chars: int = BUDGET_CHARS,
-                 violations: Sequence[Violation] = ()) -> CompiledView:
+                 violations: Sequence[Violation] = (),
+                 resolvers: Optional[Mapping[str, Sequence[str]]] = None,
+                 ) -> CompiledView:
     """*state* as one block of at most *budget_chars* characters.
 
     Deterministic: the same state compiles to the same bytes, every time,
@@ -860,7 +1251,7 @@ def compile_view(state: CognitiveState, *,
     # nothing but OWED, which is the honest thing for a run that knows what
     # it wants and has established none of it.
     frontier = state.ranked_frontier()
-    owed_lines = [owed_line(item) for item in frontier]
+    owed_lines = [owed_line(item, resolvers) for item in frontier]
     if frontier.truncated and owed_lines:
         # The note is about lines there are more of, so it needs one. A
         # walk that stopped at the cap having resolved everything it
@@ -878,12 +1269,19 @@ def compile_view(state: CognitiveState, *,
         return CompiledView()
 
     support = _supports(state, live)
+    # One figure, one line: a receipt fact whose subject copy is shown is
+    # folded into that line with its handle on it — see `_folding`, which
+    # owns both halves of that decision.
+    folding = _folding(state, live, support)
+    visible = [prop for prop in live if prop.id not in folding.hidden]
     by_entity: Dict[str, List[Proposition]] = {}
-    for prop in live:
+    for prop in visible:
         by_entity.setdefault(prop.entity or "", []).append(prop)
-    ordered = [prop for entity in _entity_order(live)
+    ordered = [prop for entity in _entity_order(visible)
                for prop in by_entity[entity]]
-    fact_lines = [_fact_line(prop, support[prop.id]) for prop in ordered]
+    fact_lines = [_fact_line(prop, support[prop.id],
+                             folding.handles.get(prop.id, ()))
+                  for prop in ordered]
     # Beside each fact line, the receipts that fact rests on — so that the
     # header can count the receipts of the facts it is ABOUT. Counting all
     # of them there would state two numbers over two different populations
@@ -899,7 +1297,18 @@ def compile_view(state: CognitiveState, *,
     # candidate is the quadratic shape this whole function stopped having.
     receipts, seen = [0], set()
     for prop in ordered:
-        seen.update(ref.locator for ref in support[prop.id].evidence_leaves)
+        # A projected claim is counted by the RECEIPT FACTS it projects,
+        # not by its own leaves. Both are correct answers to different
+        # questions: the leaves of a subject fact include the link's
+        # declaration — which is why the store believes two receipts are
+        # about one thing, and is emphatically not a receipt — and the
+        # header's word is `receipts`. Counting the leaves would have made
+        # a plane's declaration file show up in this block as a call the
+        # mission made.
+        for pid in folding.premises.get(prop.id, ()) or (prop.id,):
+            grade = support.get(pid)
+            if grade is not None:
+                seen.update(ref.locator for ref in grade.evidence_leaves)
         receipts.append(len(seen))
 
     sections = (fact_lines, clash_lines, owed_lines, guess_lines)
@@ -937,13 +1346,34 @@ def _conflict_line(state: CognitiveState, clash: Any) -> str:
     the detail is what says so.  Every other kind names two propositions
     and both of them are rendered with their handles — the rule this
     section exists for.
+
+    **A contest at a subject names the call behind each side.**  That is
+    the whole point of the subject spine on this section: two status tools
+    disagreeing about one job collide at ``job:jl-731``, so both sides of
+    the line are that same entity and a reader without the handles is
+    looking at ``x ⇄ x``.  Through :func:`_via_mark`, the same spelling a
+    folded fact line uses, because it is the same fact — which call said
+    this — and two spellings of it is the one a reader learns and the one
+    they misread.
     """
-    left = _claim(state.proposition(clash.left))
+    left = _sided(state, clash.left)
     if clash.right is None:
         other = f"refuted — {clash.detail}" if clash.detail else "refuted"
     else:
-        other = _claim(state.proposition(clash.right))
+        other = _sided(state, clash.right)
     return f"{clash.kind}: {left}{SIDE_SEP}{other}"
+
+
+def _sided(state: CognitiveState, pid: str) -> str:
+    """One side of a conflict: the claim, and the call behind it if any.
+
+    Through :func:`_via`, so the un-derived rule holds here too: a side
+    the store *concluded* names no call, because no call said it.
+    """
+    prop = state.proposition(pid)
+    handles = _via(state, prop).handles
+    text = _claim(prop)
+    return f"{text}  [{_via_mark(handles)}]" if handles else text
 
 
 def _head(receipts: int, facts: int, clashes: int) -> str:

@@ -2191,6 +2191,27 @@ class TestALinkIsAClaimAndNotARename:
             DECLARED.stamped(EvidenceAuthority.SOURCE),
             OTHER.stamped(EvidenceAuthority.SOURCE)}
 
+    def test_the_revisions_of_a_link_are_readable(self):
+        """`history`'s sibling. The digest renders a link's revisions, so a
+        reader could see that one had been upgraded and had no call to ask
+        what it was before — a fact the store held and would not hand
+        over."""
+        state, _ = store_with_receipt()
+        lid = state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
+                         authority=EvidenceAuthority.MODEL_INTERPRETATION)
+        state.link("job_status#r5", "job:jl-731", evidence=[OTHER],
+                   authority=EvidenceAuthority.SOURCE)
+        history = state.link_history(lid)
+        assert [item.revision for item in history] == [1, 2]
+        assert [item.authority for item in history] == [
+            EvidenceAuthority.MODEL_INTERPRETATION, EvidenceAuthority.SOURCE]
+        assert history[-1] == state.link_record(lid)
+
+    def test_a_link_nobody_made_has_no_history(self):
+        state, _ = store_with_receipt()
+        with pytest.raises(UnknownId):
+            state.link_history("l9")
+
     def test_re_stating_a_link_unchanged_writes_no_revision(self):
         state, _ = store_with_receipt()
         state.link("job_status#r5", "job:jl-731", evidence=[DECLARED],
