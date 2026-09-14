@@ -1735,6 +1735,29 @@ is allowed not to run — it never infers permission from an
 `ImportError`, because inferring it is what lets a conformance test report a
 pass on a comparison it never made.
 
+### A green run says what it compared
+
+At the end of every run that found a harness the kit writes one line:
+
+```
+conformance kit v2: compared this platform's table against /home/you/judais-lobi
+  — /home/you/judais-lobi/core/runtime/contract.py, SCHEMA_VERSION 1
+```
+
+Only failures used to name a path. A green run said nothing, so "the kit
+passed" carried no statement of *which* harness it passed against — and a kit
+that located the wrong checkout passes exactly as loudly as one that located
+the right one. A number without its interpreter beside it is not evidence.
+
+`KIT_VERSION` in `conftest.py` is that line's other half: it is the **kit's**
+version and has nothing to do with the harness's (`CONFORMANCE["pin"]`) or the
+wire's (`SCHEMA_VERSION`). It goes up when the kit's own behaviour changes —
+`1` was the single-sibling guess, `2` is the ancestor walk and this line — so a
+copy that has fallen behind can be recognised from its own output. If you
+vendor the kit, carry `KIT_VERSION` across unchanged when you copy a newer one,
+and do not renumber it for your own edits to `CONFORMANCE`: the dict is yours,
+the version is the kit's.
+
 ### Why a copy and not an import
 
 The thing being tested is your *restatement* of the contract — the field names

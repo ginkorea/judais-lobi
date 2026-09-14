@@ -272,6 +272,91 @@ class TestTheLocatorFindsACheckoutFromAWorktree:
         assert len(walked) == len(kit_home.parents)
 
 
+class TestASuccessSaysWhatItCompared:
+    """Only a failure named the checkout. A green run said nothing at all.
+
+    "The kit passed" is not evidence until it says which harness it passed
+    against and which kit said so: the locator has four candidates, and one
+    that found the wrong checkout passes exactly as loudly as one that found
+    the right one. A number without its interpreter beside it is not
+    evidence — the platform's own words, approved weeks before this landed.
+    """
+
+    def _module(self, tmp_path):
+        """Something shaped like `core.runtime.contract` — a file and a
+        schema version — without importing one."""
+        import types
+
+        module = types.ModuleType("contract_fixture")
+        module.__file__ = str(tmp_path / "core" / "runtime" / "contract.py")
+        module.SCHEMA_VERSION = 1
+        return module
+
+    def test_the_line_names_the_checkout_the_file_and_the_kit(
+            self, tmp_path, monkeypatch, locator):
+        found = _make_checkout(tmp_path / "judais-lobi")
+        (tmp_path / "platform").mkdir()
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", tmp_path / "platform")
+        said = locator.compared_against(self._module(found))
+        assert str(found) in said
+        assert f"v{locator.KIT_VERSION}" in said
+        assert "SCHEMA_VERSION 1" in said
+        assert "contract.py" in said
+
+    def test_an_installed_distribution_says_so_rather_than_a_path(
+            self, tmp_path, monkeypatch, locator):
+        """Nothing was located, and the contract still imported: the kit is
+        testing a `pip install`ed release, which is the case a platform is
+        MOST likely to be in, and 'None' would be the wrong word for it."""
+        (tmp_path / "platform").mkdir()
+        monkeypatch.setattr(locator, "_PLATFORM_REPO", tmp_path / "platform")
+        monkeypatch.setattr(locator, "CONTRACT_MODULE",
+                            Path("core") / "runtime" / "no_such_module.py")
+        said = locator.compared_against(self._module(tmp_path))
+        assert "the installed distribution" in said
+
+    def test_the_kit_version_is_an_int_the_kit_owns(self, locator):
+        """Not the harness's version and not `SCHEMA_VERSION`: those say
+        what was compared, and this says what did the comparing."""
+        assert isinstance(locator.KIT_VERSION, int)
+        assert locator.KIT_VERSION >= 2
+
+    def test_recording_one_puts_it_where_the_summary_reads_it(
+            self, monkeypatch, locator):
+        monkeypatch.setattr(locator, "_COMPARED", [])
+        assert locator.note_comparison(self._module(Path("/x"))) in \
+            locator._COMPARED
+
+    def test_the_fixture_records_on_the_way_past(self, monkeypatch, locator):
+        """The WIRING, not the sentence: a `compared_against` the fixture
+        never calls is a success line nobody ever sees, and the two tests
+        above would both still pass.
+
+        `__wrapped__` is the fixture's own function — pytest refuses a
+        fixture called directly, and this is that same body with the session
+        machinery out of the way.
+        """
+        monkeypatch.setattr(locator, "_COMPARED", [])
+        module = locator.contract.__wrapped__()
+        assert module is not None                 # this repo IS the harness
+        assert locator._COMPARED == [locator.compared_against(module)]
+
+    def test_the_summary_writes_every_line_it_recorded(self, monkeypatch,
+                                                       locator):
+        """A `print` in the fixture is swallowed by pytest's capture on the
+        ordinary green run, which is the only run this line exists for. So
+        it goes out through the terminal reporter."""
+        written = []
+
+        class Reporter:
+            def write_line(self, text):
+                written.append(text)
+
+        monkeypatch.setattr(locator, "_COMPARED", ["compared against X"])
+        locator.pytest_terminal_summary(Reporter())
+        assert written == ["compared against X"]
+
+
 class TestTheKitIsTwoFilesAndAPageThatSaysSo:
     """`PLATFORMS.md` §10 tells a reader to copy two files. A kit that had
     grown a third would leave every copy of it subtly broken."""

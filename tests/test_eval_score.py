@@ -516,3 +516,150 @@ class TestTheReport:
         for verdict in blob["halves"]["test"]["verdicts"]:
             assert verdict["needs_reader"]
             assert verdict["answer"]
+
+
+# ── the environment, told apart from the agent ──────────────────────────────
+
+def dead(**extra):
+    """The shape of a mission that never reached its model.
+
+    `mission_started` goes out before the model is asked and `step_started`
+    opens the step ahead of the call, so a run the endpoint ate has exactly
+    these two records and a `mission_finished` out of the `finally` holding
+    the word nothing got round to setting.
+    """
+    return [started(), step(0),
+            finished(outcome="incomplete", steps=0, **extra)]
+
+
+def an_infra_suite() -> Suite:
+    return Suite(name="infra", flags=("synthesis",),
+                 missions=(a_mission(key="lived"), a_mission(key="died")))
+
+
+class TestARunThatMeasuredTheEnvironment:
+    """Thirteen missions died in an endpoint blink and were read off the
+    reference deployment's table as thirteen model failures. They were not:
+    no model was asked, so no model failed.
+
+    The rule is `infra_reason`'s and it is stated in EVAL.md §6 — zero model
+    output AND an error shape — so every case below is one of the four
+    shapes, or one of the runs that must NOT be caught by them.
+    """
+
+    def test_an_ordinary_failure_is_still_a_failure(self):
+        """The mutation that matters most: fold infra into FAIL and this
+        stops being a distinction. A run that answered badly asked a model."""
+        verdict = score_run(a_clean_run(),
+                            a_mission(answer_must_match=(r"\bnope\b",)))
+        assert not verdict.passed
+        assert verdict.infra == ""
+
+    def test_an_empty_stream_is_infra_and_says_which_clause(self):
+        verdict = score_run([], a_mission())
+        assert "EXIT_CONTRACT['silence']" in verdict.infra
+        assert not verdict.passed          # and still a failure, loudly
+
+    def test_no_events_file_at_all_is_infra(self, tmp_path):
+        verdict = score_run(tmp_path / "nowhere", a_mission())
+        assert "no stream at all" in verdict.infra
+        assert "spawn that failed" in verdict.infra
+
+    def test_a_run_that_died_reaching_for_the_endpoint_is_infra(self):
+        verdict = score_run(dead(), a_mission())
+        assert "raised on its way to the endpoint" in verdict.infra
+
+    def test_the_reason_carries_the_word_the_record_gave_it(self):
+        verdict = score_run(dead(reason="cancelled"), a_mission())
+        assert "'cancelled'" in verdict.infra
+
+    def test_a_stream_that_stopped_before_the_model_is_infra(self):
+        verdict = score_run([started(), step(0)], a_mission())
+        assert "stopped without closing" in verdict.infra
+
+    def test_a_run_that_got_one_tool_call_out_is_not_infra(self):
+        """`step_started` is not the model speaking and `tool_call` is. A
+        run that reached its endpoint and then died is a measurement of the
+        agent, however short."""
+        records = [started(), step(0), call(), finished(outcome="incomplete")]
+        assert score_run(records, a_mission()).infra == ""
+
+    def test_a_model_call_on_the_ledger_is_not_infra(self):
+        """The endpoint answered and the reply was unusable — which is the
+        model's doing and belongs in the denominator."""
+        records = [started(), step(0),
+                   finished(outcome="incomplete", usage={"calls": 1})]
+        assert score_run(records, a_mission()).infra == ""
+
+    def test_a_bound_an_operator_set_is_not_infra(self):
+        """`budget_exhausted` is a number somebody chose, not a network."""
+        records = [started(), step(0),
+                   finished(outcome="budget_exhausted", budget="seconds")]
+        assert score_run(records, a_mission()).infra == ""
+
+    def test_a_model_state_record_alone_does_not_rescue_it(self):
+        """`model_state` is the HARNESS saying the model is absent. It is
+        the environment speaking and never the model."""
+        records = [started(), step(0),
+                   {"event": "model_state", "state": "absent",
+                    "provider": "local", "model": "m"},
+                   finished(outcome="incomplete")]
+        assert score_run(records, a_mission()).infra
+
+    def _report_with_one_dead_run(self):
+        return score_suite({"lived": a_clean_run(),
+                            "died": dead()}, an_infra_suite(), "train")
+
+    def test_the_dead_run_is_out_of_the_denominator(self):
+        totals = self._report_with_one_dead_run().halves["train"].overall
+        assert totals.missions == 2
+        assert totals.infra == 1
+        assert totals.graded == 1
+        assert totals.passed == 1
+        assert totals.success_rate == 1.0    # NOT 0.5
+
+    def test_the_dead_run_is_out_of_the_means_too(self):
+        """A mission that died in four seconds would otherwise pull a
+        suite's wall time down and read as a run that got faster."""
+        slow = [started(), step(0), call(), result(), grounding(), answered(),
+                finished(elapsed_s=40.0)]
+        quick = [started(), step(0), finished(outcome="incomplete",
+                                              elapsed_s=4.0)]
+        totals = score_suite({"lived": slow, "died": quick},
+                             an_infra_suite(), "train").halves["train"].overall
+        assert totals.elapsed_s == 40.0
+
+    def test_the_column_prints_with_its_n_and_the_run_ids(self):
+        """Excluded is not dropped: the count, the prose saying what it
+        means, and the run id that finds the stream."""
+        died = dead()
+        died[0] = started(run_id="run_20260913T010101-dead")
+        text = score_suite({"lived": a_clean_run(), "died": died},
+                           an_infra_suite(), "train").to_markdown()
+        assert "measured the environment (1)" in text
+        assert "measured the ENVIRONMENT and not the agent" in text
+        assert "run_20260913T010101-dead" in text
+        assert "| rejected | infra |" in text     # the column, beside the rates
+        assert "INFRA" in text                    # and the per-mission cell
+
+    def test_the_dead_run_is_not_in_why_they_failed(self):
+        text = self._report_with_one_dead_run().to_markdown()
+        assert "why they failed" not in text
+
+    def test_the_json_carries_the_reason_only_where_there_is_one(self):
+        blob = json.loads(self._report_with_one_dead_run().to_json())
+        by_key = {v["key"]: v for v in blob["halves"]["train"]["verdicts"]}
+        assert "infra" not in by_key["lived"]
+        assert by_key["died"]["infra"]
+        assert blob["halves"]["train"]["overall"]["infra"] == 1
+
+    def test_a_suite_whose_runs_all_reached_a_model_reads_as_it_did(self):
+        """The column costs a clean suite nothing: same rate, same
+        denominator, no prose about an environment nobody had trouble with."""
+        report = score_suite(corpus(), SUITE, "all")
+        for half in report.halves.values():
+            assert half.overall.infra == 0
+            assert half.overall.graded == half.overall.missions
+        text = report.to_markdown()
+        assert "measured the environment" not in text
+        assert "INFRA" not in text

@@ -65,6 +65,25 @@ CLIENT_NAME_ENV = "MCP_CLIENT_NAME"
 RELIST_TIMEOUT_ENV = "MCP_RELIST_TIMEOUT_S"
 DEFAULT_RELIST_TIMEOUT = 5.0
 
+#: How long a server has to come up and answer, in seconds: the bound on the
+#: ``initialize`` handshake in :meth:`McpClient.start`, on a ``tools/call``,
+#: and on the shutdown join.  **One number with a name**, because it was the
+#: same bare ``30.0`` written out in three constructors here and a fourth in
+#: the CLI, and a bare number in a timeout message tells a reader what
+#: happened without telling them what to change.
+#:
+#: It is the default only.  ``--mcp-timeout SECONDS`` / ``MCP_TIMEOUT_S`` is
+#: the knob, and it is a property of the platform holding the other end: a
+#: broker that stages a large bundle before returning a handle legitimately
+#: takes longer than this, which is the measurement that bought the flag.
+DEFAULT_TIMEOUT_S = 30.0
+
+#: The knob's own names, so the refusal below can say what to change rather
+#: than leaving a reader to find it.  See ``contract.CLI_FLAGS`` and
+#: ``contract.ENV_VARS``, which publish both.
+TIMEOUT_FLAG = "--mcp-timeout"
+TIMEOUT_ENV = "MCP_TIMEOUT_S"
+
 
 def relist_timeout() -> float:
     """The bound on a boundary re-list, from the environment or the default.
@@ -343,7 +362,7 @@ class StreamableHttpTransport(McpTransport):
         url: str,
         token: Optional[str] = None,
         headers: Optional[Mapping[str, str]] = None,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_TIMEOUT_S,
     ):
         self.url = url
         self._token = token
@@ -518,7 +537,7 @@ class McpClient:
         self,
         transport: McpTransport,
         *,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_TIMEOUT_S,
         on_tools_changed: Optional[Callable[[List[McpToolSpec]], None]] = None,
     ):
         self._transport = transport
@@ -558,9 +577,24 @@ class McpClient:
         self._thread.start()
         if not self._ready.wait(self._timeout):
             self.stop()
+            # The spawn-then-silence refusal, and it names the bound it hit.
+            # This is what a run looks like when the transport came up — the
+            # subprocess started, the socket answered — and the server then
+            # said nothing: the caller sees a process that lived for exactly
+            # the timeout and died, and the old message gave it the number
+            # without the name, so nobody reading it knew which knob the
+            # number came out of. A refusal teaches: what was waited for,
+            # how long, which knob sets it, and what to do next.
             raise McpConnectionError(
-                f"{self._transport.name} did not initialize within "
-                f"{self._timeout:g}s ({self._transport.describe()})"
+                f"{self._transport.name} did not answer the MCP `initialize` "
+                f"handshake within {self._timeout:g}s. That bound is "
+                f"{TIMEOUT_FLAG} SECONDS (env {TIMEOUT_ENV}; default "
+                f"{DEFAULT_TIMEOUT_S:g}s) — the time a server has to come up "
+                f"and answer, and the same bound a tool call gets afterwards. "
+                f"The transport opened and nothing came back over it: raise "
+                f"{TIMEOUT_FLAG} if this server is slow to start, or check "
+                f"that it is serving MCP at all. "
+                f"({self._transport.describe()})"
             )
         if self._error is not None:
             err = self._error
@@ -1175,7 +1209,7 @@ class McpFleet:
         servers: Sequence["NamedTransport"],
         bus: Any,
         *,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_TIMEOUT_S,
         scopes: Sequence[str] = McpToolBridge.DEFAULT_SCOPES,
     ):
         self._servers = list(servers)

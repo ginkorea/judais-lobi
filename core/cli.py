@@ -1152,7 +1152,9 @@ def _mission(elf, args, name, style):
         REVIEWS as SUP_REVIEWS, STALE_STEPS as SUP_STALE, STUCK, Supervisor,
     )
     from core.runtime.usage import PricingTable
-    from core.tools.mcp_client import McpFleet, McpUnavailable, McpConnectionError
+    from core.tools.mcp_client import (
+        DEFAULT_TIMEOUT_S as MCP_DEFAULT_TIMEOUT_S, McpFleet, McpUnavailable,
+        McpConnectionError)
 
     manifest = _load_skill(args)
     # At the door with the manifest and the history, and for the same
@@ -1933,10 +1935,15 @@ def _mission(elf, args, name, style):
         # named it opens exactly the session `McpClient(transport)` opened,
         # under the same namespace, and prints the same line.
         # The per-call timeout is the platform's to state (--mcp-timeout,
-        # env MCP_TIMEOUT_S): the default 30 s was measured too short for a
+        # env MCP_TIMEOUT_S): the default was measured too short for a
         # broker that stages a governed bundle before returning its handle.
+        # The default itself is `mcp_client.DEFAULT_TIMEOUT_S` and not a
+        # number retyped here — it is named in the refusal a timed-out
+        # handshake raises, and two owners of it would put one number in
+        # the message and a different one in the wait.
         _mt = getattr(args, "mcp_timeout", None)
-        mcp_timeout = _mt if _mt is not None and _mt > 0 else 30.0
+        mcp_timeout = (_mt if _mt is not None and _mt > 0
+                       else MCP_DEFAULT_TIMEOUT_S)
         with (nullcontext(None) if not servers
               else McpFleet(servers, bus, timeout=mcp_timeout)) as fleet:
             if local_plane:
@@ -2647,6 +2654,10 @@ def _main(AgentClass):
     from core.runtime.replay import (
         REPLAY_TOOLS as REPLAY_TOOL_PLANES, TOOLS_RECORDED as REPLAY_RECORDED,
     )
+    # Same reason, same idiom: the number `--mcp-timeout`'s help quotes is
+    # the one the client actually waits and the one its timeout refusal
+    # names, not a third copy of it typed into a sentence.
+    from core.tools.mcp_client import DEFAULT_TIMEOUT_S as MCP_DEFAULT_TIMEOUT_S
 
     parser = argparse.ArgumentParser(description=f"{AgentClass.__name__} CLI Interface")
     # Optional at the parser and checked below `parse_args`: it is required
@@ -2739,13 +2750,14 @@ def _main(AgentClass):
     parser.add_argument("--mcp-timeout", type=float,
                         default=_env_mcp_timeout(),
                         metavar="SECONDS",
-                        help="Per-call timeout for MCP tool calls, in "
-                             "seconds. A property of the platform holding "
-                             "the other end, like --gate-wait: a broker "
-                             "that stages a large bundle before returning "
-                             "a handle legitimately takes longer than the "
-                             "default 30. Non-positive values mean the "
-                             "default (env: MCP_TIMEOUT_S)"),
+                        help=f"Per-call timeout for MCP tool calls, in "
+                             f"seconds. A property of the platform holding "
+                             f"the other end, like --gate-wait: a broker "
+                             f"that stages a large bundle before returning "
+                             f"a handle legitimately takes longer than the "
+                             f"default {MCP_DEFAULT_TIMEOUT_S:g}. "
+                             f"Non-positive values mean the "
+                             f"default (env: MCP_TIMEOUT_S)"),
     parser.add_argument("--mission-steps", type=int, default=None,
                         help="Hard ceiling on model turns in a mission. "
                              "UNSET MEANS NO CEILING, like --mission-seconds: "

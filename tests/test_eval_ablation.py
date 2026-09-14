@@ -26,8 +26,8 @@ import pytest
 
 from core.eval import ablation as mod
 from core.eval.ablation import (ARMS, Ablation, Arm, ArmResult, Unavailable,
-                                ablate, accepted_flags, availability,
-                                chosen_arms, paired, probe_argv, wilson)
+                                ablate, accepted_flags, availability, band,
+                                chosen_arms, paired, probe_argv)
 from core.eval.run import main as eval_main
 from core.eval.score import Report, Verdict, score_suite
 from core.eval.suite import Mission, Suite
@@ -251,7 +251,7 @@ class TestAnArmIsSkippedRatherThanScored:
         assert graph.reports == ()
         assert graph.runs("train") == (0, 0)
         assert graph.passed("train") == {}
-        assert wilson(*graph.runs("train")) is None
+        assert band(graph, "train") == ()
         assert paired(ablated.baseline, graph, "train") == {}
         assert "SKIPPED" in ablated.to_markdown()
 
@@ -359,41 +359,162 @@ class TestRepeatsAreAllMustPass:
         assert "all-must-pass" in ablated.to_markdown()
 
 
-def _report(passed) -> Report:
-    """One repeat's report, straight from verdicts — no run needed."""
+def _report(passed, infra=()) -> Report:
+    """One repeat's report, straight from verdicts — no run needed.
+
+    *infra* names the keys whose run never reached a model, as
+    `core.eval.score.infra_reason` would have marked them.
+    """
     from core.eval.score import Half, Totals
 
     verdicts = tuple(
         Verdict(key=key, flag="synthesis", split="train", passed=value,
-                kpis={"outcome": "answered"})
+                infra=("the stream is empty" if key in infra else ""),
+                kpis={"outcome": "answered", "run_id": f"run_{key}"})
         for key, value in passed.items())
     half = Half(split="train", verdicts=verdicts, overall=Totals(),
                 by_flag={})
     return Report(suite="toy", halves={"train": half})
 
 
+class TestAnArmIsNotBlamedForTheEndpoint:
+    """A repeat the endpoint ate is not evidence about a flag delta.
+
+    Counting it as a failure credits the network's bad afternoon to the arm;
+    counting it as a pass is worse. So it is out of `per_repeat` — and
+    therefore out of `passed`, `runs` and the interval — and reported on its
+    own, which is the same rule `paired` already states for a mission one arm
+    did not run: an absence is not a tie.
+    """
+
+    def _arm(self, *repeats) -> ArmResult:
+        return ArmResult(arm=ARMS[0],
+                         reports=tuple(_report(p, i) for p, i in repeats))
+
+    def test_a_dead_repeat_is_out_of_the_run_level_rate(self):
+        arm = self._arm(({"a": True, "b": False}, ("b",)))
+        assert arm.runs("train") == (1, 1)
+        assert arm.passed("train") == {"a": True}
+
+    def test_a_mission_whose_every_repeat_died_is_absent_and_not_a_tie(self):
+        arm = self._arm(({"a": True, "b": False}, ("b",)))
+        assert "b" not in arm.per_repeat("train")
+        assert paired(arm, arm, "train") == {"a": 0}
+
+    def test_it_is_reported_with_its_run_id_and_its_reason(self):
+        arm = self._arm(({"a": True, "b": False}, ("b",)))
+        assert arm.environment("train") == [
+            ("b", "run_b", "the stream is empty")]
+
+    def test_the_table_carries_the_column_and_the_listing(self):
+        ablated = Ablation(suite="toy", split="train",
+                           arms=(self._arm(({"a": True, "b": False}, ("b",))),),
+                           keys={"train": ("a", "b")},
+                           flags={"a": "synthesis", "b": "synthesis"})
+        text = ablated.to_markdown()
+        assert "95% Wilson | infra |" in text
+        assert "measured the environment (1)" in text
+        assert "run_b" in text
+        assert "run the endpoint ate" in text
+
+    def test_the_json_lists_them_rather_than_dropping_them(self):
+        ablated = Ablation(suite="toy", split="train",
+                           arms=(self._arm(({"a": True, "b": False}, ("b",)),),),
+                           keys={"train": ("a", "b")})
+        arm = ablated.as_dict()["arms"][0]
+        assert arm["infra"]["train"] == [
+            {"mission": "b", "run_id": "run_b", "why": "the stream is empty"}]
+        assert arm["missions"]["train"] == {"a": True}
+
+    def test_an_arm_with_no_dead_repeat_reads_as_it_always_did(self):
+        arm = self._arm(({"a": True, "b": False}, ()))
+        assert arm.runs("train") == (1, 2)
+        assert arm.environment("train") == []
+
+
 # ── the interval ─────────────────────────────────────────────────────────────
 
 class TestTheInterval:
+    """The arithmetic is `core.eval.extraction.wilson`'s and is tested there.
+
+    What is tested here is what this module actually owns: that an arm with
+    no runs is reported with NO interval, and that the numbers reaching the
+    table are the one owner's.
+    """
+
+    def _arm(self, passes: int, total: int) -> ArmResult:
+        """An arm whose `runs(half)` is exactly (passes, total)."""
+        assert passes <= total
+        seen = {f"m{i}": i < passes for i in range(total)}
+        return ArmResult(arm=ARMS[0], reports=(_report(seen),))
+
     def test_nothing_measured_has_no_interval(self):
-        assert wilson(0, 0) is None
+        """`wilson(0, 0)` is `(0.0, 0.0)` — the honest interval of nothing —
+        and printing it would claim an arm scored 0% with no spread. So the
+        reporting rule turns it into an absence, here, once."""
+        assert mod.band(self._arm(0, 0), "train") == ()
+        assert mod._interval(self._arm(0, 0), "train") == "—"
 
     def test_a_clean_sweep_is_not_certainty(self):
         """Where the normal approximation collapses to ±0 and reads as a
         measurement nobody made."""
-        low, high = wilson(8, 8)
+        low, high = mod.band(self._arm(8, 8), "train")
         assert 0.0 < low < 1.0
         assert high == 1.0
 
     def test_the_interval_stays_inside_the_unit_range(self):
         for passes, total in ((0, 3), (1, 3), (3, 3), (1, 40)):
-            low, high = wilson(passes, total)
+            low, high = mod.band(self._arm(passes, total), "train")
             assert 0.0 <= low <= high <= 1.0
 
     def test_more_runs_narrow_it(self):
-        narrow = wilson(50, 100)
-        wide = wilson(5, 10)
+        narrow = mod.band(self._arm(50, 100), "train")
+        wide = mod.band(self._arm(5, 10), "train")
         assert (narrow[1] - narrow[0]) < (wide[1] - wide[0])
+
+
+class TestThereIsOneWilson:
+    """The twin is gone.
+
+    This module carried its own Wilson — same statistic, its own `Z95`, its
+    own rounding — grown on a branch parallel to `extraction`'s. Two owners
+    of one fact is the six-of-ten-fields bug waiting for a second place to
+    happen, and the facade already named extraction's as the owner.
+    """
+
+    def test_the_module_does_not_define_wilson_itself(self):
+        """AST and not `hasattr`: the name still RESOLVES here, because the
+        module imports it, and a check that only asked whether the attribute
+        existed would pass with the twin restored."""
+        import ast
+
+        tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
+        defined = {node.name for node in ast.walk(tree)
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assert "wilson" not in defined, "the twin is back"
+        assigned = {target.id for node in ast.walk(tree)
+                    if isinstance(node, ast.Assign)
+                    for target in node.targets
+                    if isinstance(target, ast.Name)}
+        assert "Z95" not in assigned, "the twin's z is back"
+
+    def test_the_one_it_uses_is_extractions(self):
+        from core.eval import extraction
+
+        assert mod.wilson is extraction.wilson
+
+    @pytest.mark.parametrize("passes,total,shown", [
+        (8, 8, "68%–100%"),
+        (3, 4, "30%–95%"),
+        (1, 2, "9%–91%"),
+        (2, 2, "34%–100%"),
+    ])
+    def test_the_rendered_interval_is_pinned(self, passes, total, shown):
+        """Known values, written out, so the day somebody changes the owner's
+        rounding this table says which cells moved."""
+        arm = ArmResult(arm=ARMS[0], reports=(_report(
+            {f"m{i}": i < passes for i in range(total)}),))
+        assert mod._interval(arm, "train") == shown
 
 
 # ── the report ───────────────────────────────────────────────────────────────

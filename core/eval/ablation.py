@@ -39,7 +39,19 @@ a 20-scenario tier at a 20B is twenty dice landing 14–16, and an arm
 credited with a mission it won once in three is an arm credited with
 noise.  The rate a Wilson interval is computed over is the **run**-level
 one — every mission of every repeat — because that is the n the interval
-is honest about, and both numbers are printed side by side.
+is honest about, and both numbers are printed side by side.  There is ONE
+Wilson in this package and it is :func:`core.eval.extraction.wilson`; what
+lives here is :func:`band`, the rule that an arm with no runs gets no
+interval at all.
+
+**A repeat the endpoint ate is not evidence about a flag delta.**  A run
+that never reached a model — :func:`core.eval.score.infra_reason` — is out
+of ``k``, out of ``n`` and out of the interval, and a mission whose every
+repeat was one of those drops out of the tally rather than counting as a
+loss.  Crediting the network's bad afternoon to the arm under test is the
+one way an ablation can be wrong about exactly the thing it exists to
+measure.  Each is listed under its arm with its run id: out of the rate is
+not out of the report.
 
 **The model is named beside every number.**  A rate without the model that
 produced it is a figure somebody quotes next month against a different
@@ -55,7 +67,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
 import subprocess
@@ -66,6 +77,7 @@ from typing import (Any, Dict, FrozenSet, List, Mapping, Optional, Sequence,
                     Tuple)
 
 from core.durable import atomic_write_text
+from core.eval.extraction import wilson
 from core.eval.measure import (Unmeasurable, _halves, _narrowed, _table,
                                _withheld, header, report_paths)
 from core.eval.run import DEFAULT_TIMEOUT_S, run_suite
@@ -75,7 +87,7 @@ from core.eval.suite import RubricChange, Suite, missions_in
 __all__ = [
     "ARMS", "Arm", "ArmResult", "Ablation", "Unavailable",
     "accepted_flags", "probe_argv", "availability", "ablate", "paired",
-    "wilson", "add_parser", "from_args",
+    "band", "add_parser", "from_args",
 ]
 
 
@@ -310,33 +322,34 @@ def availability(arms: Sequence[Arm], accepted: Optional[FrozenSet[str]]
 
 
 # ── the statistics ───────────────────────────────────────────────────────────
+#
+# There is ONE Wilson interval in this package and it is
+# :func:`core.eval.extraction.wilson`, imported above.  This module grew a
+# twin of it on a parallel branch — same statistic, its own ``Z95``, its own
+# rounding — and a second implementation of one fact is the six-of-ten-fields
+# bug waiting for its second place to happen.  The twin is gone; what stayed
+# here is the one thing that is genuinely this module's, which is the rule
+# below about a rate nobody measured.
+#
+# The owner answers ``(0.0, 0.0)`` for ``n == 0`` where the twin answered
+# ``None``, and that difference is not a detail worth adopting at the call
+# sites: an arm that never ran has no interval, and printing ``0%–0%`` for it
+# would be a measurement of a configuration nobody ran. So the *reporting*
+# rule lives here, in one function, rather than in each caller's ``or ()``.
 
-#: The z for a 95% interval.  One number, named, because a report that
-#: printed an interval without saying which would be printing a decoration.
-Z95 = 1.959963985
 
+def band(result: "ArmResult", half: str) -> Tuple[float, ...]:
+    """One arm's 95% Wilson interval over its runs, or ``()`` for no runs.
 
-def wilson(passes: int, total: int, z: float = Z95
-           ) -> Optional[Tuple[float, float]]:
-    """The Wilson score interval for *passes* of *total*, or ``None``.
-
-    Wilson and not the normal approximation, for the reason this harness
-    exists: at the n an eval tier actually runs — twelve missions, three
-    repeats — the normal interval goes below zero and above one and reads
-    as a claim nobody made.  Wilson stays inside [0, 1] and does not
-    collapse to a point when every run passed, which is the case a
-    benchmark hits most often and the one where a false ±0 does the most
-    damage.
+    The empty tuple is the whole point.  ``wilson(0, 0)`` is ``(0.0, 0.0)``
+    — the honest answer to "what is the interval of nothing" is the degenerate
+    one — and a report that printed it would be claiming an arm scored 0% with
+    no spread, which is exactly the false certainty the interval exists to
+    prevent.  A skipped arm has no numbers at all and this is where that is
+    said, once.
     """
-    if total <= 0:
-        return None
-    p = passes / total
-    denominator = 1.0 + z * z / total
-    centre = (p + z * z / (2 * total)) / denominator
-    spread = z * math.sqrt(p * (1 - p) / total
-                           + z * z / (4 * total * total)) / denominator
-    return (round(max(0.0, centre - spread), 3),
-            round(min(1.0, centre + spread), 3))
+    passes, total = result.runs(half)
+    return wilson(passes, total) if total else ()
 
 
 # ── one arm's result ─────────────────────────────────────────────────────────
@@ -360,12 +373,37 @@ class ArmResult:
         return bool(self.reports)
 
     def per_repeat(self, half: str) -> Dict[str, List[bool]]:
-        """Mission key → one verdict per repeat, in order."""
+        """Mission key → one verdict per repeat, in order.
+
+        A repeat that measured the ENVIRONMENT is not in here — see
+        :func:`core.eval.score.infra_reason`.  It is not evidence about this
+        arm either way: counting it as a failure would credit the endpoint's
+        bad afternoon to the flag delta, and counting it as a pass would be
+        worse.  A mission whose every repeat was infra drops out of the dict
+        entirely, which is the same rule :func:`paired` states for a mission
+        one arm did not run: an absence is not a tie.  It is reported by
+        :meth:`environment`, never dropped.
+        """
         out: Dict[str, List[bool]] = {}
         for report in self.reports:
             side = report.halves.get(half)
             for verdict in (side.verdicts if side is not None else ()):
+                if verdict.infra:
+                    continue
                 out.setdefault(verdict.key, []).append(verdict.passed)
+        return out
+
+    def environment(self, half: str) -> List[Tuple[str, str, str]]:
+        """``(mission key, run id, why)`` for every repeat that never reached
+        a model.  The runs the rate above is NOT over."""
+        out: List[Tuple[str, str, str]] = []
+        for report in self.reports:
+            side = report.halves.get(half)
+            for verdict in (side.verdicts if side is not None else ()):
+                if verdict.infra:
+                    out.append((verdict.key,
+                                str(verdict.kpis.get("run_id") or "—"),
+                                verdict.infra))
         return out
 
     def passed(self, half: str) -> Dict[str, bool]:
@@ -465,8 +503,13 @@ class Ablation:
                  "by_class": {half: {name: list(tally) for name, tally
                                      in self.by_class(result, half).items()}
                               for half in self.keys} if self.classes else {},
-                 "interval": {half: list(wilson(*result.runs(half)) or ())
+                 "interval": {half: list(band(result, half))
                               for half in self.keys},
+                 "infra": {half: [{"mission": key, "run_id": run_id,
+                                   "why": why}
+                                  for key, run_id, why
+                                  in result.environment(half)]
+                           for half in self.keys},
                  "paired": {half: paired(base, result, half)
                             for half in self.keys} if base is not None
                  else {},
@@ -570,8 +613,8 @@ def _rate(passes: int, total: int) -> str:
 
 
 def _interval(result: ArmResult, half: str) -> str:
-    band = wilson(*result.runs(half))
-    return "—" if band is None else f"{band[0]:.0%}–{band[1]:.0%}"
+    edges = band(result, half)
+    return "—" if not edges else f"{edges[0]:.0%}–{edges[1]:.0%}"
 
 
 def _identity(meta: Mapping[str, Any]) -> str:
@@ -652,15 +695,30 @@ def _markdown(ablation: Ablation) -> str:
                 f"{runs_passed}/{runs_total}",
                 _rate(runs_passed, runs_total),
                 _interval(result, half),
+                str(len(result.environment(half))),
             ])
         lines += _table(rows, ["arm", "model", "missions (all repeats)",
-                               "runs k/n", "rate", "95% Wilson"])
+                               "runs k/n", "rate", "95% Wilson", "infra"])
         lines.append("")
         lines.append(
             "*missions* is all-must-pass: a mission counts for an arm only "
             "where every repeat passed it. *runs k/n* is every mission of "
-            "every repeat, which is the n the interval is computed over.")
+            "every repeat, which is the n the interval is computed over. "
+            "*infra* is the repeats that never reached a model: they are out "
+            "of k, out of n and out of the interval, and listed below — a "
+            "flag delta cannot be credited or blamed for a run the endpoint "
+            "ate.")
         lines.append("")
+        for result in ablation.arms:
+            environment = result.environment(half) if result.ran else []
+            if not environment:
+                continue
+            lines.append(f"### {half} — `{result.arm.name}`: measured the "
+                         f"environment ({len(environment)})")
+            lines.append("")
+            lines += [f"- **{key}** (`{run_id}`): {why}"
+                      for key, run_id, why in environment]
+            lines.append("")
 
         ran = [result for result in ablation.arms if result.ran]
         if ablation.classes and ran:

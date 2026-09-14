@@ -697,6 +697,7 @@ def header(template: Sequence[str], env: Mapping[str, str], *,
 _COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("passed", "passed"),
     ("rate", "rate"),
+    ("infra", "infra"),
     ("staged", "staged"),
     ("grounded", "grounded"),
     ("rejected", "rejected"),
@@ -735,8 +736,12 @@ def columns_for(configured: Configured, half: str) -> Dict[str, Any]:
 
     row: Dict[str, Any] = {}
     for key in ("missions", "passed", "staged", "rejected", "human",
-                "grounded_true", "grounded_known"):
+                "grounded_true", "grounded_known", "infra"):
         row[key] = sum(entry[key] for entry in per_repeat)
+    # Over `missions`, which is already the graded count: a run that never
+    # reached a model is counted in `infra` and nowhere else, because a rate
+    # that included it would be a rate about the network. See
+    # `core.eval.score.infra_reason`.
     row["rate"] = (round(row["passed"] / row["missions"], 3)
                    if row["missions"] else None)
     for key in _MEANS:
@@ -748,12 +753,21 @@ def columns_for(configured: Configured, half: str) -> Dict[str, Any]:
 
 
 def _one_repeat(verdicts: Sequence[Verdict]) -> Dict[str, Any]:
-    scored = [v for v in verdicts if v.kpis]
+    """One repeat's numbers, with the runs that measured the environment
+    held out of every one of them except their own count.
+
+    ``missions`` is the GRADED count here — the denominator ``rate`` is
+    over — and ``infra`` is beside it, so a row whose endpoint blinked reads
+    as a smaller experiment rather than as a worse model.
+    """
+    graded = [v for v in verdicts if not v.infra]
+    scored = [v for v in graded if v.kpis]
     grounded = [v.kpis.get("grounded") for v in scored
                 if v.kpis.get("grounded") is not None]
     entry: Dict[str, Any] = {
-        "missions": len(verdicts),
-        "passed": len([v for v in verdicts if v.passed]),
+        "missions": len(graded),
+        "infra": len(verdicts) - len(graded),
+        "passed": len([v for v in graded if v.passed]),
         "staged": len([v for v in scored if v.kpis.get("staged")]),
         "rejected": sum(int(v.kpis.get("reply_rejected") or 0)
                         for v in scored),
@@ -845,6 +859,19 @@ def _markdown(matrix: Matrix) -> str:
                 ["configuration", *keys])
             lines.append("")
         for configuration in ran:
+            environment = _environment(configuration, half)
+            if not environment:
+                continue
+            lines.append(f"### {half} — `{configuration.name}`: measured the "
+                         f"environment ({len(environment)})")
+            lines.append("")
+            lines.append("These runs never reached a model, so the `rate` "
+                         "above is over the rest and these are here. A run "
+                         "the endpoint ate is not a model that failed.")
+            lines.append("")
+            lines += [f"- **{key}**: {reason}" for key, reason in environment]
+            lines.append("")
+        for configuration in ran:
             failures = _failures(configuration, half)
             if not failures:
                 continue
@@ -879,17 +906,25 @@ def _markdown(matrix: Matrix) -> str:
 
 
 def _verdict_cell(configured: Configured, half: str, key: str) -> str:
-    """``PASS``/``FAIL`` for one mission, or ``n/m`` over several repeats."""
+    """``PASS``/``FAIL`` for one mission, or ``n/m`` over several repeats.
+
+    ``INFRA`` when every repeat of it measured the environment: reading that
+    cell as a ``FAIL`` is the mistake this column was changed to stop, and
+    reading it as ``—`` would be the same mistake told quietly.
+    """
     seen = [v for report in configured.reports
             for v in (report.halves[half].verdicts
                       if half in report.halves else ())
             if v.key == key]
     if not seen:
         return "—"
-    passed = len([v for v in seen if v.passed])
+    graded = [v for v in seen if not v.infra]
+    if not graded:
+        return "INFRA"
+    passed = len([v for v in graded if v.passed])
     if len(seen) == 1:
         return "PASS" if passed else "FAIL"
-    return f"{passed}/{len(seen)}"
+    return f"{passed}/{len(graded)}"
 
 
 def _failures(configured: Configured, half: str) -> List[Tuple[str, str]]:
@@ -897,8 +932,24 @@ def _failures(configured: Configured, half: str) -> List[Tuple[str, str]]:
     for report in configured.reports:
         for verdict in (report.halves[half].verdicts
                         if half in report.halves else ()):
-            if not verdict.passed:
+            # An infra run's reasons are real and are listed under its own
+            # heading; what they are not is an answer about the model.
+            if not verdict.passed and not verdict.infra:
                 out.append((verdict.key, "; ".join(verdict.reasons)))
+    return out
+
+
+def _environment(configured: Configured, half: str) -> List[Tuple[str, str]]:
+    """The runs of one configuration that never reached a model: key with
+    run id, and why it was read that way."""
+    out: List[Tuple[str, str]] = []
+    for report in configured.reports:
+        for verdict in (report.halves[half].verdicts
+                        if half in report.halves else ()):
+            if verdict.infra:
+                out.append((f"{verdict.key} "
+                            f"(`{verdict.kpis.get('run_id') or '—'}`)",
+                            verdict.infra))
     return out
 
 

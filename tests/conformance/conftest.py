@@ -38,6 +38,15 @@ everybody who works in a worktree.  The reference deployment measured it:
 eight errors the moment ``$JUDAIS_LOBI_HOME`` was set, zero reported before.
 A test that cannot find the harness must not be a test that quietly checks
 nothing, and a layout nobody thought of must not be the way it happens.
+
+**And a success says what it compared.**  Only a failure named the checkout,
+through :func:`where_it_looked`; a green run said nothing at all, so "the kit
+passed" carried no statement of *which* harness it passed against — and a kit
+that located the wrong checkout passes exactly as loudly as one that located
+the right one.  A number without its interpreter beside it is not evidence.
+So :func:`compared_against` is written on the terminal at the end of every
+run that found a harness, with :data:`KIT_VERSION` beside it, because "the
+kit says we agree" also depends on which kit.
 """
 
 from __future__ import annotations
@@ -65,6 +74,25 @@ CONTRACT_MODULE = Path("core") / "runtime" / "contract.py"
 #: Where a copy of this kit sits relative to the repository holding it, so the
 #: sibling walk is computed rather than configured.
 _PLATFORM_REPO = Path(__file__).resolve().parents[2]
+
+#: The KIT's own version — this file and `test_conformance.py` — and nothing
+#: to do with the harness, whose version is `CONFORMANCE["pin"]` and whose
+#: wire is `SCHEMA_VERSION`.  Bumped when the kit's own behaviour changes, so
+#: that a platform running an old copy can be told so by the number in its own
+#: output rather than by somebody remembering.
+#:
+#:   1 — the original.  The locator guessed ONE sibling, ``<repo>/../judais-
+#:       lobi``, which is blind from a git worktree; a failure named that one
+#:       path, and a success named nothing.
+#:   2 — the bounded ancestor walk (25 Aug 2026), and the line below: a
+#:       success names the checkout it compared against, and this number.
+KIT_VERSION = 2
+
+#: What a successful comparison said, recorded by the :func:`contract`
+#: fixture and written out by :func:`pytest_terminal_summary`.  A list rather
+#: than a string because a session that somehow located two is a session
+#: whose reader needs to see both.
+_COMPARED: List[str] = []
 
 
 def sibling_checkouts() -> List[Path]:
@@ -135,6 +163,45 @@ def allowed_to_be_missing() -> bool:
     return os.environ.get(ALLOW_MISSING_ENV, "") == "1"
 
 
+def compared_against(module) -> str:
+    """The one line a SUCCESS owes its reader.
+
+    Names three things and each earns its place: the **checkout** (or the
+    installed distribution) the comparison was made against, because the
+    locator has four candidates and a green run that does not say which it
+    took is a green run that cannot be checked; the **file** the contract was
+    imported from, because ``$JUDAIS_LOBI_HOME`` can point at a tree whose
+    ``core`` is not the one on ``sys.path``; and :data:`KIT_VERSION`, because
+    "the kit says we agree" is a claim about a particular kit, and a platform
+    running a copy from before the locator walk agreed about nothing.
+    """
+    home = checkout()
+    return (f"conformance kit v{KIT_VERSION}: compared this platform's table "
+            f"against "
+            f"{home if home is not None else 'the installed distribution'}"
+            f" — {getattr(module, '__file__', '(no file)') or '(no file)'}, "
+            f"SCHEMA_VERSION {getattr(module, 'SCHEMA_VERSION', '?')}")
+
+
+def note_comparison(module) -> str:
+    """Record :func:`compared_against` for the terminal summary, and return
+    it.  Separate from the fixture so the sentence can be asserted without a
+    session."""
+    line = compared_against(module)
+    _COMPARED.append(line)
+    return line
+
+
+def pytest_terminal_summary(terminalreporter, *_args, **_kwargs) -> None:
+    """Write what was compared, at the end, where a person reads a run.
+
+    A ``print`` inside the fixture would be swallowed by pytest's capture on
+    the ordinary green run, which is the only run this line exists for.
+    """
+    for line in _COMPARED:
+        terminalreporter.write_line(line)
+
+
 def _import_contract():
     """``core.runtime.contract``, installed or off a located checkout."""
     try:
@@ -173,6 +240,7 @@ def contract():
             f"Looked at {where_it_looked()}. Install the pinned release, point "
             f"${HOME_ENV} at a checkout of it, or set {ALLOW_MISSING_ENV}=1 on "
             f"a runner that has neither.")
+    note_comparison(module)
     return module
 
 

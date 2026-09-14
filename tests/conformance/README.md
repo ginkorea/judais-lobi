@@ -42,6 +42,22 @@ Then, in `test_conformance.py` and nowhere else:
 Nothing. No model, no API key, no MCP server, no GPU, no network. Add it to
 your CI on the same trigger as everything else.
 
+## When it goes green
+
+It says what it compared:
+
+```
+conformance kit v2: compared this platform's table against /home/you/judais-lobi
+  — /home/you/judais-lobi/core/runtime/contract.py, SCHEMA_VERSION 1
+```
+
+Only failures used to name a path. A green run that does not say which of the
+four candidate locations it took is a green run nobody can check — a kit that
+found the wrong checkout passes exactly as loudly as one that found the right
+one. `KIT_VERSION` in `conftest.py` is the kit's own version, not the
+harness's: carry it across unchanged when you copy a newer kit, and leave it
+alone when you edit `CONFORMANCE`.
+
 ## What it does not do
 
 It does not test *your* platform. It tests the boundary: that the harness still
