@@ -1313,6 +1313,24 @@ mission built on an id refusal would be measuring a run that failed to check a
 catalogue, which is the missing-evidence class's business. They are an
 argument's vocabulary rather than the plane's data.
 
+**The plane declares its identifiers**, because the first five-arm run proved
+the alternative: 0 subject links in all 180 runs, the `compiled-context`
+column A2 everywhere, A3 structurally unmeasurable. Each tool's published
+`outputSchema` carries `x-identifiers` on the fields the missions genuinely
+join on — the entry id the release missions carry from a listing to a record
+to a state-changing call, the window id the rollup missions carry from index
+to summary — and on nothing else: a route is a category two entries share, so
+declaring it would project two entries' figures onto one subject and
+manufacture a contradiction, and a release token is a credential, not an
+identity. The entries are written in the richer wire shape a real platform
+publishes — `{kind, identifies, resolves_with}` — which the declarations
+reader keeps as a tested tolerance: `kind` is consumed, the richer keys are
+ignored without fault and reach nothing downstream
+(`core.runtime.declarations.IDENTIFIER_TERMS` is where that argument
+lives). `--no-declarations` on the *server's* command line withholds them,
+and that switch is §20's A2/A3 dial: one server, one world, byte-identical
+payloads and refusals, the only wire delta the `x-` keys.
+
 **"Nothing lists them" is a tested fact about `tools/list`, not a promise.**
 A tool's docstring is *published*: FastMCP puts it in `tools/list` as the
 tool's `description`, the bridge renders that into the catalogue, and the model
@@ -2079,6 +2097,50 @@ skipped. The A3−A2 delta is therefore the SAME suite run twice — once
 against the declaring plane or skill, once with the declarations withheld —
 paired mission by mission across the two tables. The plane is the dial; the
 spawn line never moves.
+
+### Running the pair
+
+Two campaigns of the same ablation, and one join. The bench plane's dial is
+`--no-declarations` on the *server's* command line (§14: same server, same
+world, the only wire delta the `x-` keys), so the two campaigns differ only
+inside the `--mcp-stdio` value — every judais-side token is identical, which
+is what makes the reading paired:
+
+```
+python -m core.eval ablation --suite benchmark --split all --repeats 3 \
+    --out ~/data/tmp/pair/declaring \
+    --arms baseline,compiled-context \
+    -- judais --provider local --model <the model> \
+       --mcp-stdio "python tests/bench_stub_server.py" \
+       --skill tests/fixtures/eval/bench_skill.md --mcp-timeout 120
+
+python -m core.eval ablation --suite benchmark --split all --repeats 3 \
+    --out ~/data/tmp/pair/withheld \
+    --arms baseline,compiled-context \
+    -- judais --provider local --model <the model> \
+       --mcp-stdio "python tests/bench_stub_server.py --no-declarations" \
+       --skill tests/fixtures/eval/bench_skill.md --mcp-timeout 120
+
+python -m core.eval spine-pair \
+    --declaring ~/data/tmp/pair/declaring/ablation.json \
+    --withheld  ~/data/tmp/pair/withheld/ablation.json
+```
+
+`spine-pair` (`core.eval.ablation.spine_pair`) joins the two tables'
+`compiled-context` columns mission by mission and prints the A3−A2 delta —
+and it **proves which table was which off the spine tallies** rather than
+trusting the file names (the recorded spawn lines cannot prove it: every
+report withholds `--mcp-stdio`'s value, so the tallies are the only
+evidence of which plane ran): the declaring side must hold links, the withheld
+side must hold logs with zero links, and any other combination is a refusal
+naming what the logs say (both bare, both declaring, or the two files
+swapped). It also refuses two tables that were not the two halves of one
+experiment — different suite, mission keys, provider, model, or repeats —
+because a paired delta over two instruments is a number that looks exactly
+like the right one. Commits may differ and both are printed. Why the dial
+cannot be an arm: an arm's flags append to the spawn line, so a second
+`--mcp-stdio` would ADD a server beside the first rather than swap the
+plane — the pair is two campaigns because that is the only honest spelling.
 
 ### The attribution rules
 

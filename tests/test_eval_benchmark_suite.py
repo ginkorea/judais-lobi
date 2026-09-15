@@ -364,17 +364,26 @@ def _agent(replies):
     return MockClass
 
 
-def drive(mission, replies, workdir: Path, name: str = "run") -> Path:
-    """Run one mission for real and return the path of its recorded stream."""
+def drive(mission, replies, workdir: Path, name: str = "run",
+          extra=(), stdio: str = "") -> Path:
+    """Run one mission for real and return the path of its recorded stream.
+
+    *extra* appends to the spawn line (the way an ablation arm does) and
+    *stdio* replaces the plane's command — both for the spine tests below,
+    which drive the SAME mission against the declaring plane and against
+    ``--no-declarations``.  Empty means exactly what every caller before
+    them got.
+    """
     from core.cli import _main
 
     events = workdir / f"{mission.key}.{name}.jsonl"
     argv = [
         "judais", mission.prompt, "--mission",
-        "--mcp-stdio", f"{sys.executable} {BENCH}",
+        "--mcp-stdio", stdio or f"{sys.executable} {BENCH}",
         "--skill", str(SKILL),
         "--events", str(events),
         *mission.flags,
+        *extra,
     ]
     with patch("sys.argv", argv):
         _main(_agent(replies))
@@ -1039,3 +1048,209 @@ class TestTheClassMechanismMapping:
         for name, mechanism in CLASS_MECHANISMS.items():
             if name != "recovery":
                 assert re.search(r"\bW[124]\b", mechanism), (name, mechanism)
+
+
+class TestThePlaneDeclaresItsIdentifiers:
+    """The bench plane's ``x-identifiers``, asserted off the real wire.
+
+    The five-arm table came back with 0 subject links in all 180 runs
+    because this plane declared nothing — the `compiled-context` column
+    was the design's A2 everywhere and A3 was structurally unmeasurable.
+    So the plane now declares, and `--no-declarations` withholds, which is
+    EVAL.md §20's pair made mechanical.  Asserted against a real
+    ``tools/list`` over stdio for the vocabulary tests' reason: what a
+    consumer is handed is what the protocol says, and the injection
+    reaches through FastMCP internals a version bump could move — a check
+    that read the Python would not notice the wire going bare.
+    """
+
+    def _specs(self, *args):
+        from core.tools.mcp_client import McpClient, StdioTransport
+
+        transport = StdioTransport(command=sys.executable,
+                                   args=[BENCH, *args])
+        with McpClient(transport, timeout=30.0) as client:
+            return {spec.name: spec for spec in client.list_tools()}
+
+    @pytest.fixture(scope="class")
+    def specs(self):
+        return self._specs()
+
+    @pytest.fixture(scope="class")
+    def withheld(self):
+        return self._specs("--no-declarations")
+
+    def test_the_published_declarations_are_the_declared_ones(self, specs):
+        """One owner: what `tools/list` carries IS `DECLARATIONS`, so the
+        data the tests below reason about cannot drift from the wire."""
+        from tests.bench_stub_server import DECLARATIONS
+
+        published = {name: (spec.output_schema or {}).get("x-identifiers")
+                     for name, spec in specs.items()
+                     if (spec.output_schema or {}).get("x-identifiers")}
+        assert published == DECLARATIONS
+
+    def test_the_entries_are_platform_shaped(self, specs):
+        """`{kind, identifies, resolves_with}` — richer than the one key
+        this framework consumes, because that is the wire shape the
+        reference deployment publishes and the tolerance the suite must
+        exercise.  `resolves_with` names a tool of this plane, so the
+        richer half is not decoration that could rot unnoticed."""
+        from tests.bench_stub_server import DECLARATIONS
+
+        for tool, identifiers in DECLARATIONS.items():
+            for path, entry in identifiers.items():
+                assert set(entry) == {"kind", "identifies", "resolves_with"}, \
+                    (tool, path)
+                assert entry["kind"] in ("entry", "window"), (tool, path)
+                assert entry["resolves_with"] in specs, (tool, path)
+
+    def test_the_real_wire_shape_resolves_with_no_discrepancy(self, specs):
+        """The tolerance, pinned against the real bytes: the platform-
+        shaped extras must not make the verb unusable — `read_wire` drops
+        a verb WHOLE on any problem, so before the tolerance this plane
+        resolved to zero identifiers under a note about an extension key
+        it could not use."""
+        from core.runtime.declarations import WIRE, PlaneDeclarations
+        from tests.bench_stub_server import DECLARATIONS
+
+        plane = PlaneDeclarations.build(
+            wire={name: spec.output_schema or {}
+                  for name, spec in specs.items()})
+        assert plane.discrepancies == ()
+        for tool, identifiers in DECLARATIONS.items():
+            declaration = plane.for_tool(tool)
+            assert dict(declaration.identifiers) == {
+                path: entry["kind"] for path, entry in identifiers.items()}
+            assert declaration.sources["identifiers"] == WIRE
+
+    def test_no_declarations_withholds_them_and_changes_nothing_else(
+            self, specs, withheld):
+        """The A2/A3 dial is HONEST: one server, one world, and the only
+        delta on the wire is the `x-` keys.  Same tools, same
+        descriptions, same input schemas — a withhold switch that also
+        moved the vocabulary would be pairing two different planes and
+        calling the delta the spine."""
+        assert not any("x-identifiers" in (spec.output_schema or {})
+                       for spec in withheld.values())
+        assert sorted(withheld) == sorted(specs)
+        for name, spec in withheld.items():
+            assert spec.description == specs[name].description, name
+            assert spec.input_schema == specs[name].input_schema, name
+
+    def test_the_declared_paths_walk_the_real_payloads(self):
+        """A declaration that names a key the envelope does not carry
+        binds nothing, silently — the exact failure mode the declarations
+        module warns about — so every declared path is walked against the
+        tool's own live payload and must find the id.  This is the test
+        that catches FastMCP moving its `result` wrapper."""
+        from core.runtime.declarations import values_at
+        from core.tools.mcp_client import McpClient, StdioTransport
+
+        calls = {
+            "ledger_entry": ({"entry_id": "led.a41"}, ("led.a41",)),
+            "audit_count": ({"entry_id": "led.c19"}, ("led.c19",)),
+            "ledger_index": ({"kind": "back"}, ("led.c19",)),
+            "window_rollup": ({"window": "win-0002"}, ("win-0002",)),
+            "window_index": ({}, ("win-0002", "win-0003")),
+        }
+        from tests.bench_stub_server import DECLARATIONS
+
+        assert sorted(calls) == sorted(DECLARATIONS)
+        transport = StdioTransport(command=sys.executable, args=[BENCH])
+        with McpClient(transport, timeout=30.0) as client:
+            for tool, (arguments, wanted) in calls.items():
+                result = client.call_tool(tool, arguments)
+                for path in DECLARATIONS[tool]:
+                    assert values_at(result.structured, path) == wanted, \
+                        (tool, path, result.structured)
+
+
+class TestTheSpineBindsOnlyWhereThePlaneDeclares:
+    """A3−A2 end to end: the same mission, the same scripted agent, the
+    same world — and subject links exactly where the plane declares.
+
+    This is the pair EVAL.md §20 describes, driven for real through
+    `core.cli._main` with `--cognition`: against the declaring plane the
+    reasoning log holds a link, the compiled view folds the receipt's
+    facts onto the subject with its via handle, and the ablation's
+    design-arms block reports the links; with the declarations withheld,
+    all three read zero off byte-identical mission behaviour.
+    """
+
+    KEY = "release_the_entry_you_were_given"
+
+    def _runs(self, tmp_path, monkeypatch, side: str, *server_args):
+        """Drive the mission with --cognition and return its runs root."""
+        workdir = tmp_path / side
+        workdir.mkdir()
+        monkeypatch.setenv("JUDAIS_LOBI_AUDIT", str(workdir / "audit.jsonl"))
+        monkeypatch.setenv("JUDAIS_LOBI_RUNS", str(workdir / "runs"))
+        monkeypatch.setenv("JUDAIS_LOBI_APPROVALS", str(workdir / "appr"))
+        mission = SUITE.mission(self.KEY)
+        drive(mission, SCRIPTS[self.KEY]["good"], workdir, side,
+              extra=("--cognition",),
+              stdio=" ".join([sys.executable, BENCH, *server_args]))
+        return workdir
+
+    def _state(self, workdir):
+        from core.runtime.cognition import REASONING_LOG, replay_reasoning
+
+        logs = sorted(Path(workdir, "runs").glob(f"*/{REASONING_LOG}"))
+        assert len(logs) == 1, logs
+        return replay_reasoning(logs[0])
+
+    def test_the_declaring_plane_links_and_the_view_folds(
+            self, tmp_path, monkeypatch):
+        from core.cognition.compile import compile_view
+
+        state = self._state(self._runs(tmp_path, monkeypatch, "declaring"))
+        links = state.links()
+        assert [link.subject for link in links] == ["entry:led.a41"]
+        # Both premises on the link: the receipt, and the declaration —
+        # located at the wire, the tool, and the declared path.
+        kinds = {ref.kind: ref.locator for ref in links[0].evidence}
+        assert kinds["declaration"] == "wire/mcp.ledger_entry/result.entry_id"
+        view = compile_view(state).text
+        assert "entry:led.a41" in view
+        assert re.search(r"via mcp\.ledger_entry#\S+", view), view
+
+    def test_withholding_the_declarations_is_the_a2_arm(
+            self, tmp_path, monkeypatch):
+        from core.cognition.compile import compile_view
+
+        state = self._state(self._runs(tmp_path, monkeypatch, "withheld",
+                                       "--no-declarations"))
+        assert state.links() == ()
+        assert "entry:led.a41" not in compile_view(state).text
+
+    def test_the_design_arms_block_tells_the_two_campaigns_apart(
+            self, tmp_path, monkeypatch):
+        """What the paired reading is made of: the declaring campaign's
+        table reports the links and the withheld one reports zero, off
+        the runs' own reasoning logs — `spine-pair` refuses any two
+        tables whose tallies do not say exactly this."""
+        from core.eval.ablation import ARMS, Ablation, ArmResult, spine
+        from core.eval.score import Half, Report, Totals, Verdict
+
+        arm = next(a for a in ARMS if a.name == "compiled-context")
+        report = Report(suite=SUITE.name, halves={"train": Half(
+            split="train", verdicts=(Verdict(key=self.KEY, flag="chaining",
+                                             split="train", passed=True),),
+            overall=Totals(), by_flag={})})
+        tallies = {}
+        for side, server_args in (("declaring", ()),
+                                  ("withheld", ("--no-declarations",))):
+            workdir = self._runs(tmp_path, monkeypatch, side, *server_args)
+            result = ArmResult(arm=arm, reports=(report,),
+                               directories=(workdir,))
+            tallies[side] = spine(result)
+            table = Ablation(suite=SUITE.name, split="train",
+                             arms=(result,)).to_markdown()
+            wanted = 1 if side == "declaring" else 0
+            assert (f"`compiled-context`: {wanted} subject link(s) "
+                    f"across 1 reasoning log(s)") in table
+        assert tallies["declaring"] == {"links": 1, "logs": 1,
+                                        "unreadable": 0}
+        assert tallies["withheld"] == {"links": 0, "logs": 1,
+                                       "unreadable": 0}
