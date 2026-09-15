@@ -520,6 +520,114 @@ class TestTheWireOwnsSemanticsPerVerb:
         assert "outputSchema" in {note.key for note in plane.discrepancies}
 
 
+class TestAnIdentifierEntryIsOpenToARicherVocabulary:
+    """The one OPEN mapping in this vocabulary, pinned so it stays true.
+
+    The reference platform publishes identifier entries shaped
+    ``{kind, identifies, resolves_with}`` — richer than the one key this
+    framework consumes — and `read_identifiers` must take the ``kind`` and
+    let the rest ride.  The alternative was a real bug, not a nicety:
+    a problem appended for an extra key makes `read_wire` drop the WHOLE
+    verb (`one bad key…` above, which is the right rule for a value that
+    cannot be used at all), so a server's perfectly good declaration
+    vanished into a discrepancy note for saying more than we read.
+    """
+
+    #: The platform's wire shape, verbatim in structure: our one key plus
+    #: two of theirs.
+    PLATFORM_ENTRY = {"kind": "job",
+                      "identifies": "the job this call is about",
+                      "resolves_with": "job_status"}
+
+    def test_the_wire_takes_the_kind_and_notes_nothing(self):
+        plane = PlaneDeclarations.build(
+            wire={"job_status": {
+                "type": "object", "properties": {"job_id": {}},
+                "x-identifiers": {"job_id": dict(self.PLATFORM_ENTRY)}}})
+        declaration = plane.for_tool("job_status")
+        assert dict(declaration.identifiers) == {"job_id": "job"}
+        assert declaration.sources["identifiers"] == WIRE
+        assert plane.discrepancies == ()
+
+    def test_it_does_not_erase_what_a_manifest_declared_either(self):
+        """The measured failure, asserted as its absence: before the
+        tolerance, the extra keys made the verb unusable and precedence
+        never ran — here the wire's richer entry must WIN over the
+        manifest, not vanish beside it."""
+        plane = PlaneDeclarations.build(
+            wire={"narrative_discovery": {
+                "type": "object", "properties": {"job_id": {}},
+                "x-identifiers": {"job_id": dict(self.PLATFORM_ENTRY)}}},
+            manifest=BLOCK)
+        declaration = plane.for_tool("narrative_discovery")
+        assert dict(declaration.identifiers) == {"job_id": "job"}
+        assert declaration.sources["identifiers"] == WIRE
+
+    def test_the_manifest_door_reads_the_same_shape(self):
+        """One owner, both doors: a platform that keeps its vocabulary in
+        a skill's ``tools:`` block writes the same entries there."""
+        block = ToolsBlock.from_mapping(_block(
+            identifiers={"job_id": dict(self.PLATFORM_ENTRY)}))
+        assert dict(block.entries[0].identifiers) == {"job_id": "job"}
+
+    def test_the_extras_do_not_excuse_a_missing_kind(self):
+        """Open for what it does not consume, closed on what it does:
+        an entry that is all richer vocabulary and no ``kind`` still
+        declares nothing, by name."""
+        with pytest.raises(DeclarationError) as exc:
+            ToolsBlock.from_mapping(_block(
+                identifiers={"job_id": {"identifies": "the job",
+                                        "resolves_with": "job_status"}}))
+        assert "states no `kind`" in str(exc.value)
+
+    def test_the_wire_door_refuses_a_missing_kind_the_same_way(self):
+        """The rollout-critical door, pinned on its own: on the wire the
+        fault costs the WHOLE verb (`read_wire`'s rule), so the manifest's
+        answer stands and the note names the extension key — openness must
+        not have widened into taking a kindless entry."""
+        plane = PlaneDeclarations.build(
+            wire={"narrative_discovery": {
+                "type": "object", "properties": {"job_id": {}},
+                "x-identifiers": {"job_id": {
+                    "identifies": "the job",
+                    "resolves_with": "job_status"}}}},
+            manifest=BLOCK)
+        declaration = plane.for_tool("narrative_discovery")
+        assert dict(declaration.identifiers) == {
+            "result_ref": "result", "corpus_asset_id": "asset",
+            "job_id": "job"}
+        assert declaration.sources["identifiers"] == MANIFEST
+        notes = [note for note in plane.discrepancies
+                 if note.key == "outputSchema"]
+        assert notes and "states no `kind`" in notes[0].detail
+
+    @pytest.mark.parametrize("kind", ["", 7])
+    def test_a_malformed_kind_on_the_open_path_is_still_a_fault(
+            self, kind):
+        """The extras must not launder a bad `kind` past the reader: an
+        empty or non-string kind beside perfectly good richer keys is the
+        same whole-verb fault it would be alone."""
+        plane = PlaneDeclarations.build(
+            wire={"job_status": {
+                "type": "object", "properties": {"job_id": {}},
+                "x-identifiers": {"job_id": {
+                    "kind": kind, "identifies": "the job",
+                    "resolves_with": "job_status"}}}})
+        declaration = plane.for_tool("job_status")
+        assert dict(declaration.identifiers) == {}
+        assert "outputSchema" in {note.key for note in plane.discrepancies}
+
+    def test_the_terms_the_reader_consumes_are_the_declared_ones(self):
+        """`IDENTIFIER_TERMS` is what `read_identifiers` actually reads
+        an entry by — the constant is the contract, not decoration."""
+        from core.runtime.declarations import IDENTIFIER_TERMS
+
+        assert IDENTIFIER_TERMS == ("kind",)
+        block = ToolsBlock.from_mapping(_block(
+            identifiers={"job_id": {IDENTIFIER_TERMS[0]: "job"}}))
+        assert dict(block.entries[0].identifiers) == {"job_id": "job"}
+
+
 class TestABareObjectContributesNothingAndRefusesNothing:
     """Eight of one real deployment's adapters declare real shapes and the
     rest fall back to a bare object.  Those tools have to degrade to

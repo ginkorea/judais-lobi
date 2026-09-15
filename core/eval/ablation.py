@@ -104,8 +104,9 @@ from core.runtime.cognition import REASONING_LOG, replay_reasoning
 
 __all__ = [
     "ARMS", "Arm", "ArmResult", "Ablation", "Unavailable", "BLOAT_NOTE",
-    "SPINE_NOTE", "accepted_flags", "probe_argv", "availability", "ablate",
-    "paired", "band", "bloat", "spine", "spend", "add_parser", "from_args",
+    "SPINE_NOTE", "PAIR_ARM", "accepted_flags", "probe_argv", "availability",
+    "ablate", "paired", "band", "bloat", "spine", "spine_pair", "spend",
+    "add_parser", "add_pair_parser", "from_args", "pair_from_args",
 ]
 
 
@@ -770,6 +771,183 @@ def spine(result: ArmResult) -> Optional[Dict[str, int]]:
     return {"links": links, "logs": logs, "unreadable": unreadable}
 
 
+# ── the A3−A2 pair: two campaigns of one table, joined ──────────────────────
+
+#: The arm the pair is read off unless the caller names another: the
+#: compiled view is where a declared subject becomes visible, so the
+#: declaring/withheld delta of THIS column is the design's A3−A2.
+PAIR_ARM = "compiled-context"
+
+
+def _pair_arm(payload: Mapping, name: str, side: str) -> Mapping:
+    """The named arm out of one ablation JSON, or the refusal that names
+    what is missing.  *side* is only for the error message."""
+    if not _is_ablation(payload):
+        raise Unavailable(
+            f"the {side} file is not an ablation JSON — no `suite` and "
+            f"`arms`; pass the `ablation.json` an `ablation` run wrote")
+    for entry in payload.get("arms") or ():
+        if isinstance(entry, Mapping) and entry.get("name") == name:
+            if entry.get("skipped"):
+                raise Unavailable(
+                    f"the {side} table's `{name}` arm was SKIPPED "
+                    f"({entry['skipped']}); a pair needs the arm to have run "
+                    f"on both sides")
+            return entry
+    raise Unavailable(
+        f"the {side} table has no `{name}` arm; its arms are "
+        f"{[a.get('name') for a in payload.get('arms') or ()]}")
+
+
+def _is_ablation(payload: Any) -> bool:
+    return (isinstance(payload, Mapping) and "suite" in payload
+            and "arms" in payload)
+
+
+def _must_agree(what: str, declaring: Any, withheld: Any) -> None:
+    if declaring != withheld:
+        raise Unavailable(
+            f"the two tables were not the same experiment: {what} is "
+            f"{declaring!r} in the declaring table and {withheld!r} in the "
+            f"withheld one. A3−A2 is ONE suite run twice with the plane as "
+            f"the only dial (EVAL.md §20), so this pair reads nothing")
+
+
+def spine_pair(declaring: Mapping, withheld: Mapping,
+               arm: str = PAIR_ARM) -> str:
+    """The A3−A2 reading off two ablation JSONs, or a refusal.
+
+    EVAL.md §20's pairing rule, made mechanical: A3 is not a flag, so the
+    spine's delta is the SAME suite run twice — once against a plane that
+    declares identifiers, once with the declarations withheld — and this
+    joins those two tables' *arm* column, mission by mission.  It exists so
+    the pair is a command rather than a hand-read of two reports, and so
+    the one mistake a hand-read invites — pairing two tables that were not
+    the two halves of one experiment — is a refusal with the reason.
+
+    **Which table was which is proven, never trusted.**  The files could
+    be handed over swapped, or both run against one plane; the spine
+    tallies each table carries (:func:`spine`, read off the runs' own
+    reasoning logs) are the evidence, and the rule is exactly §20's: the
+    declaring side must hold links and the withheld side must hold logs
+    with zero links.  A pair whose tallies say otherwise is refused naming
+    what the logs say — including the swapped case, by name, because that
+    is the mistake a person actually makes with two files.
+
+    The instrument must be the same on both sides — suite, mission keys,
+    provider, model, repeats — because a paired delta over two different
+    instruments is a number that looks exactly like the right one.  The
+    commits may differ (a re-run after a docs commit is the same
+    experiment) and both are printed, per the rule that a number without
+    its interpreter beside it is not evidence.
+    """
+    left = _pair_arm(declaring, arm, "declaring")
+    right = _pair_arm(withheld, arm, "withheld")
+    _must_agree("the suite", declaring.get("suite"), withheld.get("suite"))
+    _must_agree("`repeats`", declaring.get("repeats"),
+                withheld.get("repeats"))
+    _must_agree("the mission keys", declaring.get("keys"),
+                withheld.get("keys"))
+    meta_l = declaring.get("meta") or {}
+    meta_r = withheld.get("meta") or {}
+    for field_name in ("provider", "model"):
+        _must_agree(f"the {field_name}", meta_l.get(field_name),
+                    meta_r.get(field_name))
+
+    spines = {}
+    for side, entry in (("declaring", left), ("withheld", right)):
+        tally = entry.get("spine")
+        if not isinstance(tally, Mapping) or not tally.get("logs"):
+            raise Unavailable(
+                f"the {side} table's `{arm}` runs left no readable "
+                f"reasoning log, so which design arm that column is cannot "
+                f"be proven. The spine tally is written by --cognition "
+                f"(which --compiled-context implies); re-run the campaign "
+                f"rather than pairing on trust")
+        spines[side] = tally
+    if spines["declaring"]["links"] and spines["withheld"]["links"]:
+        raise Unavailable(
+            f"BOTH tables' `{arm}` runs recorded subject links "
+            f"({spines['declaring']['links']} and "
+            f"{spines['withheld']['links']}), so nothing was withheld: both "
+            f"columns are A3 and their delta is dice, not the spine")
+    if not spines["declaring"]["links"]:
+        if spines["withheld"]["links"]:
+            raise Unavailable(
+                f"the tables arrived SWAPPED: the file passed as declaring "
+                f"recorded 0 subject links and the one passed as withheld "
+                f"recorded {spines['withheld']['links']}. Swap the "
+                f"arguments; the logs already say which is which")
+        raise Unavailable(
+            f"NEITHER table's `{arm}` runs recorded a subject link, so "
+            f"both columns are the design's A2 and there is no spine to "
+            f"read. A declaring plane publishes identifiers (a server's "
+            f"`outputSchema` `x-identifiers`, a skill's `tools:` block) — "
+            f"check the plane the declaring campaign actually spawned")
+
+    lines = [f"# A3−A2 — suite `{declaring.get('suite')}`, arm `{arm}`", ""]
+    lines += [
+        f"- **provider / model** `{meta_l.get('provider') or '—'}` / "
+        f"`{meta_l.get('model') or '—'}` (identical both sides, checked)",
+        f"- **repeats** {declaring.get('repeats')}, both sides",
+        f"- **declaring table** commit "
+        f"`{meta_l.get('commit', 'unknown')}` — "
+        f"{spines['declaring']['links']} subject link(s) across "
+        f"{spines['declaring']['logs']} reasoning log(s): the design's "
+        f"**A3**",
+        f"- **withheld table** commit "
+        f"`{meta_r.get('commit', 'unknown')}` — 0 subject link(s) across "
+        f"{spines['withheld']['logs']} reasoning log(s): the design's "
+        f"**A2**",
+        "",
+        "Which table is which is read off the runs' own reasoning logs "
+        "above, never off the file names. The delta below is EVAL.md §20's "
+        "**A3−A2 — the spine**: what declared identity and the subject "
+        "join buy on top of the compiled view. It is a paired reading of "
+        "one suite run twice with the plane as the only dial; it is never "
+        "a reading of two arms within one table.",
+        "",
+    ]
+
+    flags = declaring.get("flags") or {}
+    for half, keys in (declaring.get("keys") or {}).items():
+        before = (right.get("missions") or {}).get(half) or {}
+        after = (left.get("missions") or {}).get(half) or {}
+        rows = []
+        fixed = broke = unchanged = 0
+        for key in keys:
+            if key not in before or key not in after:
+                # An absence is not a tie — `paired`'s rule.
+                continue
+            delta = int(bool(after[key])) - int(bool(before[key]))
+            fixed += delta > 0
+            broke += delta < 0
+            unchanged += delta == 0
+            rows.append([
+                f"`{key}`", str(flags.get(key, "—")),
+                "PASS" if before[key] else "FAIL",
+                "PASS" if after[key] else "FAIL",
+                {1: "FIXED", -1: "BROKE", 0: "—"}[delta]])
+        lines.append(f"## {half}")
+        lines.append("")
+        lines += _table(rows, ["mission", "flag", "A2 (withheld)",
+                               "A3 (declaring)", "A3−A2"])
+        runs_l = (left.get("runs") or {}).get(half) or [0, 0]
+        runs_r = (right.get("runs") or {}).get(half) or [0, 0]
+        lines.append("")
+        lines.append(
+            f"A3−A2 over {half}: **+{fixed} fixed, -{broke} broke, "
+            f"{unchanged} unchanged**. Runs: A2 {runs_r[0]}/{runs_r[1]}, "
+            f"A3 {runs_l[0]}/{runs_l[1]} — all-must-pass over "
+            f"{declaring.get('repeats')} repeat(s), same rules as the "
+            f"tables this is read from.")
+        lines.append("")
+    lines.append(
+        "Read beside §20's standing rule: small gain = simplify or stop, "
+        "measured against the instrument's own noise, never re-rolled.")
+    return "\n".join(lines)
+
+
 # ── what the runs spent ──────────────────────────────────────────────────────
 
 def _mean_of(values: Sequence[Any]) -> Optional[float]:
@@ -1238,6 +1416,45 @@ def add_parser(subs, common) -> argparse.ArgumentParser:
                         default=DEFAULT_TIMEOUT_S,
                         help="wall-clock bound on ONE mission (default 600)")
     return parser
+
+
+def add_pair_parser(subs) -> argparse.ArgumentParser:
+    """Register ``spine-pair`` — deliberately WITHOUT ``common``: it reads
+    two finished ablation JSONs, so there is no suite to load, no half to
+    hold out and nothing to spawn.  The joiner and the tally it joins on
+    (:func:`spine`) live in one file, `add_parser`'s rule."""
+    parser = subs.add_parser(
+        "spine-pair",
+        help="join a declaring and a withheld ablation into the A3−A2 "
+             "paired reading (EVAL.md §20), proven off the spine tallies")
+    parser.add_argument("--declaring", required=True, type=Path,
+                        help="ablation.json of the campaign run against the "
+                             "DECLARING plane")
+    parser.add_argument("--withheld", required=True, type=Path,
+                        help="ablation.json of the campaign with the "
+                             "declarations withheld")
+    parser.add_argument("--arm", default=PAIR_ARM, metavar="NAME",
+                        help=f"the arm the pair is read off (default "
+                             f"{PAIR_ARM!r})")
+    return parser
+
+
+def pair_from_args(args: argparse.Namespace) -> int:
+    """``spine-pair`` as :func:`core.eval.run.main` reaches it."""
+    payloads = []
+    for path in (args.declaring, args.withheld):
+        try:
+            payloads.append(json.loads(Path(path).read_text(
+                encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            print(f"spine-pair: {path}: {exc}", file=sys.stderr)
+            return 2
+    try:
+        print(spine_pair(payloads[0], payloads[1], arm=args.arm))
+    except Unavailable as exc:
+        print(f"spine-pair: {exc}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def chosen_arms(names: str, arms: Sequence[Arm] = ARMS) -> Tuple[Arm, ...]:

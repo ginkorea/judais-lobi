@@ -35,8 +35,36 @@ exists to exercise the **harness**, and it is built around the six shapes
 Nothing here is a platform's data.  The world is invented, it is four
 entries and two windows wide, and every figure in it was chosen so that no
 two of them are the same number.
+
+**The plane declares its identifiers** — ``x-identifiers`` inside each
+tool's published ``outputSchema``, the wire door of
+:mod:`core.runtime.declarations` — because the suite over this plane is the
+five-arm table's instrument (EVAL.md §20) and the design's A3 exists only
+against a plane that declares.  The declared keys are the ones the
+missions genuinely join on: the entry id the release missions carry from a
+listing to a record to a state-changing call, and the window id the rollup
+missions carry from the index to the summary.  Nothing else: a route is a
+category two entries share (declaring it would project two entries' units
+onto one subject and manufacture the exact contradiction "no link on value
+coincidence" exists to prevent), and a release token is a credential, not
+an identity.  Entries are written in the reference platform's richer shape
+— ``{kind, identifies, resolves_with}`` — so the suite exercises the wire
+shape a real deployment publishes, not only the one key this framework
+consumes.
+
+``--no-declarations`` **withholds them**, and that switch is the A2/A3
+dial.  §20's pairing rule is *the same suite run twice — once against the
+declaring plane, once with the declarations withheld* — and this is the
+cleanest honest mechanism for the second run: one server, one world, one
+vocabulary, byte-identical payloads and refusals, with the ONLY delta
+whether ``tools/list`` carries the ``x-`` keys.  A judais-side flag could
+not express it (an ablation arm appends to the spawn line, and a second
+``--mcp-stdio`` would ADD a server rather than swap one), and a forked
+second server would be a copy that drifts.  The dial is on the plane
+because the thing being ablated IS a fact about the plane.
 """
 
+import sys
 from typing import Any, Dict, List
 
 from mcp.server.fastmcp import FastMCP
@@ -241,5 +269,75 @@ def release_entry(entry_id: str, token: str) -> str:
     return f"released {entry_id} with {token}"
 
 
+#: What each tool's payload IDENTIFIES, as published on the wire.  Paths
+#: are spelled against the ``structuredContent`` a caller actually receives
+#: — FastMCP wraps a plain-dict return under ``result``, so the entry id of
+#: a record is ``result.entry_id``, exactly the envelope case the
+#: declaration grammar's dotted paths exist for.  Entries carry the
+#: reference platform's richer shape (``identifies``, ``resolves_with``
+#: beside ``kind``); this framework consumes ``kind`` and ignores the
+#: rest without fault — the argument lives at
+#: `core.runtime.declarations.IDENTIFIER_TERMS`, and the tolerance is
+#: tested at both doors.  Only genuinely identifying fields are here —
+#: see the module docstring on why a route and a release token are not.
+DECLARATIONS: Dict[str, Dict[str, Dict[str, str]]] = {
+    "ledger_index": {
+        "result.entries[].entry_id": {
+            "kind": "entry", "identifies": "one ledger entry",
+            "resolves_with": "ledger_entry"}},
+    "ledger_entry": {
+        "result.entry_id": {
+            "kind": "entry", "identifies": "one ledger entry",
+            "resolves_with": "ledger_entry"}},
+    "audit_count": {
+        "result.entry_id": {
+            "kind": "entry", "identifies": "one ledger entry",
+            "resolves_with": "ledger_entry"}},
+    "window_index": {
+        "result.windows[].window": {
+            "kind": "window", "identifies": "one settlement window",
+            "resolves_with": "window_rollup"}},
+    "window_rollup": {
+        "result.window": {
+            "kind": "window", "identifies": "one settlement window",
+            "resolves_with": "window_rollup"}},
+}
+
+#: The switch that withholds them: the A2 half of §20's pair.  An argv
+#: token rather than an env because the dial is per-invocation and
+#: composable — the caller writes it inside the ``--mcp-stdio`` command it
+#: already composes, and nothing has to plumb an environment through
+#: spawner, fleet and sandbox.  It is NOT report-visible, and no mechanism
+#: here could be: every recorded spawn line withholds ``--mcp-stdio``'s
+#: whole value (``core.eval.run.WITHHELD`` — the value can carry a token,
+#: and a report outlives the run), so no report can show which plane ran.
+#: That is exactly why ``spine-pair`` proves which campaign was which off
+#: the runs' own spine tallies: the tallies are the evidence precisely
+#: because the spawn line cannot be.
+NO_DECLARATIONS_FLAG = "--no-declarations"
+
+
+def declare(server: FastMCP = app) -> None:
+    """Put :data:`DECLARATIONS` onto the published ``outputSchema``.
+
+    FastMCP already derives an ``outputSchema`` for every annotated return
+    and serves the ``fn_metadata.output_schema`` dict live at
+    ``tools/list``; the ``x-identifiers`` key is added to that dict, which
+    changes what the plane SAYS and nothing about what it does — result
+    validation runs against ``output_model``, untouched.  Reaches through
+    the server's ``_tool_manager`` because FastMCP publishes no door for
+    schema extensions; the end-to-end test asserts the keys off a real
+    ``tools/list`` over stdio, so an mcp upgrade that moves this attribute
+    goes red there by name rather than shipping a silently bare plane.
+    """
+    for tool in server._tool_manager.list_tools():
+        identifiers = DECLARATIONS.get(tool.name)
+        if identifiers and tool.fn_metadata.output_schema is not None:
+            tool.fn_metadata.output_schema["x-identifiers"] = {
+                path: dict(entry) for path, entry in identifiers.items()}
+
+
 if __name__ == "__main__":                   # pragma: no cover - a subprocess
+    if NO_DECLARATIONS_FLAG not in sys.argv[1:]:
+        declare()
     app.run()

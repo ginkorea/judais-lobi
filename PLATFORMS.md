@@ -1432,8 +1432,8 @@ names is a hint that can never fire, and the author would find out by never
 seeing the hint they wrote.
 
 **The same three verbs may arrive on the wire**, as `x-identifiers`,
-`x-establishes` and `x-produces` inside `outputSchema`, with exactly these
-shapes. That is the **recommended end state**: a server generated from typed
+`x-establishes` and `x-produces` inside `outputSchema`, with these shapes
+(an identifier entry's body may carry more — see below). That is the **recommended end state**: a server generated from typed
 contracts can emit them, and then the manifest has nothing to say at all and
 cannot go stale. The manifest door exists so the feature can be adopted
 against a server nobody here controls.
@@ -1463,6 +1463,15 @@ manifest's answer for that tool stands, and the note says the extension key
 could not be used. That is deliberately not the same as `x-identifiers: {}`,
 which is a declaration this reader understood — your plane saying *this tool
 identifies nothing* — and which does win the verb.
+
+**An identifier entry's body is the vocabulary's one open mapping.** `kind`
+is read, and richer keys beside it — `identifies`, `resolves_with`, anything
+additive your generator emits — are **ignored without fault**: no
+discrepancy, no dropped verb, and nothing downstream reads them (the
+resolved declaration carries only `{path: kind}`, so do not expect
+`resolves_with` to reach a store, a view or a record). Openness is only for
+what is not consumed: an entry with no usable `kind` is still a fault, and
+on the wire a fault still costs the whole verb.
 
 **A bare object declares nothing and refuses nothing.** `{"type":
 "object"}` — what a schema generator emits for a return type it could not
@@ -2056,7 +2065,7 @@ missions:
     flags: [--swarm]        # every --token must be in contract.CLI_FLAGS
 ```
 
-`python -m core.eval` has eleven subcommands. The three a platform starts with
+`python -m core.eval` has twelve subcommands. The three a platform starts with
 are these:
 
 ```
@@ -2069,6 +2078,7 @@ python -m core.eval corpus   --out corpus.jsonl --from-runs DIR --note "<your da
 python -m core.eval context  --runs DIR
 python -m core.eval suggest-pack --schemas tools_list.json --runs DIR --out draft.yml
 python -m core.eval linker   --probes path/to/link_probes.jsonl
+python -m core.eval spine-pair --declaring A/ablation.json --withheld B/ablation.json
 ```
 
 * **`check`** refuses a suite that cannot be graded, before anybody spends a GPU
@@ -2166,6 +2176,19 @@ python -m core.eval linker   --probes path/to/link_probes.jsonl
   declared to be, before a mission finds out instead. Deterministic: the
   report's interpreter is the commit, and a rerun reproduces the bytes. See
   `EVAL.md` §20.
+* **`spine-pair`** needs no model and spawns nothing: it joins two finished
+  ablation JSONs — the same suite run once against a **declaring** plane and
+  once with the declarations **withheld** — into the design's A3−A2 paired
+  reading, mission by mission. It **proves which table was which** off the
+  spine tallies the tables themselves carry (subject links counted off the
+  runs' own reasoning logs), because the recorded spawn lines cannot prove
+  it — every report withholds `--mcp-stdio`'s value — and it refuses the
+  pair by name when the proof fails: both tables bare, both declaring, or
+  the two files handed over swapped. It also refuses two tables that were
+  not the two halves of one experiment (different suite, mission keys,
+  provider, model or repeats), because a paired delta over two instruments
+  is a number that looks exactly like the right one. Commits may differ and
+  both are printed. See `EVAL.md` §20.
 * **`suggest-pack`** measures nothing at all. It reads a **saved** `tools/list`
   response and your recorded `tools.jsonl` receipts, and prints a **draft**
   `cognition:`/`tools:` pack — an authoring aid for §5's manifest blocks, and

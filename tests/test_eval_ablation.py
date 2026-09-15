@@ -884,6 +884,143 @@ class TestTheSpineTally:
         assert "The design arms" not in text
 
 
+class TestTheSpinePairJoiner:
+    """`spine_pair`: EVAL.md §20's A3−A2, joined mechanically.
+
+    The pair is the SAME suite run twice — once against a declaring
+    plane, once with the declarations withheld — so the joiner's whole
+    job is two things a hand-read gets wrong: proving which table was
+    which off the spine tallies the tables themselves carry, and refusing
+    any two tables that were not the two halves of one experiment.
+    """
+
+    def _table(self, links, missions, *, commit="c1", suite="benchmark",
+               repeats=3, model="m", logs=36, spine="default",
+               skipped=""):
+        tally = ({"links": links, "logs": logs, "unreadable": 0}
+                 if spine == "default" else spine)
+        return {
+            "suite": suite, "repeats": repeats,
+            "keys": {"train": sorted(missions)},
+            "flags": {key: "chaining" for key in missions},
+            "meta": {"provider": "local", "model": model, "commit": commit},
+            "arms": [
+                {"name": "baseline", "skipped": "", "spine": None},
+                {"name": "compiled-context", "skipped": skipped,
+                 "spine": tally,
+                 "missions": {"train": dict(missions)},
+                 "runs": {"train": [sum(map(bool, missions.values())) * 3,
+                                    len(missions) * 3]}},
+            ]}
+
+    DECLARING = {"a": True, "b": True, "c": False}
+    WITHHELD = {"a": True, "b": False, "c": True}
+
+    def _pair(self, **withheld_changes):
+        return (self._table(41, self.DECLARING),
+                self._table(0, self.WITHHELD, commit="c2",
+                            **withheld_changes))
+
+    def test_the_reading_is_paired_and_labelled(self):
+        text = mod.spine_pair(*self._pair())
+        assert "41 subject link(s) across 36 reasoning log(s)" in text
+        assert "**A3**" in text and "**A2**" in text
+        assert "`c1`" in text and "`c2`" in text
+        assert "| `b` | chaining | FAIL | PASS | FIXED |" in text
+        assert "| `c` | chaining | PASS | FAIL | BROKE |" in text
+        assert "**+1 fixed, -1 broke, 1 unchanged**" in text
+        assert "A2 6/9, A3 6/9" in text
+        assert "never a reading of two arms within one table" in text
+
+    def test_a_mission_one_side_did_not_run_is_left_out(self):
+        """An absence is not a tie — `paired`'s rule, kept here too."""
+        declaring = self._table(41, self.DECLARING)
+        withheld = self._table(0, {"a": True, "b": False}, commit="c2")
+        withheld["keys"] = declaring["keys"]  # same experiment, one lost run
+        text = mod.spine_pair(declaring, withheld)
+        assert "| `c` |" not in text
+        assert "**+1 fixed, -0 broke, 1 unchanged**" in text
+
+    def test_swapped_files_are_refused_by_name(self):
+        declaring, withheld = self._pair()
+        with pytest.raises(Unavailable, match="SWAPPED"):
+            mod.spine_pair(withheld, declaring)
+
+    def test_two_bare_tables_are_refused_as_both_a2(self):
+        with pytest.raises(Unavailable, match="NEITHER"):
+            mod.spine_pair(self._table(0, self.DECLARING),
+                           self._table(0, self.WITHHELD))
+
+    def test_two_declaring_tables_are_refused_as_both_a3(self):
+        with pytest.raises(Unavailable, match="BOTH"):
+            mod.spine_pair(self._table(41, self.DECLARING),
+                           self._table(7, self.WITHHELD))
+
+    def test_a_table_with_no_reasoning_log_cannot_prove_itself(self):
+        """`spine: null` (the arm never wrote a log) and zero logs are the
+        same refusal: which design arm the column is cannot be proven, and
+        pairing on trust is the mistake the joiner exists to remove."""
+        declaring, _ = self._pair()
+        for tally in (None, {"links": 0, "logs": 0, "unreadable": 3}):
+            broken = self._table(0, self.WITHHELD, spine=tally)
+            with pytest.raises(Unavailable, match="no readable reasoning"):
+                mod.spine_pair(declaring, broken)
+
+    @pytest.mark.parametrize("changes", [
+        {"suite": "other"},
+        {"repeats": 1},
+        {"model": "m2"},
+    ])
+    def test_two_different_experiments_are_refused(self, changes):
+        declaring, withheld = self._pair(**changes)
+        with pytest.raises(Unavailable, match="not the same experiment"):
+            mod.spine_pair(declaring, withheld)
+
+    def test_different_mission_keys_are_two_experiments_as_well(self):
+        declaring, withheld = self._pair()
+        withheld["keys"] = {"train": ["a", "b", "d"]}
+        with pytest.raises(Unavailable, match="not the same experiment"):
+            mod.spine_pair(declaring, withheld)
+
+    def test_a_missing_or_skipped_arm_is_refused_with_its_reason(self):
+        declaring, withheld = self._pair()
+        with pytest.raises(Unavailable, match="no `graph` arm"):
+            mod.spine_pair(declaring, withheld, arm="graph")
+        withheld["arms"][1]["skipped"] = "the flag is not accepted"
+        with pytest.raises(Unavailable, match="SKIPPED"):
+            mod.spine_pair(declaring, withheld)
+
+    def test_a_file_that_is_not_an_ablation_is_refused(self):
+        with pytest.raises(Unavailable, match="not an ablation JSON"):
+            mod.spine_pair({"anything": 1}, self._table(0, self.WITHHELD))
+
+    def test_the_subcommand_joins_two_files(self, tmp_path, capsys):
+        declaring, withheld = self._pair()
+        left = tmp_path / "declaring.json"
+        right = tmp_path / "withheld.json"
+        left.write_text(json.dumps(declaring), encoding="utf-8")
+        right.write_text(json.dumps(withheld), encoding="utf-8")
+        code = eval_main(["spine-pair", "--declaring", str(left),
+                          "--withheld", str(right)])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "A3−A2" in out and "FIXED" in out
+
+    def test_the_subcommand_refuses_with_the_reason_on_stderr(
+            self, tmp_path, capsys):
+        declaring, withheld = self._pair()
+        left = tmp_path / "declaring.json"
+        right = tmp_path / "withheld.json"
+        left.write_text(json.dumps(declaring), encoding="utf-8")
+        right.write_text(json.dumps(withheld), encoding="utf-8")
+        assert eval_main(["spine-pair", "--declaring", str(right),
+                          "--withheld", str(left)]) == 2
+        assert "SWAPPED" in capsys.readouterr().err
+        assert eval_main(["spine-pair", "--declaring", str(left),
+                          "--withheld", str(tmp_path / "absent.json")]) == 2
+        assert "absent.json" in capsys.readouterr().err
+
+
 class TestWhatTheRunsSpent:
     """`spend`: the W5 columns as one row per arm, means per graded run."""
 

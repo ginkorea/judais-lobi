@@ -2,12 +2,14 @@
 
 """The harness's command line: ``run``, ``measure``, ``ablation``,
 ``score``, ``check``, ``extraction``, ``corpus``, ``registry``, ``context``,
-``suggest-pack``.
+``suggest-pack``, ``linker``, ``spine-pair``.
 
-Ten subcommands because there are ten jobs, and only four of them need a
-model (``run``, ``measure``, ``ablation``, ``extraction``); ``score``,
-``check``, ``corpus``, ``registry``, ``context`` and ``suggest-pack`` work
-entirely from what was already recorded:
+One subcommand per job, and only four of them need a model (``run``,
+``measure``, ``ablation``, ``extraction``); the rest work entirely from
+what was already recorded — ``linker`` runs the false-link probe corpus
+through the production attachment (:mod:`core.eval.linker`), and
+``spine-pair`` joins a declaring and a withheld ablation into EVAL.md
+§20's A3−A2 paired reading (:func:`core.eval.ablation.spine_pair`):
 
 ``run``
     Spawns the mission command once per mission — the platform's own spawn
@@ -438,6 +440,13 @@ def _parser() -> argparse.ArgumentParser:
     from core.eval.linker import add_parser as _add_linker
     _add_linker(subs)
 
+    # And `spine-pair`, without `common` for `corpus`'s reason: it joins
+    # two finished ablation JSONs into EVAL.md §20's A3−A2 paired reading,
+    # so it opens evidence that already exists and spawns nothing. It
+    # lives in `core.eval.ablation` beside the spine tally it joins on.
+    from core.eval.ablation import add_pair_parser as _add_pair
+    _add_pair(subs)
+
     return parser
 
 
@@ -485,6 +494,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "linker":
         from core.eval.linker import from_args as _linker
         return _linker(args)
+    # And `spine-pair`, which joins two finished ablation JSONs: the runs
+    # it reads may have happened on another machine, against a suite this
+    # checkout does not carry, and there is nothing here for it to spawn.
+    if args.command == "spine-pair":
+        from core.eval.ablation import pair_from_args as _pair
+        return _pair(args)
 
     try:
         suite = resolve_suite(args.suite)

@@ -69,7 +69,11 @@ own record carries.  It is invented, it is generic, and every figure in it is
 distinct so that a right answer and a wrong one are never the same
 number.  Python and not YAML for :mod:`core.eval.stub_suite`'s reason:
 ``tests/`` is out of the wheel and a suite under it could not be checked
-on a bare install.
+on a bare install.  It **declares its identifiers** — ``x-identifiers`` on
+the fields the missions join on, withheld by its ``--no-declarations`` —
+so an ablation over this pack can be run as EVAL.md §20's declaring /
+non-declaring pair and the ``compiled-context`` column can be the design's
+A3 and not only its A2.
 """
 
 from __future__ import annotations

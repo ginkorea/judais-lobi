@@ -60,7 +60,7 @@ from core.tools.descriptors import same_tool, tool_key
 
 __all__ = [
     "DECLARATIONS_KEY", "DECLARATIONS_SCHEMA_VERSION", "BLOCK_KEYS",
-    "DEFAULTS_KEYS", "ENTRY_KEYS", "IDENTIFIER_KEYS", "PRODUCES_KEYS",
+    "DEFAULTS_KEYS", "ENTRY_KEYS", "IDENTIFIER_TERMS", "PRODUCES_KEYS",
     "ESTABLISHES", "IDENTIFIERS", "PRODUCES", "SHAPE", "VERBS", "WIRE_VERBS",
     "MANIFEST", "WIRE", "PROBLEM_SEP",
     "DeclarationError", "Discrepancy", "PlaneDeclarations", "Produced",
@@ -125,8 +125,26 @@ DEFAULTS_KEYS: Tuple[str, ...] = (IDENTIFIERS,)
 ENTRY_KEYS: Tuple[str, ...] = ("name", IDENTIFIERS, ESTABLISHES, PRODUCES,
                                SHAPE)
 
-#: What one identifier declaration may say.
-IDENTIFIER_KEYS: Tuple[str, ...] = ("kind",)
+#: The terms of one identifier declaration this reader consumes — what
+#: :func:`read_identifiers` reads an entry's body by.  ``TERMS`` and not
+#: ``KEYS``, because every other ``*_KEYS`` tuple in this module feeds
+#: :func:`_closed` and this one deliberately does not: the entry body is
+#: the vocabulary's **one open mapping** — this is the home of that
+#: argument, and the other mentions point here.  It is open because it is
+#: where a platform writes its own richer semantics beside ours: a real
+#: deployment declares entries shaped
+#: ``{kind: job, identifies: …, resolves_with: …}``, and a reader that
+#: refused the keys it does not consume would not merely note them — on
+#: the wire a problem drops the WHOLE verb (:func:`read_wire`), so the
+#: refusal would silently erase a declaration the server got right.  The
+#: richer keys are **ignored without fault**: no problem, no discrepancy,
+#: and nothing downstream ever sees them — the resolved declaration
+#: carries only ``{path: kind}``, so no platform should expect
+#: ``identifies`` or ``resolves_with`` to reach a store, a view, or a
+#: record.  Openness is only for what is not consumed: ``kind`` is still
+#: required, still one word, and still refused by name when it is missing
+#: or malformed — and on the wire that refusal still costs the whole verb.
+IDENTIFIER_TERMS: Tuple[str, ...] = ("kind",)
 
 #: What one ``produces`` entry must say — all four, because a two-phase
 #: declaration missing any of them names no call anybody could make.
@@ -328,6 +346,14 @@ def read_identifiers(raw: Any, where: str,
     skill's frontmatter cannot mean two different things.  That is the
     same rule the grounding merge keeps by going through
     ``GroundingConfig`` rather than round the side of it.
+
+    **An entry's body is the vocabulary's one open mapping**: the
+    :data:`IDENTIFIER_TERMS` are read, and every richer key beside them
+    (``identifies``, ``resolves_with``, whatever a platform's generator
+    emits) is **ignored without fault** — the result carries only
+    ``{path: kind}``, so nothing downstream ever sees the extras.  The
+    whole argument, including the measured bug the alternative was, lives
+    at :data:`IDENTIFIER_TERMS`.
     """
     found: Dict[str, str] = {}
     if raw is None:
@@ -351,9 +377,11 @@ def read_identifiers(raw: Any, where: str,
                 f"{type(body).__name__}; it is a mapping stating the kind of "
                 f"subject this key identifies ({{kind: job}})")
             continue
-        _closed(body, IDENTIFIER_KEYS, f"{where} `{IDENTIFIERS}: {path}`",
-                problems)
-        kind = _text(body.get("kind"))
+        # No `_closed` here, alone in this module: the entry body is the
+        # open mapping — the argument lives at `IDENTIFIER_TERMS`, which
+        # is also where the one consumed term comes from, so the constant
+        # and this read cannot drift apart.
+        kind = _text(body.get(IDENTIFIER_TERMS[0]))
         if not kind:
             problems.append(
                 f"{where} `{IDENTIFIERS}: {path}` states no `kind`; a key "
