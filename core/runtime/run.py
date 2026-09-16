@@ -125,7 +125,7 @@ from core.runtime.mission_stream import (
 )
 from core.runtime.mission_stream import Observer as Sink
 from core.runtime.messages import assistant_turn
-from core.runtime.prompts import GOVERNED_PLANE
+from core.runtime.prompts import DEFERRED_GOVERNED_PLANE, GOVERNED_PLANE
 from core.runtime.results import (
     BRANCH_ARGUMENT, RESULT_TOOL, BranchedStores, MissionResultStore,
 )
@@ -2392,7 +2392,11 @@ class Run:
         prefix for what is the same text.
         """
         conduct = self.personality.conduct
-        return GOVERNED_PLANE if conduct is None else conduct
+        if conduct is not None:
+            return conduct
+        return (DEFERRED_GOVERNED_PLANE
+                if self.personality.deferred_skills is not None
+                else GOVERNED_PLANE)
 
     def _core_memory(self) -> str:
         """The bank's pinned section, or ``""`` when there is no bank.

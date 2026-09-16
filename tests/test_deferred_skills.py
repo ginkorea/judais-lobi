@@ -74,6 +74,39 @@ def test_existing_personality_positional_constructor_is_unchanged():
     assert personality.deferred_skills is None
 
 
+def test_default_conduct_distinguishes_loadable_from_currently_callable():
+    from core.runtime.prompts import DEFERRED_GOVERNED_PLANE, GOVERNED_PLANE
+
+    run, model, calls = runner(tool_call("select_skills", skills=["catalogue"]),
+                               tool_call("catalog.search"), '{"answer":"done"}')
+    run.run("what is in the catalogue?")
+    first = model.seen[0][0]["content"]
+    assert DEFERRED_GOVERNED_PLANE.strip() in first
+    assert "what it does not list you cannot do" not in first
+    assert "first call select_skills" in first
+    assert "unselected capability is not an unavailable capability" in first
+    assert "tools after selection: catalog.search" in first
+    assert "FULL SCHEMA DESCRIPTION catalog.search" not in first
+    assert "FULL SCHEMA DESCRIPTION catalog.search" in model.seen[1][0]["content"]
+    assert calls == ["catalog.search"]
+    # Eager and explicitly customized conduct retain their prior semantics.
+    assert replace(run.personality, deferred_skills=None).conduct is None
+    run.personality = replace(run.personality, deferred_skills=None)
+    assert run._conduct_text() == GOVERNED_PLANE
+    run.personality = replace(run.personality, deferred_skills=library(), conduct="CUSTOM")
+    assert run._conduct_text() == "CUSTOM"
+
+
+def test_deferred_conduct_preserves_evidence_and_authority_rules():
+    from core.runtime.prompts import DEFERRED_GOVERNED_PLANE
+
+    for sentence in ("never send the same call twice unchanged",
+                     "If a number is not in the view, it is not in the draft",
+                     "Selection changes exposure, never permissions, approval gates or sandbox"):
+        assert sentence in DEFERRED_GOVERNED_PLANE
+    assert "before claiming a relevant tool is unavailable" in library().descriptor().description
+
+
 def test_multi_skill_selection_then_switch_updates_prompt_schema_and_dispatch():
     changes = []
     run, model, calls = runner(

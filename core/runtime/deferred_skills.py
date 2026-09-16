@@ -66,12 +66,16 @@ class DeferredSkills:
 
     def prompt(self) -> str:
         lines = [
-            "Configured skill and capability index:",
+            "Configured skill and capability index (loadable, not all active):",
             f"Call {self.tool_name} with the skill IDs needed for this task. "
             "You may select several, then replace that selection as the task "
             "changes. Full instructions and tool schemas become available on "
             "the next step. A greeting needs no skill selection. Unselected "
-            "tools cannot be called. Selection grants no additional authority.",
+            "tools cannot be called until selected, but are not thereby absent. "
+            "A question about platform data requires selecting its relevant "
+            "skill and using the resulting lookup tool, not answering from "
+            "memory or reporting that the initial tool list lacks it. "
+            "Selection grants no additional authority.",
         ]
         for manifest in self.manifests:
             description = manifest.description or next(
@@ -80,7 +84,7 @@ class DeferredSkills:
                  if part.startswith("When to use:")), "")
             description = " ".join(description.split())[:240]
             tools = ", ".join(manifest.allowed_tools)
-            lines.append(f"- {manifest.name}: {description}\n  tools: {tools}")
+            lines.append(f"- {manifest.name}: {description}\n  tools after selection: {tools}")
         selected = self.selected()
         if selected:
             lines.extend(["Active skill instructions:",
@@ -102,7 +106,11 @@ class DeferredSkills:
     def descriptor(self) -> ToolDescriptor:
         return ToolDescriptor(
             tool_name=self.tool_name,
-            description="Select configured skills for the current task. This "
+            description="Load the configured skills and tools needed to answer "
+                        "the current request. Tools named in the capability "
+                        "index are exposed after selection when available on "
+                        "this plane, on the next step. "
+                        "Use this before claiming a relevant tool is unavailable. This "
                         "replaces visible skill instructions and tool schemas, "
                         "not permissions. Select several IDs for a multi-part "
                         "task; select another set when the task changes.",

@@ -165,7 +165,7 @@ no count — because it is stacked into the cached prefix of every single
 step: see :meth:`core.runtime.run.Run.seed` for what that prefix is worth.
 """
 
-__all__ = ["GOVERNED_PLANE"]
+__all__ = ["GOVERNED_PLANE", "DEFERRED_GOVERNED_PLANE"]
 
 
 #: The conduct every run is given, between the catalogue and core memory
@@ -220,3 +220,24 @@ that shows it.
 When the objective cannot be met, answer with what you have and name what \
 is missing: a caveat beats a refusal.
 """
+
+# The eager wording describes a complete catalogue. A deferred catalogue is
+# only the current working set; treating absence there as absence of capability
+# made a live agent refuse catalogue search without selecting its listed skill.
+# Keep every other conduct rule, and eager prompt bytes, unchanged.
+DEFERRED_GOVERNED_PLANE = GOVERNED_PLANE.replace(
+    "the catalogue is all there is, and what it does not list you cannot do.",
+    "the configured skill index describes the capabilities you can load. "
+    "The tool catalogue lists only what is callable on this step. "
+    "For a task covered by an unselected skill, first call select_skills, "
+    "then use its tools on the next step. Do not ask the user to load it. "
+    "Selection changes exposure, never permissions, approval gates or sandbox.",
+).replace(
+    "a capability is absent only when the catalogue or a refusal says so, "
+    "never because an attempt at it errored.",
+    "an unselected capability is not an unavailable capability. "
+    "Before reporting that a capability is missing, inspect the configured "
+    "index and select the matching skill, if any; only its resulting tool "
+    "catalogue or an actual refusal can establish what is unavailable. "
+    "A failed attempt is not evidence of permanent absence.",
+)
