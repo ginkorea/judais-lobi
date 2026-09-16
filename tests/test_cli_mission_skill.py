@@ -118,6 +118,15 @@ def run_cli(MockClass, *extra):
 
 
 class TestDeferredSkillExposure:
+    def test_duplicate_configured_ids_give_a_clean_cli_refusal(self, skill_file, tmp_path):
+        from core.cli import _load_skill
+        other = tmp_path / "other-skill.md"
+        other.write_text(skill_file.read_text(encoding="utf-8"), encoding="utf-8")
+        args = SimpleNamespace(skill=[skill_file, other], defer_skills=True)
+        with pytest.raises(SystemExit, match="--skill:") as error:
+            _load_skill(args)
+        assert "both called 'recon'" in str(error.value)
+
     @pytest.mark.parametrize("initial_deferred", [False, True])
     def test_resume_cannot_change_loading_mode(self, elf, skill_file, tmp_path,
                                              initial_deferred):

@@ -14,7 +14,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable, Optional, Sequence
 
-from core.runtime.skills import SkillManifest, compose_manifests
+from core.runtime.skills import SkillManifest, SkillManifestError, compose_manifests
 from core.tools.descriptors import ToolDescriptor, same_tool
 
 SELECT_SKILLS = "select_skills"
@@ -29,7 +29,7 @@ class DeferredSkills:
         self.manifests = tuple(manifests)
         names = [manifest.name for manifest in self.manifests]
         if not names or len(set(names)) != len(names):
-            raise ValueError("deferred skills need unique configured skill IDs")
+            raise SkillManifestError("deferred skills need unique configured skill IDs")
         self.ceiling = compose_manifests(self.manifests)
         self.active: tuple[str, ...] = ()
         self.used: tuple[str, ...] = ()

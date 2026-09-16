@@ -13,7 +13,7 @@ from core.runtime.resume import Resumption
 from core.runtime.run import (
     NO_SUPERVISOR, Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
 )
-from core.runtime.skills import SkillManifest
+from core.runtime.skills import SkillManifest, SkillManifestError
 from core.tools.bus import ToolBus
 from core.tools.capability import CapabilityEngine
 from core.tools.descriptors import ToolDescriptor
@@ -157,7 +157,7 @@ def test_duplicate_selection_is_idempotent_and_library_is_fixed():
 
 def test_duplicate_configured_names_refuse_at_startup():
     one = SkillManifest(name="same")
-    with pytest.raises(ValueError, match="unique"):
+    with pytest.raises(SkillManifestError, match="unique"):
         DeferredSkills([one, one])
 
 
