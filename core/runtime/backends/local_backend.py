@@ -334,7 +334,9 @@ class LocalBackend(Backend):
                 f"{self.endpoint}/models",
                 headers=self._headers(),
                 timeout=PROBE_TIMEOUT,
+                allow_redirects=False,
             )
+            self._refuse_redirect(res)
             res.raise_for_status()
             payload = res.json() or {}
         except Exception as exc:  # noqa: BLE001 — any failure is "unreachable"
@@ -596,6 +598,7 @@ class LocalBackend(Backend):
                 json=body,
                 timeout=CHAT_TIMEOUT,
                 stream=stream,
+                allow_redirects=False,
             ),
             retries=self.CONNECT_RETRIES,
             on_connect_error=lambda exc: self.report_connect_error(
@@ -637,6 +640,17 @@ class LocalBackend(Backend):
                     break
         return "\n  ".join(found)
 
+    @staticmethod
+    def _refuse_redirect(res) -> None:
+        """The configured endpoint cannot delegate a prompt or credential elsewhere."""
+        if 300 <= res.status_code < 400:
+            res.close()
+            # Neither Location nor the response body is safe diagnostic text:
+            # a gateway can put credentials in either one.
+            raise requests.HTTPError(
+                "the model endpoint returned a redirect; use its direct endpoint "
+                "instead. No redirected request was sent.", response=res)
+
     def _raise_for_status(self, res, body: Optional[Dict[str, Any]] = None) -> None:
         """The shared body-as-diagnosis rule, plus the harmony hint.
 
@@ -669,6 +683,7 @@ class LocalBackend(Backend):
         it and the state is what a watcher needed while the turn was
         still alive.
         """
+        self._refuse_redirect(res)
         where = (self._locate_suspect_text(body or {})
                  if res.status_code >= 400 else "")
         word = policy.state_for_status(res.status_code)
