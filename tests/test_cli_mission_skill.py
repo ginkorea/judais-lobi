@@ -118,6 +118,54 @@ def run_cli(MockClass, *extra):
 
 
 class TestDeferredSkillExposure:
+    def test_remembered_skill_is_exposed_on_first_model_call(self, elf, skill_file):
+        MockClass, agent = elf
+        run_cli(MockClass, "--skill", str(skill_file), "--defer-skills",
+                "--active-skill", "recon")
+        assert "Start broad, then narrow by facet." in agent.seeds[0][0]["content"]
+        assert "asset_id (string, required)" in agent.seeds[0][0]["content"]
+        assert len(agent.seeds) == 2
+
+    def test_resume_restores_initial_skills_from_record_not_new_flags(self, elf, skill_file, tmp_path):
+        from core.durable import RunStore
+        MockClass, agent = elf
+        replies = [json.dumps({"tool": "mcp.governed_read",
+                               "arguments": {"asset_id": "asset.5f21"}})]
+
+        def stop_after_read(**kwargs):
+            if replies:
+                return replies.pop()
+            raise RuntimeError("model stopped")
+
+        agent.client.chat.side_effect = stop_after_read
+        with pytest.raises(SystemExit):
+            run_cli(MockClass, "--skill", str(skill_file), "--defer-skills",
+                    "--active-skill", "recon")
+        records = RunStore(tmp_path / "runs")
+        run_id = records.list()[0].run_id
+        seeds = []
+
+        def finish(**kwargs):
+            seeds.append(kwargs["messages"][0]["content"])
+            return '{"answer":"The asset is asset.5f21."}'
+
+        agent.client.chat.side_effect = finish
+        run_resume(MockClass, run_id, "--skill", str(skill_file), "--defer-skills")
+        assert "Start broad, then narrow by facet." in seeds[0]
+
+    def test_initial_selection_is_validated_against_current_library(self, skill_file):
+        from core.cli import _load_skill
+        args = SimpleNamespace(skill=[skill_file], defer_skills=True,
+                               active_skill=["recon"])
+        _load_skill(args)
+        assert args.deferred_skills.active == ("recon",)
+        args.active_skill = ["no-longer-configured"]
+        with pytest.raises(SystemExit, match="--active-skill"):
+            _load_skill(args)
+        args.defer_skills = False
+        with pytest.raises(SystemExit, match="requires --defer-skills"):
+            _load_skill(args)
+
     def test_duplicate_configured_ids_give_a_clean_cli_refusal(self, skill_file, tmp_path):
         from core.cli import _load_skill
         other = tmp_path / "other-skill.md"

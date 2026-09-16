@@ -188,6 +188,31 @@ def test_duplicate_selection_is_idempotent_and_library_is_fixed():
     assert selected.descriptor().input_schema["additionalProperties"] is False
 
 
+def test_remembered_selection_is_callable_on_first_step_and_keeps_checks():
+    checked = []
+    deferred = library(validator_factory=lambda manifest, offered:
+                       checked.append((manifest.allowed_tools, offered)) or None)
+    deferred.select(["catalogue"])
+    run, model, calls = runner(tool_call("catalog.search"), '{"answer":"done"}',
+                               deferred=deferred)
+    run.run("continue looking at the catalogue")
+    assert calls == ["catalog.search"]
+    assert "CATALOGUE FULL INSTRUCTIONS" in model.seen[0][0]["content"]
+    assert "WEATHER FULL INSTRUCTIONS" not in model.seen[0][0]["content"]
+    assert checked[0][0] == ("catalog.search",)
+    assert "catalog.search" in checked[0][1]
+
+
+def test_remembered_selection_does_not_restore_an_approval():
+    deferred = library()
+    deferred.select(["catalogue"])
+    run, _, calls = runner(tool_call("catalog.search"), '{"answer":"done"}',
+                           deferred=deferred, gated=["catalog.search"])
+    run.run("continue")
+    assert calls == []
+    assert "catalog.search" in run.plane.gated
+
+
 def test_duplicate_configured_names_refuse_at_startup():
     one = SkillManifest(name="same")
     with pytest.raises(SkillManifestError, match="unique"):

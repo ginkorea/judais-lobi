@@ -386,6 +386,9 @@ def _load_skill(args):
     run it always was.
     """
     named = _skill_values(args)
+    active = getattr(args, "active_skill", None) or []
+    if active and not getattr(args, "defer_skills", False):
+        raise SystemExit("--active-skill requires --defer-skills")
     if getattr(args, "defer_skills", False) and any(
             getattr(args, flag, False)
             for flag in ("swarm", "campaign", "campaign_plan")):
@@ -405,6 +408,10 @@ def _load_skill(args):
         if getattr(args, "defer_skills", False):
             from core.runtime.deferred_skills import DeferredSkills
             args.deferred_skills = DeferredSkills(resolved)
+            try:
+                args.deferred_skills.select(active)
+            except ValueError as exc:
+                raise SystemExit(f"--active-skill: {exc}") from None
         return manifest
     except SkillManifestError as exc:
         raise SystemExit(f"--skill: {exc}")
@@ -873,7 +880,7 @@ def _mission_tools(manifest, discovered, style, bus=None):
 RUN_META_FLAGS = (
     "mission_steps", "provider", "model", "profile", "unsandboxed", "skill",
     "swarm", "events", "control", "history", "gate_tool", "temperature",
-    "top_p", "seed", "no_grounding", "defer_skills",
+    "top_p", "seed", "no_grounding", "defer_skills", "active_skill",
 )
 
 #: The step ceiling a mission runs under when nobody says otherwise: **none**.
@@ -1386,6 +1393,15 @@ def _mission(elf, args, name, style):
             raise SystemExit("--resume must retain the recorded --defer-skills mode")
         if getattr(args, "defer_skills", False) and recorded.staged:
             raise SystemExit("--defer-skills cannot resume a staged mission")
+        if previous_deferred:
+            initial = recorded.meta.meta.get("flags", {}).get("active_skill", [])
+            supplied = getattr(args, "active_skill", None) or []
+            if supplied and supplied != initial:
+                raise SystemExit("--resume must retain the recorded --active-skill selection")
+            try:
+                args.deferred_skills.select(initial)
+            except ValueError as exc:
+                raise SystemExit(f"--resume: {exc}") from None
         objective = recorded.objective
         max_steps = recorded.total_steps(args.mission_steps)
         # The run's, not this command line's. The replay rebuilds the
@@ -1964,6 +1980,13 @@ def _mission(elf, args, name, style):
                    else ""),
                 style="yellow")
 
+    def request_tools():
+        if native:
+            return [*declared, *_function_schemas([RESULT_TOOL]), ANSWER_FUNCTION]
+        if getattr(elf.client, "supports_tool_calls", True):
+            return declared
+        return []
+
     def chat_fn(messages):
         # The mission loop still reads one JSON object out of the reply; the
         # backend renders any native tool_call back into that shape. So this
@@ -1981,14 +2004,12 @@ def _mission(elf, args, name, style):
             # returns it while the loop is running and nothing here has to
             # know when.
             extra.update({
-                "tools": [*declared,
-                          *_function_schemas([RESULT_TOOL]),
-                          ANSWER_FUNCTION],
+                "tools": request_tools(),
                 "tool_choice": "required",
                 "parallel_tool_calls": True,
             })
         elif declared and getattr(elf.client, "supports_tool_calls", True):
-            extra.update({"tools": declared, "tool_choice": "auto"})
+            extra.update({"tools": request_tools(), "tool_choice": "auto"})
         return mission_ask(messages, stream=streaming, **extra)
 
     def plain_chat_fn(messages, **extra):
@@ -2380,6 +2401,7 @@ def _mission(elf, args, name, style):
                 provider=getattr(elf, "provider", "") or "",
                 model=elf.model,
                 client=elf.client,
+                request_tools=request_tools,
             )
             console.print(
                 f"🪟 context: {window.limit_tokens} input tokens of "
@@ -3297,6 +3319,10 @@ def _main(AgentClass):
                              "load full instructions and tool schemas only "
                              "after the mission selects skills. The configured "
                              "permission and sandbox ceiling stays unchanged.")
+    parser.add_argument("--active-skill", action="append", default=[],
+                        help="Restore a configured skill ID selected in this "
+                             "conversation. Repeatable; requires --defer-skills. "
+                             "Does not restore permissions or approvals.")
     parser.add_argument("--events", type=str,
                         default=os.getenv("MISSION_EVENTS", ""),
                         help="Write an NDJSON account of the mission AS IT "

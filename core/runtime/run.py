@@ -2296,10 +2296,11 @@ class Run:
         with nothing that scores renders nothing, and no bank at all
         renders the objective by itself — the same dict, the same bytes.
         """
+        self._seed_objective = {"role": "user", "content": self._objective_turn(objective)}
         return [
             self.system_turn(),
             *(dict(turn) for turn in self.personality.history),
-            {"role": "user", "content": self._objective_turn(objective)},
+            self._seed_objective,
         ]
 
     def _objective_turn(self, objective: str) -> str:
@@ -2431,13 +2432,12 @@ class Run:
 
     @property
     def pinned(self) -> int:
-        """How many leading messages a compaction may never drop.
+        """The initial boundary through the seeded objective.
 
-        Exactly what :meth:`seed` returns — the system turn, every seeded
-        history turn, and the objective — counted the same way it builds
-        them, because the two must move together: a prefix that grew a
-        message and a count that did not is a compaction that eats the
-        objective and an agent that answers a question nobody asked.
+        This remains the size of :meth:`seed` for callers inspecting the
+        initial prompt. :meth:`_fit` locates that objective by identity after
+        seeded history is compacted; it never treats this original count as
+        a license to remove the objective or pin newly appended tool output.
         """
         return 2 + len(self.personality.history)
 
@@ -2491,8 +2491,12 @@ class Run:
         """
         if self.model.window is None:
             return messages, None
+        objective = getattr(self, "_seed_objective", None)
+        boundary = next((index + 1 for index, message in enumerate(messages)
+                         if message is objective), self.pinned)
         kept, compaction = self.model.window.fit(
-            messages, pinned=self.pinned, note=self._compaction_note,
+            messages, pinned=boundary, note=self._compaction_note,
+            history_start=1 if objective is not None else None,
         )
         if compaction is None:
             return kept, compaction
@@ -3049,6 +3053,12 @@ class Run:
             raise ValueError("the skill selection tool name is already registered")
         self.plane.bus.register(library.descriptor(), self._select_skills)
         try:
+            if library.active:
+                # Rebuild checks from today's manifests and plane, never from
+                # persisted permissions or a previous run's validator.
+                self.personality = replace(
+                    self.personality, grounding=library.grounding(self.offered),
+                    critic=library.critic if library.needs_critic() else None)
             if self.plane.plane_changed is not None:
                 self.plane.plane_changed(self.offered)
         except Exception:

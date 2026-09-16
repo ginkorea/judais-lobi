@@ -1599,6 +1599,25 @@ replay are not supported with this new flag; their flag-absent behavior is
 unchanged. The optional cognitive shadow still loads the configured advisory
 rule packs as before: task-scoped prose and tools are not task-scoped cognition.
 
+For follow-up turns, persist only the successful selector receipt's `selected`
+IDs per owner-checked conversation and pass each as `--active-skill ID` alongside
+`--defer-skills`. The first model call can use these skills immediately. Resolve
+them against the current configured library, discard removed skills at the host,
+and keep an explicit empty selection when the agent clears its task. Every
+turn still validates manifests, discovered tools, grounding and approval gates;
+remembering a selection does not remember permission to execute an action.
+
+Mission conversations compact automatically near the measured model window:
+90% of the input allowance triggers compaction towards 75%, after reserving
+output tokens and counting the current function schemas. The budget is estimated,
+not tokenizer-exact. Older tool round trips go first, then older conversation
+exchanges. System instructions, the current objective, the latest conversation
+exchange and current tool work remain. Removed history is represented by short,
+explicitly incomplete quotations, not a generated comprehensive summary. The
+original history and audit remain intact; `step_started.compacted` records what
+was removed. A protected prefix larger than the window cannot be solved by
+history compaction alone.
+
 `--skill` **repeats**, and several manifests become one mission — which is how
 a platform ships a *family* of skills rather than one file per combination it
 can imagine. `--skill analyst --skill research` is one mission holding both

@@ -909,7 +909,7 @@ CLI_FLAGS: tuple[str, ...] = (
     "--top-p", "--seed", "--protocol", "--no-stream", "--control",
     "--gate-wait", "--replay", "--grant",
     "--campaign", "--campaign-plan",
-    "--no-grounding", "--defer-skills",
+    "--no-grounding", "--defer-skills", "--active-skill",
     "--cognition", "--compiled-context", "--graph-context",
     "--swarm-steering",
     "--version",

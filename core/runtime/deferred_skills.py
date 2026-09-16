@@ -69,7 +69,8 @@ class DeferredSkills:
             "Configured skill and capability index (loadable, not all active):",
             f"Call {self.tool_name} with the skill IDs needed for this task. "
             "You may select several, then replace that selection as the task "
-            "changes. Full instructions and tool schemas become available on "
+            "changes. Already active skills need not be selected again. "
+            "Full instructions and tool schemas become available on "
             "the next step. A greeting needs no skill selection. Unselected "
             "tools cannot be called until selected, but are not thereby absent. "
             "A question about platform data requires selecting its relevant "
