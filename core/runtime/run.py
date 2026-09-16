@@ -80,6 +80,7 @@ store.  The two do not meet: nothing here imports that one, and
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import json
 import threading
@@ -187,6 +188,8 @@ class Personality:
     #: A :class:`~core.runtime.grounding.GroundingValidator`, or ``None``
     #: for a mission nobody configured a grammar for.
     grounding: Optional[GroundingValidator] = None
+    #: Optional task-scoped reading/exposure within the plane's fixed ceiling.
+    deferred_skills: Any = field(default=None, kw_only=True)
     #: A :class:`~core.critic.mission.MissionCritic`, or ``None``.
     #: Duck-typed rather than imported: a mission not using a critic must
     #: not pay for pydantic and a transport.
@@ -1652,6 +1655,13 @@ class Run:
             if widened != plane.gated:
                 plane = replace(plane, gated=widened)
         self.plane = plane
+        if self.personality.deferred_skills is not None:
+            library = self.personality.deferred_skills.clone()
+            if plane.store_branch:
+                library.tool_name += "_" + hashlib.sha256(
+                    plane.store_branch.encode()).hexdigest()[:12]
+            self.personality = replace(self.personality, deferred_skills=library)
+        self._initial_personality = self.personality
         if self.model.native and ANSWER_TOOL in self.offered:
             # Refused at construction, and refused rather than worked
             # around. Under `tool_choice="required"` the model's only way
@@ -1906,6 +1916,10 @@ class Run:
         this returns exactly what it always returned.
         """
         names = list(self.plane.offered)
+        library = self.personality.deferred_skills
+        if library is not None:
+            names = [name for name in names if library.exposes(name)]
+            names.append(library.tool_name)
         if self.plane.store_tool:
             names.append(self.plane.store_tool)
         if self.personality.memory is not None:
@@ -2353,6 +2367,8 @@ class Run:
         """
         return {"role": "system", "content": stacked(
             self.personality.system_message,
+            (self.personality.deferred_skills.prompt()
+             if self.personality.deferred_skills is not None else ""),
             self._protocol_text(),
             "Tool catalogue:\n" + self.catalogue(),
             self._conduct_text(),
@@ -2874,6 +2890,10 @@ class Run:
         # back is the instant the MISSION began, which is a parent's when a
         # parent handed one down.
         started = self.bounds.begin()
+        if self._initial_personality.deferred_skills is not None:
+            self.personality = replace(
+                self._initial_personality,
+                deferred_skills=self._initial_personality.deferred_skills.clone())
         if self._started_at is None:
             self._started_at = started
         # Per run and not per runner: a runner used twice must not open its
@@ -2910,7 +2930,17 @@ class Run:
         registered = self._register_store()
         # Beside the store tool and before the baseline below, so the two
         # memory tools are never read as a plane that grew under the run.
-        remembered = self._register_memory()
+        remembered = []
+        selected_tool = ""
+        try:
+            remembered = self._register_memory()
+            selected_tool = self._register_skill_selector()
+        except Exception:
+            for name in remembered:
+                self.plane.bus.unregister(name)
+            if registered:
+                self.plane.close_store()
+            raise
         # The baseline for "the plane grew", taken AFTER the store tool is on
         # the bus so the mission's own descriptor is never read as an
         # arrival. Everything registered at this instant — every local tool
@@ -2937,6 +2967,8 @@ class Run:
         if resumption is None:
             self.observer.emit(MISSION_STARTED, **self.opening(objective))
         try:
+            if resumption is not None and self.personality.deferred_skills is not None:
+                self._restore_skill_selection(resumption.steps)
             finished = await self._loop(objective, transcript, resumption)
             # After the answer is settled and before `mission_finished`
             # goes out, which is the only moment a reflection can read a
@@ -2978,6 +3010,8 @@ class Run:
             # memory tools.
             for name in remembered:
                 self.plane.bus.unregister(name)
+            if selected_tool:
+                self.plane.bus.unregister(selected_tool)
             # Nothing to withdraw from `bus.audit_context` any more, and
             # that is the point of `step` riding the dispatch: a column
             # that is a parameter of the call cannot be left behind on a
@@ -3002,6 +3036,70 @@ class Run:
                 usage=transcript.usage.as_record(self.model.rate),
                 started_at=self._started_at,
                 stopped_with_draft=transcript.delivered_draft))
+
+    def _register_skill_selector(self) -> str:
+        library = self.personality.deferred_skills
+        if library is None:
+            return ""
+        if library.tool_name in (self.plane.registered() or ()):
+            raise ValueError("the skill selection tool name is already registered")
+        self.plane.bus.register(library.descriptor(), self._select_skills)
+        try:
+            if self.plane.plane_changed is not None:
+                self.plane.plane_changed(self.offered)
+        except Exception:
+            self.plane.bus.unregister(library.tool_name)
+            raise
+        return library.tool_name
+
+    def _restore_skill_selection(self, steps: Sequence[Any]) -> None:
+        """Rebuild exposure and obligations from completed selector receipts."""
+        name = self.personality.deferred_skills.tool_name
+        for step in steps:
+            for call in (step.calls or [step]):
+                if call.tool != name or call.exit_code != 0:
+                    continue
+                try:
+                    result = json.loads(call.output)
+                except (TypeError, ValueError):
+                    raise ValueError("cannot restore the recorded skill selection") from None
+                if not isinstance(result, dict) or "selected" not in result:
+                    # A refused selector call is a normal error response, not
+                    # a transition; a forged argument never acquires authority.
+                    continue
+                restored = self._select_skills(skills=result["selected"])
+                if "error" in restored:
+                    raise ValueError("recorded skills are not configured for this resume")
+
+    def _select_skills(self, skills: Any = None, **unexpected: Any) -> dict:
+        """Change exposure atomically; retain the original governance ceiling."""
+        if unexpected:
+            return {"error": "select_skills accepts only configured skill IDs"}
+        candidate = self.personality.deferred_skills.clone()
+        try:
+            candidate.select(skills)
+            names = [name for name in self.plane.offered if candidate.exposes(name)]
+            grounding = candidate.grounding([*names, candidate.tool_name,
+                                             self.plane.store_tool])
+        except (ValueError, TypeError):
+            return {"error": "skills must be a list of configured skill IDs"}
+        before = self.offered
+        previous = self.personality
+        self.personality = replace(
+            self.personality, deferred_skills=candidate, grounding=grounding,
+            critic=candidate.critic if candidate.needs_critic() else None)
+        after = self.offered
+        try:
+            if self.plane.plane_changed is not None:
+                self.plane.plane_changed(after)
+        except Exception:
+            self.personality = previous
+            raise
+        self._pending.extend([f"-{name}" for name in before if name not in after]
+                             + [f"+{name}" for name in after if name not in before]
+                             + ["skill instructions updated"])
+        return {"selected": list(candidate.active), "available_tools": after,
+                "authority_changed": False}
 
     def _register_store(self) -> str:
         """Put the result store on the bus for the length of this run.
@@ -4150,6 +4248,8 @@ class Run:
         # the next call only. It dies with the turn, because the next step
         # is a decision the model has not made yet.
         cancel_step = False
+        declared_at_start = (set(self.offered)
+                             if self.personality.deferred_skills is not None else None)
 
         for ordinal, entry in enumerate(wanted):
             name = entry["name"]
@@ -4179,7 +4279,8 @@ class Run:
                     call_id=entry["id"], ordinal=ordinal, error=problem))
                 reject(problem, entry["id"], name)
                 continue
-            if not self._offers(name):
+            if ((declared_at_start is not None and name not in declared_at_start)
+                    or not self._offers(name)):
                 # Unreachable through a decoder constrained to the declared
                 # namespace, which is the point of the protocol — and kept
                 # anyway, because the constraint is the SERVER's promise and

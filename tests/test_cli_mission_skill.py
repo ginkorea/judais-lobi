@@ -117,6 +117,70 @@ def run_cli(MockClass, *extra):
         _main(MockClass)
 
 
+class TestDeferredSkillExposure:
+    @pytest.mark.parametrize("initial_deferred", [False, True])
+    def test_resume_cannot_change_loading_mode(self, elf, skill_file, tmp_path,
+                                             initial_deferred):
+        from core.durable import RunStore
+        MockClass, agent = elf
+        replies = [json.dumps({"tool": "select_skills", "arguments": {"skills": ["recon"]}})
+                   if initial_deferred else json.dumps({"tool": "mcp.governed_read",
+                                                         "arguments": {"asset_id": "asset.5f21"}})]
+
+        def fail_after_one(**kw):
+            if replies:
+                return replies.pop(0)
+            raise RuntimeError("model stopped")
+
+        agent.client.chat.side_effect = fail_after_one
+        flags = ["--defer-skills"] if initial_deferred else []
+        with pytest.raises(SystemExit):
+            run_cli(MockClass, "--skill", str(skill_file), *flags)
+        run_id = RunStore(tmp_path / "runs").list()[0].run_id
+        other = [] if initial_deferred else ["--defer-skills"]
+        with pytest.raises(SystemExit, match="retain the recorded"):
+            run_resume(MockClass, run_id, "--skill", str(skill_file), *other)
+
+    def test_greeting_loads_index_not_instructions_or_full_schema(self, elf, skill_file):
+        MockClass, agent = elf
+        agent.replies = ['{"answer":"Yes, I am here."}']
+        run_cli(MockClass, "--skill", str(skill_file), "--defer-skills")
+        system = agent.seeds[0][0]["content"]
+        assert "Configured skill and capability index" in system
+        assert "select_skills" in system
+        assert "Start broad, then narrow by facet." not in system
+        assert "asset_id (string, required)" not in system
+
+    def test_selection_loads_skill_and_tool_before_use(self, elf, skill_file):
+        MockClass, agent = elf
+        original_chat = agent.client.chat.side_effect
+        schemas = []
+
+        def capture(**kw):
+            schemas.append([item["function"]["name"] for item in kw.get("tools", [])])
+            return original_chat(**kw)
+
+        agent.client.chat.side_effect = capture
+        agent.replies.insert(0, json.dumps({"tool": "select_skills",
+                                           "arguments": {"skills": ["recon"]}}))
+        run_cli(MockClass, "--skill", str(skill_file), "--defer-skills")
+        assert "Start broad, then narrow by facet." not in agent.seeds[0][0]["content"]
+        assert "Start broad, then narrow by facet." in agent.seeds[1][0]["content"]
+        assert "asset_id (string, required)" in agent.seeds[1][0]["content"]
+        assert "select_skills" in schemas[0]
+        assert "mcp.governed_read" not in schemas[0]
+        assert "mcp.governed_read" in schemas[1]
+
+    def test_no_grounding_stays_an_operator_choice_after_selection(self, elf, skill_file):
+        MockClass, agent = elf
+        agent.replies = [json.dumps({"tool": "select_skills",
+                                    "arguments": {"skills": ["recon"]}}),
+                         '{"answer":"asset.invented"}']
+        run_cli(MockClass, "--skill", str(skill_file), "--defer-skills",
+                "--no-grounding")
+        assert len(agent.seeds) == 2
+
+
 class TestTheHappyPath:
     def test_the_skills_prompt_and_persona_both_reach_the_model(self, elf, skill_file):
         MockClass, agent = elf

@@ -386,14 +386,26 @@ def _load_skill(args):
     run it always was.
     """
     named = _skill_values(args)
+    if getattr(args, "defer_skills", False) and any(
+            getattr(args, flag, False)
+            for flag in ("swarm", "campaign", "campaign_plan")):
+        raise SystemExit("--defer-skills currently supports direct missions, "
+                         "not swarm or campaign execution")
     if not named:
+        if getattr(args, "defer_skills", False):
+            raise SystemExit("--defer-skills requires at least one --skill")
         return None
 
     from core.runtime.skills import (SkillManifestError, compose_manifests,
                                      resolve_skill)
 
     try:
-        return compose_manifests([resolve_skill(value) for value in named])
+        resolved = [resolve_skill(value) for value in named]
+        manifest = compose_manifests(resolved)
+        if getattr(args, "defer_skills", False):
+            from core.runtime.deferred_skills import DeferredSkills
+            args.deferred_skills = DeferredSkills(resolved)
+        return manifest
     except SkillManifestError as exc:
         raise SystemExit(f"--skill: {exc}")
 
@@ -861,7 +873,7 @@ def _mission_tools(manifest, discovered, style, bus=None):
 RUN_META_FLAGS = (
     "mission_steps", "provider", "model", "profile", "unsandboxed", "skill",
     "swarm", "events", "control", "history", "gate_tool", "temperature",
-    "top_p", "seed", "no_grounding",
+    "top_p", "seed", "no_grounding", "defer_skills",
 )
 
 #: The step ceiling a mission runs under when nobody says otherwise: **none**.
@@ -941,15 +953,16 @@ def _run_meta_flags(args) -> dict:
 
 
 def _personality_of(system_message, history, validator, critic, manifest,
-                    memory=None):
+                    memory=None, deferred_skills=None):
     """What the model is told, and what it is held to."""
     from core.runtime.run import Personality
 
     return Personality(
         system_message=system_message,
         history=history,
-        grounding=validator,
-        critic=critic,
+        grounding=None if deferred_skills is not None else validator,
+        critic=None if deferred_skills is not None else critic,
+        deferred_skills=deferred_skills,
         # The memory bank is what the model is TOLD it may remember and
         # recall — core blocks in the system turn, a titles-only hint beside
         # the objective, two tools on the plane — so it is this object's.
@@ -1317,6 +1330,8 @@ def _mission(elf, args, name, style):
     replay = None
 
     if replay_id:
+        if getattr(args, "defer_skills", False):
+            raise SystemExit("--defer-skills does not yet support recorded replay")
         # The same door `--resume` has, and for the same reason: every
         # refusal a replay can meet — no store, no such run, no model log,
         # no recorded plane, the wrong objective — is answered before a run
@@ -1327,6 +1342,8 @@ def _mission(elf, args, name, style):
                                      tools=replay_tools)
         except ReplayRefused as exc:
             raise SystemExit(f"--replay: {exc}")
+        if replay.meta.meta.get("flags", {}).get("defer_skills"):
+            raise SystemExit("recorded replay of deferred-skill missions is not yet supported")
         objective = replay.objective
         # The run's, not this command line's — the recorded messages were
         # made in one protocol's shape and the loop about to be handed them
@@ -1364,6 +1381,11 @@ def _mission(elf, args, name, style):
         except ResumeRefused as exc:
             raise SystemExit(f"--resume: {exc}")
         run_id = recorded.run_id
+        previous_deferred = bool(recorded.meta.meta.get("flags", {}).get("defer_skills"))
+        if previous_deferred != bool(getattr(args, "defer_skills", False)):
+            raise SystemExit("--resume must retain the recorded --defer-skills mode")
+        if getattr(args, "defer_skills", False) and recorded.staged:
+            raise SystemExit("--defer-skills cannot resume a staged mission")
         objective = recorded.objective
         max_steps = recorded.total_steps(args.mission_steps)
         # The run's, not this command line's. The replay rebuilds the
@@ -1553,8 +1575,10 @@ def _mission(elf, args, name, style):
     # can read it whether or not that happened.
     critic = None
 
+    deferred_skills = getattr(args, "deferred_skills", None)
     system_message = "\n\n".join(
-        part for part in (elf.system_message, manifest.prompt if manifest else "")
+        part for part in (elf.system_message, manifest.prompt
+                          if manifest and deferred_skills is None else "")
         if part and part.strip()
     )
 
@@ -2241,6 +2265,16 @@ def _mission(elf, args, name, style):
                     # measured on — see `core.runtime.reading`.
                     ask=lambda prompt: str(plain_chat_fn(
                         [{"role": "user", "content": prompt}]) or ""))
+                if deferred_skills is not None:
+                    def selected_validator(selected, offered):
+                        config = GroundingConfig.from_mapping(selected.grounding)
+                        if config is None:
+                            return None
+                        return GroundingValidator.from_config(
+                            config.offering(offered),
+                            ask=lambda prompt: str(plain_chat_fn(
+                                [{"role": "user", "content": prompt}]) or ""))
+                    deferred_skills.validator_factory = selected_validator
             # The second opinion, and the ONE place the manifest's switch
             # for it is read. Off unless a skill wrote `critic: true`, so a
             # deployment that never heard of it builds nothing, reads no
@@ -2251,6 +2285,8 @@ def _mission(elf, args, name, style):
                 from core.critic.mission import MissionCritic
 
                 critic = MissionCritic()
+                if deferred_skills is not None:
+                    deferred_skills.critic = critic
                 if critic.available:
                     console.print(
                         f"🧐 critic: {critic.provider} — an answer this run "
@@ -2445,7 +2481,8 @@ def _mission(elf, args, name, style):
                     f"block(s), {len(bank.notes())} note(s)",
                     style=style)
             personality = _personality_of(system_message, history, validator,
-                                          critic, manifest, memory=bank)
+                                          critic, manifest, memory=bank,
+                                          deferred_skills=deferred_skills)
             plane = _plane_of(bus, tool_names, gated, manifest, _redeclare,
                               grants)
             if grants:
@@ -3255,6 +3292,11 @@ def _main(AgentClass):
                              "mission's name and its answer shape, the rest "
                              "add tools, prompt and grounding strictness "
                              "(env: MISSION_SKILL, os.pathsep-separated)")
+    parser.add_argument("--defer-skills", action="store_true",
+                        help="Expose a compact index of the configured skills; "
+                             "load full instructions and tool schemas only "
+                             "after the mission selects skills. The configured "
+                             "permission and sandbox ceiling stays unchanged.")
     parser.add_argument("--events", type=str,
                         default=os.getenv("MISSION_EVENTS", ""),
                         help="Write an NDJSON account of the mission AS IT "

@@ -487,6 +487,7 @@ releases.
 | `--mcp-token` | `MCP_TOKEN` | the bearer token, paired with the `--mcp-url` in the same position. **Use the variable**: argv is world-readable |
 | `--mcp-timeout` | `MCP_TIMEOUT_S` | per-call timeout for MCP tool calls, in seconds, for every server on the plane. A property of the platform holding the other end, like `--gate-wait`: a broker that stages a large bundle before returning its handle legitimately takes longer than the default 30. Non-positive means the default; zero is not a value |
 | `--skill` | `MISSION_SKILL` | the manifest directory or file, or the NAME of a shipped pack — `research`, `coding`, `analyst` (§5). Repeatable: several compose into one mission, first is primary (§5, "Composing skills"). The variable takes an `os.pathsep`-separated list |
+| `--defer-skills` | — | direct missions only: opt in to an initial capability index; the mission selects configured skills on demand using `select_skills`. Full skill prose, function schemas and dispatch membership change together. The installed permission/sandbox ceiling is unchanged; accumulated evidence obligations survive task switches and direct resumes. Swarm/campaign combinations are refused before execution |
 | `--swarm` | `MISSION_SWARM` | plan the mission as steps rather than one loop |
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native` tool calling |
 | `--no-stream` | `MISSION_STREAM` | suppress `answer_delta` |
@@ -1589,6 +1590,14 @@ one value will keep to one is a claim about your plane. See §9 and `EVAL.md`
 §19.
 
 ### Composing skills
+
+For a direct conversational mission, `--defer-skills` keeps a compact index
+available and loads the full prose and schemas only after `select_skills`.
+It does not narrow permissions, bypass approval gates or erase checks already
+incurred by earlier selected skills. Swarm/campaign execution and recorded
+replay are not supported with this new flag; their flag-absent behavior is
+unchanged. The optional cognitive shadow still loads the configured advisory
+rule packs as before: task-scoped prose and tools are not task-scoped cognition.
 
 `--skill` **repeats**, and several manifests become one mission — which is how
 a platform ships a *family* of skills rather than one file per combination it
