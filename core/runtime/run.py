@@ -3454,7 +3454,7 @@ class Run:
                     return done
                 continue
 
-            name = str(decision.get("tool") or "")
+            name = self._dispatch_name(str(decision.get("tool") or ""))
             arguments = decision.get("arguments") or {}
             if not isinstance(arguments, dict):
                 problem = (
@@ -3614,6 +3614,23 @@ class Run:
         if not isinstance(info, dict) or "error" in info:
             return arguments
         return empty_envelope(info.get("input_schema"), arguments)
+
+    def _dispatch_name(self, name: str, offered: Optional[Sequence[str]] = None) -> str:
+        """Resolve one unambiguous spelling in the active plane, never a gate.
+
+        Skill prose uses run_code; a bridge may register mcp.run_code. Repeated
+        spelling refusals taught the model that the advertised tool was absent.
+        Use the same whole-tool comparison as skill resolution, not suffix or
+        fuzzy matching. Raw model replies stay recorded; dispatch receipts name
+        the actual tool. Approval proposals retain their original spelling.
+        """
+        choices = self.offered if offered is None else offered
+        if name in choices:
+            return name
+        canonical = self._near_miss(name, choices)
+        if canonical and canonical not in self.plane.gated:
+            return canonical
+        return name
 
     def _schema_violation(self, name: str, arguments: Dict[str, Any]) -> str:
         """What is wrong with *arguments* against the tool's own schema, or ``""``.
@@ -4319,7 +4336,8 @@ class Run:
                              if self.personality.deferred_skills is not None else None)
 
         for ordinal, entry in enumerate(wanted):
-            name = entry["name"]
+            name = self._dispatch_name(
+                entry["name"], sorted(declared_at_start) if declared_at_start is not None else None)
             arguments = entry["arguments"]
             # The call boundary this protocol has and the JSON one does
             # not: a turn may carry several calls, and the operator gets to

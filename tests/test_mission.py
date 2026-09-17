@@ -2070,7 +2070,10 @@ class TestTheRefusalNamesTheNearMiss:
         model = ScriptedModel(tool_call(spelling), '{"answer": "done"}')
         offered = ["mcp.catalog_search_assets", "mcp.catalog_get_asset",
                    "mcp.runs_list"]
-        transcript = MissionRunner(model, bus, offered, max_steps=4).run("go")
+        # Gated names retain the original proposal; only ungated aliases are
+        # resolved automatically. Their refusal must still teach the spelling.
+        transcript = MissionRunner(model, bus, offered, max_steps=4,
+                                   gated=offered).run("go")
         return transcript.steps[0].error
 
     @pytest.mark.parametrize("spelling", [
