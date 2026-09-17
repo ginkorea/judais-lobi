@@ -117,6 +117,7 @@ class ContextWindowManager:
         private name is kept as an alias for the callers that had it.
         """
         cfg = self._config
+        reported_output = getattr(backend_caps, "max_output_tokens", None)
         # Backend capabilities override (instance-aware).
         #
         # `max_ctx` alone is enough, and that is not a loosening.  A served
@@ -141,13 +142,13 @@ class ContextWindowManager:
         # Model overrides from config
         if cfg.model_overrides and model in cfg.model_overrides:
             max_ctx = int(cfg.model_overrides[model])
-            max_out = int(cfg.max_output_tokens or 4096)
+            max_out = int(reported_output or cfg.max_output_tokens or 4096)
             return ModelContextProfile(max_ctx, max_out, source="config")
 
         # Global config overrides
         if cfg.max_context_tokens:
             max_ctx = int(cfg.max_context_tokens)
-            max_out = int(cfg.max_output_tokens or 4096)
+            max_out = int(reported_output or cfg.max_output_tokens or 4096)
             return ModelContextProfile(max_ctx, max_out, source="config")
 
         # Default model lookup
@@ -179,6 +180,11 @@ class ContextWindowManager:
         # stated guess; a cap derived from the wrong machine's device list
         # is a wrong number wearing a measurement's clothes — and it cost a
         # `torch` import at resolve time to produce.
+        # Even if the endpoint's context probe was unavailable, a declared
+        # completion bound must be reserved against the fallback context.
+        if reported_output:
+            base = ModelContextProfile(base.max_context_tokens, int(reported_output),
+                                       source=base.source)
         return base
 
     #: The name this cascade was resolved by before it had a second caller.
@@ -447,6 +453,15 @@ class MissionWindow:
     def limit_tokens(self) -> int:
         """Input tokens this window allows, output reserve already taken out."""
         return self.profile.max_input_tokens
+
+    def reserve_output_tokens(self, tokens: int) -> None:
+        """Raise a recovery call's reserve before its messages are fitted."""
+        profile = self.profile
+        if tokens <= 0 or tokens >= profile.max_context_tokens:
+            raise ValueError("output reserve must fit within the model context")
+        self._profile = ModelContextProfile(
+            profile.max_context_tokens, max(tokens, profile.max_output_tokens),
+            profile.source)
 
     def estimate(self, messages: Sequence[Dict[str, str]]) -> int:
         """This module's one token estimate, over a message list."""

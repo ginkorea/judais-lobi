@@ -1073,7 +1073,7 @@ def _observer_of(store, *sinks):
 
 
 def _model_of(chat_fn, plain_chat_fn, protocol, window, streaming, json_mode,
-              usage_fn, tool_calls_fn, rate):
+              usage_fn, tool_calls_fn, rate, recover_output_budget=None):
     """The client, the protocol, and the side channels.
 
     Two functions and not one: ``plain`` is the same model with **no tools
@@ -1099,6 +1099,7 @@ def _model_of(chat_fn, plain_chat_fn, protocol, window, streaming, json_mode,
         usage_fn=usage_fn,
         tool_calls_fn=tool_calls_fn,
         rate=rate,
+        recover_output_budget=recover_output_budget,
     )
 
 
@@ -2535,7 +2536,8 @@ def _mission(elf, args, name, style):
                 # decoder is the default.
                 bool(getattr(getattr(elf.client, "capabilities", None),
                              "supports_json_mode", False)),
-                usage_fn, tool_calls_fn, rate)
+                usage_fn, tool_calls_fn, rate,
+                recover_output_budget=getattr(elf.client, "recover_output_budget", None))
 
             # Which runner continues a recorded run is the RUN's fact and
             # not this command line's — the same rule `--protocol` and the

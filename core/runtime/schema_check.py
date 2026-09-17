@@ -60,7 +60,26 @@ try:                                            # pragma: no cover - import
 except Exception:                               # pragma: no cover - import
     _jsonschema = None
 
-__all__ = ["check", "engine", "JSONSCHEMA", "BUILTIN"]
+__all__ = ["check", "empty_envelope", "engine", "JSONSCHEMA", "BUILTIN"]
+
+
+def empty_envelope(schema: Any, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove only the empty protocol wrapper for an explicitly argumentless tool.
+
+    Some tool-calling models put the mission envelope's `arguments` inside
+    the native function arguments. No values may be discarded, nor may a
+    real property named `arguments` be reinterpreted. Unknown/composite schemas
+    keep the original call; the normal schema check still runs afterwards.
+    """
+    if (arguments == {"arguments": {}}
+            and isinstance(schema, dict)
+            and schema.get("type") == "object"
+            and schema.get("properties") == {}
+            and schema.get("additionalProperties") is False
+            and set(schema) <= {"type", "properties", "additionalProperties",
+                                "title", "description", "$schema"}):
+        return {}
+    return arguments
 
 #: What :func:`engine` answers when the real validator is installed.
 JSONSCHEMA = "jsonschema"

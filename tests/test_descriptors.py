@@ -14,7 +14,67 @@ from core.tools.descriptors import (
     RAG_CRAWLER_DESCRIPTOR,
     VOICE_DESCRIPTOR,
     ALL_DESCRIPTORS,
+    same_tool,
+    summarize_input_schema,
 )
+
+
+class TestWholeToolAliases:
+    @pytest.mark.parametrize("one, other", [
+        ("runs_get", "runs.get"),
+        ("runs_get", "mcp.runs_get"),
+        ("runs.get", "mcp2.runs_get"),
+        ("catalog.search_assets", "alpha.catalog_search_assets"),
+        ("Read", "mcp.Read"),
+        ("run_shell_command", "partner-two.run_shell_command"),
+    ])
+    def test_full_remote_tool_names_still_resolve(self, one, other):
+        assert same_tool(one, other)
+        assert same_tool(other, one)
+
+    @pytest.mark.parametrize("one, other", [
+        ("Read", "mcp.stamp_read"),
+        ("Read", "mcp.stamp.read"),
+        ("read", "stamp_read"),
+        ("get", "mcp.runs_get"),
+        ("search_assets", "mcp.catalog_search_assets"),
+        ("runs_get", "mcp.admin_runs_get"),
+        ("mcp.runs_get", "mcp2.runs_get"),
+        ("", "mcp.read"),
+    ])
+    def test_operation_tails_do_not_resolve_as_whole_tools(self, one, other):
+        assert not same_tool(one, other)
+        assert not same_tool(other, one)
+
+    def test_optional_local_read_does_not_add_a_campaign_tool(self):
+        from core.runtime.skills import SkillManifest
+
+        skill = SkillManifest(name="inspect", description="Inspect environment",
+                              allowed_tools=("runs_get", "Read"),
+                              optional_tools=frozenset({"Read"}))
+        assert skill.resolve(["mcp.runs_get", "mcp.stamp_read"]) == ["mcp.runs_get"]
+        assert skill.resolve(["mcp.runs_get", "Read", "mcp.stamp_read"]) == [
+            "mcp.runs_get", "Read"]
+
+
+class TestNumericSchemaSummary:
+    def test_inclusive_bounds_include_zero_and_negative_values(self):
+        summary = summarize_input_schema({"properties": {
+            "limit": {"type": "integer", "minimum": 0, "maximum": 50},
+            "offset": {"type": "number", "minimum": -0.5, "maximum": 1.25}},
+            "required": ["limit"]})
+        assert summary == ("limit (integer, required, minimum 0, maximum 50), "
+                           "offset (number, minimum -0.5, maximum 1.25)")
+
+    def test_exclusive_bounds_use_distinct_wording(self):
+        assert summarize_input_schema({"properties": {
+            "ratio": {"type": "number", "exclusiveMinimum": 0,
+                      "exclusiveMaximum": 1}}}) == "ratio (number, greater than 0, less than 1)"
+
+    def test_non_numeric_and_boolean_bounds_are_not_printed_as_numbers(self):
+        assert summarize_input_schema({"properties": {
+            "limit": {"type": "integer", "minimum": False, "maximum": "50",
+                      "exclusiveMinimum": True, "exclusiveMaximum": None}}}) == "limit (integer)"
 
 
 class TestSandboxProfile:

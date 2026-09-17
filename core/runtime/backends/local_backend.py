@@ -79,6 +79,7 @@ DEFAULT_LOCAL_MODEL = "local-model"
 #: were not consulted on.  What ended is the silent state — no bound the
 #: harness set, and no way to say an answer was cut off.
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
+MAX_RECOVERY_OUTPUT_TOKENS = 16384
 
 #: Where a deployment raises (or lowers) :data:`DEFAULT_MAX_OUTPUT_TOKENS`.
 #: Read here, like ``LOCAL_API_BASE`` and ``LOCAL_MODEL``, because it is
@@ -225,16 +226,11 @@ class LocalBackend(Backend):
         self._model = model or os.getenv("LOCAL_MODEL") or None
         self._max_context_tokens = max_context_tokens
         self._max_output_tokens = max_output_tokens
-        #: What goes in the request when nobody named a number.  Kept apart
-        #: from ``_max_output_tokens`` on purpose: that one is what a
-        #: caller DECLARED and is what :attr:`capabilities` reports, and
-        #: ``core.runtime.context_window`` sizes every prompt off the
-        #: capability.  Announcing a ceiling nobody declared would move the
-        #: input window — which is prompt bytes, on a path this change is
-        #: not allowed to touch — so the default is a fact about the
-        #: request and stays one.
+        # One effective number feeds both requests and capabilities, so an
+        # environment override cannot exceed the input window's reserve.
         self._output_bound = (max_output_tokens if max_output_tokens is not None
                               else _env_max_output_tokens())
+        self._recovery_output_bound: Optional[int] = None
         self._api_key = api_key or os.getenv("LOCAL_API_KEY") or None
         self._supports_tool_calls = supports_tool_calls
         self._session = session if session is not None else requests
@@ -243,6 +239,36 @@ class LocalBackend(Backend):
         self.streaming_long_s = streaming_long_s
         self.last_usage = None
         self.last_tool_calls = []
+
+    @property
+    def output_bound(self) -> int:
+        """The default sent on requests and reserved from their input window."""
+        return (self._output_bound if self._output_bound is not None
+                else self._recovery_output_bound or DEFAULT_MAX_OUTPUT_TOKENS)
+
+    def recover_output_budget(self, usage: Dict[str, Any]) -> Optional[int]:
+        """Raise an implicit default for one explicit caller-owned retry.
+
+        No request is made here. An operator-set ceiling remains a ceiling.
+        The caller must reserve the returned output allowance before retrying,
+        and is responsible for the retry count and recording both calls.
+        """
+        if self._output_bound is not None or not truncation_of(usage.get("finish_reason")):
+            return None
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+        if (type(prompt) is not int or prompt < 0
+                or type(completion) is not int or completion < self.output_bound):
+            return None
+        context = self.capabilities.max_context_tokens
+        if not context:
+            return None
+        raised = min(self.output_bound * 2, MAX_RECOVERY_OUTPUT_TOKENS,
+                     context - prompt - 1024)
+        if raised <= self.output_bound:
+            return None
+        self._recovery_output_bound = raised
+        return raised
 
     # ── configuration ────────────────────────────────────────────────────
 
@@ -534,8 +560,7 @@ class LocalBackend(Backend):
         # cannot report it.
         body["max_tokens"] = (
             max_tokens if max_tokens is not None
-            else self._output_bound if self._output_bound is not None
-            else DEFAULT_MAX_OUTPUT_TOKENS)
+            else self.output_bound)
         body.update(extra)
         if constrained is not None:
             # AFTER the passthrough, so the typed argument wins over a
@@ -1207,5 +1232,5 @@ class LocalBackend(Backend):
             supports_parallel_tool_calls=self._supports_tool_calls,
             supports_tool_choice_required=self._supports_tool_calls,
             max_context_tokens=max_context,
-            max_output_tokens=self._max_output_tokens,
+            max_output_tokens=self.output_bound,
         )

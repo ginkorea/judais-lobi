@@ -64,6 +64,11 @@ class UnifiedClient:
     def capabilities(self):
         return self._backend.capabilities
 
+    def recover_output_budget(self, usage):
+        """Optional bounded recovery, only on backends that implement it."""
+        recover = getattr(self._backend, "recover_output_budget", None)
+        return recover(usage) if callable(recover) else None
+
     @property
     def default_model(self) -> str:
         """The model this backend sends when the caller names none, or ``""``.

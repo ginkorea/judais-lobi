@@ -99,7 +99,7 @@ from core.redact import scrub_record
 from core.runtime.answer_stream import adrain as adrain_answer
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
 from core.runtime.backends import state as model_state
-from core.runtime.backends.base import SideChannels, capturing
+from core.runtime.backends.base import SideChannels, capturing, truncation_of
 from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
 )
@@ -130,6 +130,7 @@ from core.runtime.results import (
     BRANCH_ARGUMENT, RESULT_TOOL, BranchedStores, MissionResultStore,
 )
 from core.runtime.schema_check import check as check_arguments
+from core.runtime.schema_check import empty_envelope
 from core.runtime.supervisor import (
     NUDGE, NUDGE_NOTE, STUCK, Supervisor, WIND_UP,
 )
@@ -1418,6 +1419,8 @@ class Model:
     #: caller's, or one per run" is what the loop has always done, and it
     #: is how a staged turn keeps ONE ledger across its sub-missions.
     ledger: Optional[Ledger] = None
+    #: Raises an implicit output ceiling for one explicitly recorded retry.
+    recover_output_budget: Optional[Callable[[Dict[str, Any]], Optional[int]]] = None
 
     #: What this model has already been heard to say about itself, so it
     #: is not said twice.  Built on first use rather than declared,
@@ -3251,6 +3254,7 @@ class Run:
         # How many times this run has been handed an empty reply. The only
         # thing the loop asks a model to do over now, and it does so once.
         empty_replies = 0
+        output_retried = False
 
         # Unbounded unless an operator asked for a ceiling — see `_indices`.
         # When they did, `self.bounds.max_steps` is the TOTAL for the run
@@ -3374,6 +3378,37 @@ class Run:
             spent = self.model.spend(transcript.usage, capture)
             step = MissionStep(index=index, raw_reply=reply)
 
+            usage = spent.get("usage", {})
+            finish = truncation_of(usage.get("finish_reason"))
+            if (finish and not reply.strip()
+                    and not self._read_tool_calls(index, capture)):
+                raised = None
+                if (not output_retried and self.model.window is not None
+                        and self.model.recover_output_budget is not None):
+                    raised = self.model.recover_output_budget(usage)
+                    if raised is not None:
+                        self.model.window.reserve_output_tokens(raised)
+                        output_retried = True
+                problem = (
+                    "The model exhausted its output-token budget before producing "
+                    "an answer or tool call "
+                    f"(finish_reason={finish}, completion_tokens="
+                    f"{usage.get('completion_tokens', 'unreported')}).")
+                if raised is not None:
+                    problem += (f" Retrying once with {raised} output tokens; "
+                                "input context will be fitted to the larger reserve.")
+                else:
+                    problem += " No further automatic retry; this is not a JSON-format error."
+                step.error = problem
+                transcript.steps.append(step)
+                self._reject(index, problem, **spent)
+                if raised is None:
+                    transcript.outcome = "incomplete"
+                    return self._with_draft(transcript)
+                messages.append({"role": "user", "content": problem +
+                                 " Keep reasoning brief and provide the answer or next tool call."})
+                continue
+
             if self.model.native:
                 # The whole of the other protocol, in one branch and one
                 # method. Everything it decides — an answer, a gate, a stop
@@ -3444,6 +3479,8 @@ class Run:
                 messages.append({"role": "user", "content": problem})
                 continue
 
+            arguments = self._tool_arguments(name, arguments)
+            step.arguments = dict(arguments)
             if name in self.plane.gated:
                 # `None` back means the gate was ANSWERED on the control
                 # channel while the run stood at it — the call was
@@ -3561,6 +3598,22 @@ class Run:
                              "content": text})
             return
         messages.append({"role": "user", "content": text})
+
+    def _tool_arguments(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Repair an empty envelope before dispatch, never an approval proposal.
+
+        The model recording/raw reply stays unchanged. The tool-call receipt
+        records the actual arguments sent; no nonempty values are rewritten.
+        """
+        if name in self.plane.gated:
+            return arguments
+        try:
+            info = self.plane.bus.describe_tool(name)
+        except Exception:                       # pragma: no cover - defensive
+            return arguments
+        if not isinstance(info, dict) or "error" in info:
+            return arguments
+        return empty_envelope(info.get("input_schema"), arguments)
 
     def _schema_violation(self, name: str, arguments: Dict[str, Any]) -> str:
         """What is wrong with *arguments* against the tool's own schema, or ``""``.
@@ -4309,6 +4362,7 @@ class Run:
                     call_id=entry["id"], ordinal=ordinal, error=problem))
                 reject(problem, entry["id"], name)
                 continue
+            arguments = self._tool_arguments(name, arguments)
             call = MissionCall(tool=name, arguments=dict(arguments),
                                call_id=entry["id"], ordinal=ordinal)
             step.calls.append(call)

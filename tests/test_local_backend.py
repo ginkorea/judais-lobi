@@ -1055,22 +1055,18 @@ class TestEveryRequestCarriesABound:
             "m", [{"role": "user", "content": "x"}])
         assert stub.last_body["max_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS
 
-    def test_the_capability_still_reports_only_what_was_declared(
+    def test_the_capability_reports_the_effective_default_reserve(
             self, stub, monkeypatch):
-        """The bound is a fact about the REQUEST and stays one.
-        `core.runtime.context_window` sizes the input window off
-        `capabilities.max_output_tokens`, so announcing a ceiling nobody
-        declared would move prompt bytes — on the one path this change is
-        not allowed to touch."""
+        """The capability and wire request must reserve the same allowance."""
         monkeypatch.delenv(MAX_OUTPUT_TOKENS_ENV, raising=False)
         assert LocalBackend(
-            endpoint=stub.base).capabilities.max_output_tokens is None
+            endpoint=stub.base).capabilities.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS
 
-    def test_and_an_environment_ceiling_does_not_leak_into_it_either(
+    def test_an_environment_ceiling_also_increases_the_input_reserve(
             self, stub, monkeypatch):
         monkeypatch.setenv(MAX_OUTPUT_TOKENS_ENV, "20000")
         assert LocalBackend(
-            endpoint=stub.base).capabilities.max_output_tokens is None
+            endpoint=stub.base).capabilities.max_output_tokens == 20000
 
 
 class TestACutOffCompletionSaysSo:

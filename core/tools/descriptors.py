@@ -57,15 +57,22 @@ def same_tool(one: Any, other: Any) -> bool:
     Equal after reduction, or one is the other under a namespace — the
     bridge prefixes a discovered server's tools so that one server cannot
     shadow another's, and a manifest, a skill's prose and a model all
-    write the unprefixed name. The suffix is anchored to a segment
-    boundary, so ``runs.get`` is not a spelling of ``xruns.get``.
+    write the unprefixed name. A bridge adds exactly one literal dot
+    before the COMPLETE remote name. Strip that prefix before reducing
+    separators, not arbitrary suffix segments afterwards: ``Read`` must
+    not become an alias for ``mcp.stamp_read``.
     """
     left, right = tool_key(one), tool_key(other)
     if not left or not right:
         return False
-    return (left == right
-            or left.endswith(f".{right}")
-            or right.endswith(f".{left}"))
+    if left == right:
+        return True
+
+    def remote_key(name: Any) -> str:
+        namespace, separator, remote = str(name or "").partition(".")
+        return tool_key(remote) if namespace and separator and remote else ""
+
+    return left == remote_key(other) or right == remote_key(one)
 
 
 @dataclass(frozen=True)
@@ -248,6 +255,12 @@ def summarize_input_schema(schema: Optional[Dict[str, Any]]) -> str:
             notes[-1:] = [f"{notes[-1]}: {values}"] if notes else [values]
         if name in required:
             notes.append("required")
+        for key, label in (("minimum", "minimum"), ("maximum", "maximum"),
+                           ("exclusiveMinimum", "greater than"),
+                           ("exclusiveMaximum", "less than")):
+            bound = spec.get(key)
+            if isinstance(bound, (int, float)) and not isinstance(bound, bool):
+                notes.append(f"{label} {bound}")
         parts.append(f"{name} ({', '.join(notes)})" if notes else str(name))
     return ", ".join(parts)
 
