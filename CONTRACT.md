@@ -398,6 +398,11 @@ rather than from the conversation.
 
 ### `usage`, `cost` and `elapsed_s` — what a run spent
 
+The additive request metadata contract, separate from these existing spend
+fields, is documented in [request metadata](docs/request-metadata.md). It
+includes call/parent identity, phase, sanitized provider metadata, independent
+stop codes, numeric subset provenance and explicit observation coverage.
+
 `usage` is **what the provider said a model call cost**, and it appears in
 two forms.
 

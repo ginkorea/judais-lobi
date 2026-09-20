@@ -28,11 +28,49 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from uuid import uuid4
 from typing import Any, Dict, List, Mapping, Optional
 
-from core.runtime.backends.base import Usage
+from core.runtime.backends.base import CallMetadata, SideChannels, Usage
 
-__all__ = ["Ledger", "Rate", "PricingTable"]
+__all__ = ["Ledger", "Rate", "PricingTable", "RequestContext"]
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    """Caller-owned logical phase and optional actual parent request."""
+
+    phase: str = "mission"
+    parent_request_id: Optional[str] = None
+    parent_call_id: Optional[str] = None
+
+
+def _usage_detail(usage: Usage) -> Dict[str, Any]:
+    """Only named numeric provider subsets; never copy arbitrary extra fields.
+
+    Anthropic cache categories are separate input components, not subsets of
+    its uncached input_tokens. Neither those nor OpenAI subsets are added to
+    the legacy ledger totals. Visible output is not inferred by subtraction.
+    """
+    breakdown = {}
+    for source, container, name, relation in (
+        ("prompt_tokens_details.cached_tokens", "prompt_tokens_details", "cached_tokens", "prompt_subset"),
+        ("completion_tokens_details.reasoning_tokens", "completion_tokens_details", "reasoning_tokens", "completion_subset"),
+        ("cache_read_input_tokens", "", "cache_read_input_tokens", "separate_input_component"),
+        ("cache_creation_input_tokens", "", "cache_creation_input_tokens", "separate_input_component"),
+    ):
+        values = usage.extra.get(container) if container else usage.extra
+        value = values.get(name) if isinstance(values, Mapping) else None
+        if type(value) is int and value >= 0:
+            breakdown[source] = {"tokens": value, "source": "provider", "relation": relation}
+    return {
+        "count_sources": {name: (source if isinstance(source, str) and source in {"reported", "derived", "missing"}
+                                 else "unavailable")
+                          for name in ("prompt_tokens", "completion_tokens", "total_tokens")
+                          for source in (usage.count_sources.get(name, "reported"),)},
+        "provider_breakdown": breakdown,
+        "visible_output_tokens": None,
+    }
 
 
 @dataclass
@@ -65,12 +103,15 @@ class Ledger:
     compaction_events: int = 0
     request_records: List[Dict[str, Any]] = field(default_factory=list)
     latest_request: Optional[Dict[str, Any]] = None
+    latest_usage_detail: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    tracked_phases: set[str] = field(default_factory=set)
 
     #: How many per-call records to keep. The totals do not stop at it.
     MAX_PER_CALL = 256
 
     def begin_request(self, *, run_id: str, branch: str, index: int,
-                      budget: Dict[str, Any], compaction: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                      budget: Dict[str, Any], compaction: Optional[Dict[str, Any]],
+                      context: Optional[RequestContext] = None) -> Dict[str, Any]:
         """Record a windowed loop attempt before calling the backend.
 
         This does not add spend: only ``add`` owns provider accounting. No
@@ -79,7 +120,7 @@ class Ledger:
         self.request_attempts += 1
         if compaction is not None:
             self.compaction_events += 1
-        record = {
+        record: Dict[str, Any] = {
             "request_id": f"{run_id or 'unrecorded'}:{branch or 'direct'}:{self.request_attempts}",
             "step_index": index,
             "started_at": datetime.now(timezone.utc).isoformat(),
@@ -88,17 +129,32 @@ class Ledger:
             "compaction": dict(compaction) if compaction is not None else None,
             "reported_usage": None,
         }
+        if context is not None:
+            self.tracked_phases.add(context.phase)
+            record.update(phase=context.phase, parent_request_id=context.parent_request_id,
+                          identity_source="harness", logical_run_id=run_id or None,
+                          branch=branch or "direct", call_id=uuid4().hex,
+                          parent_call_id=context.parent_call_id)
         self.latest_request = record
         if len(self.request_records) < self.MAX_PER_CALL:
             self.request_records.append(record)
         return record
 
     def end_request(self, request: Dict[str, Any], *, status: str,
-                    usage_reported: bool = False) -> None:
+                    usage_reported: bool = False,
+                    capture: Optional[SideChannels] = None,
+                    failure: Optional[BaseException] = None) -> None:
         """Close an attempt without guessing usage for a failed request."""
         request["status"] = status
         request["finished_at"] = datetime.now(timezone.utc).isoformat()
         request["reported_usage"] = dict(self.latest_call) if usage_reported and self.latest_call else None
+        if "phase" in request:
+            metadata = capture.metadata if capture is not None else None
+            request["call"] = (metadata or CallMetadata()).as_record()
+            request["usage_detail"] = self.latest_usage_detail if usage_reported else None
+            request["ending"] = (metadata.stop_reason if metadata is not None and status == "returned"
+                                 else "cancelled" if status == "cancelled"
+                                 else CallMetadata.failure_reason(failure) if status == "failed" else "unavailable")
 
     # ── the only two ways in ─────────────────────────────────────────────
 
@@ -124,10 +180,12 @@ class Ledger:
         """
         self.observed_calls = max(self.observed_calls, self.calls) + 1
         self.latest_call = None
+        self.latest_usage_detail = None
         if not isinstance(usage, Usage):
             return None
         self._fold(usage.prompt_tokens, usage.completion_tokens,
                    usage.total_tokens, 1)
+        self.latest_usage_detail = _usage_detail(usage)
         if len(self.per_call) < self.MAX_PER_CALL:
             self.per_call.append(usage.as_record())
         self.latest_call = {
@@ -155,6 +213,7 @@ class Ledger:
             return
         self.request_attempts += other.request_attempts
         self.compaction_events += other.compaction_events
+        self.tracked_phases.update(other.tracked_phases)
         room = self.MAX_PER_CALL - len(self.request_records)
         if room > 0:
             self.request_records.extend(other.request_records[:room])
@@ -164,6 +223,7 @@ class Ledger:
         # Absorption order is not request completion order when children run
         # concurrently. There is no defensible "latest" across child ledgers.
         self.latest_call = None
+        self.latest_usage_detail = None
         if other.peak_prompt_tokens is not None:
             self.peak_prompt_tokens = max(
                 self.peak_prompt_tokens or 0, other.peak_prompt_tokens)
@@ -234,7 +294,7 @@ class Ledger:
         No context capacity or compaction is inferred from cumulative tokens.
         Peaks remain exact after the bounded per-call sample fills up.
         """
-        record = {
+        record: Dict[str, Any] = {
             "version": 1,
             "coverage": "ledger_observations_only",
             "observed_calls": max(self.observed_calls, self.calls),
@@ -255,6 +315,13 @@ class Ledger:
                 "omitted_records": self.request_attempts - len(self.request_records),
                 "latest": self.latest_request,
             }
+            if self.tracked_phases:
+                record["request_tracking"].update(
+                    coverage="instrumented_harness_calls_only",
+                    phases=sorted(self.tracked_phases),
+                    nested_tool_provider_calls="unavailable",
+                    internal_retry_usage="unavailable",
+                    compaction_coverage="instrumented_window_fits_only")
         return record
 
 

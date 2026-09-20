@@ -342,6 +342,10 @@ class Compaction:
     dropped_results: int = 0
     dropped_history_messages: int = 0
     request_overhead_tokens: int = 0
+    trigger: str = "input_allowance"
+    trigger_tokens: Optional[int] = None
+    target_tokens: Optional[int] = None
+    retained_categories: Tuple[str, ...] = ()
 
     def as_record(self) -> Dict[str, Any]:
         """The mission stream's ``compacted`` field.  See ``CONTRACT.md``."""
@@ -356,6 +360,11 @@ class Compaction:
             "dropped_results": self.dropped_results,
             "dropped_history_messages": self.dropped_history_messages,
             "request_overhead_tokens": self.request_overhead_tokens,
+            "trigger": self.trigger,
+            "trigger_tokens": self.trigger_tokens,
+            "target_tokens": self.target_tokens,
+            "estimate_method": "characters_plus_message_framing",
+            "retained_categories": list(self.retained_categories),
         }
 
 
@@ -473,10 +482,11 @@ class MissionWindow:
         tools = self._request_tools() if self._request_tools is not None else None
         return estimate_tokens(json.dumps(tools, ensure_ascii=False)) + 16 if tools else 0
 
-    def request_budget(self, messages: Sequence[Dict[str, str]]) -> Dict[str, Any]:
+    def request_budget(self, messages: Sequence[Dict[str, str]], *,
+                       include_tool_schemas: bool = True) -> Dict[str, Any]:
         """The fitted request's estimates, never provider-measured occupancy."""
         profile = self.profile
-        overhead = self.request_overhead()
+        overhead = self.request_overhead() if include_tool_schemas else 0
         estimated = self.estimate(messages) + overhead
         return {
             "context_limit_tokens": profile.max_context_tokens,
@@ -641,6 +651,14 @@ class MissionWindow:
             dropped_results=results,
             dropped_history_messages=len(history_dropped),
             request_overhead_tokens=overhead,
+            trigger="history_headroom" if proactive else "input_allowance",
+            trigger_tokens=trigger,
+            target_tokens=target,
+            retained_categories=tuple(
+                (["pinned_prefix"] if head else [])
+                + (["current_objective", "latest_history_exchange"] if proactive else [])
+                + (["history_quotations"] if history_dropped else [])
+                + (["latest_round_trip"] if tail else [])),
         )
 
 

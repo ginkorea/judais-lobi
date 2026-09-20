@@ -540,6 +540,7 @@ class LocalBackend(Backend):
         # may not be asked for is a refusal about the request, not a call
         # that happened.
         constrained = self.constrained_response_format(json_schema)
+        self.start_call_metadata(model or self.model, self.endpoint)
         # Cleared before anything is sent: a call that raises must not
         # leave the previous call's numbers — or its tool calls — standing
         # for a ledger to count, or a runner to dispatch, a second time.
@@ -619,14 +620,18 @@ class LocalBackend(Backend):
         de-duplication is the run's, not this method's; see
         :meth:`core.runtime.run.Model.watching`.
         """
-        return policy.retry_on_connect(
-            lambda: self._session.post(
+        def post():
+            self.note_transport_attempt()
+            return self._session.post(
                 f"{self.endpoint}/chat/completions",
                 headers=self._headers(),
                 json=body,
                 timeout=CHAT_TIMEOUT,
                 stream=stream,
-            ),
+            )
+
+        return policy.retry_on_connect(
+            post,
             retries=self.CONNECT_RETRIES,
             on_connect_error=lambda exc: self.report_connect_error(
                 exc, model=str(body.get("model") or self._named_model())),
@@ -879,6 +884,7 @@ class LocalBackend(Backend):
                      model=str(payload.get("model") or body.get("model") or ""))
         choices = payload.get("choices") or []
         first = choices[0] if choices else {}
+        self.report_stop(first.get("finish_reason"))
         # Before the empty-choices return, not after it: a completion that
         # produced no content still spent the prompt, and a reply nobody
         # could use is exactly the call worth finding in the ledger.
@@ -1123,6 +1129,7 @@ class LocalBackend(Backend):
             # In a `finally` so that a consumer that walks away mid-stream
             # still leaves behind whatever had been reported by then —
             # the abandoned case is the one that has to work.
+            self.report_stop(finish)
             self.last_usage = (
                 seen if seen is None
                 else replace(seen, finish_reason=truncation_of(finish)))

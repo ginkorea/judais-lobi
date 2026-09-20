@@ -90,7 +90,9 @@ class OpenAIBackend(Backend):
         self.last_usage = None
         self.last_tool_calls = []
         self.report_state(state.ASKING, model=model)
+        self.start_call_metadata(model, None)
         try:
+            self.start_call_metadata(model, str(getattr(self.client, "base_url", "")))
             if stream:
                 return self._track(self.client.chat.completions.create(
                     model=model, messages=messages, stream=True, **extra
@@ -103,6 +105,7 @@ class OpenAIBackend(Backend):
         self.report_state(state.LOADED,
                           model=str(getattr(result, "model", "") or model))
         self.last_usage = Usage.from_payload(getattr(result, "usage", None))
+        self.report_stop(getattr(result.choices[0], "finish_reason", None) if result.choices else None)
         message = result.choices[0].message
         self.last_tool_calls = tool_calls_from(
             getattr(message, "tool_calls", None))
@@ -150,6 +153,8 @@ class OpenAIBackend(Backend):
                 if found is not None:
                     seen = found
                 for choice in getattr(chunk, "choices", None) or []:
+                    if getattr(choice, "finish_reason", None):
+                        self.report_stop(choice.finish_reason)
                     delta = getattr(choice, "delta", None)
                     calls.add(getattr(delta, "tool_calls", None))
                 yield chunk

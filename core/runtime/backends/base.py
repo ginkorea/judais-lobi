@@ -42,10 +42,12 @@ import json
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from urllib.parse import urlsplit
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 
 from core.runtime.backends import policy, state as model_state
+from core.redact import scrub_secrets
 from core.runtime.messages import (
     CALL_KEYS,
     merge_extra,
@@ -566,6 +568,94 @@ def json_schema_request(json_schema: Any) -> Dict[str, Any]:
             "strict": bool(strict)}
 
 
+_STOP_CODES = {
+    "stop": "completed", "end_turn": "completed", "stop_sequence": "completed",
+    "tool_calls": "tool_call", "function_call": "tool_call", "tool_use": "tool_call",
+    "length": "output_limit", "max_tokens": "output_limit",
+    "model_length": "token_limit", "model_context_window_exceeded": "context_limit",
+    "content_filter": "provider_refusal", "refusal": "provider_refusal",
+    "pause_turn": "provider_pause",
+}
+
+
+def _safe_identity(value: Any) -> Optional[str]:
+    """Metadata only; do not publish a changed or credential-shaped identity."""
+    if not isinstance(value, str) or not value or len(value) > 256:
+        return None
+    if any(ord(char) < 32 for char in value) or scrub_secrets(value) != value:
+        return None
+    return value
+
+
+def endpoint_origin(value: Any) -> Optional[str]:
+    """Origin only: never userinfo, a consumer/bearer path, query or fragment."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parts = urlsplit(value)
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            return None
+        host = parts.hostname
+        authority = f"[{host}]" if ":" in host else host
+        if parts.port is not None:
+            authority += f":{parts.port}"
+        return _safe_identity(f"{parts.scheme}://{authority}")
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class CallMetadata:
+    """Non-payload facts about a logical call, independent of token usage."""
+
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    endpoint: Optional[str] = None
+    raw_stop_reason: Optional[str] = None
+    stop_reason: str = "unavailable"
+    stop_source: str = "unavailable"
+    physical_attempts: Optional[int] = None
+
+    @classmethod
+    def for_request(cls, provider: str, model: Any, endpoint: Any = None) -> "CallMetadata":
+        model_name = _safe_identity(model)
+        if model_name and ("://" in model_name or model_name.startswith("/")):
+            model_name = None
+        return cls(provider=_safe_identity(provider), model=model_name,
+                   endpoint=endpoint_origin(endpoint))
+
+    def stopped(self, value: Any) -> "CallMetadata":
+        # Provider codes are a closed machine vocabulary, not exception text.
+        # An unknown value may itself contain a secret and is not copied.
+        if isinstance(value, str) and value.lower() in _STOP_CODES:
+            return replace(self, raw_stop_reason=value,
+                           stop_reason=_STOP_CODES[value.lower()], stop_source="provider")
+        return replace(self, raw_stop_reason=None, stop_reason="unavailable",
+                       stop_source="unrecognized" if value else "unavailable")
+
+    def as_record(self) -> Dict[str, Any]:
+        return {
+            "provider": self.provider, "model": self.model,
+            "model_source": "requested" if self.model is not None else "unavailable",
+            "endpoint_origin": self.endpoint,
+            "raw_stop_reason": self.raw_stop_reason, "stop_reason": self.stop_reason,
+            "stop_reason_source": self.stop_source,
+            "physical_attempts": self.physical_attempts,
+            "physical_attempt_coverage": ("backend_transport" if self.physical_attempts is not None
+                                          else "unavailable"),
+            "physical_attempt_usage": "unavailable",
+        }
+
+    @staticmethod
+    def failure_reason(error: Optional[BaseException]) -> str:
+        """Classify known timeout types, never inspect an exception message."""
+        if isinstance(error, (policy.requests.exceptions.Timeout, policy.httpx.TimeoutException)):
+            return "transport_timeout"
+        if isinstance(error, TimeoutError):
+            return "request_timeout"
+        return "request_failed"
+
+
 @dataclass
 class SideChannels:
     """One model call's ``last_usage`` and ``last_tool_calls``, captured
@@ -587,6 +677,7 @@ class SideChannels:
     usage: Optional[Usage] = None
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     filled: bool = False
+    metadata: Optional[CallMetadata] = None
 
 
 #: The slot the call running *on this context* writes into, if any.
@@ -612,7 +703,7 @@ _capture: "ContextVar[Optional[SideChannels]]" = ContextVar(
 
 
 @contextmanager
-def capturing() -> "Iterator[SideChannels]":
+def capturing(slot: Optional[SideChannels] = None) -> "Iterator[SideChannels]":
     """A slot for the next model call's side channels, scoped to this block.
 
     Opened by the ONE place a run touches a backend
@@ -620,7 +711,7 @@ def capturing() -> "Iterator[SideChannels]":
     and its deltas are complete, so what comes out belongs to the call
     that produced it and to no other.
     """
-    slot = SideChannels()
+    slot = slot if slot is not None else SideChannels()
     token = _capture.set(slot)
     try:
         yield slot
@@ -640,6 +731,28 @@ class Backend(ABC):
     #: or a platform's own adapter is: a required field on the record, and
     #: the empty string is an honest answer where a guess would not be.
     provider_name: str = ""
+    _last_call_metadata: Optional[CallMetadata] = None
+
+    @property
+    def last_call_metadata(self) -> Optional[CallMetadata]:
+        slot = _capture.get()
+        return slot.metadata if slot is not None else self._last_call_metadata
+
+    def _metadata(self, value: CallMetadata) -> None:
+        self._last_call_metadata = value
+        slot = _capture.get()
+        if slot is not None:
+            slot.metadata = value
+
+    def start_call_metadata(self, model: Any, endpoint: Any = None) -> None:
+        self._metadata(CallMetadata.for_request(self.provider_name, model, endpoint))
+
+    def report_stop(self, value: Any) -> None:
+        self._metadata((self.last_call_metadata or CallMetadata()).stopped(value))
+
+    def note_transport_attempt(self) -> None:
+        current = self.last_call_metadata or CallMetadata()
+        self._metadata(replace(current, physical_attempts=(current.physical_attempts or 0) + 1))
 
     #: What the provider said the **last** completion through this backend
     #: cost, or ``None`` when it said nothing.  A side channel and not a

@@ -136,7 +136,7 @@ from core.runtime.schema_check import empty_envelope
 from core.runtime.supervisor import (
     NUDGE, NUDGE_NOTE, STUCK, Supervisor, WIND_UP,
 )
-from core.runtime.usage import Ledger, Rate
+from core.runtime.usage import Ledger, Rate, RequestContext
 from core.runtime.task_state import TASK_TOOL, TaskContext
 from core.tools.descriptors import same_tool, summarize_input_schema
 
@@ -2052,7 +2052,7 @@ class Run:
 
     async def _model_reply(
             self, messages: List[Dict[str, Any]],
-            index: int) -> Tuple[str, SideChannels]:
+            index: int, capture: Optional[SideChannels] = None) -> Tuple[str, SideChannels]:
         """The model's reply and this call's side channels, together.
 
         **Together** is the second half of the signature and the reason it
@@ -2128,7 +2128,7 @@ class Run:
         nobody's backend says anything about costs a
         :class:`~contextvars.ContextVar` set and nothing else.
         """
-        with capturing() as capture, self.model.watching(self.observer,
+        with capturing(capture) as capture, self.model.watching(self.observer,
                                                          index=index):
             got = await asyncio.to_thread(self.model.ask, messages)
             if isinstance(got, str):
@@ -2519,6 +2519,12 @@ class Run:
         )
         if compaction is None:
             return kept, compaction
+        categories = compaction.retained_categories
+        if self.plane.store_tool:
+            categories += ("result_store_handles",)
+        if self.store.task is not None:
+            categories += ("current_task_projection",)
+        compaction = replace(compaction, retained_categories=categories)
         return self._heal_native(kept), compaction
 
     @staticmethod
@@ -3436,11 +3442,19 @@ class Run:
             # afterwards has already rendered the turn it applied to.
             messages, compacted = self._fit(messages)
             request = None
+            capture = SideChannels()
             if self.model.window is not None:
+                previous = transcript.usage.latest_request
                 request = transcript.usage.begin_request(
                     run_id=self.run_id, branch=self.observer.name, index=index,
                     budget=self.model.window.request_budget(messages),
-                    compaction=compacted.as_record() if compacted is not None else None)
+                    compaction=compacted.as_record() if compacted is not None else None,
+                    context=RequestContext(
+                        phase="continuation" if continuation.text else "mission",
+                        parent_request_id=(previous["request_id"]
+                                           if continuation.text and previous else None),
+                        parent_call_id=(previous.get("call_id")
+                                        if continuation.text and previous else None)))
             # `catalogue` on the steps where it CHANGED and no other, so a
             # watcher that has never heard of the field reads the stream it
             # always read, and one that has can tell the plane it is looking
@@ -3462,11 +3476,12 @@ class Run:
                           if compacted is not None else {}))
             opening = {}
             try:
-                reply, capture = await self._model_reply(messages, index)
+                reply, capture = await self._model_reply(messages, index, capture)
             except BaseException as error:
                 if request is not None:
                     transcript.usage.end_request(
-                        request, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
+                        request, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+                        capture=capture, failure=error)
                 if continuation.text and isinstance(error, Exception):
                     transcript.outcome = "incomplete"
                     problem = "The continuation request failed; the partial answer was retained."
@@ -3482,7 +3497,7 @@ class Run:
             # used to bill one child for the other's call.
             spent = self.model.spend(transcript.usage, capture)
             if request is not None:
-                transcript.usage.end_request(request, status="returned", usage_reported=bool(spent))
+                transcript.usage.end_request(request, status="returned", usage_reported=bool(spent), capture=capture)
             step = MissionStep(index=index, raw_reply=reply)
 
             usage = spent.get("usage", {})

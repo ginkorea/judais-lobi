@@ -141,6 +141,7 @@ class MistralBackend(Backend):
         # see `core.runtime.backends.state.WAITING` — and a hosted
         # provider mostly goes straight from here to `loaded`.
         self.report_state(state.ASKING, model=str(body["model"]))
+        self.start_call_metadata(body["model"], CHAT_URL)
 
         if stream:
             return self._stream(body)
@@ -155,13 +156,18 @@ class MistralBackend(Backend):
         :data:`core.runtime.backends.policy.ERROR_POLICY`, not this
         method's opinion.
         """
-        return policy.retry_on_connect(
-            lambda: self._client.post(
+        def post():
+            headers = self._headers()
+            self.note_transport_attempt()
+            return self._client.post(
                 CHAT_URL,
-                headers=self._headers(),
+                headers=headers,
                 json=body,
                 timeout=CHAT_TIMEOUT,
-            ),
+            )
+
+        return policy.retry_on_connect(
+            post,
             retries=CONNECT_RETRIES,
             on_connect_error=lambda exc: self.report_connect_error(
                 exc, model=str(body.get("model") or "")),
@@ -184,6 +190,7 @@ class MistralBackend(Backend):
                 json=body,
                 timeout=CHAT_TIMEOUT,
             )
+            self.note_transport_attempt()
             return ctx, ctx.__enter__()
 
         return policy.retry_on_connect(
@@ -257,6 +264,7 @@ class MistralBackend(Backend):
         # use is exactly the call an operator wants to find billed.
         self.last_usage = Usage.from_payload(payload.get("usage"))
         choices = payload.get("choices") or []
+        self.report_stop(choices[0].get("finish_reason") if choices else None)
         if not choices:
             return ""
         message = choices[0].get("message") or {}
@@ -309,6 +317,8 @@ class MistralBackend(Backend):
                 if found is not None:
                     seen = found
                 for choice in chunk.get("choices") or []:
+                    if (choice or {}).get("finish_reason"):
+                        self.report_stop(choice["finish_reason"])
                     calls.add(((choice or {}).get("delta") or {}).get(
                         "tool_calls"))
                 content = self._delta_content(chunk)

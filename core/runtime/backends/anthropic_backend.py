@@ -641,6 +641,7 @@ class AnthropicBackend(Backend):
         # `core.runtime.backends.state.WAITING` — and a hosted provider
         # mostly goes straight from it to `loaded`.
         self.report_state(state.ASKING, model=str(body["model"]))
+        self.start_call_metadata(body["model"], None)
 
         if stream:
             return self._stream(body)
@@ -648,6 +649,7 @@ class AnthropicBackend(Backend):
 
     def _complete(self, body: Dict[str, Any]) -> str:
         try:
+            self.start_call_metadata(body["model"], str(getattr(self.client, "base_url", "")))
             result = self.client.messages.create(**body)
         except Exception as exc:
             # The status the SDK's exception carries, read through the
@@ -661,6 +663,7 @@ class AnthropicBackend(Backend):
         # spent the prompt, and a call nobody could use is exactly the one
         # worth finding in the ledger.
         self.last_usage = usage_from(attr_or_key(result, "usage"))
+        self.report_stop(attr_or_key(result, "stop_reason"))
         blocks = attr_or_key(result, "content") or []
         self.last_tool_calls = tool_calls_from_blocks(blocks)
         return text_from_blocks(blocks)
@@ -696,6 +699,7 @@ class AnthropicBackend(Backend):
         a JSON string, not a decision.
         """
         try:
+            self.start_call_metadata(body["model"], str(getattr(self.client, "base_url", "")))
             events = self.client.messages.create(stream=True, **body)
         except Exception as exc:
             self.report_failure(exc, model=str(body.get("model") or ""))
@@ -724,6 +728,9 @@ class AnthropicBackend(Backend):
                     continue
 
                 if kind == "message_delta":
+                    stop = attr_or_key(attr_or_key(event, "delta"), "stop_reason")
+                    if stop is not None:
+                        self.report_stop(stop)
                     self._merge_usage(seen, attr_or_key(event, "usage"))
                     continue
 

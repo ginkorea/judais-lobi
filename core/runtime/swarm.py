@@ -102,6 +102,7 @@ from core.durable import RunStore
 from core.runtime.control import GATE_WAIT_S
 from core.budgets import Deadline
 from core.runtime.approvals import ApprovalStore, ApprovalTicket
+from core.runtime.backends.base import SideChannels, capturing
 from core.runtime.context_window import MissionWindow
 from core.runtime.grounding import GroundingValidator
 from core.runtime.mission import (
@@ -118,7 +119,7 @@ from core.runtime.run import (
 )
 from core.runtime.supervisor import NUDGE, PROGRESSING, REPLAN
 from core.runtime.task_state import TaskContext
-from core.runtime.usage import Ledger, Rate
+from core.runtime.usage import Ledger, Rate, RequestContext
 
 __all__ = ["SwarmRunner", "PlanStep", "RUNGS", "RUNGS_WITHOUT_SDK",
            "SDK_RUNG", "MAX_PLAN_STEPS"]
@@ -957,7 +958,7 @@ class SwarmRunner:
 
     # ── what the last call cost ─────────────────────────────────────────
 
-    def _asked(self) -> Dict[str, Any]:
+    def _asked(self, capture: Optional[SideChannels] = None) -> Dict[str, Any]:
         """Fold the call this object just made into the turn's ledger.
 
         The **fold** is :meth:`core.runtime.run.Model.spend`'s and is not
@@ -973,8 +974,37 @@ class SwarmRunner:
         reported nothing, so a record carries no ``usage`` key rather than
         a zeroed one.
         """
-        self._last_spent = self._model.spend(self._ledger)
+        self._last_spent = self._model.spend(self._ledger, capture)
         return self._last_spent
+
+    def _plain_call(self, messages: Sequence[Dict[str, str]], *, phase: str,
+                    parent_request_id: Optional[str] = None,
+                    parent_call_id: Optional[str] = None, **extra: Any) -> str:
+        """One captured request and one spend fold for every staged plain role."""
+        fitted = [dict(message) for message in messages]
+        request = None
+        window = self._model.window
+        if window is not None:
+            fitted, compacted = window.fit(fitted, pinned=1)
+            request = self._ledger.begin_request(
+                run_id=self.run_id, branch="staged", index=self._ledger.request_attempts,
+                budget=window.request_budget(fitted, include_tool_schemas=False),
+                compaction=compacted.as_record() if compacted is not None else None,
+                context=RequestContext(phase=phase, parent_request_id=parent_request_id,
+                                       parent_call_id=parent_call_id))
+        with capturing() as capture:
+            try:
+                result = str(self._model.plain(fitted, **extra) or "")
+            except BaseException as error:
+                if request is not None:
+                    self._ledger.end_request(
+                        request, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+                        capture=capture, failure=error)
+                raise
+            spent = self._asked(capture)
+            if request is not None:
+                self._ledger.end_request(request, status="returned", usage_reported=bool(spent), capture=capture)
+            return result
 
     # ── the one entry point ─────────────────────────────────────────────
 
@@ -1212,7 +1242,7 @@ class SwarmRunner:
         messages = self._role_messages(
             stacked(TRIAGE_PROMPT, f"Tools that exist here: {tools}"),
             objective)
-        decision = self._json_reply(messages)
+        decision = self._json_reply(messages, phase="routing")
         route = str((decision or {}).get("route", "")).strip().lower()
         return route if route == "staged" else "direct"
 
@@ -1301,7 +1331,7 @@ class SwarmRunner:
         messages = self._role_messages(system, "\n\n".join(user_parts))
 
         for _attempt in range(2):
-            decision = self._json_reply(messages)
+            decision = self._json_reply(messages, phase="planning")
             steps, problem = self._read_plan(decision)
             if steps is not None:
                 return steps
@@ -1993,7 +2023,7 @@ class SwarmRunner:
                 f"The step reported: {self._summary(sub.answer or '')}"
             )},
         ]
-        decision = self._json_reply(messages)
+        decision = self._json_reply(messages, phase="verification")
         if decision is None or "pass" not in decision:
             # A gate that cannot say no has not said yes — but a gate that
             # cannot PARSE must not fail work that mechanically succeeded.
@@ -2167,8 +2197,7 @@ class SwarmRunner:
                     transcript: MissionTranscript) -> MissionTranscript:
         messages, lines = self._synthesis_messages(
             objective, plan, results, evidence)
-        answer = str(self._model.plain(messages) or "").strip()
-        self._asked()
+        answer = self._plain_call(messages, phase="synthesis").strip()
         if not answer:
             # The synthesizer said nothing.  The step results themselves are
             # the honest fallback — facts the gates passed, not prose.
@@ -2202,10 +2231,12 @@ class SwarmRunner:
             messages.append({
                 "role": "user",
                 "content": self._run._repairing_turn(report, repairs)})
-            answer = str(
-                self._model.plain(self._fit(messages)) or "").strip() or answer
+            parent = self._ledger.latest_request
+            answer = self._plain_call(
+                messages, phase="synthesis_repair",
+                parent_request_id=parent["request_id"] if parent else None,
+                parent_call_id=parent.get("call_id") if parent else None).strip() or answer
             answer = self._run.compose_task_answer(answer)
-            self._asked()
             report = self._run._ground(answer, repairs, evidence=evidence,
                                        called=self._called)
         # The draft is what the model wrote; the caveat is this harness's
@@ -2296,7 +2327,7 @@ class SwarmRunner:
         bounded, _cut = bound_result(text, self._summary_chars)
         return bounded
 
-    def _json_reply(self, messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    def _json_reply(self, messages: List[Dict[str, str]], *, phase: str = "staged") -> Optional[Dict[str, Any]]:
         """One JSON object from the plain backend, or ``None``.  Never raises.
 
         The router, the planner and every gate come through here, and all
@@ -2326,10 +2357,10 @@ class SwarmRunner:
         The synthesizer does NOT come through here — it writes prose, and
         a grammar that forbids prose would forbid the answer.
         """
-        extra = ({"response_format": {"type": "json_object"}}
+        extra: Dict[str, Any] = ({"response_format": {"type": "json_object"}}
                  if self._model.json_mode else {})
         try:
-            reply = str(self._model.plain(self._fit(messages), **extra) or "")
+            reply = self._plain_call(messages, phase=phase, **extra)
         except Exception:
             # Nothing to fold: `last_usage` is cleared at the start of
             # every call, so a call that raised reports nothing and adding
@@ -2337,7 +2368,6 @@ class SwarmRunner:
             return None
         # Folded even when the reply turns out to be unparseable below — a
         # call that produced garbage was still billed.
-        self._asked()
         text = _FENCE.sub("", reply.strip()).strip()
         if not text:
             return None
