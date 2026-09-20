@@ -699,7 +699,10 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: ``call`` — as on ``tool_call``, and the same ordinal: the pair
     #: belongs together and a consumer matching a result to its call under
     #: a shared ``index`` needs both halves numbered the same way.
-    TOOL_RESULT: ("call",),
+    #: ``quoted_history`` — true only for a read of supplied conversation
+    #: history, including a reread of that receipt. It records what was said,
+    #: not verified evidence or new authority; replay preserves this distinction.
+    TOOL_RESULT: ("call", "quoted_history"),
     #: ``usage`` — as above: the cost of the call that wrote ``text``.
     #:
     #: ``draft`` — ``true`` on the one ``answer`` a run emits **after** its

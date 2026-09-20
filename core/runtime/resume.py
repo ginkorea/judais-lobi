@@ -840,6 +840,7 @@ def _rebuild_staged(recorded: Recorded) -> StagedResumption:
             # travelled on the event stream.
             evidence="",
             exit_code=int(record.get("exit_code") or 0),
+            quoted_history=record.get("quoted_history") is True,
         )
     resumption = StagedResumption(
         run_id=recorded.run_id,
@@ -887,7 +888,8 @@ def _replay_result(runner: Any, store: MissionResultStore,
     # `evidence` is empty because it never travelled: see LOST_STRUCTURED.
     # Everything else is on the record.
     stored = store.record(name, arguments, text=output, evidence="",
-                          exit_code=exit_code)
+                          exit_code=exit_code,
+                          quoted_history=record.get("quoted_history") is True)
     result = _Result(exit_code=exit_code, stdout=output, stderr=error)
     rendered, truncated = runner._render_result(
         name, result, stored.handle, already=store.first_identical(stored),

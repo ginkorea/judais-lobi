@@ -495,6 +495,7 @@ class MissionWindow:
         pinned: int,
         note: Optional[Callable[[int, int], str]] = None,
         history_start: Optional[int] = None,
+        history_excerpt: Optional[Callable[[], Dict[str, str]]] = None,
     ) -> Tuple[List[Dict[str, str]], Optional[Compaction]]:
         """``(messages that fit, what was dropped)``; the second is ``None``
         when nothing had to be.
@@ -619,7 +620,8 @@ class MissionWindow:
                 removed = exchanges.pop(0)
                 history_dropped.extend(removed)
                 dropped.extend(removed)
-                quote = _history_excerpt(history_dropped)
+                quote = (history_excerpt() if history_excerpt is not None
+                         else _history_excerpt(history_dropped))
                 head = (prefix + [quote]
                         + [message for exchange in exchanges for message in exchange]
                         + objective)

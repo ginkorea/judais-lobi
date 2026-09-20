@@ -2483,6 +2483,7 @@ class Run:
             f'{self.plane.store_tool}(handle="…", path="…") with the '
             "handle you "
             f"were given when it arrived.{gone}"
+            + self.results.history_pointer(self.plane.store_tool)
         )
 
     def _fit(
@@ -2501,6 +2502,9 @@ class Run:
         kept, compaction = self.model.window.fit(
             messages, pinned=boundary, note=self._compaction_note,
             history_start=1 if objective is not None else None,
+            history_excerpt=(self.results.history_excerpt
+                             if self.plane.store_tool and self.results.has_history
+                             else None),
         )
         if compaction is None:
             return kept, compaction
@@ -2931,6 +2935,7 @@ class Run:
         )
         if resumption is None:
             self.results.clear()
+            self.results.remember_history(self.personality.history)
         else:
             # Adopted, not copied into: the handles the model was given
             # earlier in this run (`r1`, `r2`) have to keep addressing the
@@ -3817,6 +3822,8 @@ class Run:
             text=result.stdout,
             evidence=getattr(result, "evidence", "") or "",
             exit_code=result.exit_code,
+            quoted_history=(name == self.plane.store_tool
+                            and self.results.is_history_read(arguments)),
         )
         slot.handle = stored.handle
         # THE ONE PLACE a receipt is durably known — the bus has answered,
@@ -3828,7 +3835,7 @@ class Run:
         # See `core.runtime.cognition`, which owns what a receipt is worth.
         # The call cannot fail: every method on that object is total, and a
         # mission is never told that cognition had a bad day.
-        if self.store.cognition is not None:
+        if self.store.cognition is not None and not stored.quoted_history:
             self.store.cognition.receipt(name, self._receipt_seq(stored.handle),
                                          stored.text, stored.evidence)
         rendered, slot.truncated = self._render_result(
@@ -3844,7 +3851,9 @@ class Run:
                    arguments=dict(arguments),
                    ok=result.exit_code == 0, exit_code=result.exit_code,
                    output=result.stdout or "", error=result.stderr or "",
-                   handle=stored.handle, truncated=slot.truncated, **ordinal)
+                   handle=stored.handle, truncated=slot.truncated,
+                   **({"quoted_history": True} if stored.quoted_history else {}),
+                   **ordinal)
         self._say(messages, rendered, getattr(slot, "call_id", ""))
         # The moment a plane can have changed: a dispatch is the only thing
         # this loop does that a server can watch, and `add_a_tool`-shaped
