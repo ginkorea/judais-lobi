@@ -26,7 +26,7 @@ The initial candidate comparison was 1,056 passed / 1 failed: the staged legacy
 test expected raw-output loss even though its newly recorded receipts restored
 successfully. The fixture correction above and mixed-recovery warning correction
 preceded the final frozen comparison. One earlier restricted local attempt did
-not finish within its observation deadline (exit 137); it is not counted as a
+not finish within its enforced process timeout (exit 137); it is not counted as a
 pass. All final comparison handles completed, and tests ran sequentially in the
 team's reserved test slot.
 
@@ -91,3 +91,18 @@ Existing event output/arguments policy is unchanged. These tests establish the
 new archive's credential hygiene, not universal secret detection or a rewrite
 of historical event storage. The 64 MiB archive limit is not a hard bound on
 memory used to parse an already-large in-memory tool result.
+
+## Paired platform check
+
+After fast-forwarding the canonical harness feature branch to `373db7b`, the
+TAIPAN candidate `83dd2dc2` passed 393 targeted Mission bridge, boundary, BYOA,
+slop and Python-floor checks, with no skips, in 50.38 seconds. Interpreter was
+`/home/gompert/.conda/envs/iq/bin/python` 3.13.14; `JUDAIS_LOBI_HOME` pointed to
+`.worktrees/judais-mission-reliability`, and reconnaissance resolved
+`core.runtime.run` to that checkout. TAIPAN imports resolved to the candidate's
+absolute `src` path. Process handle 25242 exited zero.
+
+Modules: `test_mission_bridge.py`, `test_mission_boundary.py`,
+`test_byoa_onboards_every_agent.py`, `test_byoa_context_states_what_we_enforce.py`,
+`test_no_slop.py`, `test_python_floor.py`. These are local fixture contracts,
+not authenticated live acceptance or a production version-pin change.
