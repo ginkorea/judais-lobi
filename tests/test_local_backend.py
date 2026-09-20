@@ -296,6 +296,12 @@ class TestCapabilities:
     def test_context_comes_from_max_model_len(self, stub):
         caps = LocalBackend(endpoint=stub.base).capabilities
         assert caps.max_context_tokens == 131072
+        assert caps.context_limit_source == "backend_probed"
+
+    def test_configured_capacity_is_not_reported_as_a_probe(self, stub):
+        caps = LocalBackend(endpoint=stub.base, max_context_tokens=32768).capabilities
+        assert caps.max_context_tokens == 32768
+        assert caps.context_limit_source == "backend_configured"
 
     def test_tool_calls_are_true_unlike_the_old_stub(self, stub):
         """The gap this replaces: the stub said False for a server that can."""

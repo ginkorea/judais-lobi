@@ -424,6 +424,29 @@ telemetry. A total derived from both reported input and output counts is known;
 a total synthesized from one missing count is not a measured call footprint.
 The existing cumulative usage wire is unchanged for compatibility.
 
+When the Mission loop has a `MissionWindow`, telemetry also includes optional
+`request_tracking`, with coverage `windowed_mission_loop_only`. This is NOT a
+claim to cover provider HTTP retries, supervisor calls or APEX internal phases.
+Each record has a request ID (run ID, branch and ledger attempt number), step,
+UTC start/end times, and `started`, `returned`, `failed` or `cancelled` status.
+`returned` means the backend returned, not that an answer was valid or a tool
+succeeded. An exception records no exception text or invented usage. Cancellation
+is the caller's observation; it does not prove a worker's HTTP request stopped.
+
+The budget records context capacity and its source, output reserve, estimated
+input including native tool schemas, and estimated headroom after reserving
+output. `backend_probed` means endpoint metadata; `backend_configured`/`config`
+means a setting, `backend` is an unspecified backend declaration, and default
+sources are assumptions. Character-based estimates are not measured token
+counts; negative headroom remains visible rather than being clamped to zero.
+An optional compaction receipt preserves before/after estimates, profile and
+removed message/result counts. The count is recorded events, not inferred from
+cumulative spend. Records retain the first 256 attempts plus the latest; the
+attempt/compaction counts continue past that bound and omissions are explicit.
+Absorbed child records keep their IDs, but there is no cross-child latest record
+because absorption order is not completion order. The new records do not alter
+token accounting and contain no prompts, credentials or endpoint URLs.
+
 **Reading a slow turn.** Three fields answer it and all three are already on
 the wire. `model_state.state` says whether the model is silent (`queued`,
 `cold`) or working (`streaming`). `usage.prompt_tokens` on the `tool_call` or

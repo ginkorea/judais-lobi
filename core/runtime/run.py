@@ -3349,6 +3349,12 @@ class Run:
             # what this step is about to send, and a watcher told about it
             # afterwards has already rendered the turn it applied to.
             messages, compacted = self._fit(messages)
+            request = None
+            if self.model.window is not None:
+                request = transcript.usage.begin_request(
+                    run_id=self.run_id, branch=self.observer.name, index=index,
+                    budget=self.model.window.request_budget(messages),
+                    compaction=compacted.as_record() if compacted is not None else None)
             # `catalogue` on the steps where it CHANGED and no other, so a
             # watcher that has never heard of the field reads the stream it
             # always read, and one that has can tell the plane it is looking
@@ -3369,7 +3375,13 @@ class Run:
                        **({"compacted": compacted.as_record()}
                           if compacted is not None else {}))
             opening = {}
-            reply, capture = await self._model_reply(messages, index)
+            try:
+                reply, capture = await self._model_reply(messages, index)
+            except BaseException as error:
+                if request is not None:
+                    transcript.usage.end_request(
+                        request, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
+                raise
             # Read here and used below: whichever record this step emits
             # carries the cost of the call that produced it. Off the
             # capture the call itself filled, and not off the client's
@@ -3377,6 +3389,8 @@ class Run:
             # run, and a sibling finishing between the reply and this line
             # used to bill one child for the other's call.
             spent = self.model.spend(transcript.usage, capture)
+            if request is not None:
+                transcript.usage.end_request(request, status="returned", usage_reported=bool(spent))
             step = MissionStep(index=index, raw_reply=reply)
 
             usage = spent.get("usage", {})

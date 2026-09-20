@@ -43,6 +43,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests.request_telemetry_fixtures import comparable_request_clocks, with_request_telemetry
 
 from core.contracts.schemas import PolicyPack
 from core.durable import RUNS_ENV, RunStore
@@ -1128,8 +1129,8 @@ class TestARunWithAReviewInIt:
         MockClass, _ = scripted_elf(refuse=True)
         run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path)))
         fresh = replayed(root, run_id)
-        assert comparable(records(root, fresh.run_id)) == \
-            comparable(records(root, run_id))
+        assert comparable(comparable_request_clocks(records(root, fresh.run_id), fresh.run_id)) == \
+            comparable(comparable_request_clocks(records(root, run_id), run_id))
 
     def test_the_replayed_run_carries_the_review_and_the_nudge(self,
                                                                tmp_path):
@@ -1156,8 +1157,9 @@ class TestReplayingTheCorpus:
             run_id, write_skill(tmp_path, REPLAY_SKILL.get(run_id, SKILL)),
             *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
-        assert comparable(records(corpus, fresh.run_id)) == \
-            comparable(records(corpus, run_id))
+        expected = with_request_telemetry(records(corpus, run_id), run_id, "run")
+        assert comparable(comparable_request_clocks(records(corpus, fresh.run_id), fresh.run_id)) == \
+            comparable(expected)
 
     def test_the_staged_replay_served_every_recorded_call_in_order(
             self, corpus, tmp_path):

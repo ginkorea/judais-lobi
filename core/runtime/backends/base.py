@@ -485,6 +485,7 @@ class BackendCapabilities:
     supports_tool_choice_required: bool = False
     max_context_tokens: int | None = None
     max_output_tokens: int | None = None
+    context_limit_source: str = "backend"
 
 
 #: The three keys a ``json_schema=`` argument carries.  ``name`` is what

@@ -133,10 +133,11 @@ class ContextWindowManager:
             max_ctx = getattr(backend_caps, "max_context_tokens", None)
             max_out = getattr(backend_caps, "max_output_tokens", None)
             if max_ctx:
+                source = getattr(backend_caps, "context_limit_source", "backend")
                 return ModelContextProfile(
                     int(max_ctx),
                     int(max_out or cfg.max_output_tokens or 4096),
-                    source="backend",
+                    source=source if isinstance(source, str) else "backend",
                 )
 
         # Model overrides from config
@@ -467,6 +468,26 @@ class MissionWindow:
         """This module's one token estimate, over a message list."""
         return _estimate_messages_tokens(list(messages))
 
+    def request_overhead(self) -> int:
+        """Estimate the native tool schemas using the same rule as fitting."""
+        tools = self._request_tools() if self._request_tools is not None else None
+        return estimate_tokens(json.dumps(tools, ensure_ascii=False)) + 16 if tools else 0
+
+    def request_budget(self, messages: Sequence[Dict[str, str]]) -> Dict[str, Any]:
+        """The fitted request's estimates, never provider-measured occupancy."""
+        profile = self.profile
+        overhead = self.request_overhead()
+        estimated = self.estimate(messages) + overhead
+        return {
+            "context_limit_tokens": profile.max_context_tokens,
+            "context_limit_source": profile.source,
+            "output_reserve_tokens": profile.max_output_tokens,
+            "estimated_input_tokens": estimated,
+            "estimated_tool_schema_tokens": overhead,
+            "estimated_headroom_tokens": profile.max_input_tokens - estimated,
+            "estimate_method": "characters_plus_message_framing",
+        }
+
     def fit(
         self,
         messages: Sequence[Dict[str, str]],
@@ -524,11 +545,7 @@ class MissionWindow:
         pinned = max(0, min(int(pinned), len(kept)))
         head, tail = kept[:pinned], kept[pinned:]
         proactive = history_start is not None and 0 < history_start < pinned
-        overhead = 0
-        if self._request_tools is not None:
-            tools = self._request_tools()
-            if tools:
-                overhead = estimate_tokens(json.dumps(tools, ensure_ascii=False)) + 16
+        overhead = self.request_overhead()
         trigger = int(limit * 0.90) if proactive else limit
         target = int(limit * 0.75) if proactive else limit
         note_fn = note or default_compaction_note

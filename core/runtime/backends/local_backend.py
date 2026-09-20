@@ -1233,4 +1233,6 @@ class LocalBackend(Backend):
             supports_tool_choice_required=self._supports_tool_calls,
             max_context_tokens=max_context,
             max_output_tokens=self.output_bound,
+            context_limit_source=("backend_configured" if self._max_context_tokens is not None
+                                  else "backend_probed"),
         )

@@ -27,6 +27,7 @@ than none, because somebody bills from it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
 from core.runtime.backends.base import Usage
@@ -60,9 +61,44 @@ class Ledger:
     peak_prompt_tokens: Optional[int] = None
     peak_call_tokens: Optional[int] = None
     latest_call: Optional[Dict[str, Optional[int]]] = None
+    request_attempts: int = 0
+    compaction_events: int = 0
+    request_records: List[Dict[str, Any]] = field(default_factory=list)
+    latest_request: Optional[Dict[str, Any]] = None
 
     #: How many per-call records to keep. The totals do not stop at it.
     MAX_PER_CALL = 256
+
+    def begin_request(self, *, run_id: str, branch: str, index: int,
+                      budget: Dict[str, Any], compaction: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Record a windowed loop attempt before calling the backend.
+
+        This does not add spend: only ``add`` owns provider accounting. No
+        messages, tool arguments, endpoint URLs or provider payloads are copied.
+        """
+        self.request_attempts += 1
+        if compaction is not None:
+            self.compaction_events += 1
+        record = {
+            "request_id": f"{run_id or 'unrecorded'}:{branch or 'direct'}:{self.request_attempts}",
+            "step_index": index,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "status": "started",
+            "budget": dict(budget),
+            "compaction": dict(compaction) if compaction is not None else None,
+            "reported_usage": None,
+        }
+        self.latest_request = record
+        if len(self.request_records) < self.MAX_PER_CALL:
+            self.request_records.append(record)
+        return record
+
+    def end_request(self, request: Dict[str, Any], *, status: str,
+                    usage_reported: bool = False) -> None:
+        """Close an attempt without guessing usage for a failed request."""
+        request["status"] = status
+        request["finished_at"] = datetime.now(timezone.utc).isoformat()
+        request["reported_usage"] = dict(self.latest_call) if usage_reported and self.latest_call else None
 
     # ── the only two ways in ─────────────────────────────────────────────
 
@@ -115,8 +151,14 @@ class Ledger:
         Through the same fold as :meth:`add`, so a staged mission's total
         cannot drift from the sum of the calls it is made of.
         """
-        if other is self or not (other.observed_calls or other.calls):
+        if other is self or not (other.observed_calls or other.calls or other.request_attempts):
             return
+        self.request_attempts += other.request_attempts
+        self.compaction_events += other.compaction_events
+        room = self.MAX_PER_CALL - len(self.request_records)
+        if room > 0:
+            self.request_records.extend(other.request_records[:room])
+        self.latest_request = None  # Child absorption is not chronological.
         self.observed_calls = (max(self.observed_calls, self.calls)
                                + max(other.observed_calls, other.calls))
         # Absorption order is not request completion order when children run
@@ -192,7 +234,7 @@ class Ledger:
         No context capacity or compaction is inferred from cumulative tokens.
         Peaks remain exact after the bounded per-call sample fills up.
         """
-        return {
+        record = {
             "version": 1,
             "coverage": "ledger_observations_only",
             "observed_calls": max(self.observed_calls, self.calls),
@@ -204,6 +246,16 @@ class Ledger:
             "retained_usage_records": len(self.per_call),
             "omitted_usage_records": self.calls - len(self.per_call),
         }
+        if self.request_attempts:
+            record["request_tracking"] = {
+                "coverage": "windowed_mission_loop_only",
+                "attempts": self.request_attempts,
+                "compaction_events": self.compaction_events,
+                "records": self.request_records,
+                "omitted_records": self.request_attempts - len(self.request_records),
+                "latest": self.latest_request,
+            }
+        return record
 
 
 @dataclass(frozen=True)
