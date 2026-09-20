@@ -26,7 +26,9 @@ of the behaviour:
 2. **Authorization headers and known key shapes** — ``Bearer …``,
    ``Authorization: …``, ``sk-…``, ``ghp_…``, ``AKIA…``, ``xox?-…``.  These
    are the credentials that reach a message without ever having been an
-   environment variable: a server echoing back the header it rejected.
+   environment variable: a server echoing back the header it rejected. Secret
+   query parameters and standalone JSON-shaped JWTs are covered too, without
+   removing a URL's ordinary query values or treating dotted prose as a token.
 3. **Absolute paths**, rewritten rather than deleted, because a frame with no
    path is a frame nobody can find.  A path under ``site-packages`` keeps its
    module-relative tail (``<site-packages>/httpx/_client.py``), a path under
@@ -73,11 +75,15 @@ them is a cycle.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import functools
+import json
 import os
 import re
 import socket
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from urllib.parse import unquote
 
 __all__ = [
     "scrub", "scrub_record", "redacted",
@@ -264,7 +270,7 @@ _BEARER = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._\-+/=]{8,})")
 #: first would leave the credential sitting next to a label announcing it.
 _HEADER = re.compile(
     r"(?i)\b(authorization|proxy-authorization|x-api-key|api[_-]?key)"
-    r"\s*[:=]\s*([^\r\n,;'\")}\]]{4,})")
+    r"\s*[:=]\s*([^\s,;'\")}\]<>][^\r\n,;'\")}\]<>]{3,})")
 _SHAPES: Sequence[Tuple["re.Pattern", str]] = (
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}"), redacted("api-key")),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}"), redacted("github-token")),
@@ -289,15 +295,55 @@ _SHAPES: Sequence[Tuple["re.Pattern", str]] = (
 _ASSIGNMENT = re.compile(
     r"(?<![A-Za-z0-9_])"
     r"([A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD)[\"']?\s*[:=]\s*[\"']?)"
-    r"([^\s\"',;}]{4,})",
+    r"([^\s\"',;}<>]{4,})",
     re.IGNORECASE,
 )
+
+
+# Match only query pairs, not prose mentioning a token or an ordinary URL path.
+# Decode the name for comparison, but keep its spelling and all nonsecret bytes.
+_QUERY = re.compile(r"([?&])([A-Za-z0-9_.%~-]+)=([^\s&#\"'<>()[\]{}]+)")
+_QUERY_SECRET_NAMES = frozenset({
+    "key", "api_key", "apikey", "token", "access_token", "refresh_token",
+    "id_token", "password", "passwd", "secret", "client_secret",
+    "authorization", "auth_token", "x_amz_signature", "x_amz_security_token",
+})
+_JWT = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    r"([A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{8,})"
+    r"(?![A-Za-z0-9_.-])")
+
+
+def _query_credential(match: "re.Match") -> str:
+    name = unquote(match.group(2)).lower().replace("-", "_")
+    if (name in _QUERY_SECRET_NAMES
+            or name.upper().endswith(SECRET_ENV_SUFFIXES)):
+        return match.group(1) + match.group(2) + "=" + redacted("query-credential")
+    return match.group(0)
+
+
+def _jwt_credential(match: "re.Match") -> str:
+    """Recognize JSON header/claims, without trusting or verifying the token."""
+    header, claims, _signature = match.group(1).split(".")
+    try:
+        values = [json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+                  for part in (header, claims)]
+    except RecursionError:
+        return redacted("jwt")
+    except (ValueError, UnicodeError, binascii.Error):
+        return match.group(0)
+    if (isinstance(values[0], dict) and isinstance(values[1], dict)
+            and isinstance(values[0].get("alg"), str) and values[0]["alg"]):
+        return redacted("jwt")
+    return match.group(0)
 
 
 def _credentials(text: str) -> str:
     for value, name in _secret_values():
         if value in text:
             text = text.replace(value, redacted(name))
+    text = _QUERY.sub(_query_credential, text)
+    text = _JWT.sub(_jwt_credential, text)
     text = _HEADER.sub(lambda m: f"{m.group(1)}: {redacted(m.group(1))}", text)
     text = _BEARER.sub(lambda m: f"{m.group(1)}{redacted('bearer')}", text)
     text = _ASSIGNMENT.sub(
