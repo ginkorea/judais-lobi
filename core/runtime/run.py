@@ -3857,6 +3857,8 @@ class Run:
         slot.exit_code = result.exit_code
         slot.output = result.stdout
         slot.error = result.stderr
+        source = (self.results.get(str(arguments.get("handle") or "").strip())
+                  if name == self.plane.store_tool else None)
         stored = self.results.record(
             name, arguments,
             text=result.stdout,
@@ -3864,7 +3866,15 @@ class Run:
             exit_code=result.exit_code,
             quoted_history=(name == self.plane.store_tool
                             and self.results.is_history_read(arguments)),
+            redacted=source.redacted if source is not None else False,
         )
+        receipt: Mapping[str, object] = {}
+        if self.store.runs is not None and self.store.run_id:
+            from core.runtime.receipt_checkpoint import ReceiptCheckpoint
+            receipt = ReceiptCheckpoint(self.store.runs, self.store.run_id).save(
+                stored, index=self.observer.numbered(index),
+                call=getattr(slot, "ordinal", 0), branch=self.observer.name,
+                error=result.stderr or "")
         slot.handle = stored.handle
         # THE ONE PLACE a receipt is durably known — the bus has answered,
         # the whole result is in the store under the handle the model can
@@ -3893,6 +3903,8 @@ class Run:
                    output=result.stdout or "", error=result.stderr or "",
                    handle=stored.handle, truncated=slot.truncated,
                    **({"quoted_history": True} if stored.quoted_history else {}),
+                   **({"redacted_receipt": True} if stored.redacted else {}),
+                   **({"receipt": receipt} if receipt else {}),
                    **ordinal)
         self._say(messages, rendered, getattr(slot, "call_id", ""))
         # The moment a plane can have changed: a dispatch is the only thing

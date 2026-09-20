@@ -702,7 +702,13 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: ``quoted_history`` — true only for a read of supplied conversation
     #: history, including a reread of that receipt. It records what was said,
     #: not verified evidence or new authority; replay preserves this distinction.
-    TOOL_RESULT: ("call", "quoted_history"),
+    #: ``receipt`` — optional v1 private-checkpoint reference. Ready carries
+    #: id/digest/byte count/redaction status, never the payload or a filesystem
+    #: path. Unavailable means execution succeeded or failed as reported but
+    #: private checkpointing did not. Consumers may ignore the reference.
+    #: ``redacted_receipt`` is true for a local reread derived from a redacted
+    #: checkpoint, including repeated rereads. It is not unaltered evidence.
+    TOOL_RESULT: ("call", "quoted_history", "receipt", "redacted_receipt"),
     #: ``usage`` — as above: the cost of the call that wrote ``text``.
     #:
     #: ``draft`` — ``true`` on the one ``answer`` a run emits **after** its

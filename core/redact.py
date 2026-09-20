@@ -314,10 +314,15 @@ _JWT = re.compile(
     r"(?![A-Za-z0-9_.-])")
 
 
+def is_credential_name(name: str) -> bool:
+    """The shared credential-field vocabulary, not a general data classifier."""
+    normalized = unquote(name).lower().replace("-", "_")
+    return (normalized in _QUERY_SECRET_NAMES
+            or normalized.upper().endswith(SECRET_ENV_SUFFIXES))
+
+
 def _query_credential(match: "re.Match") -> str:
-    name = unquote(match.group(2)).lower().replace("-", "_")
-    if (name in _QUERY_SECRET_NAMES
-            or name.upper().endswith(SECRET_ENV_SUFFIXES)):
+    if is_credential_name(match.group(2)):
         return match.group(1) + match.group(2) + "=" + redacted("query-credential")
     return match.group(0)
 

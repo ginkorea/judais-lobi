@@ -608,9 +608,11 @@ class TestWhatIsLostIsSaidOutLoud:
         built = runner(bus, ScriptedModel(), run_store=store, run_id=run_id)
         return rebuild(built, open_for_resume(store, run_id))
 
-    def test_the_typed_payload_of_a_result_is_gone(self, bus, store):
-        """``structuredContent`` was never on the wire. Named rather than
+    def test_legacy_typed_payload_of_a_result_is_gone(self, bus, store, monkeypatch):
+        """Legacy ``structuredContent`` was never on the wire. Named rather than
         discovered later by a `mission_result(path=…)` that refuses."""
+        from core.runtime.receipt_checkpoint import ReceiptCheckpoint
+        monkeypatch.setattr(ReceiptCheckpoint, "save", lambda *args, **kwargs: {})
         replayed = self._stopped_after(bus, store,
                                        tool_call("catalog.search", q="a"))
         assert LOST_STRUCTURED in replayed.lost
@@ -929,11 +931,13 @@ class TestAStagedRunPicksItsPlanBackUp:
         assert [entry["id"] for entry
                 in store.meta(run_id).meta["steps_done"]] == ["s1"]
 
-    def test_the_grounding_evidence_comes_back_off_the_stream(self, bus,
-                                                              store):
+    def test_legacy_grounding_evidence_comes_back_off_the_stream(self, bus,
+                                                              store, monkeypatch):
         """The recorded step's tool output is what the validator checks the
         synthesized answer against. Without it a resumed turn would caveat
         every figure the first half of the run found."""
+        from core.runtime.receipt_checkpoint import ReceiptCheckpoint
+        monkeypatch.setattr(ReceiptCheckpoint, "save", lambda *args, **kwargs: {})
         run_id = self._killed(bus, store)
         resumption = rebuild(None, open_for_resume(store, run_id))
         assert any("corpus" in text for text in resumption.evidence)
@@ -1296,4 +1300,3 @@ class TestLivenessIsALockAndNotAClock:
     def test_a_caller_may_still_widen_the_clock(self):
         assert orphan_window(10_000.0, locks=True) == 10_000.0
         assert orphan_window(10_000.0, locks=False) == 10_000.0
-

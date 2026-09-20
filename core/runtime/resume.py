@@ -66,7 +66,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from core.durable import LOCKS, NoSuchRun, Run, RunStore, now
 from core.runtime.mission import (
@@ -78,7 +78,8 @@ from core.runtime.mission_stream import (
     REPLY_REJECTED, STEP_STARTED, TOOL_CALL, TOOL_RESULT,
 )
 from core.runtime.messages import assistant_turn
-from core.runtime.results import MissionResultStore
+from core.runtime.results import MissionResultStore, StoredResult
+from core.runtime.receipt_checkpoint import ReceiptCheckpoint, ReceiptLoad
 
 __all__ = [
     "ORPHAN_OUTCOME", "ORPHAN_STALE_S", "ORPHAN_FALLBACK_MARGIN_S",
@@ -314,6 +315,8 @@ class Recorded:
     #: None preserves legacy callers; [] with a notice means restoration failed.
     history: Optional[List[Dict[str, str]]] = None
     history_notice: str = ""
+    #: Private typed receipts, when the caller opened this run through RunStore.
+    receipts: Optional[ReceiptCheckpoint] = None
 
     def total_steps(self, more: Optional[int]) -> int:
         """The step ceiling for the whole run — recorded steps included.
@@ -498,6 +501,7 @@ def open_for_resume(store: Optional[RunStore], run_id: str, *,
         replanned=bool(meta.meta.get("replanned")),
         history=history,
         history_notice=history_notice,
+        receipts=ReceiptCheckpoint(store, run_id),
     )
 
 
@@ -775,7 +779,8 @@ def rebuild(runner: Any, recorded: Recorded) -> Resumption:
 
         elif event == TOOL_RESULT:
             (name, arguments, exit_code, output, error, stored, rendered,
-             truncated) = _replay_result(runner, store, record)
+             truncated) = _replay_result(runner, store, record, recorded.receipts,
+                                         resumption.lost)
             if error:
                 scrubbed += 1
             tail.append({"role": "user", "content": rendered})
@@ -827,8 +832,7 @@ def rebuild(runner: Any, recorded: Recorded) -> Resumption:
                 "and the resumed loop starts from the step after it")
 
     resumption.next_index = recorded.spent_steps
-    if store.results:
-        resumption.lost.append(LOST_STRUCTURED)
+    _note_receipt_loss(store, resumption.lost, LOST_STRUCTURED)
     if rejected:
         resumption.lost.append(LOST_REJECTED_REPLY.format(
             n=rejected, y="y" if rejected == 1 else "ies"))
@@ -863,19 +867,11 @@ def _rebuild_staged(recorded: Recorded) -> StagedResumption:
     path already has one answer each for.
     """
     store = MissionResultStore()
+    lost: List[str] = []
     for record in recorded.records:
         if record.get("event") != TOOL_RESULT:
             continue
-        store.record(
-            str(record.get("tool") or ""),
-            dict(record.get("arguments") or {}),
-            text=str(record.get("output") or ""),
-            # Empty for `LOST_STRUCTURED`'s reason: the typed payload never
-            # travelled on the event stream.
-            evidence="",
-            exit_code=int(record.get("exit_code") or 0),
-            quoted_history=record.get("quoted_history") is True,
-        )
+        _restore_result(store, record, recorded.receipts, lost)
     resumption = StagedResumption(
         run_id=recorded.run_id,
         objective=recorded.objective,
@@ -890,18 +886,55 @@ def _rebuild_staged(recorded: Recorded) -> StagedResumption:
         next_index=recorded.spent_steps,
         steps_spent=recorded.spent_steps,
         replanned=recorded.replanned,
+        lost=lost,
     )
     settled = sum(1 for entry in resumption.steps_done
                   if str(entry.get("outcome") or "") in ("ok", "failed"))
     _restore_history(resumption, recorded)
-    if store.results:
-        resumption.lost.append(LOST_STAGED_EVIDENCE.format(
-            n=settled, s="" if settled == 1 else "s"))
+    _note_receipt_loss(store, resumption.lost, LOST_STAGED_EVIDENCE.format(
+        n=settled, s="" if settled == 1 else "s"))
     return resumption
 
 
+def _note_receipt_loss(store: MissionResultStore, lost: List[str], legacy: str) -> None:
+    missing = sum(item.origin is None for item in store.results)
+    if missing == 0:
+        return
+    if missing == len(store.results):
+        lost.append(legacy)
+    else:
+        lost.append(f"Typed fields are unavailable for {missing} replayed tool "
+                    "result(s) without a valid private checkpoint; their event "
+                    "text remains available. Other receipts were restored. "
+                    "Do not repeat actions to reconstruct missing fields.")
+
+
+def _restore_result(store: MissionResultStore, record: Mapping[str, Any],
+                    checkpoint: Optional[ReceiptCheckpoint], lost: List[str]
+                    ) -> Tuple[StoredResult, str, str]:
+    """The same receipt owner for direct, native and staged replay."""
+    loaded = checkpoint.load(record) if checkpoint is not None else ReceiptLoad()
+    if loaded.notice and loaded.notice not in lost:
+        lost.append(loaded.notice)
+    item = loaded.receipt
+    if item is not None:
+        stored = store.record(item.tool, item.arguments, text=item.text,
+                              evidence=item.evidence, exit_code=item.exit_code,
+                              quoted_history=item.quoted_history, origin=item.origin,
+                              redacted=item.redacted)
+        return stored, loaded.error, loaded.notice
+    stored = store.record(str(record.get("tool") or ""),
+                          dict(record.get("arguments") or {}),
+                          text=str(record.get("output") or ""), evidence="",
+                          exit_code=int(record.get("exit_code") or 0),
+                          quoted_history=record.get("quoted_history") is True,
+                          redacted=record.get("redacted_receipt") is True)
+    return stored, str(record.get("error") or ""), loaded.notice
+
+
 def _replay_result(runner: Any, store: MissionResultStore,
-                   record: Mapping[str, Any]):
+                   record: Mapping[str, Any], checkpoint: Optional[ReceiptCheckpoint] = None,
+                   lost: Optional[List[str]] = None):
     """One recorded ``tool_result`` back into the store, rendered as the
     loop rendered it.
 
@@ -915,20 +948,16 @@ def _replay_result(runner: Any, store: MissionResultStore,
     Returns ``(name, arguments, exit_code, output, error, stored,
     rendered, truncated)``.
     """
-    name = str(record.get("tool") or "")
-    arguments = dict(record.get("arguments") or {})
-    output = str(record.get("output") or "")
-    error = str(record.get("error") or "")
-    exit_code = int(record.get("exit_code") or 0)
-    # `evidence` is empty because it never travelled: see LOST_STRUCTURED.
-    # Everything else is on the record.
-    stored = store.record(name, arguments, text=output, evidence="",
-                          exit_code=exit_code,
-                          quoted_history=record.get("quoted_history") is True)
+    stored, error, notice = _restore_result(store, record, checkpoint,
+                                           lost if lost is not None else [])
+    name, arguments = stored.tool, stored.arguments
+    output, exit_code = stored.text, stored.exit_code
     result = _Result(exit_code=exit_code, stdout=output, stderr=error)
     rendered, truncated = runner._render_result(
         name, result, stored.handle, already=store.first_identical(stored),
     )
+    if notice:
+        rendered = notice + "\n" + rendered
     return (name, arguments, exit_code, output, error, stored, rendered,
             truncated)
 
@@ -1021,7 +1050,8 @@ def _rebuild_native(runner: Any, recorded: Recorded,
             if not calls:
                 continue
             (name, arguments, exit_code, output, error, stored, rendered,
-             truncated) = _replay_result(runner, store, record)
+             truncated) = _replay_result(runner, store, record, recorded.receipts,
+                                         resumption.lost)
             if error:
                 scrubbed += 1
             answers.append(rendered)
@@ -1074,8 +1104,7 @@ def _rebuild_native(runner: Any, recorded: Recorded,
 
     flush()
     resumption.next_index = recorded.spent_steps
-    if store.results:
-        resumption.lost.append(LOST_STRUCTURED)
+    _note_receipt_loss(store, resumption.lost, LOST_STRUCTURED)
     if minted:
         resumption.lost.append(LOST_NATIVE_IDS.format(
             n=minted, s="" if minted == 1 else "s"))
