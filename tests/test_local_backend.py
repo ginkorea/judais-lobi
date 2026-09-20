@@ -1004,6 +1004,7 @@ class TestEveryRequestCarriesABound:
         """The variable is read from the process environment, so a shell
         that happens to export it would otherwise decide these tests."""
         monkeypatch.delenv(MAX_OUTPUT_TOKENS_ENV, raising=False)
+        monkeypatch.delenv("JUDAIS_LOBI_OUTPUT_PROFILE", raising=False)
 
     def test_a_request_nobody_bounded_carries_the_default(self, stub):
         LocalBackend(endpoint=stub.base).chat(

@@ -560,7 +560,8 @@ The rest of `contract.ENV_VARS`, which have no flag:
 | `MCP_CLIENT_NAME` | **what this client calls itself in the `initialize` handshake** — see §5, and set it |
 | `ELF_PERSONALITY` / `TAI_PERSONALITY` | where the personality file is (§4) |
 | `LOCAL_API_BASE` / `LOCAL_MODEL` | the OpenAI-compatible endpoint on this host, and the name it serves (§8) |
-| `JUDAIS_LOBI_MAX_OUTPUT_TOKENS` | how many completion tokens that endpoint is asked for when nobody names a number; default 4,096, and blank/garbage/non-positive all mean the default. Raise it for a model that reasons at length — a completion that hits the ceiling arrives as `usage.finish_reason` and is not a failure (§8) |
+| `JUDAIS_LOBI_OUTPUT_PROFILE` | implicit output budget: `standard` (default, 8,192), `synthesis` (16,384), or `extended` (32,768); capped at half a known context capacity; unknown/blank selects standard |
+| `JUDAIS_LOBI_MAX_OUTPUT_TOKENS` | explicit positive output ceiling, overriding the profile; blank/garbage/non-positive selects the profile. Automatic recovery never raises an explicit ceiling (§8) |
 | `JUDAIS_LOBI_AUDIT` | move the audit file (a path) or silence it (`none`/`off`) |
 | `JUDAIS_LOBI_RUNS` | move the run store (a path) or keep nothing (`none`/`off`) |
 | `JUDAIS_LOBI_APPROVALS` | move the approvals directory |
@@ -2090,7 +2091,9 @@ Three things follow that a hosted-only integration never has to think about:
   *drift* when a request differs from a recorded one, which is how that promise
   is tested rather than asserted.
 * **The output is bounded, and the bound is yours to move.** Every request
-  carries a `max_tokens` — `JUDAIS_LOBI_MAX_OUTPUT_TOKENS`, default 4,096,
+  carries a `max_tokens` — the selected `JUDAIS_LOBI_OUTPUT_PROFILE` (8,192
+  by default, capped at half a known context), unless an explicit
+  `JUDAIS_LOBI_MAX_OUTPUT_TOKENS` overrides it —
   which is the same output reserve the harness already subtracts from the
   context window when it sizes a prompt. It did not always: a request with no
   `max_tokens` is not an unbounded request, it is one bounded by
@@ -2098,8 +2101,13 @@ Three things follow that a hosted-only integration never has to think about:
   fires first — and a timeout cannot tell you an answer was cut short, because
   it is not the thing that cut it. With the harness sending its own number, a
   completion that reaches the ceiling says so as `usage.finish_reason` on the
-  record that follows. If your model reasons at length, raise the variable
-  rather than live with the truncation.
+  record that follows. Without a numeric ceiling, a token-limit stop can raise
+  the output reserve within measured headroom, up to 32,768 and half the window.
+  Usable truncated answer text can continue in at most two text-only calls;
+  tools already executed are not replayed. If that fails, the pane receives a
+  partial draft and an incomplete/budget outcome. A completed continuation still
+  passes the ordinary grounding checks. Step/wall-clock bounds and per-request
+  output ceilings still apply; this does not enforce a cumulative token budget.
 * **The critic can be local too.** `critic: true` in a manifest's `grounding:`
   block resolves local first, so a deployment running entirely on its own
   hardware still gets an adversarial second opinion (§5).

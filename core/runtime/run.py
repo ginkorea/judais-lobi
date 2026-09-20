@@ -104,6 +104,7 @@ from core.runtime.context_window import (
     Compaction, MissionWindow, default_compaction_note,
 )
 from core.runtime.contract import SCHEMA_VERSION
+from core.runtime.completion import AnswerContinuation, answer_fragment
 from core.runtime.control import (
     CANCEL_STEP, GATE_DECISION, GATE_WAIT_S, INJECT,
 )
@@ -3256,6 +3257,7 @@ class Run:
         # thing the loop asks a model to do over now, and it does so once.
         empty_replies = 0
         output_retried = False
+        continuation = AnswerContinuation()
 
         # Unbounded unless an operator asked for a ceiling — see `_indices`.
         # When they did, `self.bounds.max_steps` is the TOTAL for the run
@@ -3290,7 +3292,8 @@ class Run:
             # so a run cannot spend a repair turn past its deadline.
             stop = self.bounds.stop()
             if stop is not None:
-                return self._stopped(transcript, stop)
+                stopped = self._stopped(transcript, stop)
+                return self._with_draft(stopped) if continuation.text and stop[2] != CANCELLED else stopped
             # Looked at again here, and not only after the dispatch that
             # caused it: the bridge re-lists on ITS OWN THREAD when a server
             # notifies, so the registration can land a few milliseconds
@@ -3381,6 +3384,12 @@ class Run:
                 if request is not None:
                     transcript.usage.end_request(
                         request, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
+                if continuation.text and isinstance(error, Exception):
+                    transcript.outcome = "incomplete"
+                    problem = "The continuation request failed; the partial answer was retained."
+                    transcript.steps.append(MissionStep(index=index, raw_reply="", error=problem))
+                    self._reject(index, problem)
+                    return self._with_draft(transcript)
                 raise
             # Read here and used below: whichever record this step emits
             # carries the cost of the call that produced it. Off the
@@ -3395,7 +3404,7 @@ class Run:
 
             usage = spent.get("usage", {})
             finish = truncation_of(usage.get("finish_reason"))
-            if (finish and not reply.strip()
+            if (finish and not continuation.text and not reply.strip()
                     and not self._read_tool_calls(index, capture)):
                 raised = None
                 if (not output_retried and self.model.window is not None
@@ -3422,6 +3431,45 @@ class Run:
                     return self._with_draft(transcript)
                 messages.append({"role": "user", "content": problem +
                                  " Keep reasoning brief and provide the answer or next tool call."})
+                continue
+
+            if finish or continuation.text:
+                calls = self._read_tool_calls(index, capture)
+                fragment = answer_fragment(reply, calls)
+                changed = continuation.append(fragment) if fragment else False
+                if continuation.text:
+                    self._draft = transcript.draft = continuation.text
+                if not finish and changed:
+                    messages.append(self._assistant_turn(reply, calls))
+                    answer = continuation.text
+                    continuation = AnswerContinuation()
+                    done, repairs = await self._answered(
+                        answer, index, step, spent, messages, transcript, repairs,
+                        call_id=calls[0]["id"] if calls else "")
+                    if done is not None:
+                        return done
+                    continue
+                problem = (
+                    "The output-token limit interrupted the answer; usable text was retained."
+                    if finish and changed else
+                    "The answer continuation produced no usable new text; no tool action was executed.")
+                step.error = problem
+                transcript.steps.append(step)
+                self._reject(index, problem, **spent)
+                if not changed or continuation.attempts >= continuation.maximum:
+                    transcript.outcome = "incomplete"
+                    return self._with_draft(transcript)
+                if (not output_retried and self.model.window is not None
+                        and self.model.recover_output_budget is not None):
+                    raised = self.model.recover_output_budget(usage)
+                    if raised is not None:
+                        self.model.window.reserve_output_tokens(raised)
+                        output_retried = True
+                continuation.attempts += 1
+                # Text only: do not leave an unexecuted native call in history,
+                # and never redispatch tools merely to regenerate an answer.
+                messages.append({"role": "assistant", "content": fragment})
+                messages.append({"role": "user", "content": continuation.prompt()})
                 continue
 
             if self.model.native:
@@ -3560,11 +3608,10 @@ class Run:
     def _with_draft(self, transcript: MissionTranscript) -> MissionTranscript:
         """Hand over the abandoned draft, when the run ended without one.
 
-        The two exits that end a run *without an answer it meant to give*:
-        the wind-up turn that did not answer, and the step ceiling.  Not
-        :meth:`_stopped` — a person pressed a button or an operator's clock
-        fired, and delivering an answer they interrupted would be this loop
-        overriding them; and not the answered paths, which have their own.
+        A wind-up turn, a step ceiling, or failed text continuation can leave
+        a draft. A clock expiring during continuation also retains that text.
+        A person's cancellation does NOT deliver it, and completed answers
+        have their own path through grounding.
 
         **The outcome word is not touched.**  ``incomplete`` and
         ``budget_exhausted`` are the truth about the run, and a consumer

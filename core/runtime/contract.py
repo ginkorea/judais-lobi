@@ -1052,7 +1052,7 @@ CLI_FLAGS: tuple[str, ...] = (
 #: It has **no flag**: it is configuration of the endpoint a deployment
 #: points at, like ``LOCAL_API_BASE`` and ``LOCAL_MODEL`` beside it, and
 #: it is read by the backend itself.  Unset, blank, unparseable or
-#: non-positive all mean the default (4,096) — zero is not a value,
+#: non-positive all mean the selected output profile — zero is not a value,
 #: because a zero-token completion is every answer empty by typo.
 #:
 #: It is published because the *absence* of a bound was not a neutral
@@ -1075,6 +1075,7 @@ ENV_VARS: tuple[str, ...] = (
     "MCP_TIMEOUT_S",
     "ELF_PERSONALITY", "TAI_PERSONALITY",
     "LOCAL_API_BASE", "LOCAL_MODEL", "JUDAIS_LOBI_MAX_OUTPUT_TOKENS",
+    "JUDAIS_LOBI_OUTPUT_PROFILE",
     "MISSION_SKILL", "MISSION_SWARM", "MISSION_EVENTS", "MISSION_HISTORY",
     "MISSION_APPROVAL",
     "MISSION_SECONDS",

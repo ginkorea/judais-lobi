@@ -396,10 +396,10 @@ def first_json_object(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def strip_envelope(reply: str) -> str:
-    """*reply* with a code fence and a leading channel marker removed."""
-    return _CHANNEL.sub(
-        "", _FENCE.sub("", (reply or "").strip()).strip(), count=1).strip()
+def strip_envelope(reply: str, *, preserve_trailing: bool = False) -> str:
+    """Remove outer markers, optionally keeping an unfinished string's tail."""
+    trim = str.lstrip if preserve_trailing else str.strip
+    return trim(_CHANNEL.sub("", trim(_FENCE.sub("", trim(reply or ""))), count=1))
 
 #: Bounds on a seeded conversation history, chosen as a safety net and not
 #: a working limit.  The one caller that seeds history today (TAIPAN's

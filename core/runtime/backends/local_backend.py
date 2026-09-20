@@ -63,14 +63,10 @@ DEFAULT_LOCAL_MODEL = "local-model"
 #: :data:`~core.runtime.backends.base.TRUNCATED_REASONS`, which is how the
 #: fact gets onto the wire.
 #:
-#: **4,096, and the number is not a taste.**  It is the output reserve this
-#: harness has *already* subtracted from every prompt it built —
-#: ``core.runtime.context_window`` defaults ``max_output_tokens`` to 4096
-#: and sizes the input window at ``max_context − max_output`` — so it is
-#: the one number in the tree that is already a statement about how long an
-#: answer may be.  Asking the server for more than the window reserved room
-#: for is the harness contradicting its own arithmetic, and on a full
-#: window it is the request that 400s.  A test holds the two equal.
+#: Output profiles leave room for reasoning and substantial answers. The
+#: effective bound feeds capabilities too, so MissionWindow reserves exactly
+#: what the wire asks for. Profiles are targets, limited to half a known context
+#: to leave input space; explicit operator/call ceilings still take precedence.
 #:
 #: **Raising it is one variable**, :data:`MAX_OUTPUT_TOKENS_ENV`, and a
 #: deployment whose model reasons at length should raise it: the doctrine
@@ -78,8 +74,10 @@ DEFAULT_LOCAL_MODEL = "local-model"
 #: a thing an operator is told about and can undo, never a ceiling they
 #: were not consulted on.  What ended is the silent state — no bound the
 #: harness set, and no way to say an answer was cut off.
-DEFAULT_MAX_OUTPUT_TOKENS = 4096
-MAX_RECOVERY_OUTPUT_TOKENS = 16384
+OUTPUT_PROFILES = {"standard": 8192, "synthesis": 16384, "extended": 32768}
+OUTPUT_PROFILE_ENV = "JUDAIS_LOBI_OUTPUT_PROFILE"
+DEFAULT_MAX_OUTPUT_TOKENS = OUTPUT_PROFILES["standard"]
+MAX_RECOVERY_OUTPUT_TOKENS = OUTPUT_PROFILES["extended"]
 
 #: Where a deployment raises (or lowers) :data:`DEFAULT_MAX_OUTPUT_TOKENS`.
 #: Read here, like ``LOCAL_API_BASE`` and ``LOCAL_MODEL``, because it is
@@ -188,11 +186,12 @@ class LocalBackend(Backend):
         Declared, not probed — see :attr:`capabilities`.
     max_output_tokens:
         The completion ceiling this backend asks for when a caller names
-        none.  Defaults to :data:`MAX_OUTPUT_TOKENS_ENV` then
-        :data:`DEFAULT_MAX_OUTPUT_TOKENS` — never to *no ceiling*, which
-        is what it used to default to and what left the bound in
-        somebody else's hands.  A ``max_tokens=`` on :meth:`chat` still
-        wins.
+        none. Defaults to :data:`MAX_OUTPUT_TOKENS_ENV`, otherwise the output
+        profile. A ``max_tokens=`` on :meth:`chat` still wins.
+    output_profile:
+        ``standard``, ``synthesis``, or ``extended``; read from
+        :data:`OUTPUT_PROFILE_ENV` when omitted. Implicit budgets are capped
+        at half a known context capacity. Numeric ceilings override profiles.
     first_byte_queued_s:
         How long an accepted request may stay silent before the wait is
         reported as a state.  See
@@ -220,6 +219,7 @@ class LocalBackend(Backend):
         session: Any = None,
         first_byte_queued_s: float = state.FIRST_BYTE_QUEUED_S,
         streaming_long_s: float = state.STREAMING_LONG_S,
+        output_profile: Optional[str] = None,
     ):
         raw = endpoint or os.getenv("LOCAL_API_BASE") or DEFAULT_LOCAL_API_BASE
         self.endpoint = self._normalize_base(raw)
@@ -231,6 +231,8 @@ class LocalBackend(Backend):
         self._output_bound = (max_output_tokens if max_output_tokens is not None
                               else _env_max_output_tokens())
         self._recovery_output_bound: Optional[int] = None
+        profile = (output_profile or os.getenv(OUTPUT_PROFILE_ENV) or "standard").strip().lower()
+        self.output_profile = profile if profile in OUTPUT_PROFILES else "standard"
         self._api_key = api_key or os.getenv("LOCAL_API_KEY") or None
         self._supports_tool_calls = supports_tool_calls
         self._session = session if session is not None else requests
@@ -243,8 +245,11 @@ class LocalBackend(Backend):
     @property
     def output_bound(self) -> int:
         """The default sent on requests and reserved from their input window."""
-        return (self._output_bound if self._output_bound is not None
-                else self._recovery_output_bound or DEFAULT_MAX_OUTPUT_TOKENS)
+        if self._output_bound is not None:
+            return self._output_bound
+        target = self._recovery_output_bound or OUTPUT_PROFILES[self.output_profile]
+        context = self._max_context_tokens or self.probe().max_model_len
+        return min(target, max(1, context // 2)) if context and context > 0 else target
 
     def recover_output_budget(self, usage: Dict[str, Any]) -> Optional[int]:
         """Raise an implicit default for one explicit caller-owned retry.
@@ -264,7 +269,7 @@ class LocalBackend(Backend):
         if not context:
             return None
         raised = min(self.output_bound * 2, MAX_RECOVERY_OUTPUT_TOKENS,
-                     context - prompt - 1024)
+                     context // 2, context - prompt - 1024)
         if raised <= self.output_bound:
             return None
         self._recovery_output_bound = raised

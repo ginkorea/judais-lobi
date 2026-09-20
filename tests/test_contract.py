@@ -787,7 +787,15 @@ class TestTheLedgerIsAFieldAndNotAnEvent:
                                               finish_reason="length"))
         assert _faults(seen) == []
         answer = [r for r in seen if r["event"] == ms.ANSWER][0]
-        assert answer["usage"]["finish_reason"] == "length"
+        # Token-limited text is now recovered as a draft/continuation rather
+        # than certified complete. Its one cost record belongs to the rejected
+        # model reply, not also to the later draft-delivery event.
+        counted = [r for r in seen if "usage" in r and r["event"] != ms.MISSION_FINISHED]
+        assert counted[0]["usage"]["finish_reason"] == "length"
+        assert counted[0]["event"] == ms.REPLY_REJECTED
+        assert answer["draft"] is True
+        assert answer["outcome"] == "incomplete"
+        assert "usage" not in answer
 
     def test_and_an_ordinary_call_carries_no_such_key(self):
         """Absent, never `"stop"`: a key on every record to state the
