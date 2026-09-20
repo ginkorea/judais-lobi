@@ -81,10 +81,30 @@ class TestPlatformsGuideNamesWhatAnIntegratorNeeds:
 
 
 class TestTheVersionIsOneNumber:
-    def test_the_readme_states_the_version_setup_py_ships(self, readme):
+    @staticmethod
+    def _version() -> str:
         match = re.search(r'^VERSION\s*=\s*"([^"]+)"',
                           SETUP.read_text(encoding="utf-8"), re.MULTILINE)
         assert match, "setup.py has no VERSION constant"
-        version = match.group(1)
-        assert version in readme, (
-            f"setup.py ships {version} and the README does not say so")
+        return match.group(1)
+
+    def test_the_readme_states_the_version_setup_py_ships(self, readme):
+        version = self._version()
+        status = readme.split("### Status\n", 1)[1].split("\n---", 1)[0]
+        current = re.search(r'^\*\*v([^\s*]+)', status, re.MULTILINE)
+        assert current and current.group(1) == version, (
+            f"setup.py ships {version} but README's current status disagrees")
+
+    def test_current_status_and_history_link_the_release_notes(self, readme):
+        link = f"docs/releases/{self._version()}.md"
+        status = readme.split("### Status\n", 1)[1].split("\n---", 1)[0]
+        history = readme.split("### Release history\n", 1)[1].split(
+            "### Status\n", 1)[0]
+        assert f"]({link})" in status
+        assert f"]({link})" in history
+
+    def test_current_release_notes_exist_and_name_the_shipped_version(self):
+        version = self._version()
+        notes = (REPO / "docs" / "releases" / f"{version}.md").read_text(
+            encoding="utf-8")
+        assert notes.splitlines()[0] == f"# Judais-Lobi {version}"

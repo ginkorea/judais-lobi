@@ -878,10 +878,11 @@ is why this exists (an agent, not a chatbot — local, governed, honest), and
 
 ### Release history
 
-One line each. The commit for every one of these is `release: <version> — …`.
+One line each. Release tags identify the exact source shipped to PyPI.
 
 | version | date | what it was |
 | --- | --- | --- |
+| [1.6.0](docs/releases/1.6.0.md) | 20 Sep 2026 | **Reliable multi-turn missions.** Task-specific skill loading, remembered selections, source-bound task state and durable tool receipts; context compaction and bounded answer recovery; per-request usage, stop causes and explicit observation gaps. CLI/library parity, replay coverage and credential redaction strengthened. |
 | 1.1.3 | 7 Sep 2026 | a reply the loop can read: the JSON protocol now reads a model turn four ways instead of one — the envelope (code fence AND a harmony `analysis`/`commentary`/`final` channel marker stripped, and an envelope embedded in commentary recovered by a balanced scan), a native `tool_calls` entry under BOTH protocols (a served model with `--enable-auto-tool-choice` answers on that channel whichever protocol the prompt asked for, and the call used to be discarded), prose as the ANSWER, and only an EMPTY reply asked again — once. Measured on a reference deployment's pane, where a correct prose answer was refused as "not valid JSON" three turns running and the analyst was handed nothing |
 | 1.1.2 | 7 Sep 2026 | `--no-grounding` / `MISSION_NO_GROUNDING`: a deployment may decline the checks entirely — no validator, no critic, no repair turn, no caveat, no `grounding` record — while the skill's block is still parsed, so an unusable one still refuses at the door (for a conversational surface, where a figure comes from the tool catalogue rather than a tool result); a run that wrote an answer, had it sent back by a repair turn and then ran out hands the draft over instead of dropping it (`answer.draft`, `mission_finished.stopped_with_draft`); and a tool whose schema declares no arguments says so in the catalogue AND in the refusal, instead of rendering as a tool nobody described |
 | 1.5.1 | 15 Sep 2026 | **the reader takes the vocabulary as it is spoken**. An `x-identifiers` entry body is the vocabulary's one open mapping — `kind` read and required, richer keys ignored without fault — where 1.5.0's closed-set validation silently erased the whole declaration for one unknown key it had never heard of. The bench plane now declares identifiers in the reference platform's frozen wire shape, `--no-declarations` withholds them, and `core.eval spine-pair` joins the two campaigns and proves which was which off the runs' own reasoning logs — so the subject spine (the design's A3) is measurable from this release on |
@@ -911,9 +912,11 @@ One line each. The commit for every one of these is `release: <version> — …`
 
 ### Status
 
-**v1.5.1 — 8,657 tests collected** (`pytest --collect-only -q`). Mission
-mode, skill manifests, the grounding validator, `--swarm`, campaigns, the
-NDJSON mission stream and the published contract are all in this release.
+**v1.6.0** — see the [release notes](docs/releases/1.6.0.md) for changes and
+integration checks. Mission mode, skill manifests, the grounding validator,
+`--swarm`, campaigns, the NDJSON mission stream and the published contract
+remain available. The current test inventory comes from `pytest --collect-only -q`,
+not a manually maintained count.
 
 ---
 

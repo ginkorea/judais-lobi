@@ -2510,10 +2510,33 @@ failed on one would make every additive release a breaking one.
    deploy doctor compares its checked-out tag against.
 2. Update the version in `README.md`'s status line —
    `tests/test_docs_track_the_code.py` holds the README against `VERSION`, and
-   `setup.py`'s summary derives from it rather than repeating it.
-3. Tag `vX.Y.Z` and push the tag. `.github/workflows/pypi-release.yml` builds
-   from a clean export of the tag, refuses a tag that disagrees with `VERSION`,
-   and uploads.
+   `setup.py`'s summary derives from it rather than repeating it. Add the matching
+   release page under `docs/releases/` and link it from the status and history.
+3. Integrate the complete reviewed candidate into the original repository's
+   default branch. Run the release workflow's packaging, contract, documentation
+   and platform-guide tests, plus the changed runtime suites and consumer
+   conformance checks. Record the exact tested commit; a feature-branch push
+   alone does not update the default branch or publish a package.
+4. Build both the source distribution and wheel from a clean export of that
+   commit, check their metadata, and smoke-test the installed wheel. Keep the
+   release pending if either artifact or an integration gate fails.
+5. Create and push the new immutable `vX.Y.Z` tag at that tested commit.
+   Never move a previously published tag or replace an existing PyPI version.
+   `.github/workflows/pypi-release.yml` builds both artifacts from the tag,
+   refuses a tag that disagrees with `VERSION`, and uploads through the
+   repository's configured PyPI publishing credential.
+6. Verify the workflow completed and PyPI exposes both artifacts with the
+   expected version. Test installation of the exact published version in a
+   clean environment before updating downstream pins. A tag, a green source
+   test or an upload attempt alone is not evidence of a published package.
+
+If the repository's publishing credential is not configured, a maintainer may
+publish manually with an already configured local Twine repository profile.
+Use the same tested tag and clean-export artifact checks; record the two
+artifact hashes and upload those exact files, not every file in an old build
+directory. Keep credentials out of commands, logs and source. Manual publication
+does not waive the gates or justify moving the tag; verify PyPI and installation
+as in step 6. The release workflow itself need not be changed for this fallback.
 
 ---
 
