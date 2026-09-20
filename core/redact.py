@@ -155,6 +155,9 @@ SCRUBBED_FIELDS = frozenset({
     # been a path.  One rule for one field name, and the rule has to hold on
     # the event where the name was never validated.
     "tool",
+    # Telemetry coverage is currently a fixed label. Scrub rather than exempt
+    # it so a future provider's explanatory text cannot bypass redaction.
+    "coverage",
 })
 
 #: Fields that are **never** scrubbed, and recursion stops at them — an

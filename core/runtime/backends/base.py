@@ -178,6 +178,9 @@ class Usage:
     #: :data:`TRUNCATED_REASONS`; ``""`` for a completion that ended on its
     #: own terms, which is nearly all of them.
     finish_reason: str = ""
+    #: Internal provenance for telemetry; the historical usage wire remains
+    #: unchanged. Direct construction declares the counts the caller supplied.
+    count_sources: Mapping[str, str] = field(default_factory=dict, compare=False)
 
     @classmethod
     def from_payload(cls, payload: Any,
@@ -215,6 +218,13 @@ class Usage:
         total = _as_int(raw.get("total_tokens"))
         if prompt is None and completion is None and total is None:
             return None
+        sources = {
+            name: "reported" if value is not None else "missing"
+            for name, value in zip(NAMED_COUNTS, (prompt, completion, total),
+                                   strict=True)
+        }
+        if total is None and prompt is not None and completion is not None:
+            sources["total_tokens"] = "derived"
         prompt = prompt or 0
         completion = completion or 0
         if total is None:
@@ -223,7 +233,8 @@ class Usage:
                  if key not in NAMED_COUNTS and value is not None}
         return cls(prompt_tokens=prompt, completion_tokens=completion,
                    total_tokens=total, extra=extra,
-                   finish_reason=truncation_of(finish_reason))
+                   finish_reason=truncation_of(finish_reason),
+                   count_sources=sources)
 
     def as_record(self) -> Dict[str, Any]:
         """The shape this rides the event stream in.

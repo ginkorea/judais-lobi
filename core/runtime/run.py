@@ -3045,6 +3045,7 @@ class Run:
                 budget=transcript.budget,
                 reason=transcript.reason,
                 usage=transcript.usage.as_record(self.model.rate),
+                telemetry=transcript.usage.telemetry_record(),
                 started_at=self._started_at,
                 stopped_with_draft=transcript.delivered_draft))
 

@@ -140,6 +140,32 @@ def shapes(records):
     return [(record["event"], sorted(record)) for record in records]
 
 
+def expected_records(run_id):
+    """Historical records plus the one explicitly specified additive field.
+
+    Keep the original recordings intact. These direct fixtures each contain
+    two replayed calls with no usage report. Assert the full new object rather
+    than removing telemetry from the comparator or weakening field checks.
+    """
+    result = committed_records(run_id)
+    if run_id in {"run_corpusjson-0001", "run_corpusnative-0001"}:
+        finished = next(r for r in result if r["event"] == "mission_finished")
+        assert "telemetry" not in finished
+        finished["telemetry"] = {
+            "version": 1,
+            "coverage": "ledger_observations_only",
+            "observed_calls": 2,
+            "usage_reporting_calls": 0,
+            "usage_missing_calls": 2,
+            "peak_reported_prompt_tokens": None,
+            "peak_reported_call_tokens": None,
+            "latest_reported_call": None,
+            "retained_usage_records": 0,
+            "omitted_usage_records": 0,
+        }
+    return result
+
+
 def moved_columns(live, committed):
     """Which verdict columns differ, the three that may move aside."""
     return {key for key in committed.kpis
@@ -172,7 +198,7 @@ class TestTheRecordedRunsReplayUnchanged:
                                         *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
         assert comparable(records(corpus, fresh.run_id)) == \
-            comparable(committed_records(run_id))
+            comparable(expected_records(run_id))
 
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_events_arrive_in_the_recorded_order(
@@ -206,7 +232,7 @@ class TestTheRecordedRunsReplayUnchanged:
                                         *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
         assert shapes(records(corpus, fresh.run_id)) == \
-            shapes(committed_records(run_id))
+            shapes(expected_records(run_id))
 
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_replay_reports_no_drift(self, corpus, tmp_path, run_id):

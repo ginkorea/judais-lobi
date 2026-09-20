@@ -69,7 +69,7 @@ carry and which is described below the table.
 | **`tool_result`** | `call` | the same ordinal as its `tool_call`, so a consumer can pair them under a shared `index` |
 | **`gate_requested`** | `approval_id` | the name of the durable record this request was written to, which is what a decision is addressed to afterwards |
 | **`answer`** | `usage`, `draft` | what the call that wrote this text cost — the repair turn's, on a repaired answer; and `draft: true` on the one answer a run emits after its outcome is already decided (see below) |
-| **`mission_finished`** | `usage`, `budget`, `reason`, `elapsed_s`, `stopped_with_draft` | the run's ledger; which budget ran out and by how much; why it ended when the outcome word does not say; the wall clock; and whether the run ended early having handed over an answer it had already written |
+| **`mission_finished`** | `usage`, `telemetry`, `budget`, `reason`, `elapsed_s`, `stopped_with_draft` | the run's ledger and optional observation coverage; which budget ran out and by how much; why it ended when the outcome word does not say; the wall clock; and whether the run ended early having handed over an answer it had already written |
 | **`model_state`** | `index`, `detail`, `since_s`, `retry_after_s` | the step the wait happened in; what the server said about it; how long the run had been waiting when it was reported; and the `Retry-After` the server asked for |
 
 **`branch` may ride any of them**, and is the one optional field that is not
@@ -829,6 +829,7 @@ person's surface and may move.
 - `--profile` — the capability profile: deny-by-default `safe`, then `dev`, `research`, `ops`, `god`. Arrives back as `profile`.
 - `--unsandboxed` — run tool subprocesses with no isolation. Without it, `bwrap` wherever bubblewrap exists. Arrives back as `sandbox`.
 - `--skill` — the skill manifest: tool subset, prompt, grounding grammar. **Repeatable**: several manifests compose into one mission. The FIRST is the primary and owns what a mission has one of — the name every record is filed under, the version, and the answer shape (a supporting skill's `output_format` is dropped); the rest add tools (union, first-seen order, required beats optional), prompt text in listed order, and grounding strictness (unioned, never intersected). Two skills that disagree about a scalar — the identifier grammar, the number grammar, `max_repairs` — or about what a plane name means, or that name two SDKs, are refused at the door listing every disagreement at once. The environment form takes an `os.pathsep`-separated list; one value behaves exactly as one `--skill` always has.
+- `--active-skill` — restore a configured skill ID selected in this conversation. Repeatable; requires `--defer-skills`. Restores instructions and tool selection, not permissions or approvals. Resume must retain the recorded selection.
 - `--swarm` — triage first, then stage the mission if it needs staging.
 - `--events` — where the NDJSON goes **out**. See above.
 - `--history` — prior turns, seeded as chat messages ahead of the objective.

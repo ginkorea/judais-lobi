@@ -364,7 +364,7 @@ what it says is not about the record's kind.
 | `answer_delta` | `index`, `part`, `text` | `branch` |
 | `answer` | `text`, `outcome` | `usage`, `draft`, `branch` |
 | `grounding` | `ran`, `grounded`, `verified`, `repairs`, `repairing`, `caveat`, `unsupported`, `silent`, `uncited`, `checks` | `branch` |
-| `mission_finished` | `outcome`, `steps`, `max_steps` | `usage`, `budget`, `reason`, `elapsed_s`, `stopped_with_draft`, `branch` |
+| `mission_finished` | `outcome`, `steps`, `max_steps` | `usage`, `telemetry`, `budget`, `reason`, `elapsed_s`, `stopped_with_draft`, `branch` |
 | `model_state` | `state`, `provider`, `model` | `index`, `detail`, `since_s`, `retry_after_s`, `branch` |
 
 **`model_state`** (0.16, the eleventh) says why a pane is waiting: `state` is
@@ -407,6 +407,22 @@ the whole answer.
 vocabulary-growth rule for enums as such, so it can be classified from there
 alone. A lockstep test holding that tuple against your own list will see it
 grow, and the response is a branch or a shrug, not a pin.
+
+**Call sizes versus cumulative work.** Direct runs may additionally emit
+`telemetry` on `mission_finished`. Version 1 identifies its coverage as
+`ledger_observations_only`: completed calls observed by the ledger, not all
+attempted HTTP requests. It reports observed, usage-reporting and missing-usage
+call counts, peak reported prompt/call tokens, and the latest reported call.
+Unknown peaks or an unreported latest call are null, not zero. After combining
+child ledgers, latest is unknown because aggregation order is not completion
+order. Retained and omitted usage-record counts describe the bounded history;
+peaks continue to update beyond that bound. Cumulative `usage.total_tokens`
+does not establish context occupancy, a context limit, or that compaction ran.
+Older and staged emitters may omit this object; absence means uninstrumented.
+If a provider reports only some token fields, the other fields remain null in
+telemetry. A total derived from both reported input and output counts is known;
+a total synthesized from one missing count is not a measured call footprint.
+The existing cumulative usage wire is unchanged for compatibility.
 
 **Reading a slow turn.** Three fields answer it and all three are already on
 the wire. `model_state.state` says whether the model is silent (`queued`,

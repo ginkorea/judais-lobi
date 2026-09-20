@@ -734,6 +734,7 @@ def _finished_record(*, outcome: str, steps: int, max_steps: int,
                      budget: Optional[BudgetExhausted] = None,
                      reason: str = "",
                      usage: Optional[Dict[str, Any]] = None,
+                     telemetry: Optional[Dict[str, Any]] = None,
                      started_at: Optional[float] = None,
                      stopped_with_draft: bool = False) -> Dict[str, Any]:
     """The ``mission_finished`` fields, for **both** paths that emit them.
@@ -768,6 +769,8 @@ def _finished_record(*, outcome: str, steps: int, max_steps: int,
     # anything — not three zeros; see the ledger.
     if usage is not None:
         record["usage"] = usage
+    if telemetry is not None:
+        record["telemetry"] = telemetry
     # `elapsed_s` — wall time from the run's first record to this one, on
     # the harness's own monotonic clock (the same one `--mission-seconds`
     # runs against). Present whenever the run knew when it started, which is

@@ -1244,6 +1244,7 @@ _FLAG_VALUES = {
     "--model": "gpt-oss-20b",
     "--profile": "dev",
     "--skill": "skill.yaml",
+    "--active-skill": "catalogue_recon",
     "--events": "-",
     "--history": "thread.json",
     "--gate-tool": "compute_cancel_job",

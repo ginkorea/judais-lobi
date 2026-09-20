@@ -56,6 +56,10 @@ class Ledger:
     #: and this list is held for the whole of it; the totals above are
     #: never bounded and remain exact past the cut.
     per_call: List[Dict[str, Any]] = field(default_factory=list)
+    observed_calls: int = 0
+    peak_prompt_tokens: Optional[int] = None
+    peak_call_tokens: Optional[int] = None
+    latest_call: Optional[Dict[str, Optional[int]]] = None
 
     #: How many per-call records to keep. The totals do not stop at it.
     MAX_PER_CALL = 256
@@ -65,8 +69,9 @@ class Ledger:
     def add(self, usage: Optional[Usage]) -> Optional[Usage]:
         """Fold one model call in and hand back what was folded.
 
-        ``None`` in, ``None`` out and nothing counted — a provider that
-        said nothing must not move a counter.  The return value is what
+        ``None`` in, ``None`` out and no usage counted — a provider that
+        said nothing must not move a token counter. The observation is
+        counted separately so missing reports remain visible. The return value
         lets a caller emit the same numbers it just accumulated without
         reading them back out, which is how the per-call field on
         ``tool_call`` and the totals on ``mission_finished`` stay two
@@ -81,12 +86,27 @@ class Ledger:
         that is not a report is treated as no report rather than as a
         number nobody can trace.
         """
+        self.observed_calls = max(self.observed_calls, self.calls) + 1
+        self.latest_call = None
         if not isinstance(usage, Usage):
             return None
         self._fold(usage.prompt_tokens, usage.completion_tokens,
                    usage.total_tokens, 1)
         if len(self.per_call) < self.MAX_PER_CALL:
             self.per_call.append(usage.as_record())
+        self.latest_call = {
+            name: (None if usage.count_sources.get(name) == "missing" else value)
+            for name, value in (
+                ("prompt_tokens", usage.prompt_tokens),
+                ("completion_tokens", usage.completion_tokens),
+                ("total_tokens", usage.total_tokens))
+        }
+        prompt = self.latest_call["prompt_tokens"]
+        total = self.latest_call["total_tokens"]
+        if prompt is not None:
+            self.peak_prompt_tokens = max(self.peak_prompt_tokens or 0, prompt)
+        if total is not None:
+            self.peak_call_tokens = max(self.peak_call_tokens or 0, total)
         return usage
 
     def absorb(self, other: "Ledger") -> None:
@@ -95,8 +115,19 @@ class Ledger:
         Through the same fold as :meth:`add`, so a staged mission's total
         cannot drift from the sum of the calls it is made of.
         """
-        if other is self or not other.calls:
+        if other is self or not (other.observed_calls or other.calls):
             return
+        self.observed_calls = (max(self.observed_calls, self.calls)
+                               + max(other.observed_calls, other.calls))
+        # Absorption order is not request completion order when children run
+        # concurrently. There is no defensible "latest" across child ledgers.
+        self.latest_call = None
+        if other.peak_prompt_tokens is not None:
+            self.peak_prompt_tokens = max(
+                self.peak_prompt_tokens or 0, other.peak_prompt_tokens)
+        if other.peak_call_tokens is not None:
+            self.peak_call_tokens = max(
+                self.peak_call_tokens or 0, other.peak_call_tokens)
         self._fold(other.prompt, other.completion, other.total, other.calls)
         room = self.MAX_PER_CALL - len(self.per_call)
         if room > 0:
@@ -152,6 +183,27 @@ class Ledger:
         if cost is not None:
             line += f" — {cost['amount']} {cost['currency']}"
         return line
+
+    def telemetry_record(self) -> Dict[str, Any]:
+        """Measured call sizes beside cumulative spend, without inventing usage.
+
+        These are observations at the ledger boundary, not all attempted HTTP
+        requests: a backend exception can occur before the caller reaches it.
+        No context capacity or compaction is inferred from cumulative tokens.
+        Peaks remain exact after the bounded per-call sample fills up.
+        """
+        return {
+            "version": 1,
+            "coverage": "ledger_observations_only",
+            "observed_calls": max(self.observed_calls, self.calls),
+            "usage_reporting_calls": self.calls,
+            "usage_missing_calls": max(self.observed_calls - self.calls, 0),
+            "peak_reported_prompt_tokens": self.peak_prompt_tokens,
+            "peak_reported_call_tokens": self.peak_call_tokens,
+            "latest_reported_call": self.latest_call,
+            "retained_usage_records": len(self.per_call),
+            "omitted_usage_records": self.calls - len(self.per_call),
+        }
 
 
 @dataclass(frozen=True)
