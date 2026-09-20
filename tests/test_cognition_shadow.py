@@ -66,7 +66,8 @@ from tests.test_cli_mission_skill import STUB as MISSION_STUB
 from tests.test_cli_mission_skill import elf
 from tests.test_cli_mission_skill import run_cli as mission_run_cli
 from tests.test_record_replay import ASSET
-from tests.test_run_corpus import committed_records
+from tests.test_run_corpus import expected_records
+from tests.request_telemetry_fixtures import comparable_request_clocks
 
 #: What each committed fixture's receipts are worth, as
 #: ``(propositions, assert_observation events, derive events)``.
@@ -984,8 +985,8 @@ class TestCognitionOnAddsOneFileAndNothingElse:
     def test_the_stream_is_still_the_committed_stream(self, corpus, tmp_path,
                                                       run_id):
         fresh = _replay(corpus, tmp_path, run_id, "--cognition")
-        assert comparable(records(corpus, fresh)) == \
-            comparable(committed_records(run_id))
+        assert comparable(comparable_request_clocks(records(corpus, fresh), fresh)) == \
+            comparable(expected_records(run_id, "run"))
 
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_replay_still_reports_no_drift(self, corpus, tmp_path,
@@ -1094,8 +1095,8 @@ class TestAFailingShadowDoesNotMarkTheRun:
     def test_the_mission_is_untouched(self, corpus, tmp_path, poisoned,
                                       run_id):
         fresh = _replay(corpus, tmp_path, run_id, "--cognition")
-        assert comparable(records(corpus, fresh)) == \
-            comparable(committed_records(run_id))
+        assert comparable(comparable_request_clocks(records(corpus, fresh), fresh)) == \
+            comparable(expected_records(run_id, "run"))
 
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_reasoning_log_says_what_happened(self, corpus, tmp_path,
@@ -1300,8 +1301,8 @@ class TestARefusedLogDoesNotRefuseTheMission:
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_mission_still_runs(self, corpus, tmp_path, refusing, run_id):
         fresh = _replay(corpus, tmp_path, run_id, "--cognition")
-        assert comparable(records(corpus, fresh)) == \
-            comparable(committed_records(run_id))
+        assert comparable(comparable_request_clocks(records(corpus, fresh), fresh)) == \
+            comparable(expected_records(run_id, "run"))
 
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_it_runs_with_no_shadow_rather_than_half_of_one(
