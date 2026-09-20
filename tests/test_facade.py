@@ -32,7 +32,9 @@ a library.
 """
 
 import json
+import hashlib
 import os
+from dataclasses import asdict
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -48,6 +50,7 @@ from core.tools.capability import CapabilityEngine
 from core.tools.descriptors import ToolDescriptor
 from core.tools.sandbox import NoneSandbox
 from tests.test_record_replay import comparable, scripted_elf
+from tests.request_telemetry_fixtures import comparable_request_clocks
 
 
 # ── the manifest the runs below share ───────────────────────────────────────
@@ -121,6 +124,9 @@ def local_bus():
 def cli_elf(replies=REPLIES):
     """``scripted_elf`` with the local plane's bus under it."""
     MockClass, agent = scripted_elf(replies)
+    # Explicit JSON-only fixture: an unset MagicMock capability is truthy
+    # and otherwise adds native schemas absent from the library fixture.
+    agent.client.supports_tool_calls = False
     agent.tools.bus = local_bus()
     return MockClass, agent
 
@@ -145,7 +151,8 @@ def cli_records(objective, skill_path, *extra, replies=REPLIES):
     return store.records(runs[0].run_id)
 
 
-def facade_records(objective, bus, replies=REPLIES):
+def facade_records(objective, bus, replies=REPLIES, *, task=False, durable=False,
+                   windowed=False, skill_path=None):
     """The same mission, built out of the six objects a platform imports.
 
     This function IS the README's "Library API" example with a list to
@@ -153,7 +160,7 @@ def facade_records(objective, bus, replies=REPLIES):
     name comes off ``judais_lobi``, which is the point.
     """
     from judais_lobi import (
-        Bounds, Model, Observer, Personality, Run, Store, ToolPlane,
+        Bounds, Model, Observer, Personality, Run, Store, ToolPlane, TaskContext,
     )
 
     seen = []
@@ -162,14 +169,57 @@ def facade_records(objective, bus, replies=REPLIES):
     def ask(messages, **_extra):
         return remaining.pop(0) if remaining else '{"answer": "done"}'
 
+    runs = RunStore(Path(os.environ[RUNS_ENV])) if durable else None
+    run_id = runs.create().run_id if runs is not None else ""
+    window = None
+    if windowed:
+        from core.runtime.context_window import MissionWindow
+        _, agent = cli_elf()
+        window = MissionWindow(provider="local", model=agent.model, client=agent.client)
+    skill_prompt = (judais_lobi.load_skill(skill_path).prompt if skill_path else
+                    "Read the view, then answer from it.")
     run = Run(
-        Personality(system_message="You are Tai.\n\nRead the view, then "
-                                   "answer from it."),
+        Personality(system_message="You are Tai.\n\n" + skill_prompt),
         ToolPlane(bus=bus, offered=["governed_view"]),
-        Bounds(), Store(), Observer(seen.append), Model(ask=ask),
+        Bounds(), Store(runs=runs, run_id=run_id, task=TaskContext.local() if task else None),
+        Observer(seen.append), Model(ask=ask, window=window),
     )
     run.run(objective)
     return seen
+
+
+def verified_receipt_comparison(records, runs):
+    """Verify each private payload/binding before normalizing random locators."""
+    from core.runtime.receipt_checkpoint import ReceiptCheckpoint
+    run_id = records[0]["run_id"]
+    rows, payloads = comparable(comparable_request_clocks(records, run_id)), []
+    for row in rows:
+        if row["event"] != "tool_result":
+            continue
+        ref = row["receipt"]
+        assert set(ref) == {"version", "state", "id", "sha256", "bytes", "redacted"}
+        assert ref["version"] == 1 and ref["state"] == "ready"
+        raw = (runs.directory(run_id) / "receipts" / (ref["id"] + ".json")).read_bytes()
+        assert len(raw) == ref["bytes"]
+        assert hashlib.sha256(raw).hexdigest() == ref["sha256"]
+        loaded = ReceiptCheckpoint(runs, run_id).load(row)
+        assert loaded.receipt is not None and not loaded.notice
+        receipt, origin = loaded.receipt, loaded.receipt.origin
+        assert origin.run_id == run_id and origin.receipt_id == ref["id"]
+        assert origin.sha256 == ref["sha256"] and origin.handle == row["handle"]
+        assert origin.index == row["index"] and origin.branch == row.get("branch", "")
+        assert origin.call == row.get("call", 0)
+        assert receipt.tool == row["tool"] and receipt.arguments == row["arguments"]
+        assert receipt.exit_code == row["exit_code"]
+        assert receipt.quoted_history == row.get("quoted_history", False)
+        assert receipt.redacted == ref["redacted"] == row.get("redacted_receipt", False)
+        payload = asdict(receipt)
+        payload["origin"] = {key: value for key, value in asdict(origin).items()
+                             if key not in {"run_id", "receipt_id", "sha256"}}
+        payloads.append(payload)
+        row["receipt"] = {**ref, "id": "<random-receipt-id>", "sha256": "<verified-digest>"}
+    assert payloads
+    return rows, payloads
 
 
 # ── the façade is a re-export ───────────────────────────────────────────────
@@ -204,6 +254,10 @@ class TestEveryPromisedNameIsItsOwners:
         "MissionWindow": "core.runtime.context_window",
         "GOVERNED_PLANE": "core.runtime.prompts",
         "RunStore": "core.durable",
+        "TaskContext": "core.runtime.task_state",
+        "TaskScope": "core.runtime.task_state",
+        "TaskIntent": "core.runtime.task_state",
+        "TaskHandoff": "core.runtime.task_state",
         "open_shadow": "core.runtime.cognition",
         "SCHEMA_VERSION": "core.runtime.contract",
     }
@@ -334,12 +388,38 @@ class TestTheCLIIsAClientOfThis:
     """
 
     def test_the_two_streams_are_the_same_stream(self, tmp_path):
-        through_the_cli = cli_records("what are the totals?",
-                                      write_skill(tmp_path))
+        skill_path = write_skill(tmp_path)
+        through_the_cli = cli_records("what are the totals?", skill_path)
         through_the_facade = facade_records("what are the totals?",
-                                            local_bus())
+            local_bus(), task=True, durable=True, windowed=True, skill_path=skill_path)
 
-        assert comparable(through_the_cli) == comparable(through_the_facade)
+        runs = RunStore(Path(os.environ[RUNS_ENV]))
+        assert (verified_receipt_comparison(through_the_cli, runs)
+                == verified_receipt_comparison(through_the_facade, runs))
+
+    def test_disabled_storage_and_legacy_no_state_still_match(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(RUNS_ENV, "none")
+        events = tmp_path / "events.jsonl"
+        mock, _ = cli_elf()
+        skill_path = write_skill(tmp_path)
+        run_cli(mock, "what are the totals?", "--mission", "--skill", skill_path,
+                "--no-task-state", "--events", str(events))
+        cli = [json.loads(line) for line in events.read_text().splitlines()]
+        library = facade_records("what are the totals?", local_bus(), windowed=True,
+                                 skill_path=skill_path)
+        assert all("receipt" not in row and "task_state" not in row for row in cli)
+        assert (comparable(comparable_request_clocks(cli, "unrecorded"))
+                == comparable(comparable_request_clocks(library, "unrecorded")))
+
+    def test_receipt_comparison_rejects_corrupted_archive(self):
+        records = facade_records("what are the totals?", local_bus(), durable=True)
+        runs = RunStore(Path(os.environ[RUNS_ENV]))
+        verified_receipt_comparison(records, runs)
+        row = next(row for row in records if row["event"] == "tool_result")
+        path = runs.directory(records[0]["run_id"]) / "receipts" / (row["receipt"]["id"] + ".json")
+        path.write_text("{}")
+        with pytest.raises(AssertionError):
+            verified_receipt_comparison(records, runs)
 
     def test_and_it_is_not_an_empty_comparison(self, tmp_path):
         """The guard on the assertion above. Two empty lists are equal,
@@ -384,7 +464,7 @@ class TestTheLocalToolPlane:
         out = capsys.readouterr().out
 
         assert "is on its BUILT-IN tools" in out
-        assert records[0]["catalogue"] == ["governed_view", "mission_result"]
+        assert records[0]["catalogue"] == ["governed_view", "mission_result", "mission_task"]
         assert records[-1]["outcome"] == "answered"
 
     def test_the_tool_is_really_dispatched(self, tmp_path):
@@ -425,7 +505,7 @@ class TestTheLocalToolPlane:
         assert "is on its BUILT-IN tools" in out
         store = RunStore(Path(os.environ[RUNS_ENV]))
         records = store.records(store.list()[0].run_id)
-        assert records[0]["catalogue"] == ["governed_view", "mission_result"]
+        assert records[0]["catalogue"] == ["governed_view", "mission_result", "mission_task"]
 
     def test_a_named_server_still_takes_the_ordinary_path(self, tmp_path,
                                                           monkeypatch):
