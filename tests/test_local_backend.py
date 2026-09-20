@@ -14,6 +14,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+import requests
 
 from core.runtime.backends.base import Backend
 from core.runtime.backends.local_backend import (
@@ -34,6 +35,8 @@ class _StubState:
             "data": [{"id": "gpt-oss-20b", "object": "model", "max_model_len": 131072}],
         }
         self.models_status = 200
+        self.redirect_status = 0
+        self.redirect_hits = 0
         self.last_body = None
         self.last_headers = None
         #: What the stub puts in `usage`, on both paths. ``None`` is a
@@ -73,6 +76,12 @@ def _make_handler(state: _StubState):
 
         def do_GET(self):
             state.last_headers = dict(self.headers)
+            if self.path.startswith("/v1/redirect-target"):
+                state.redirect_hits += 1
+                self._send(200, json.dumps(state.models).encode())
+                return
+            if self._redirect():
+                return
             if self.path != "/v1/models":
                 self._send(404, b'{"error":"not found"}')
                 return
@@ -86,6 +95,12 @@ def _make_handler(state: _StubState):
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
             state.last_body = body
+            if self.path.startswith("/v1/redirect-target"):
+                state.redirect_hits += 1
+                self._send(200, b'{"choices":[{"message":{"content":"redirected"}}]}')
+                return
+            if self._redirect():
+                return
             if self.path != "/v1/chat/completions":
                 self._send(404, b'{"error":"not found"}')
                 return
@@ -105,6 +120,15 @@ def _make_handler(state: _StubState):
             if state.usage is not None:
                 payload["usage"] = state.usage
             self._send(200, json.dumps(payload).encode())
+
+        def _redirect(self):
+            if not state.redirect_status:
+                return False
+            self.send_response(state.redirect_status)
+            self.send_header("Location", state.base + "/redirect-target?token=private-location")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
 
         def _stream(self, body):
             frames = []
@@ -165,6 +189,35 @@ def stub():
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+class TestRedirects:
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_probe_does_not_follow_a_redirect(self, stub, status):
+        stub.redirect_status = status
+        backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b",
+                               api_key="private-invocation-key")
+        result = backend.probe()
+        assert not result.reachable
+        assert "redirect" in result.error.lower()
+        assert "private-location" not in result.error
+        assert "private-invocation-key" not in result.error
+        assert stub.redirect_hits == 0
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_completion_does_not_resend_the_prompt_to_a_redirect(self, stub, status, stream):
+        stub.redirect_status = status
+        backend = LocalBackend(endpoint=stub.base, model="gpt-oss-20b",
+                               api_key="private-invocation-key")
+        with pytest.raises(requests.HTTPError, match="redirect") as caught:
+            answer = backend.chat("gpt-oss-20b", [{"role": "user", "content": "private prompt"}],
+                                  stream=stream)
+            if stream:
+                list(answer)
+        assert "private-location" not in str(caught.value)
+        assert "private-invocation-key" not in str(caught.value)
+        assert stub.redirect_hits == 0
 
 
 class TestBaseNormalization:
