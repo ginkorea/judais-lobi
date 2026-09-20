@@ -62,7 +62,7 @@ carry and which is described below the table.
 
 | event | optional fields | what they add |
 | --- | --- | --- |
-| **`mission_started`** | `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol`, `granted` | the run's posture: the isolation its tool subprocesses ran under, the capability profile governing it, the audit file, the durable transcript it is being recorded in, how the model was asked to decide, and the scopes an operator pre-authorised **beyond** that profile with `--grant` |
+| **`mission_started`** | `sandbox`, `profile`, `audit_ref`, `run_id`, `protocol`, `granted`, `history_checkpoint` | the run's posture and scopes; `history_checkpoint: 1` means this run attempted the private v1 conversation checkpoint, not that the disk write succeeded; resume verifies its metadata/digest |
 | **`step_started`** | `plan`, `compacted`, `resumed`, `injected`, `catalogue`, `review`, `artifacts` | what happened to this step before it was asked: a staged plan drawn, the conversation shortened to fit the window, an earlier stretch continued, an operator instruction put in front of the model, the supervisor's verdict on a repeating pattern, and — only where it changed — the whole set of tool names the model may name from this step on, because a server may register a tool mid-run and a closed set that allows it lets it join; and, on a campaign step, the files it was handed and the files it owes |
 | **`reply_rejected`** | `tool`, `usage` | the name the model wrote, when it got as far as one; and what the rejected call cost, because a rejected reply is still a billed reply |
 | **`tool_call`** | `usage`, `call` | what the model call that chose this tool cost; and which call of the turn it is when the model asked for several |

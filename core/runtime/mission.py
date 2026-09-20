@@ -414,7 +414,7 @@ HISTORY_MAX_TURNS = 100
 HISTORY_MAX_CHARS = 262_144
 
 
-def validate_history(turns: Any) -> List[Dict[str, str]]:
+def validate_history(turns: Any, *, max_chars: int = HISTORY_MAX_CHARS) -> List[Dict[str, str]]:
     """*turns* as a clean ``[{"role", "content"}, …]``, or ``ValueError``.
 
     The one answer to "is this a conversation history this loop will
@@ -467,10 +467,10 @@ def validate_history(turns: Any) -> List[Dict[str, str]]:
             )
         total += len(content)
         cleaned.append({"role": role, "content": content})
-    if total > HISTORY_MAX_CHARS:
+    if total > max_chars:
         raise ValueError(
             f"history totals {total} characters; the cap is "
-            f"{HISTORY_MAX_CHARS}. Trim it at the caller."
+            f"{max_chars}. Trim it at the caller."
         )
     return cleaned
 

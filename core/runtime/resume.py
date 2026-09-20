@@ -66,12 +66,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from core.durable import LOCKS, NoSuchRun, Run, RunStore, now
 from core.runtime.mission import (
     AWAITING_APPROVAL, JSON_PROTOCOL, NATIVE_PROTOCOL, MissionCall,
-    MissionStep,
+    HISTORY_MAX_CHARS, MissionStep,
 )
 from core.runtime.mission_stream import (
     ANSWER, GATE_REQUESTED, GROUNDING, MISSION_FINISHED, MISSION_STARTED,
@@ -310,6 +310,11 @@ class Recorded:
     #: Whether the staged run has already spent its one plan redraw.
     replanned: bool = False
 
+    #: Original, credential-redacted seed when a history checkpoint exists.
+    #: None preserves legacy callers; [] with a notice means restoration failed.
+    history: Optional[List[Dict[str, str]]] = None
+    history_notice: str = ""
+
     def total_steps(self, more: Optional[int]) -> int:
         """The step ceiling for the whole run — recorded steps included.
 
@@ -473,6 +478,11 @@ def open_for_resume(store: Optional[RunStore], run_id: str, *,
             f"pass the recorded objective, or omit it and the run supplies "
             f"it.")
 
+    from core.runtime.history_checkpoint import load as load_history
+    history, history_notice = load_history(store, run_id, meta.meta)
+    if history is None and opening[-1].get("history_checkpoint"):
+        from core.runtime.history_checkpoint import UNAVAILABLE
+        history, history_notice = [], UNAVAILABLE
     return Recorded(
         run_id=run_id,
         objective=recorded_objective,
@@ -486,6 +496,8 @@ def open_for_resume(store: Optional[RunStore], run_id: str, *,
         plan=plan,
         steps_done=steps_done,
         replanned=bool(meta.meta.get("replanned")),
+        history=history,
+        history_notice=history_notice,
     )
 
 
@@ -585,8 +597,8 @@ class Resumption:
     store: MissionResultStore = field(default_factory=MissionResultStore)
     #: Everything the loop appended to :meth:`~MissionRunner.seed`'s list,
     #: in order.  The seed itself is rebuilt by the runner, because it is a
-    #: function of the persona, the catalogue and the history — all of
-    #: which belong to the resuming process and not to the log.
+    #: function of current persona/catalogue and checkpointed history when
+    #: available. Legacy runs retain the caller-supplied seed behavior.
     tail: List[Dict[str, str]] = field(default_factory=list)
     #: The index the resumed loop starts at.
     next_index: int = 0
@@ -598,6 +610,8 @@ class Resumption:
     #: What the stream could not give back, in sentences.  See the
     #: ``LOST_*`` constants: this is shown to an operator, not swallowed.
     lost: List[str] = field(default_factory=list)
+    history: Optional[List[Dict[str, str]]] = None
+    history_notice: str = ""
 
     @property
     def steps_replayed(self) -> int:
@@ -630,6 +644,8 @@ class StagedResumption:
     run_id: str
     objective: str
     from_seq: int
+    history: Optional[List[Dict[str, str]]] = None
+    history_notice: str = ""
     #: The checkpointed plan, every field of every step.
     plan: List[Dict[str, Any]] = field(default_factory=list)
     #: The checkpointed step outcomes, in the order they were reached.
@@ -669,6 +685,23 @@ class StagedResumption:
         return resumed_record(self.from_seq, self.steps_replayed)
 
 
+def _restore_history(resumption: Union[Resumption, StagedResumption],
+                     recorded: Recorded) -> None:
+    resumption.history = recorded.history
+    resumption.history_notice = recorded.history_notice
+    if recorded.history is not None:
+        resumption.store.remember_history(recorded.history)
+        if sum(len(m["content"]) for m in recorded.history) > HISTORY_MAX_CHARS:
+            # Safe redaction labels expanded a valid original. Keep the full
+            # archive addressable but seed an explicitly incomplete excerpt.
+            resumption.history = [resumption.store.history_excerpt()]
+            resumption.history_notice += (
+                " Redacted history expanded beyond the seed allowance; "
+                "an excerpt is seeded and the full quotations remain under h-handles.")
+    if resumption.history_notice:
+        resumption.lost.append(resumption.history_notice)
+
+
 def rebuild(runner: Any, recorded: Recorded) -> Resumption:
     """The recorded stream, read back into the loop's own state.
 
@@ -703,6 +736,7 @@ def rebuild(runner: Any, recorded: Recorded) -> Resumption:
     resumption = Resumption(run_id=recorded.run_id,
                             objective=recorded.objective,
                             from_seq=recorded.from_seq)
+    _restore_history(resumption, recorded)
     if recorded.protocol == NATIVE_PROTOCOL:
         return _rebuild_native(runner, recorded, resumption)
     store = resumption.store
@@ -859,6 +893,7 @@ def _rebuild_staged(recorded: Recorded) -> StagedResumption:
     )
     settled = sum(1 for entry in resumption.steps_done
                   if str(entry.get("outcome") or "") in ("ok", "failed"))
+    _restore_history(resumption, recorded)
     if store.results:
         resumption.lost.append(LOST_STAGED_EVIDENCE.format(
             n=settled, s="" if settled == 1 else "s"))

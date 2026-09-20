@@ -491,7 +491,7 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: the tools named by ``gated`` are unaffected, and a scope a campaign
     #: step is narrowed past is still refused, naming the grant.
     MISSION_STARTED: ("sandbox", "profile", "audit_ref", "run_id",
-                      "protocol", "granted"),
+                      "protocol", "granted", "history_checkpoint"),
     #: ``plan`` — ``[{id, goal, rung}]``, the staged mission's plan, on the
     #: first ``step_started`` that plan produces.  Absent on a direct
     #: mission, which has no plan to show, and absent on every later step.

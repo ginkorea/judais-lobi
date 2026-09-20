@@ -990,6 +990,14 @@ class SwarmRunner:
 
     async def arun(self, objective: str,
                    resumption: Optional[Any] = None) -> MissionTranscript:
+        """Apply the root run's history checkpoint across every routing mode."""
+        with self._run.history_scope(resumption):
+            if resumption is None:
+                self._run.checkpoint_history()
+            return await self._arun(objective, resumption)
+
+    async def _arun(self, objective: str,
+                   resumption: Optional[Any] = None) -> MissionTranscript:
         """Announce, triage, then one path or the other.
 
         **This is the turn**, and it is a coroutine for one reason: a plan's

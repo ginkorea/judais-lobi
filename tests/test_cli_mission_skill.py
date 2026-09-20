@@ -1913,6 +1913,30 @@ class TestResumingFromTheCommandLine:
         assert len(self.runs(tmp_path).list()) == 1
         assert self.runs(tmp_path).list()[0].run_id == run_id
 
+    def test_byoa_resume_recovers_history_without_the_original_input_file(
+            self, elf, tmp_path):
+        """Public CLI path, not just the pane's library adapter."""
+        MockClass, agent = elf
+        turns = [
+            {"role": "user", "content": "List three projects."},
+            {"role": "assistant", "content": "1. Maple\n2. Cedar\n3. Pine"},
+        ]
+        path = tmp_path / "history.json"
+        path.write_text(json.dumps(turns), encoding="utf-8")
+        self.kill_after_one_step(agent)
+        with pytest.raises(SystemExit):
+            run_cli(MockClass, "--history", str(path))
+        run_id = self.runs(tmp_path).list()[0].run_id
+        path.unlink()
+        agent.seeds.clear()
+        self.answer_next(agent, "Cedar was the second project.")
+        run_resume(MockClass, run_id)
+        assert agent.seeds[0][1:3] == turns
+        assert "Result of mcp.governed_read" in agent.seeds[0][-1]["content"]
+        records = self.runs(tmp_path).records(run_id)
+        assert len([r for r in records if r.get("event") == "tool_call"
+                    and r.get("tool") == "mcp.governed_read"]) == 1
+
     def test_the_log_holds_one_opening_and_the_resumed_step_says_so(
             self, elf, tmp_path):
         MockClass, agent = elf

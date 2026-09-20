@@ -80,6 +80,7 @@ store.  The two do not meet: nothing here imports that one, and
 from __future__ import annotations
 
 import asyncio
+import sys
 import hashlib
 import itertools
 import json
@@ -89,7 +90,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import (
-    Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple,
+    Any, Callable, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple,
 )
 
 from core.bounding import MAX_RESULT_BYTES, bound_result
@@ -2215,6 +2216,8 @@ class Run:
             "gated": self.gated,
             "max_steps": self.bounds.max_steps,
             "history": len(self.personality.history),
+            **({"history_checkpoint": 1}
+               if getattr(self, "_history_checkpoint_expected", False) else {}),
             # The word the bus's actual runner answers to — `bwrap` or
             # `none` — so a consumer learns from the opening frame whether
             # this mission's tool subprocesses are isolated, without
@@ -2860,7 +2863,39 @@ class Run:
         """
         return _to_completion(self.arun(objective, resumption))
 
+    @contextmanager
+    def history_scope(self, resumption: Optional[Any]) -> Iterator[None]:
+        """A resumed seed is temporary, including registration/finalizer errors."""
+        original = self.personality.history
+        restored = getattr(resumption, "history", None)
+        try:
+            if restored is not None:
+                self.personality = replace(self.personality, history=restored)
+            yield
+        finally:
+            if restored is not None:
+                self.personality = replace(self.personality, history=original)
+
+    def checkpoint_history(self) -> None:
+        """The root turn checkpoints its seed before announcing/model calls."""
+        self._history_checkpoint_expected = bool(
+            self.personality.history and self.store.runs is not None and self.store.run_id)
+        if not self._history_checkpoint_expected:
+            return
+        from core.runtime.history_checkpoint import save as save_history
+        try:
+            save_history(self.store.runs, self.store.run_id, self.personality.history)
+        except Exception:
+            print("[run] Conversation history checkpoint unavailable; "
+                  "this run retains history in memory only.", file=sys.stderr)
+
     async def arun(self, objective: str,
+                   resumption: Optional[Any] = None) -> MissionTranscript:
+        """Run with exception-safe restoration of a resumed conversation seed."""
+        with self.history_scope(resumption):
+            return await self._arun(objective, resumption)
+
+    async def _arun(self, objective: str,
                    resumption: Optional[Any] = None) -> MissionTranscript:
         """Run the mission, or carry a recorded one on from where it stopped.
 
@@ -2909,6 +2944,7 @@ class Run:
         if self._initial_personality.deferred_skills is not None:
             self.personality = replace(
                 self._initial_personality,
+                history=self.personality.history,
                 deferred_skills=self._initial_personality.deferred_skills.clone())
         if self._started_at is None:
             self._started_at = started
@@ -2936,6 +2972,8 @@ class Run:
         if resumption is None:
             self.results.clear()
             self.results.remember_history(self.personality.history)
+            if not isinstance(self.observer, _Branch):
+                self.checkpoint_history()
         else:
             # Adopted, not copied into: the handles the model was given
             # earlier in this run (`r1`, `r2`) have to keep addressing the
@@ -3248,12 +3286,14 @@ class Run:
         opening: Dict[str, Any] = {}
 
         if resumption is not None:
-            # The seed is rebuilt rather than replayed — persona, catalogue
-            # and history belong to the resuming process, and a run resumed
+            # The seed uses current persona/catalogue but checkpointed history
+            # when available. A run resumed
             # against a server that has since grown a tool must be told
             # about the tool. Everything the loop itself appended is the
             # tail, and that is the half the log can give back.
             messages.extend(dict(turn) for turn in resumption.tail)
+            if getattr(resumption, "history_notice", ""):
+                messages.append({"role": "user", "content": resumption.history_notice})
             repairs = resumption.repairs
             start = resumption.next_index
             opening = {"resumed": resumption.as_record()}
