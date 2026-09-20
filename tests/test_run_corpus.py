@@ -45,11 +45,13 @@ that agrees with itself.
 
 import json
 from datetime import datetime
-from tests.request_telemetry_fixtures import with_request_telemetry
+from tests.request_telemetry_fixtures import comparable_request_clocks, with_request_telemetry
+from tests.receipt_fixtures import historical_receipts
 
 import pytest
 
 from core.eval.score import score_run
+from core.durable import RunStore
 from core.eval.stub_suite import SUITE
 from tests.test_eval_stub_suite import (
     FIXTURES, SCRIPTS, _fixture_path, drive, workdir,
@@ -57,7 +59,7 @@ from tests.test_eval_stub_suite import (
 from tests.test_record_replay import (
     CORPUS, CORPUS_RUNS, MOVES, REPLAY_FLAGS, REPLAY_SKILL, SKILL, comparable,
     corpus, records, replay_argv, replayed, run_cli, scripted_elf,
-    write_skill,
+    write_skill, lines, TOOL_LOG,
 )
 
 #: The verdict columns a re-run of a committed eval stream may move, and
@@ -188,7 +190,10 @@ class TestTheRecordedRunsReplayUnchanged:
                 finished = datetime.fromisoformat(request["finished_at"])
                 assert started.utcoffset().total_seconds() == 0
                 assert finished >= started
-        assert comparable(actual) == comparable(expected_records(run_id, fresh.run_id))
+        expected, actual = historical_receipts(
+            expected_records(run_id, "run"), actual, RunStore(corpus),
+            lines(corpus / run_id / TOOL_LOG))
+        assert comparable(comparable_request_clocks(actual, fresh.run_id)) == comparable(expected)
 
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_events_arrive_in_the_recorded_order(
@@ -221,8 +226,10 @@ class TestTheRecordedRunsReplayUnchanged:
         run_cli(MockClass, *replay_argv(run_id, skill(tmp_path, run_id),
                                         *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
-        assert shapes(records(corpus, fresh.run_id)) == \
-            shapes(expected_records(run_id))
+        expected, actual = historical_receipts(
+            expected_records(run_id), records(corpus, fresh.run_id), RunStore(corpus),
+            lines(corpus / run_id / TOOL_LOG))
+        assert shapes(actual) == shapes(expected)
 
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_replay_reports_no_drift(self, corpus, tmp_path, run_id):

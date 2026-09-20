@@ -44,6 +44,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from tests.request_telemetry_fixtures import comparable_request_clocks, with_request_telemetry
+from tests.receipt_fixtures import historical_receipts, verified_receipts
 
 from core.contracts.schemas import PolicyPack
 from core.durable import RUNS_ENV, RunStore
@@ -297,7 +298,7 @@ def record_json_run(tmp_path):
     """Record the JSON-protocol corpus run.  Returns ``(root, run_id)``."""
     MockClass, _ = scripted_elf(JSON_REPLIES)
     run_cli(MockClass, *mission_argv("what are the totals?",
-                                     write_skill(tmp_path)))
+                                     write_skill(tmp_path), "--no-task-state"))
     root = Path(os.environ[RUNS_ENV])
     return root, only_run(root)
 
@@ -308,7 +309,7 @@ def record_native_run(tmp_path):
                                 tool_calls=NATIVE_CALLS)
     run_cli(MockClass, *mission_argv("what are the totals?",
                                      write_skill(tmp_path),
-                                     "--protocol", "native"))
+                                     "--protocol", "native", "--no-task-state"))
     root = Path(os.environ[RUNS_ENV])
     return root, only_run(root)
 
@@ -317,7 +318,7 @@ def record_swarm_run(tmp_path):
     """Record the staged (``--swarm``) corpus run.  ``(root, run_id)``."""
     MockClass, _ = scripted_elf(SWARM_REPLIES)
     run_cli(MockClass, *mission_argv("what do the two runs hold?",
-                                     write_skill(tmp_path), "--swarm"))
+                                     write_skill(tmp_path), "--swarm", "--no-task-state"))
     root = Path(os.environ[RUNS_ENV])
     return root, only_run(root)
 
@@ -340,7 +341,7 @@ def record_swarm_caveat_run(tmp_path):
     MockClass, _ = scripted_elf(SWARM_CAVEAT_REPLIES)
     run_cli(MockClass, *mission_argv("what do the two runs hold?",
                                      write_skill(tmp_path, CAVEAT),
-                                     "--swarm"))
+                                     "--swarm", "--no-task-state"))
     root = Path(os.environ[RUNS_ENV])
     return root, only_run(root)
 
@@ -1129,8 +1130,11 @@ class TestARunWithAReviewInIt:
         MockClass, _ = scripted_elf(refuse=True)
         run_cli(MockClass, *replay_argv(run_id, write_skill(tmp_path)))
         fresh = replayed(root, run_id)
-        assert comparable(comparable_request_clocks(records(root, fresh.run_id), fresh.run_id)) == \
-            comparable(comparable_request_clocks(records(root, run_id), run_id))
+        actual, actual_payloads = verified_receipts(records(root, fresh.run_id), RunStore(root))
+        expected, expected_payloads = verified_receipts(records(root, run_id), RunStore(root))
+        assert actual_payloads == expected_payloads
+        assert comparable(comparable_request_clocks(actual, fresh.run_id)) == \
+            comparable(comparable_request_clocks(expected, run_id))
 
     def test_the_replayed_run_carries_the_review_and_the_nudge(self,
                                                                tmp_path):
@@ -1149,6 +1153,30 @@ class TestARunWithAReviewInIt:
 
 
 class TestReplayingTheCorpus:
+    @pytest.mark.parametrize("mutation", ["text", "json_scalar_type", "scope", "trust", "digest"])
+    def test_historical_receipt_comparison_rejects_changed_evidence(
+            self, corpus, tmp_path, mutation):
+        MockClass, _ = scripted_elf(refuse=True)
+        run_cli(MockClass, *replay_argv(JSON_RUN, write_skill(tmp_path)))
+        fresh = replayed(corpus, JSON_RUN)
+        expected, actual = records(corpus, JSON_RUN), records(corpus, fresh.run_id)
+        recorded = lines(corpus / JSON_RUN / TOOL_LOG)
+        call = next(row for row in recorded if "result" in row)
+        event = next(row for row in actual if row["event"] == "tool_result")
+        if mutation == "text":
+            call["result"]["stdout"] += " changed"
+        elif mutation == "json_scalar_type":
+            # 7 == 7.0 in Python; the structured JSON types must still differ.
+            call["result"]["structured"]["result"]["totals"]["blocks"] = 7.0
+        elif mutation == "scope":
+            event["branch"] = "other-source"
+        elif mutation == "trust":
+            event["quoted_history"] = True
+        else:
+            event["receipt"]["sha256"] = "0" * 64
+        with pytest.raises(AssertionError):
+            historical_receipts(expected, actual, RunStore(corpus), recorded)
+
     @pytest.mark.parametrize("run_id", CORPUS_RUNS)
     def test_the_replayed_stream_is_the_recorded_stream(
             self, corpus, tmp_path, run_id):
@@ -1158,7 +1186,10 @@ class TestReplayingTheCorpus:
             *REPLAY_FLAGS.get(run_id, ())))
         fresh = replayed(corpus, run_id)
         expected = with_request_telemetry(records(corpus, run_id), run_id, "run")
-        assert comparable(comparable_request_clocks(records(corpus, fresh.run_id), fresh.run_id)) == \
+        expected, actual = historical_receipts(
+            expected, records(corpus, fresh.run_id), RunStore(corpus),
+            lines(corpus / run_id / TOOL_LOG))
+        assert comparable(comparable_request_clocks(actual, fresh.run_id)) == \
             comparable(expected)
 
     def test_the_staged_replay_served_every_recorded_call_in_order(

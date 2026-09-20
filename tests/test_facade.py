@@ -32,9 +32,7 @@ a library.
 """
 
 import json
-import hashlib
 import os
-from dataclasses import asdict
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -51,6 +49,7 @@ from core.tools.descriptors import ToolDescriptor
 from core.tools.sandbox import NoneSandbox
 from tests.test_record_replay import comparable, scripted_elf
 from tests.request_telemetry_fixtures import comparable_request_clocks
+from tests.receipt_fixtures import verified_receipts
 
 
 # ── the manifest the runs below share ───────────────────────────────────────
@@ -190,36 +189,9 @@ def facade_records(objective, bus, replies=REPLIES, *, task=False, durable=False
 
 def verified_receipt_comparison(records, runs):
     """Verify each private payload/binding before normalizing random locators."""
-    from core.runtime.receipt_checkpoint import ReceiptCheckpoint
     run_id = records[0]["run_id"]
-    rows, payloads = comparable(comparable_request_clocks(records, run_id)), []
-    for row in rows:
-        if row["event"] != "tool_result":
-            continue
-        ref = row["receipt"]
-        assert set(ref) == {"version", "state", "id", "sha256", "bytes", "redacted"}
-        assert ref["version"] == 1 and ref["state"] == "ready"
-        raw = (runs.directory(run_id) / "receipts" / (ref["id"] + ".json")).read_bytes()
-        assert len(raw) == ref["bytes"]
-        assert hashlib.sha256(raw).hexdigest() == ref["sha256"]
-        loaded = ReceiptCheckpoint(runs, run_id).load(row)
-        assert loaded.receipt is not None and not loaded.notice
-        receipt, origin = loaded.receipt, loaded.receipt.origin
-        assert origin.run_id == run_id and origin.receipt_id == ref["id"]
-        assert origin.sha256 == ref["sha256"] and origin.handle == row["handle"]
-        assert origin.index == row["index"] and origin.branch == row.get("branch", "")
-        assert origin.call == row.get("call", 0)
-        assert receipt.tool == row["tool"] and receipt.arguments == row["arguments"]
-        assert receipt.exit_code == row["exit_code"]
-        assert receipt.quoted_history == row.get("quoted_history", False)
-        assert receipt.redacted == ref["redacted"] == row.get("redacted_receipt", False)
-        payload = asdict(receipt)
-        payload["origin"] = {key: value for key, value in asdict(origin).items()
-                             if key not in {"run_id", "receipt_id", "sha256"}}
-        payloads.append(payload)
-        row["receipt"] = {**ref, "id": "<random-receipt-id>", "sha256": "<verified-digest>"}
-    assert payloads
-    return rows, payloads
+    rows, payloads = verified_receipts(records, runs)
+    return comparable(comparable_request_clocks(rows, run_id)), payloads
 
 
 # ── the façade is a re-export ───────────────────────────────────────────────
