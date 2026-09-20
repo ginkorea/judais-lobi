@@ -1253,6 +1253,10 @@ _FLAG_VALUES = {
     "--profile": "dev",
     "--skill": "skill.yaml",
     "--active-skill": "catalogue_recon",
+    "--task-owner": "fixture-owner",
+    "--task-thread": "fixture-thread",
+    "--task-state-in": "private-prior.json",
+    "--task-state-out": "private-next.json",
     "--events": "-",
     "--history": "thread.json",
     "--gate-tool": "compute_cancel_job",
@@ -1272,6 +1276,26 @@ _FLAG_VALUES = {
 
 
 class TestTheSpawningSurface:
+    @pytest.mark.parametrize("flag", [
+        "--no-task-state", "--task-owner", "--task-thread",
+        "--task-state-in", "--task-state-out",
+    ])
+    def test_task_handoff_flags_are_published(self, flag):
+        assert flag in c.CLI_FLAGS
+
+    def test_private_handoff_options_keep_their_declared_types(self):
+        parser = _mission_parser()
+        args = parser.parse_args([
+            "go", "--task-owner", "fixture-owner", "--task-thread", "fixture-thread",
+            "--task-state-in", "private-prior.json", "--task-state-out", "private-next.json",
+        ])
+        assert args.task_owner == "fixture-owner"
+        assert args.task_thread == "fixture-thread"
+        assert args.task_state_in == Path("private-prior.json")
+        assert args.task_state_out == Path("private-next.json")
+        assert args.no_task_state is False
+        assert parser.parse_args(["go", "--no-task-state"]).no_task_state is True
+
     def test_every_published_flag_is_one_the_parser_takes(self):
         from core.cli import PROVIDERS
 

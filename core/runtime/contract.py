@@ -921,6 +921,8 @@ CLI_FLAGS: tuple[str, ...] = (
     "--no-grounding", "--defer-skills", "--active-skill",
     "--cognition", "--compiled-context", "--graph-context",
     "--swarm-steering",
+    "--no-task-state", "--task-owner", "--task-thread",
+    "--task-state-in", "--task-state-out",
     "--version",
 )
 

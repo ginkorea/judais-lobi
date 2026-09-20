@@ -508,7 +508,7 @@ entrance to this state, so a run under that flag never carries them.
 ### The opening frame is the run's posture
 
 `mission_started` is the one record to read in full before rendering anything.
-Its six optional fields say what kind of run this is:
+Its optional fields say what kind of run this is:
 
 | field | what a driver does with it |
 | --- | --- |
@@ -516,8 +516,25 @@ Its six optional fields say what kind of run this is:
 | `profile` | `safe` \| `dev` \| `ops` \| `god` — the capability profile. A `safe` mission and a `god` one are otherwise indistinguishable on the wire |
 | `audit_ref` | the path of this process's append-only audit file, or **`null`** when `JUDAIS_LOBI_AUDIT` was `none`/`off` |
 | `run_id` | the durable transcript (§6). **Absent**, not null, when nothing is being recorded |
+| `history_checkpoint` | `1` means the run attempted its private v1 conversation checkpoint, not that the write succeeded. Resume verifies the checkpoint metadata and digest; this field contains no history text |
 | `protocol` | `"native"`, and **absent** on a `json` run — which keeps every stream recorded before the field existed byte-identical |
 | `granted` | the scopes `--grant` pre-authorised **beyond** `profile`, sorted, and **absent** on every run nobody widened. Read it beside `profile`: since 0.17 the profile is the floor a deployment set and this is what the operator typed on top of it, so a pane that renders only `profile` is now under-reporting what a run may do |
+
+Tool results also have optional provenance fields. `quoted_history` set to true
+marks supplied conversation history or a reread of it: what was said is not
+verified evidence or new authority. `receipt` is a private checkpoint reference
+with status, identity, digest, byte count and redaction status, never a payload
+or filesystem path; unavailable checkpointing does not mean the tool never ran.
+`redacted_receipt` set to true retains redacted-source provenance across rereads and
+resume, rather than presenting altered text as an original receipt. See
+[receipt checkpoints](docs/receipt-checkpoints.md) for partial recovery rules.
+
+The optional `mission_finished.task_state` report is emitted as `task_state`:
+measured current-task coverage and separately attributed requested counts, not
+task prose or an authenticated owner/thread. Missing coverage stays unknown;
+rendered-item counts are not independent proof that prose is correct. See
+[current task state](docs/current-task-state.md) for its exact fields and the
+distinction between caller requirements and model interpretations.
 
 ### The published spawning surface
 
@@ -536,6 +553,12 @@ releases.
 | `--mcp-timeout` | `MCP_TIMEOUT_S` | per-call timeout for MCP tool calls, in seconds, for every server on the plane. A property of the platform holding the other end, like `--gate-wait`: a broker that stages a large bundle before returning its handle legitimately takes longer than the default 30. Non-positive means the default; zero is not a value |
 | `--skill` | `MISSION_SKILL` | the manifest directory or file, or the NAME of a shipped pack — `research`, `coding`, `analyst` (§5). Repeatable: several compose into one mission, first is primary (§5, "Composing skills"). The variable takes an `os.pathsep`-separated list |
 | `--defer-skills` | — | direct missions only: opt in to an initial capability index; the mission selects configured skills on demand using `select_skills`. Full skill prose, function schemas and dispatch membership change together. The installed permission/sandbox ceiling is unchanged; accumulated evidence obligations survive task switches and direct resumes. Swarm/campaign combinations are refused before execution |
+| `--active-skill` | — | repeat a configured skill ID selected in this conversation to restore its instructions/tools before the first model call; requires `--defer-skills`. No permissions or approvals are restored; resume keeps the recorded selection |
+| `--no-task-state` | — | opt out of default run-local task/reference tracking; incompatible with scoped task flags. Resume/replay preserve recorded mode |
+| `--task-owner` | — | application-supplied owner binding, paired with `--task-thread`; a scope match is not authentication |
+| `--task-thread` | — | application-supplied private thread binding, paired with `--task-owner`; never derive scope from conversation/peer text |
+| `--task-state-in` | — | private prior-turn pointer file; requires both scope flags and resolves through the same host's private `JUDAIS_LOBI_RUNS` store |
+| `--task-state-out` | — | private pointer file exported at finalization; requires both scope flags. Use per-turn paths and caller-owned admission order so late older turns cannot supersede newer objectives |
 | `--swarm` | `MISSION_SWARM` | plan the mission as steps rather than one loop |
 | `--protocol` | `MISSION_PROTOCOL` | `json` (default) or `native` tool calling |
 | `--no-stream` | `MISSION_STREAM` | suppress `answer_delta` |
@@ -1649,7 +1672,7 @@ unchanged. The optional cognitive shadow still loads the configured advisory
 rule packs as before: task-scoped prose and tools are not task-scoped cognition.
 
 For follow-up turns, persist only the successful selector receipt's `selected`
-IDs per owner-checked conversation and pass each as `--active-skill ID` alongside
+IDs per owner-checked conversation and pass each as `--active-skill` followed by its ID alongside
 `--defer-skills`. The first model call can use these skills immediately. Resolve
 them against the current configured library, discard removed skills at the host,
 and keep an explicit empty selection when the agent clears its task. Every

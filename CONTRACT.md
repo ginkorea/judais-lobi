@@ -838,6 +838,11 @@ person's surface and may move.
 - `--swarm` — triage first, then stage the mission if it needs staging.
 - `--events` — where the NDJSON goes **out**. See above.
 - `--history` — prior turns, seeded as chat messages ahead of the objective.
+- `--no-task-state` — opt out of default run-local task/reference tracking. Cannot be combined with scoped task flags; resume/replay retain their recorded enabled/disabled mode.
+- `--task-owner` — caller-supplied owner binding for private handoff, paired with `--task-thread`. This is not authentication; the application supplies the authenticated identity, never conversation text.
+- `--task-thread` — caller-supplied private thread binding, paired with `--task-owner`.
+- `--task-state-in` — path to a private, bounded prior-turn handoff pointer. Requires both scope flags and resolves source snapshots through the same host's `JUDAIS_LOBI_RUNS` store, not an arbitrary payload or peer message.
+- `--task-state-out` — path for this turn's private scoped handoff pointer, exported at finalization. Requires both scope flags; use distinct per-turn paths and private caller-controlled ordering. See [current task state](docs/current-task-state.md).
 - `--gate-tool` — offer a tool and refuse to call it. Repeatable. Names resolve through the same `same_tool` rule a manifest's `allowed_tools` uses, so a bare name matches the namespaced one the bus dispatches; a name matching nothing, or matching two offered tools, is a refusal at the door listing what was offered.
 - `--approval` — an approval id somebody has already decided. Lifts that one tool out of the gated set, for this run only, and is spent when the tool is dispatched. A pending, refused, spent or abandoned record is refused at the door, naming the state.
 - `--resume` — carry on a recorded mission by its `run_id`. The objective comes off that run, so the positional message may be omitted; a different one is refused. A finished run is refused, except one that ended `awaiting_approval`.
