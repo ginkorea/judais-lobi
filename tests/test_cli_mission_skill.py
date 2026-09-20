@@ -676,7 +676,7 @@ class TestSamplingIsExplicitAndNotChosenForYou:
         body = self._body(agent)
         assert body["tool_choice"] == "auto"
         assert [t["function"]["name"] for t in body["tools"]] == \
-            ["mcp.governed_read"]
+            ["mcp.governed_read", "mission_task"]
 
     def test_the_run_says_out_loud_what_it_pinned(self, elf, skill_file, capsys):
         """A sampling setting that is not in the transcript is a setting the
@@ -739,12 +739,13 @@ class TestHistoryFlag:
         }
 
     def test_without_the_flag_the_seed_is_unchanged(self, elf, skill_file):
-        """Backward compatibility: no --history is exactly yesterday's
-        two-message seed, so nothing breaks before TAIPAN passes it."""
+        """No history still leaves the literal objective last; task state
+        is a separate assistant projection, never folded into owner input."""
         MockClass, agent = elf
         run_cli(MockClass, "--skill", str(skill_file))
         messages = self._messages(agent)
-        assert [m["role"] for m in messages] == ["system", "user"]
+        assert [m["role"] for m in messages] == ["system", "assistant", "user"]
+        assert "Current task state" in messages[1]["content"]
 
     def test_the_operator_is_told_the_history_was_seeded(
             self, elf, skill_file, history_file, capsys):
@@ -799,7 +800,8 @@ class TestHistoryFlag:
         run_cli(MockClass, "--skill", str(skill_file),
                 "--history", str(path))
         messages = self._messages(agent)
-        assert [m["role"] for m in messages] == ["system", "user"]
+        assert [m["role"] for m in messages] == ["system", "assistant", "user"]
+        assert "Current task state" in messages[1]["content"]
 
 
 class TestSwarmFlag:
@@ -1972,7 +1974,8 @@ class TestResumingFromTheCommandLine:
         run_resume(MockClass, run_id)
         # `argv()` started the run with "what exists?" and `resume_argv`
         # passes no message at all.
-        assert agent.seeds[0][1] == {"role": "user", "content": "what exists?"}
+        assert next(m for m in agent.seeds[0] if m["role"] == "user") == {
+            "role": "user", "content": "what exists?"}
 
     def test_a_different_objective_is_refused_naming_both(self, elf, tmp_path):
         MockClass, agent = elf
@@ -2216,7 +2219,7 @@ class TestTheNativeProtocolFromTheCommandLine:
         assert body["tool_choice"] == "required"
         assert body["parallel_tool_calls"] is True
         assert [t["function"]["name"] for t in body["tools"]] == \
-            ["mcp.governed_read", "mission_result", "mission_answer"]
+            ["mcp.governed_read", "mission_task", "mission_result", "mission_answer"]
 
     def test_the_answer_function_carries_its_own_schema(self, elf, skill_file):
         MockClass, agent = elf
@@ -2235,7 +2238,7 @@ class TestTheNativeProtocolFromTheCommandLine:
         assert body["tool_choice"] == "auto"
         assert "parallel_tool_calls" not in body
         assert [t["function"]["name"] for t in body["tools"]] == \
-            ["mcp.governed_read"]
+            ["mcp.governed_read", "mission_task"]
 
     # ── the run ────────────────────────────────────────────────────────
 
@@ -2279,7 +2282,7 @@ class TestTheNativeProtocolFromTheCommandLine:
             [native_call("mcp.governed_read", "c0", asset_id="asset.5f21")],
             [native_answer("done")])
         run_cli(MockClass, "--skill", str(skill_file), "--protocol", "native")
-        assistant = [m for m in agent.seeds[1] if m["role"] == "assistant"][0]
+        assistant = next(m for m in agent.seeds[1] if m["role"] == "assistant" and "tool_calls" in m)
         assert assistant["tool_calls"][0]["id"] == "c0"
         assert assistant["tool_calls"][0]["function"]["name"] == \
             "mcp.governed_read"
@@ -2422,7 +2425,7 @@ class TestResumingANativeRun:
         self.answer_next(agent)
         run_resume(MockClass, run_id)
         first_ask = agent.seeds[0]
-        assistant = [m for m in first_ask if m["role"] == "assistant"][0]
+        assistant = next(m for m in first_ask if m["role"] == "assistant" and "tool_calls" in m)
         results = [m for m in first_ask if m["role"] == "tool"]
         assert assistant["tool_calls"][0]["function"]["name"] == \
             "mcp.governed_read"

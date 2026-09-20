@@ -117,6 +117,7 @@ from core.runtime.run import (
     _to_completion,
 )
 from core.runtime.supervisor import NUDGE, PROGRESSING, REPLAN
+from core.runtime.task_state import TaskContext
 from core.runtime.usage import Ledger, Rate
 
 __all__ = ["SwarmRunner", "PlanStep", "RUNGS", "RUNGS_WITHOUT_SDK",
@@ -678,6 +679,7 @@ class SwarmRunner:
         approvals: Optional[ApprovalStore] = None,
         approval: Optional[ApprovalTicket] = None,
         history: Sequence[Dict[str, str]] = (),
+        task_context: Optional[TaskContext] = None,
         observer: Optional[Observer] = None,
         plain_chat_fn: Optional[Callable[..., Any]] = None,
         json_mode: bool = False,
@@ -713,7 +715,7 @@ class SwarmRunner:
         # it — and the constructor's surface is unchanged because `core/cli
         # .py` and this class's conformance suite hold it.
         store = Store(runs=run_store, run_id=run_id, approvals=approvals,
-                      ticket=approval, cognition=cognition)
+                      ticket=approval, cognition=cognition, task=task_context)
         # ONE plane for the whole turn, shared by every sub-mission. Each
         # used to build its own from the manifest's list, so a tool the bus
         # grew mid-turn was offered to the step that learned of it and to
@@ -994,6 +996,13 @@ class SwarmRunner:
         with self._run.history_scope(resumption):
             if resumption is None:
                 self._run.checkpoint_history()
+                if self._run.store.task is not None:
+                    self._run.results.clear()
+            if self._run.store.task is not None:
+                self._run.store.task.begin(objective,
+                    resumption.store if resumption is not None else self._run.results,
+                    runs=self._run.store.runs, run_id=self._run.store.run_id,
+                    resume=resumption is not None)
             return await self._arun(objective, resumption)
 
     async def _arun(self, objective: str,
@@ -1120,7 +1129,8 @@ class SwarmRunner:
                     # The run's totals, ABSENT when no provider reported
                     # anything — not three zeros. Off the one ledger every
                     # call of this turn folded into.
-                    usage=self._ledger.as_record(self._model.rate)))
+                    usage=self._ledger.as_record(self._model.rate)),
+                    **self._run.finish_task(transcript))
 
     # ── the clock and the switch, shared by every stage ─────────────────
     #
@@ -2080,6 +2090,8 @@ class SwarmRunner:
         """
         parts = [f"Objective: {objective}\n\nStep results:\n"
                  + "\n".join(lines)]
+        if self._run.store.task is not None:
+            parts.append(self._run.store.task.projection())
         if dropped:
             parts.append(f"({dropped} tool result(s) left out to fit the "
                          f"context window; the whole of each is in the "
@@ -2180,6 +2192,7 @@ class SwarmRunner:
         # contract requires.
         validator = self._run.personality.grounding
         repairs = 0
+        answer = self._run.compose_task_answer(answer)
         report = self._run._ground(answer, repairs, evidence=evidence,
                                    called=self._called)
         while (report is not None and report.ran and not report.grounded
@@ -2191,6 +2204,7 @@ class SwarmRunner:
                 "content": self._run._repairing_turn(report, repairs)})
             answer = str(
                 self._model.plain(self._fit(messages)) or "").strip() or answer
+            answer = self._run.compose_task_answer(answer)
             self._asked()
             report = self._run._ground(answer, repairs, evidence=evidence,
                                        called=self._called)
@@ -2235,7 +2249,8 @@ class SwarmRunner:
         the SDK is true if *any* step used it.  One owner still — each
         store's own record of what it dispatched — merged, not re-derived.
         """
-        for name in child.results.called_tools():
+        current_run_id = self._run.run_id if self._run.store.task is not None else None
+        for name in child.results.called_tools(current_run_id):
             if name not in self._called:
                 self._called.append(name)
 

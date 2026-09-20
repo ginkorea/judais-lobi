@@ -2,7 +2,7 @@
 import argparse
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Mapping
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -12,6 +12,9 @@ from core.contracts.schemas import ProfileMode
 # spelling of a record type is how a consumer comes to render nothing.
 from core.runtime.contract import ANSWER_DELTA, MODEL_STATE
 from core.runtime.provider_config import PROVIDERS
+
+if TYPE_CHECKING:
+    from core.runtime.task_state import TaskContext
 
 GREEN = "\033[92m"
 RESET = "\033[0m"
@@ -682,6 +685,58 @@ def _load_history(args):
         raise SystemExit(f"--history: {path}: {exc}")
 
 
+def _task_context(args: argparse.Namespace) -> "TaskContext | None":
+    """Caller-bound private task handoff; never read from conversation text."""
+    import json
+    from core.runtime.task_state import TaskContext, TaskHandoff, TaskScope
+    owner, thread = getattr(args, "task_owner", ""), getattr(args, "task_thread", "")
+    source, target = getattr(args, "task_state_in", None), getattr(args, "task_state_out", None)
+    if getattr(args, "no_task_state", False):
+        if owner or thread or source or target:
+            raise SystemExit("--no-task-state cannot be combined with scoped task flags")
+        return None
+    if bool(owner) != bool(thread) or ((source or target) and not (owner and thread)):
+        raise SystemExit("scoped task handoff requires both --task-owner and --task-thread")
+    try:
+        scope = TaskScope(owner, thread) if owner and thread else None
+    except ValueError:
+        raise SystemExit("task owner and thread must be nonempty caller identifiers") from None
+    handoff = None
+    if source is not None:
+        try:
+            with source.open("rb") as stream:
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                raise ValueError("handoff exceeds pointer bound")
+            handoff = TaskHandoff.from_record(json.loads(raw))
+        except (OSError, ValueError, TypeError):
+            raise SystemExit("--task-state-in: private handoff pointer is unavailable or invalid") from None
+    try:
+        return TaskContext(scope=scope, handoff=handoff)
+    except ValueError:
+        raise SystemExit("--task-state-in: handoff does not match caller owner/thread") from None
+
+
+def _recorded_task_context(args: argparse.Namespace, flags: Mapping[str, Any],
+                           current: "TaskContext | None") -> "TaskContext | None":
+    """Restore a recorded mode, never a recorded identity or authorization.
+
+    Recordings predating task state retain their legacy namespace and seed.
+    An explicit opt-out cannot silently alter an enabled run during resume.
+    """
+    enabled = flags.get("task_state_enabled", False)
+    if type(enabled) is not bool:
+        raise SystemExit("recorded task-state mode is invalid")
+    if not enabled:
+        if current is not None and current.scope is not None:
+            raise SystemExit("recorded no-state mode cannot import a scoped task handoff")
+        args.no_task_state = True
+        return None
+    if current is None:
+        raise SystemExit("resume/replay must retain the recorded enabled task-state mode")
+    return current
+
+
 def _mission_protocol(args) -> str:
     """``"json"`` or ``"native"``, or a refusal naming the two words.
 
@@ -918,12 +973,13 @@ DECLARATION_NOTE_CAP = 20
 def _run_meta_flags(args) -> dict:
     """How this mission was spawned, as the run's own index over itself.
 
-    Only flags that were actually given: a metadata file listing every
+    Apart from the version-sensitive task-state mode, only flags actually given:
+    a metadata file listing every
     default is a file in which the two settings somebody chose are invisible.
     Read through ``getattr`` so a caller building an ``args`` of its own —
     the tests do — is not obliged to carry the whole parser's surface.
     """
-    given = {}
+    given = {"task_state_enabled": not bool(getattr(args, "no_task_state", False))}
     for flag in RUN_META_FLAGS:
         # `skill` goes through `_skill_values` and not through `getattr`,
         # because the environment form is no longer an argparse default:
@@ -1035,7 +1091,7 @@ def _bounds_of(max_steps, deadline, cancel, control, gate_wait_s, supervisor):
     )
 
 
-def _store_of(run_store, run_id, recorder, approvals, ticket, cognition=None):
+def _store_of(run_store, run_id, recorder, approvals, ticket, cognition=None, task=None):
     """What survives the process: the log, the recording, the decisions.
 
     The recorder is named here even though nothing in the loop reads it
@@ -1056,7 +1112,7 @@ def _store_of(run_store, run_id, recorder, approvals, ticket, cognition=None):
     from core.runtime.run import Store
 
     return Store(runs=run_store, run_id=run_id, recorder=recorder,
-                 approvals=approvals, ticket=ticket, cognition=cognition)
+                 approvals=approvals, ticket=ticket, cognition=cognition, task=task)
 
 
 def _observer_of(store, *sinks):
@@ -1306,6 +1362,9 @@ def _mission(elf, args, name, style):
     # (JUDAIS_LOBI_RUNS=off) and not a thing to discover later from an empty
     # directory.
     run_store = open_run_store()
+    task_context = _task_context(args)
+    if task_context is not None and task_context.scope is not None and run_store is None:
+        raise SystemExit("scoped task handoff requires a durable JUDAIS_LOBI_RUNS store")
     run_id = ""
     # What this mission is about and how many steps it may spend, resolved
     # here because `--resume` can change both: the objective comes off the
@@ -1352,6 +1411,7 @@ def _mission(elf, args, name, style):
             raise SystemExit(f"--replay: {exc}")
         if replay.meta.meta.get("flags", {}).get("defer_skills"):
             raise SystemExit("recorded replay of deferred-skill missions is not yet supported")
+        task_context = _recorded_task_context(args, replay.meta.meta.get("flags", {}), task_context)
         objective = replay.objective
         # The run's, not this command line's — the recorded messages were
         # made in one protocol's shape and the loop about to be handed them
@@ -1389,6 +1449,7 @@ def _mission(elf, args, name, style):
         except ResumeRefused as exc:
             raise SystemExit(f"--resume: {exc}")
         run_id = recorded.run_id
+        task_context = _recorded_task_context(args, recorded.meta.meta.get("flags", {}), task_context)
         previous_deferred = bool(recorded.meta.meta.get("flags", {}).get("defer_skills"))
         if previous_deferred != bool(getattr(args, "defer_skills", False)):
             raise SystemExit("--resume must retain the recorded --defer-skills mode")
@@ -2522,7 +2583,7 @@ def _mission(elf, args, name, style):
             bounds = _bounds_of(max_steps, deadline, cancel, control,
                                 gate_wait_s, supervisor)
             store = _store_of(run_store, run_id, recorder, approvals, ticket,
-                              shadow)
+                              shadow, task=task_context)
             # ONE observer for the turn, so the two runners below cannot be
             # given different watchers, and the durable log beside it:
             # emitting is store-first, so the observer holds both.
@@ -2680,6 +2741,16 @@ def _mission(elf, args, name, style):
                 # new run directory is complete as far as it goes; what is
                 # owed is the sentence saying which call ran off the end.
                 raise SystemExit(f"--replay: {exc}")
+            finally:
+                target = getattr(args, "task_state_out", None)
+                if target is not None and task_context is not None:
+                    try:
+                        import json
+                        from core.durable import atomic_write_text
+                        pointer = task_context.export_handoff().as_record()
+                        atomic_write_text(target, json.dumps(pointer, ensure_ascii=False))
+                    except (OSError, ValueError, TypeError):
+                        console.print("Task handoff export unavailable; no replacement action was run.", style="yellow")
     except (McpUnavailable, McpConnectionError) as exc:
         # Scrubbed like everything else a mission says about a failure: this
         # message names the transport, and a transport is a URL, a socket path
@@ -3251,6 +3322,16 @@ def _main(AgentClass):
                              "into the message. A file, not an argument: a "
                              "conversation is many KB and argv is visible in "
                              "ps (env: MISSION_HISTORY)")
+    parser.add_argument("--no-task-state", action="store_true",
+                        help="Disable default run-local task/reference tracking; preserves legacy behavior")
+    parser.add_argument("--task-owner", default="",
+                        help="Caller-supplied owner binding for private state; not authentication")
+    parser.add_argument("--task-thread", default="",
+                        help="Caller-supplied thread binding for private state")
+    parser.add_argument("--task-state-in", type=Path,
+                        help="Private scoped handoff pointer, never conversation JSON")
+    parser.add_argument("--task-state-out", type=Path,
+                        help="Write a private scoped handoff pointer after this turn")
     # Unset means UNSENT, not zero. See the note beside `chat_fn`: the default
     # is the server's own, deliberately, because a noise floor taken at a
     # temperature nobody ships is not a floor.

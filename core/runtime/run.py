@@ -137,6 +137,7 @@ from core.runtime.supervisor import (
     NUDGE, NUDGE_NOTE, STUCK, Supervisor, WIND_UP,
 )
 from core.runtime.usage import Ledger, Rate
+from core.runtime.task_state import TASK_TOOL, TaskContext
 from core.tools.descriptors import same_tool, summarize_input_schema
 
 __all__ = ["Bounds", "Model", "NO_SUPERVISOR", "Observer", "Personality",
@@ -847,6 +848,8 @@ class Store:
     #: claim about deciding, and it survives both: no answer is held,
     #: checked or refused against this object.
     cognition: Any = None
+    #: Generic in-run task tracking, with optional caller-scoped handoff.
+    task: Optional[TaskContext] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_id", str(self.run_id or ""))
@@ -1927,6 +1930,8 @@ class Run:
             names.append(library.tool_name)
         if self.plane.store_tool:
             names.append(self.plane.store_tool)
+        if self.store.task is not None:
+            names.append(TASK_TOOL)
         if self.personality.memory is not None:
             names.extend(name for name in self.personality.memory.tool_names()
                          if name not in names)
@@ -2307,6 +2312,8 @@ class Run:
         return [
             self.system_turn(),
             *(dict(turn) for turn in self.personality.history),
+            *([{"role": "assistant", "content": self.store.task.projection()}]
+              if self.store.task is not None else []),
             self._seed_objective,
         ]
 
@@ -2475,7 +2482,7 @@ class Run:
         note = default_compaction_note(dropped_turns, freed_chars,
                                        dropped_results)
         if not self.plane.store_tool:
-            return note
+            return note + ("\n" + self.store.task.projection() if self.store.task is not None else "")
         gone = (f" The results whose text was removed here are still in that "
                 f"store: call {self.plane.store_tool}() with no handle "
                 "for the "
@@ -2487,6 +2494,7 @@ class Run:
             "handle you "
             f"were given when it arrived.{gone}"
             + self.results.history_pointer(self.plane.store_tool)
+            + ("\n" + self.store.task.projection() if self.store.task is not None else "")
         )
 
     def _fit(
@@ -2982,15 +2990,30 @@ class Run:
             # validator reads the other.
             self.results = resumption.store
             transcript.steps.extend(resumption.steps)
+        if self.store.task is not None and not isinstance(self.observer, _Branch):
+            self.store.task.begin(objective, self.results, runs=self.store.runs,
+                                  run_id=self.store.run_id, resume=resumption is not None)
+        elif self.store.task is not None:
+            self.store.task.import_sources(self.results)
         registered = self._register_store()
         # Beside the store tool and before the baseline below, so the two
         # memory tools are never read as a plane that grew under the run.
         remembered = []
         selected_tool = ""
+        task_registered = False
         try:
             remembered = self._register_memory()
             selected_tool = self._register_skill_selector()
+            if self.store.task is not None:
+                self.store.task.acquire(self.plane.bus)
+                task_registered = True
+                if self.plane.plane_changed is not None:
+                    self.plane.plane_changed(self.offered)
         except Exception:
+            if task_registered and self.store.task is not None:
+                self.store.task.release(self.plane.bus)
+            if selected_tool:
+                self.plane.bus.unregister(selected_tool)
             for name in remembered:
                 self.plane.bus.unregister(name)
             if registered:
@@ -3067,6 +3090,8 @@ class Run:
                 self.plane.bus.unregister(name)
             if selected_tool:
                 self.plane.bus.unregister(selected_tool)
+            if task_registered and self.store.task is not None:
+                self.store.task.release(self.plane.bus)
             # Nothing to withdraw from `bus.audit_context` any more, and
             # that is the point of `step` riding the dispatch: a column
             # that is a parameter of the call cannot be left behind on a
@@ -3082,6 +3107,7 @@ class Run:
             # swarm's `grounding` came to carry six of ten fields.
             # `usage` is the run's totals and is ABSENT when no provider
             # reported anything — not three zeros.
+            task_summary = self.finish_task(transcript)
             self.observer.emit(MISSION_FINISHED, **_finished_record(
                 outcome=transcript.outcome,
                 steps=len(transcript.steps),
@@ -3091,7 +3117,19 @@ class Run:
                 usage=transcript.usage.as_record(self.model.rate),
                 telemetry=transcript.usage.telemetry_record(),
                 started_at=self._started_at,
-                stopped_with_draft=transcript.delivered_draft))
+                stopped_with_draft=transcript.delivered_draft), **task_summary)
+
+    def compose_task_answer(self, answer: str) -> str:
+        """Prepare source-bound items before the existing grounding owner."""
+        if self.store.task is None or getattr(self.observer, "_stage", False):
+            return answer
+        return self.store.task.compose_answer(answer)
+
+    def finish_task(self, transcript: MissionTranscript) -> Dict[str, Any]:
+        if self.store.task is None or getattr(self.observer, "_stage", False):
+            return {}
+        self.store.task.finish(transcript.outcome, transcript.answer or "")
+        return {"task_state": self.store.task.summary()}
 
     def _register_skill_selector(self) -> str:
         library = self.personality.deferred_skills
@@ -3843,7 +3881,11 @@ class Run:
         # and the sandbox live, and an async path to the session that
         # skipped them would be a second dispatcher with a different
         # governance story. See ROADMAP.md §2.6.3.
-        result = await asyncio.to_thread(self.plane.bus.dispatch, name, **call)
+        if self.store.task is None:
+            result = await asyncio.to_thread(self.plane.bus.dispatch, name, **call)
+        else:
+            with self.store.task.using(self.results):
+                result = await asyncio.to_thread(self.plane.bus.dispatch, name, **call)
         if self.bounds.supervisor is not None:
             # The WHOLE result and the exit code with it, not the bounded
             # rendering the model is shown: what makes a repetition a
@@ -3864,8 +3906,9 @@ class Run:
             text=result.stdout,
             evidence=getattr(result, "evidence", "") or "",
             exit_code=result.exit_code,
-            quoted_history=(name == self.plane.store_tool
-                            and self.results.is_history_read(arguments)),
+            quoted_history=((self.store.task is not None and name == TASK_TOOL)
+                            or (name == self.plane.store_tool
+                                and self.results.is_history_read(arguments))),
             redacted=source.redacted if source is not None else False,
         )
         receipt: Mapping[str, object] = {}
@@ -3906,6 +3949,9 @@ class Run:
                    **({"redacted_receipt": True} if stored.redacted else {}),
                    **({"receipt": receipt} if receipt else {}),
                    **ordinal)
+        if self.store.task is not None:
+            self.store.task.observe(stored, receipt, branch=self.observer.name)
+            self.store.task.checkpoint()
         self._say(messages, rendered, getattr(slot, "call_id", ""))
         # The moment a plane can have changed: a dispatch is the only thing
         # this loop does that a server can watch, and `add_a_tool`-shaped
@@ -3941,6 +3987,7 @@ class Run:
         implementation, two callers, and the awaited one does not hold
         the loop while a critic thinks.
         """
+        answer = self.compose_task_answer(answer)
         report = self._ground(answer, repairs)
         transcript.grounding = report
 
@@ -4624,6 +4671,8 @@ class Run:
                 # is somebody talking, and `user` is the role for that.
                 messages.append({"role": "user", "content": text})
                 injected.append(text)
+                if self.store.task is not None:
+                    self.store.task.revise_objective(text)
             elif word == CANCEL_STEP:
                 messages.append({"role": "user",
                                  "content": CANCEL_STEP_LATE})
@@ -4717,7 +4766,8 @@ class Run:
             # Which tools this run dispatched, from the store that recorded
             # them — the plane-claim check's evidence, and the one place
             # that fact lives. See `MissionResultStore.called_tools`.
-            called=(self.results.called_tools() if called is None
+            called=(self.results.called_tools(self.run_id if self.store.task is not None else None)
+                    if called is None
                     else called),
             # And HOW MANY dispatches there were, which is a different fact
             # from the list above: that one is distinct names, and the
@@ -4726,7 +4776,8 @@ class Run:
             # said, and `SubjectGroundingCheck` reports no opinion rather
             # than reading it as a run that called nothing. The direct
             # path's store IS the count, one entry per dispatch.
-            calls=(len(self.results) if called is None else None))
+            calls=(self.results.dispatch_count(self.run_id if self.store.task is not None else None)
+                   if called is None else None))
         # Reshaped, always, and with the run's own repair count on it. Two
         # facts ride out of here: what the checks said, which is
         # `results`, and how many repair turns this answer has already

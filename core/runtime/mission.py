@@ -122,6 +122,7 @@ from core.runtime.grounding import GroundingReport, GroundingValidator
 from core.runtime.mission_stream import Observer
 from core.runtime.results import RESULT_TOOL, MissionResultStore
 from core.runtime.usage import Ledger, Rate
+from core.runtime.task_state import TaskContext
 
 
 def _profile_field(bus: Any) -> Dict[str, Any]:
@@ -1441,6 +1442,7 @@ class MissionRunner:
         approvals: Optional[ApprovalStore] = None,
         approval: Optional[ApprovalTicket] = None,
         history: Sequence[Dict[str, str]] = (),
+        task_context: Optional[TaskContext] = None,
         observer: Optional[Observer] = None,
         window: Optional[MissionWindow] = None,
         run_store: Optional[RunStore] = None,
@@ -1483,7 +1485,7 @@ class MissionRunner:
         # called `mission_answer`. Nothing here decides anything — every
         # line is a parameter finding the object that owns it.
         store = Store(runs=run_store, run_id=run_id, approvals=approvals,
-                      ticket=approval, cognition=cognition)
+                      ticket=approval, cognition=cognition, task=task_context)
         plane = ToolPlane(bus=bus, offered=tool_names, store_tool=store_tool,
                           gated=gated, admits=admits,
                           plane_changed=plane_changed)

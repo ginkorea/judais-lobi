@@ -430,7 +430,16 @@ class MissionResultStore:
                         sent=sent))
         return texts
 
-    def called_tools(self) -> List[str]:
+    def _dispatches(self, current_run_id: Optional[str] = None) -> List[StoredResult]:
+        """An imported observation is evidence, not a new dispatch in this run."""
+        return [stored for stored in self._results
+                if current_run_id is None or stored.origin is None
+                or stored.origin.run_id == current_run_id]
+
+    def dispatch_count(self, current_run_id: Optional[str] = None) -> int:
+        return len(self._dispatches(current_run_id))
+
+    def called_tools(self, current_run_id: Optional[str] = None) -> List[str]:
         """Every tool this run dispatched, once each, in the order called.
 
         **The one owner of "what was called this run."**  The store already
@@ -447,7 +456,7 @@ class MissionResultStore:
         dispatched, and what it produced is the other checks' business.
         """
         names: List[str] = []
-        for stored in self._results:
+        for stored in self._dispatches(current_run_id):
             if stored.tool and stored.tool not in names:
                 names.append(stored.tool)
         return names

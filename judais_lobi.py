@@ -88,6 +88,7 @@ from core.runtime.run import (
 from core.runtime.skills import (SkillManifest as Skill, compose_manifests,
                                  load_skill, resolve_skill)
 from core.runtime.supervisor import Supervisor
+from core.runtime.task_state import TaskContext, TaskHandoff, TaskIntent, TaskScope
 from core.skills.library import packs
 from core.tools import Tools
 
@@ -102,6 +103,7 @@ __all__ = [
     "ToolPlane",
     "Bounds",
     "Store",
+    "TaskContext", "TaskHandoff", "TaskIntent", "TaskScope",
     "Observer",
     "Model",
     # What the six are usually built out of.

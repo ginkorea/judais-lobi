@@ -47,12 +47,17 @@ Rereading a redacted receipt retains that provenance in both its result and
 checkpoint, including after another process restart. Partial recovery reports
 only the count of unavailable receipts; healthy receipts remain retrievable.
 
-This is a prerequisite for typed current-task/progress state, not that complete
-feature. Passing reference sets between distinct hosted turns still needs the
-thread/CLI handoff; requested/delivered counts and compaction state must later
-refer to these source receipts, not model-reported completion totals.
+Receipts provide the persistence prerequisite for current-task/progress state.
+The connected handoff below now binds requested/delivered counts and compaction
+references to those receipts, not model-reported completion totals. Hosted
+applications still supply their own authenticated thread binding.
 
-## Next connected slice (not implemented here)
+## Connected task-state slice
+
+The public task-state and CLI handoff described below is now implemented in
+[current task state](current-task-state.md). Hosted applications must still wire
+authenticated scope and private per-turn handoffs; receipts alone never create
+that authority. The original design checklist follows for traceability.
 
 1. Add an immutable current-task value beside Run's existing objective, with
    the newest literal owner objective and separately attributed interpreted

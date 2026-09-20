@@ -792,7 +792,7 @@ _OWN_OPTIONAL: dict[str, tuple[str, ...]] = {
     #: reads the answer, and a run's metadata is read by whoever asks
     #: afterwards what this run actually delivered.  Absent, never
     #: ``false``.
-    MISSION_FINISHED: ("usage", "telemetry", "budget", "reason", "elapsed_s",
+    MISSION_FINISHED: ("task_state", "usage", "telemetry", "budget", "reason", "elapsed_s",
                        "stopped_with_draft"),
     #: ``approval_id`` — the id of the durable record this request was
     #: written to, when the deployment keeps them (it does by default;

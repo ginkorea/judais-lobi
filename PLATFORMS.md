@@ -205,6 +205,15 @@ pays for nothing else. `Skill` and `load_skill` read a `SKILL.md`, and
 `Deadline` and `Cancellation` build a real `Bounds` (§7); `RunStore` is the
 `Store` (§6); `MissionWindow` is the `Model`'s context bound.
 
+Optional `Store(task=TaskContext.local())` adds generic current-task and ordered
+reference tracking; legacy library callers remain unchanged. Hosted callers
+can supply authenticated owner/thread binding and a private RunStore pointer
+through `TaskContext`, or the CLI's `--task-owner`, `--task-thread`,
+`--task-state-in`, and `--task-state-out` options. The CLI enables local tracking
+by default; `--no-task-state` opts out. See [current task state](docs/current-task-state.md)
+for the exact handoff schema, counted versus interpreted progress, and retained
+references after compaction. Scope matching does not authenticate a caller.
+
 The exception — the one default that is not *nothing* — is the **supervisor**.
 `Bounds()` carries one: `Run` builds it from the model the run was given, and
 every child of the run shares it, so a turn has one review budget the way it
