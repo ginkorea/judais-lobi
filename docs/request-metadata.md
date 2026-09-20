@@ -69,6 +69,10 @@ projection. This is retention of references, not a claim that every referenced
 archive remains available. Earlier synthesis evidence-block selection and
 unobserved external compaction are outside `instrumented_window_fits_only`
 coverage. No compaction is inferred from cumulative token spend.
+The initial synthesizer receives the already-fitted assembler output unchanged;
+its request has `compaction_observation=preassembly_unobserved` and a null
+compaction receipt, not proof that assembly retained everything. Other staged
+calls use `compaction_observation=request_fit` and report their one request fit.
 
 Records retain the existing first-256/latest bound; counters continue beyond
 retention and omitted records remain explicit. Child-ledger absorption retains

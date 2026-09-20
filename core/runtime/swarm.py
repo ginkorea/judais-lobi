@@ -979,19 +979,24 @@ class SwarmRunner:
 
     def _plain_call(self, messages: Sequence[Dict[str, str]], *, phase: str,
                     parent_request_id: Optional[str] = None,
-                    parent_call_id: Optional[str] = None, **extra: Any) -> str:
-        """One captured request and one spend fold for every staged plain role."""
+                    parent_call_id: Optional[str] = None,
+                    already_fitted: bool = False, **extra: Any) -> str:
+        """Capture/spend once, without refitting the synthesis assembler's output."""
         fitted = [dict(message) for message in messages]
         request = None
         window = self._model.window
         if window is not None:
-            fitted, compacted = window.fit(fitted, pinned=1)
+            compacted = None
+            if not already_fitted:
+                fitted, compacted = window.fit(fitted, pinned=1)
             request = self._ledger.begin_request(
                 run_id=self.run_id, branch="staged", index=self._ledger.request_attempts,
                 budget=window.request_budget(fitted, include_tool_schemas=False),
                 compaction=compacted.as_record() if compacted is not None else None,
                 context=RequestContext(phase=phase, parent_request_id=parent_request_id,
                                        parent_call_id=parent_call_id))
+            request["compaction_observation"] = (
+                "preassembly_unobserved" if already_fitted else "request_fit")
         with capturing() as capture:
             try:
                 result = str(self._model.plain(fitted, **extra) or "")
@@ -2197,7 +2202,7 @@ class SwarmRunner:
                     transcript: MissionTranscript) -> MissionTranscript:
         messages, lines = self._synthesis_messages(
             objective, plan, results, evidence)
-        answer = self._plain_call(messages, phase="synthesis").strip()
+        answer = self._plain_call(messages, phase="synthesis", already_fitted=True).strip()
         if not answer:
             # The synthesizer said nothing.  The step results themselves are
             # the honest fallback — facts the gates passed, not prose.

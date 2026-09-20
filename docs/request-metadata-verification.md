@@ -26,7 +26,7 @@ JSON after exact archive integrity checks, retaining JSON scalar distinctions
 such as integer versus floating point. The focused replay/facade retry passed
 22 tests in 4.71 seconds, no skips.
 
-## Final affected union
+## Pre-review affected union
 
 The final baseline and candidate include all modules from both earlier sets:
 
@@ -82,3 +82,41 @@ diagnostic was suppressed. `git diff --check` is clean.
 No live model, Mission Pane rendering, all-provider retry visibility, measured
 tokenizer occupancy, complete nested-tool usage, deployment, or release is
 claimed. Coverage and unknowns are part of the additive record contract.
+
+## Review correction — affected-path gate
+
+Review found that Local's transport counter ran before header preparation, and
+that the new staged request wrapper refitted initial synthesis output which the
+existing assembler had already fitted. Both are corrected without changing the
+fitting policy: headers resolve before counting an attempted transport, and the
+initial synthesis records its existing prepared prompt without a second fit.
+Preassembly compaction is explicitly unobserved. The all-green union above is
+evidence for the pre-review source, not this corrective change.
+
+Six new cases cover header preparation failure in streaming/nonstreaming modes,
+and real synthesis assembly with/without a window and with/without grounding
+repair. They check the exact prepared prompt, the number of fit calls, unchanged
+repair fitting, request budget, one spend per call and repair parent identity.
+
+The pre-review characterization substituted only `LocalBackend._post`,
+`SwarmRunner._plain_call` and `SwarmRunner._synthesize` from `659258b` into the
+loaded classes in memory, then selected the six new cases. No source file was
+mutated. It produced **four expected failures and two passes**, no skips, in
+**0.40 seconds**: both header cases counted an unattempted transport and both
+windowed synthesis cases fitted twice. The no-window cases already passed.
+The early module imports produced one harmless pytest assertion-rewrite warning
+for anyio. Private report: `review-base.xml`.
+
+The corrective source then passed **389 tests, zero failures, zero skips**, in
+**11.79 seconds**, using the same Python 3.13.14 interpreter and absolute
+worktree import verified above. The gate selected `test_call_metadata.py`,
+`test_local_backend.py`, `test_swarm.py`, `test_run_swarm.py` and
+`test_request_telemetry.py`, with the same pytest options above and a 360-second
+process bound. Private report: `review-candidate.xml`. The full 2,108-case union
+was not repeated for this bounded correction. Both handles were terminal before
+the slot was released for paired platform integration.
+
+Ruff and diff-whitespace checks pass for the corrective tests and Local source.
+The two changed production modules retain their existing mypy diagnostics
+(requests stubs, Local `last_tool_calls` annotation and the staged optional plan);
+the correction adds no new type diagnostics. No deployment or live call occurred.

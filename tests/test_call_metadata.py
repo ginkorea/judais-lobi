@@ -18,6 +18,8 @@ from core.runtime.backends.openai_backend import OpenAIBackend
 from core.runtime.backends.anthropic_backend import AnthropicBackend
 from core.runtime.backends.mistral_backend import MistralBackend
 from core.runtime.context_window import ContextConfig, MissionWindow
+from core.runtime.grounding import GroundingConfig, GroundingValidator
+from core.runtime.mission import MissionTranscript
 from core.runtime.usage import Ledger, RequestContext
 from tests.test_local_backend import stub  # noqa: F401
 from tests.test_request_telemetry import run_fixture
@@ -302,6 +304,93 @@ def test_failed_local_retry_keeps_coverage_without_spend_or_previous_stop(monkey
     assert request["reported_usage"] is None
     assert "usage" not in finished
     assert "secret failure text" not in json.dumps(request)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_local_header_failure_is_not_a_transport_attempt(monkeypatch, stream):
+    backend = LocalBackend(endpoint="https://fixture.example/private")
+    backend.start_call_metadata("old", backend.endpoint)
+    backend.report_stop("length")
+    post = MagicMock()
+    monkeypatch.setattr(backend._session, "post", post)
+
+    def headers():
+        raise RuntimeError("private header preparation failure")
+
+    monkeypatch.setattr(backend, "_headers", headers)
+    with capturing() as captured, pytest.raises(RuntimeError):
+        result = backend.chat("new", [], stream=stream)
+        if stream:
+            list(result)
+    post.assert_not_called()
+    assert captured.metadata.model == "new"
+    assert captured.metadata.physical_attempts is None
+    assert captured.metadata.raw_stop_reason is None
+    assert captured.usage is None
+    assert "private header preparation failure" not in json.dumps(captured.metadata.as_record())
+
+
+@pytest.mark.parametrize("windowed", [False, True])
+@pytest.mark.parametrize("repair", [False, True])
+def test_synthesis_preserves_prepared_prompt_and_only_fits_repairs(
+        monkeypatch, bus, windowed, repair):  # noqa: F811
+    window = MissionWindow(config=ContextConfig(max_context_tokens=32000, max_output_tokens=2000))
+    fits = []
+    actual_fit = window.fit
+
+    def recorded_fit(messages, **kwargs):
+        fitted, compacted = actual_fit(messages, **kwargs)
+        fits.append(([dict(m) for m in messages], [dict(m) for m in fitted]))
+        return fitted, compacted
+
+    monkeypatch.setattr(window, "fit", recorded_fit)
+    plain = ScriptedModel("ref.missing" if repair else "ref.real", "ref.real")
+    counts_at_call = []
+
+    def recorded_plain(messages):
+        counts_at_call.append(len(fits))
+        return plain(messages)
+
+    validator = GroundingValidator.from_config(GroundingConfig(identifier_pattern=r"\bref\.[a-z]+\b"))
+    runner = swarm(recorded_plain, ScriptedModel(), bus, validator=validator,
+                   window=window if windowed else None, usage_fn=lambda: Usage(10, 2, 12))
+    prepared = {}
+    assemble = runner._synthesis_messages
+
+    def recorded_assembly(*args):
+        messages, lines = assemble(*args)
+        prepared["messages"] = [dict(m) for m in messages]
+        prepared["fits"] = len(fits)
+        return messages, lines
+
+    monkeypatch.setattr(runner, "_synthesis_messages", recorded_assembly)
+    result = runner._synthesize("answer the question", [], {}, ["ref.real"],
+                                MissionTranscript(objective="answer the question"))
+    assert result.answer == "ref.real"
+    assert result.outcome == "answered"
+    assert plain.seen[0] == prepared["messages"]
+    assert counts_at_call[0] == prepared["fits"]
+    assert len(fits) == prepared["fits"] + int(windowed and repair)
+    assert plain.calls == 1 + int(repair)
+    assert runner._ledger.calls == plain.calls
+    if repair:
+        assert plain.seen[1][:len(prepared["messages"])] == prepared["messages"]
+        assert plain.seen[1][-2] == {"role": "assistant", "content": "ref.missing"}
+        assert plain.seen[1][-1]["role"] == "user"
+        if windowed:
+            assert plain.seen[1] == fits[-1][1]
+    records = runner._ledger.request_records
+    if windowed:
+        assert records[0]["phase"] == "synthesis"
+        assert records[0]["compaction"] is None
+        assert records[0]["compaction_observation"] == "preassembly_unobserved"
+        assert records[0]["budget"] == window.request_budget(prepared["messages"], include_tool_schemas=False)
+        if repair:
+            assert records[1]["phase"] == "synthesis_repair"
+            assert records[1]["compaction_observation"] == "request_fit"
+            assert records[1]["parent_call_id"] == records[0]["call_id"]
+    else:
+        assert records == []
 
 
 @pytest.mark.parametrize("error,expected", [(requests.ReadTimeout("private"), "transport_timeout"),

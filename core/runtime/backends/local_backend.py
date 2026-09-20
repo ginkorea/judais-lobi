@@ -621,10 +621,11 @@ class LocalBackend(Backend):
         :meth:`core.runtime.run.Model.watching`.
         """
         def post():
+            headers = self._headers()
             self.note_transport_attempt()
             return self._session.post(
                 f"{self.endpoint}/chat/completions",
-                headers=self._headers(),
+                headers=headers,
                 json=body,
                 timeout=CHAT_TIMEOUT,
                 stream=stream,
