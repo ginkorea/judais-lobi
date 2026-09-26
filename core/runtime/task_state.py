@@ -130,6 +130,61 @@ class CurrentTask:
     last_mapping_current: bool = False
 
 
+def decode_task_state(document: Mapping[str, Any], scope: Optional[TaskScope]) -> CurrentTask:
+    """Parse source-owned state without resolving evidence or changing a context.
+
+    This is structural validation, not proof that a referenced receipt exists.
+    Both live recovery and portable validation use this single parser.
+    """
+    expected = asdict(scope) if scope is not None else None
+    if document.get("scope") != expected or not isinstance(document.get("state"), dict):
+        raise ValueError("task checkpoint scope mismatch")
+    data = document["state"]
+    if not isinstance(data.get("objective"), str):
+        raise ValueError("invalid task objective")
+    for name in ("references", "staged", "delivered"):
+        if not isinstance(data.get(name), list):
+            raise ValueError("invalid task collection")
+    for name in ("last_delivered", "prior_staged"):
+        if not isinstance(data.get(name, []), list):
+            raise ValueError("invalid task collection")
+    intent = TaskIntent(**data["intent"])
+    references = [TaskReference(**row) for row in data["references"]]
+    staged = [TaskItem(**row) for row in data["staged"]]
+    delivered = [TaskItem(**row) for row in data["delivered"]]
+    unresolved, todo = data["unresolved"], data["declared_todo"]
+    if (not isinstance(unresolved, list) or not isinstance(todo, list)
+            or any(not isinstance(v, str) for v in [*unresolved, *todo])):
+        raise ValueError("invalid task work list")
+    interpreted = data.get("interpreted_intent")
+    last_delivered = [TaskItem(**row) for row in data.get("last_delivered", [])]
+    prior_staged = [TaskItem(**row) for row in data.get("prior_staged", [])]
+    reference_ids = {ref.id for ref in references}
+    for items in (staged, delivered, last_delivered, prior_staged):
+        if (any(item.reference_id not in reference_ids for item in items)
+                or len({item.reference_id for item in items}) != len(items)):
+            raise ValueError("invalid delivered reference list")
+    selection_known = data.get("selection_known", bool(references))
+    if type(selection_known) is not bool or len(reference_ids) != len(references):
+        raise ValueError("invalid reference selection")
+    selected = data.get("selected_reference_ids", [ref.id for ref in references])
+    selection_current = data.get("selection_current", False)
+    last_current = data.get("last_mapping_current", False)
+    if (not isinstance(selected, list) or any(not isinstance(v, str) for v in selected)
+            or any(v not in reference_ids for v in selected)
+            or len(set(selected)) != len(selected)
+            or type(selection_current) is not bool or type(last_current) is not bool):
+        raise ValueError("invalid active reference ordering")
+    return CurrentTask(
+        objective=data["objective"], intent=intent, references=references,
+        staged=staged, delivered=delivered, unresolved=list(unresolved),
+        declared_todo=list(todo), interpreted_intent=(
+            TaskIntent(**interpreted) if interpreted is not None else None),
+        selection_known=selection_known, last_delivered=last_delivered,
+        prior_staged=prior_staged, selected_reference_ids=list(selected),
+        selection_current=selection_current, last_mapping_current=last_current)
+
+
 class TaskCheckpoint:
     """Mutable restart state and immutable exported snapshots in RunStore."""
 
@@ -161,6 +216,17 @@ class TaskCheckpoint:
             path = root / "task-states" / (digest + ".json")
         with path.open("rb") as stream:
             raw = stream.read(MAX_STATE_BYTES + 1)
+        return self.decode(run_id, raw, digest=digest)
+
+    @staticmethod
+    def decode(run_id: str, raw: bytes, *, digest: str = "") -> Dict[str, Any]:
+        """Read a captured checkpoint envelope without opening or resuming a run.
+
+        Scope and reference closure remain the consumer's responsibility, just
+        as they are for ``load``. This does not instantiate a TaskContext.
+        """
+        if digest and not _DIGEST.fullmatch(digest):
+            raise ValueError("invalid checkpoint digest")
         if len(raw) > MAX_STATE_BYTES or (digest and hashlib.sha256(raw).hexdigest() != digest):
             raise ValueError("task checkpoint unavailable")
         document = json.loads(raw)
@@ -258,48 +324,9 @@ class TaskContext:
 
     def _restore(self, document: Mapping[str, Any], results: MissionResultStore,
                  *, resume: bool) -> None:
-        expected = asdict(self.scope) if self.scope is not None else None
-        if document.get("scope") != expected or not isinstance(document.get("state"), dict):
-            raise ValueError("task checkpoint scope mismatch")
-        data = document["state"]
-        if not isinstance(data.get("objective"), str):
-            raise ValueError("invalid task objective")
-        intent = TaskIntent(**data["intent"])
-        references = [TaskReference(**row) for row in data["references"]]
-        staged = [TaskItem(**row) for row in data["staged"]]
-        delivered = [TaskItem(**row) for row in data["delivered"]]
-        unresolved, todo = data["unresolved"], data["declared_todo"]
-        if (not isinstance(unresolved, list) or not isinstance(todo, list)
-                or any(not isinstance(v, str) for v in [*unresolved, *todo])):
-            raise ValueError("invalid task work list")
-        interpreted = data.get("interpreted_intent")
-        last_delivered = [TaskItem(**row) for row in data.get("last_delivered", [])]
-        prior_staged = [TaskItem(**row) for row in data.get("prior_staged", [])]
-        reference_ids = {ref.id for ref in references}
-        for items in (staged, delivered, last_delivered, prior_staged):
-            if (any(item.reference_id not in reference_ids for item in items)
-                    or len({item.reference_id for item in items}) != len(items)):
-                raise ValueError("invalid delivered reference list")
-        selection_known = data.get("selection_known", bool(references))
-        if type(selection_known) is not bool or len({r.id for r in references}) != len(references):
-            raise ValueError("invalid reference selection")
-        selected = data.get("selected_reference_ids", [ref.id for ref in references])
-        selection_current = data.get("selection_current", False)
-        last_current = data.get("last_mapping_current", False)
-        if (not isinstance(selected, list) or any(not isinstance(v, str) for v in selected)
-                or any(v not in reference_ids for v in selected)
-                or len(set(selected)) != len(selected)
-                or type(selection_current) is not bool or type(last_current) is not bool):
-            raise ValueError("invalid active reference ordering")
-        self.state = CurrentTask(
-            objective=data["objective"], intent=intent, references=references,
-            staged=staged, delivered=delivered, unresolved=list(unresolved),
-            declared_todo=list(todo), interpreted_intent=(
-                TaskIntent(**interpreted) if interpreted is not None else None),
-            selection_known=selection_known, last_delivered=last_delivered,
-            prior_staged=prior_staged, selected_reference_ids=list(selected),
-            selection_current=selection_current, last_mapping_current=last_current)
-        for ref in references:
+        self.state = decode_task_state(document, self.scope)
+        staged, delivered = self.state.staged, self.state.delivered
+        for ref in self.state.references:
             try:
                 self._resolve(ref, results)
             except (OSError, ValueError, TypeError, KeyError):

@@ -70,10 +70,24 @@ def load(store: RunStore, run_id: str, meta: Dict[str, Any]
     try:
         if not isinstance(ref, dict) or ref.get("state") != "ready":
             return [], UNAVAILABLE
-        if ref.get("version") != 1:
-            return [], UNAVAILABLE
         with (store.directory(run_id) / FILENAME).open("rb") as handle:
             data = handle.read(MAX_BYTES + 1)
+        return decode(run_id, meta, data)
+    except (OSError, ValueError, TypeError):
+        return [], UNAVAILABLE
+
+
+def decode(run_id: str, meta: Dict[str, Any], data: bytes
+           ) -> Tuple[Optional[List[Dict[str, str]]], str]:
+    """Validate captured history without filesystem access or execution state."""
+    if META_KEY not in meta:
+        return None, ""
+    ref = meta[META_KEY]
+    try:
+        if (not isinstance(ref, dict) or ref.get("state") != "ready"
+                or type(ref.get("version")) is not int or ref["version"] != 1
+                or type(ref.get("turns")) is not int):
+            return [], UNAVAILABLE
         if len(data) > MAX_BYTES or hashlib.sha256(data).hexdigest() != ref.get("sha256"):
             return [], UNAVAILABLE
         value = json.loads(data)

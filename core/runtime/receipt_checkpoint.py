@@ -76,6 +76,32 @@ class ReceiptLoad:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class ReceiptReference:
+    """A validated event pointer, not permission to read or replay a tool."""
+
+    id: str
+    sha256: str
+    size_bytes: int
+    redacted: bool
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, Any]) -> Optional[ReceiptReference]:
+        if "receipt" not in record:
+            return None
+        ref = record["receipt"]
+        if (not isinstance(ref, dict) or type(ref.get("version")) is not int
+                or ref["version"] != 1 or ref.get("state") != "ready"
+                or not isinstance(ref.get("id"), str) or not _ID.fullmatch(ref["id"])
+                or not isinstance(ref.get("sha256"), str)
+                or not _DIGEST.fullmatch(ref["sha256"])
+                or type(ref.get("bytes")) is not int
+                or not 0 < ref["bytes"] <= MAX_BYTES
+                or type(ref.get("redacted")) is not bool):
+            raise ValueError("invalid receipt reference")
+        return cls(ref["id"], ref["sha256"], ref["bytes"], ref["redacted"])
+
+
 class ReceiptCheckpoint:
     """One persistence adapter over the existing RunStore directory contract."""
 
@@ -128,25 +154,33 @@ class ReceiptCheckpoint:
         Hashes detect damage/mixed files, not an attacker controlling both log
         and checkpoint. Legacy events have no reference and retain old behavior.
         """
-        if "receipt" not in record:
-            return ReceiptLoad()
-        ref = record["receipt"]
         try:
-            if (not isinstance(ref, dict) or ref.get("version") != 1
-                    or ref.get("state") != "ready"
-                    or not isinstance(ref.get("id"), str) or not _ID.fullmatch(ref["id"])
-                    or not isinstance(ref.get("sha256"), str)
-                    or not _DIGEST.fullmatch(ref["sha256"])
-                    or type(ref.get("bytes")) is not int
-                    or not 0 < ref["bytes"] <= MAX_BYTES):
-                return ReceiptLoad(notice=UNAVAILABLE)
-            path = self.store.directory(self.run_id) / DIRECTORY / (ref["id"] + ".json")
+            ref = ReceiptReference.from_record(record)
+            if ref is None:
+                return ReceiptLoad()
+            path = self.store.directory(self.run_id) / DIRECTORY / (ref.id + ".json")
             with path.open("rb") as stream:
-                raw = stream.read(ref["bytes"] + 1)
-            if len(raw) != ref["bytes"] or hashlib.sha256(raw).hexdigest() != ref["sha256"]:
+                raw = stream.read(ref.size_bytes + 1)
+            return self.decode(self.run_id, record, raw)
+        except (OSError, ValueError, TypeError, KeyError, RecursionError):
+            return ReceiptLoad(notice=UNAVAILABLE)
+
+    @staticmethod
+    def decode(run_id: str, record: Mapping[str, Any], raw: bytes) -> ReceiptLoad:
+        """Validate already captured bytes without opening a store or dispatching.
+
+        Uses the same event binding and redaction as local recovery. A caller
+        transporting original bytes must separately refuse newly found secrets;
+        this result may contain a safely redacted projection of those bytes.
+        """
+        try:
+            ref = ReceiptReference.from_record(record)
+            if ref is None:
+                return ReceiptLoad()
+            if len(raw) != ref.size_bytes or hashlib.sha256(raw).hexdigest() != ref.sha256:
                 return ReceiptLoad(notice=UNAVAILABLE)
             doc = json.loads(raw)
-            expected = {"version": 1, "run_id": self.run_id, "receipt_id": ref["id"],
+            expected = {"version": 1, "run_id": run_id, "receipt_id": ref.id,
                         "index": record.get("index"), "call": record.get("call", 0),
                         "branch": record.get("branch", ""), "handle": record.get("handle"),
                         "tool": record.get("tool"), "exit_code": record.get("exit_code"),
@@ -158,7 +192,7 @@ class ReceiptCheckpoint:
             if (any(not isinstance(value, str) for value in identity.values())
                     or _safe_json(identity) != identity):
                 return ReceiptLoad(notice=UNAVAILABLE)
-            if (type(doc.get("redacted")) is not bool or doc["redacted"] != ref.get("redacted")
+            if (type(doc.get("redacted")) is not bool or doc["redacted"] != ref.redacted
                     or type(doc.get("has_evidence")) is not bool
                     or type(doc.get("exit_code")) is not int
                     or type(doc.get("index")) is not int or type(doc.get("call")) is not int
@@ -184,8 +218,8 @@ class ReceiptCheckpoint:
                     or not isinstance(error, str)):
                 return ReceiptLoad(notice=UNAVAILABLE)
             changed = doc["redacted"] or safe != payload
-            origin = ReceiptOrigin(self.run_id, ref["id"], doc["handle"], doc["branch"],
-                                   doc["index"], doc["call"], ref["sha256"], changed,
+            origin = ReceiptOrigin(run_id, ref.id, doc["handle"], doc["branch"],
+                                   doc["index"], doc["call"], ref.sha256, changed,
                                    tuple(dict.fromkeys([*paths, *newly_changed])))
             restored = StoredResult(
                 handle=doc["handle"], tool=doc["tool"], arguments=arguments,

@@ -148,3 +148,9 @@ the changed state the original. This is recognizable/known-secret hygiene,
 not a promise to recognize every arbitrary opaque secret. Existing event-output
 policy is unchanged. State serialization and archive reads are bounded to
 4 MiB, not all allocations used to build state or parse live results.
+
+For copying scoped work between hosts, the source candidate's
+[portable checkpoint validator](portable-checkpoints.md) checks a captured
+closure using these same parsers without resuming a run. It preserves receipt
+identities and refuses incomplete or unsafe bundles. Filesystem capture,
+current governance and durable transport remain the integrator's responsibility.
