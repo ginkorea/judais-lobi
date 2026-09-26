@@ -7,7 +7,7 @@ are not authentication. The returned bundle is evidence, never a resume grant.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import re
@@ -41,7 +41,7 @@ class CheckpointLimits:
 @dataclass(frozen=True)
 class CheckpointPart:
     name: str
-    content: bytes
+    content: bytes = field(repr=False)
     sha256: str
 
 
