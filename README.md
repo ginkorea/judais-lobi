@@ -120,6 +120,7 @@ never use costs nothing at runtime.
 
 | extra | what it adds | install it when |
 | --- | --- | --- |
+| [1.6.1](docs/releases/1.6.1.md) | 26 Sep 2026 | **Portable checkpoint validation.** Bounded, read-only capture of native checkpoint closures through a private process wire; exact-part integrity checks and run-lock exclusion. Does not resume or replay work, grant export access, or implement cross-host recovery. |
 | `mission` | `mcp`, `pyyaml`, `jsonschema` | **always, to run a mission** — this is the one a platform installs |
 | `mcp` | `mcp` alone | you want the tool bridge and nothing else (the trap above) |
 | `anthropic` | the Anthropic SDK | `--provider anthropic` |
@@ -920,7 +921,7 @@ One line each. Release tags identify the exact source shipped to PyPI.
 
 ### Status
 
-**v1.6.0** — see the [release notes](docs/releases/1.6.0.md) for changes and
+**v1.6.1** — see the [release notes](docs/releases/1.6.1.md) for changes and
 integration checks. Mission mode, skill manifests, the grounding validator,
 `--swarm`, campaigns, the NDJSON mission stream and the published contract
 remain available. The current test inventory comes from `pytest --collect-only -q`,
