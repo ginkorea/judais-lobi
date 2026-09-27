@@ -8,6 +8,7 @@ about the three ways it declines: no recorded span, an ambiguous name,
 and a path that leaves the repository.
 """
 
+import subprocess
 import textwrap
 
 import pytest
@@ -45,11 +46,17 @@ SOURCE = textwrap.dedent('''\
 
 
 @pytest.fixture
-def repo(tmp_path):
+def repo(tmp_path, monkeypatch):
     """Writes pkg/mod.py; `repo(*rels)` maps them. `twin` is opt-in so the
     single-match tests are not accidentally ambiguous."""
+    # Tool subprocesses sanitize their environment, so an inherited Git ceiling
+    # is not isolation. Own a repository with exactly this fixture's files.
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "mod.py").write_text(SOURCE, encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "pkg/mod.py"], check=True)
 
     def build(*rel_paths):
         extractor = PythonExtractor()
@@ -63,6 +70,7 @@ def repo(tmp_path):
 
     def add_twin():
         (tmp_path / "pkg" / "twin.py").write_text(SOURCE, encoding="utf-8")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "pkg/twin.py"], check=True)
         return build("pkg/mod.py", "pkg/twin.py")
 
     build.root = tmp_path

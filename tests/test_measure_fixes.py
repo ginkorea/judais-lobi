@@ -682,11 +682,13 @@ class TestTheLocalBackendOwnsTheMiddleOfTheOrder:
 
     def test_otherwise_the_listing_decides(self, monkeypatch):
         monkeypatch.delenv("LOCAL_MODEL", raising=False)
-        session = SimpleNamespace(get=lambda url, headers=None, timeout=None:
-                                  SimpleNamespace(
-                                      raise_for_status=lambda: None,
-                                      json=lambda: {"data": [
-                                          {"id": "what-is-served"}]}))
+        def get(url, headers=None, timeout=None, *, allow_redirects):
+            assert allow_redirects is False
+            return SimpleNamespace(
+                status_code=200, raise_for_status=lambda: None,
+                json=lambda: {"data": [{"id": "what-is-served"}]})
+
+        session = SimpleNamespace(get=get)
         backend = LocalBackend(endpoint="http://x/v1", session=session)
         assert backend.model == "what-is-served"
 

@@ -12,7 +12,8 @@ character for character, and the turns around it are the turns
 `core.eval.extraction` sent — rebuilt through its own `prompt_for`, so that
 a prompt change cannot quietly become a corpus change.
 
-Nothing here is mocked except the report, and the report is mocked the way
+Apart from one deliberate redactor fault injection, nothing here is mocked
+except the report, and the report is mocked the way
 the extraction tests mock a model: the *replies* are scripted and everything
 else is real — the shipped probe corpus, the real recorded run directories
 under `tests/fixtures/runs`, the real redactor, the real file writer.
@@ -356,29 +357,37 @@ def test_the_scrub_redacts_a_credential_the_redactor_owns(tmp_path):
     assert header["scrub_changed"] == 1
 
 
-def test_a_credential_shape_that_survives_the_scrub_is_never_written(tmp_path):
+@pytest.mark.parametrize("missed_by_scrubber", [False, True])
+def test_a_bare_jwt_is_scrubbed_or_refused_before_writing(
+        tmp_path, monkeypatch, missed_by_scrubber):
     """The second opinion, and the reason there is one.
 
-    A bearer token that arrives without the word `Bearer` in front of it —
-    a bare JWT under a key nobody called `_TOKEN` — is a shape
-    `core.redact` has no rule for, so re-running the redactor and asking it
-    again would answer a question nobody had. `residue_in` looks with its
-    own patterns, and what it finds is refused: counted, and absent from
-    the file.
+    Bare JWTs are scrubbed by the current redactor. A targeted fault injection
+    makes this one survive so the independent residue guard is still exercised:
+    what that guard finds is refused, counted, and absent from the file.
 
     The mutation: write the example anyway and this goes red on the bytes
     of the file, not on the counter.
     """
     token = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-             "eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9P")
+                 "eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9P")
+    if missed_by_scrubber:
+        real_scrub = C.scrub
+        monkeypatch.setattr(C, "scrub", lambda value:
+                            value if token in value else real_scrub(value))
     code, header, rows = build(tmp_path, report([
         attempt("totals_records", "assert"),
         attempt("totals_blocks", "assert",
                 replies=['[{"status":"ASSERT","field":"blocks","value":7,'
                          '"quote":"session ' + token + '"}]'])]))
     assert code == 0
-    assert header["excluded"]["credential_residue"] == 1
-    assert [row["meta"]["probe"] for row in rows] == ["totals_records"]
+    if missed_by_scrubber:
+        assert header["excluded"]["credential_residue"] == 1
+        assert [row["meta"]["probe"] for row in rows] == ["totals_records"]
+    else:
+        assert header["excluded"].get("credential_residue", 0) == 0
+        assert [row["meta"]["probe"] for row in rows] == ["totals_records", "totals_blocks"]
+        assert header["scrub_changed"] >= 1
     written = (tmp_path / "corpus.jsonl").read_text(encoding="utf-8")
     assert token not in written
     assert "eyJhbGci" not in written

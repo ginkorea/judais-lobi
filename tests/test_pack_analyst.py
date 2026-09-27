@@ -1010,10 +1010,10 @@ class TestTheCommandLineTakesThePackByName:
 
         assert "is on its BUILT-IN tools" in out
         assert records[0]["event"] == "mission_started"
-        # The pack's closed set, plus the store the runner adds — which is
+        # The pack's closed set, plus the result/task stores the runner adds — which is
         # the catalogue the model was shown.
         assert records[0]["catalogue"] == ["run_python_code", "fs",
-                                           "mission_result"]
+                                           "mission_result", "mission_task"]
         assert records[0]["sandbox"] == "bwrap"
         assert records[-1]["outcome"] == "answered"
         # And the console names the skill it loaded by name.

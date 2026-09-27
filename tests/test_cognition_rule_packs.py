@@ -610,9 +610,15 @@ class TestAPackWithoutTheFlagIsTheRunItAlwaysWas:
         assert packed.cognition is not None and plain.cognition is None
 
     def test_the_event_stream_is_the_same_stream(self, arms):
+        from tests.receipt_fixtures import verified_receipts
+        from tests.request_telemetry_fixtures import comparable_request_clocks
+
         root, plain, packed = arms
-        assert comparable(records(root, packed)) == \
-            comparable(records(root, plain))
+        packed_rows, packed_payloads = verified_receipts(records(root, packed), RunStore(root))
+        plain_rows, plain_payloads = verified_receipts(records(root, plain), RunStore(root))
+        assert packed_payloads == plain_payloads
+        assert comparable(comparable_request_clocks(packed_rows, packed)) == \
+            comparable(comparable_request_clocks(plain_rows, plain))
 
     def test_the_model_was_asked_the_same_questions(self, arms):
         root, plain, packed = arms
